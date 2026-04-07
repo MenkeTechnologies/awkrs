@@ -154,6 +154,40 @@ fn in_operator_membership() {
 }
 
 #[test]
+fn in_operator_numeric_index() {
+    let (c, o, _) = run_awkrs_stdin("BEGIN { a[7] = 1; print (7 in a), (8 in a) }", "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "1 0\n");
+}
+
+#[test]
+fn in_operator_multidimensional_key() {
+    let (c, o, _) = run_awkrs_stdin(
+        "BEGIN { a[1,2] = 42; k = 1 SUBSEP 2; print (k in a), (k in b) }",
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "1 0\n");
+}
+
+#[test]
+fn in_operator_chained_comparison() {
+    let (c, o, _) = run_awkrs_stdin(
+        "BEGIN { a[\"x\"] = 1; print ((\"x\" in a) == 1), ((\"y\" in a) == 0) }",
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "1 1\n");
+}
+
+#[test]
+fn in_operator_false_when_name_not_array() {
+    let (c, o, _) = run_awkrs_stdin("BEGIN { s = \"scalar\"; print (\"k\" in s) }", "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "0\n");
+}
+
+#[test]
 fn delete_array_element() {
     let (c, o, _) = run_awkrs_stdin("BEGIN { a[1] = 1; delete a[1]; print length(a) }", "");
     assert_eq!(c, 0);

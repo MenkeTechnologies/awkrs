@@ -1,6 +1,7 @@
 mod common;
 
-use common::run_awkrs_stdin;
+use common::{run_awkrs_stdin, run_awkrs_stdin_args_env};
+use std::ffi::OsString;
 use std::io::Write;
 use std::process::{Command, Stdio};
 
@@ -337,4 +338,82 @@ fn print_redirect_and_fflush() {
     let contents = std::fs::read_to_string(&path).expect("read redirected output");
     assert_eq!(contents, "hello\n");
     let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn use_lc_numeric_short_flag_c_locale_printf() {
+    let (code, stdout, stderr) = run_awkrs_stdin_args_env(
+        ["-N"],
+        r#"BEGIN { printf "%f\n", 1.5 }"#,
+        "",
+        [(OsString::from("LC_NUMERIC"), OsString::from("C"))],
+    );
+    assert_eq!(code, 0, "stderr={stderr:?}");
+    assert_eq!(stdout, "1.500000\n");
+}
+
+#[test]
+fn use_lc_numeric_long_flag_c_locale_sprintf() {
+    let (code, stdout, stderr) = run_awkrs_stdin_args_env(
+        ["--use-lc-numeric"],
+        r#"BEGIN { print sprintf("%e", 0.25) }"#,
+        "",
+        [(OsString::from("LC_NUMERIC"), OsString::from("C"))],
+    );
+    assert_eq!(code, 0, "stderr={stderr:?}");
+    assert!(
+        stdout.starts_with("2.5") && stdout.contains('e') && stdout.ends_with('\n'),
+        "unexpected scientific output: {stdout:?}"
+    );
+}
+
+#[test]
+fn stdin_parallel_safe_high_threads_no_parallel_unsafe_warning() {
+    let bin = env!("CARGO_BIN_EXE_awkrs");
+    let mut child = Command::new(bin)
+        .args(["-j", "8", "{ print $1 }"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn awkrs");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(b"a\nb\nc\n")
+        .expect("write stdin");
+    let out = child.wait_with_output().expect("wait");
+    assert_eq!(out.status.code(), Some(0));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("not parallel-safe"),
+        "stdin should not hit parallel-unsafe path; stderr={stderr:?}"
+    );
+}
+
+#[test]
+fn parallel_mode_with_input_file_preserves_line_order() {
+    let dir = std::env::temp_dir();
+    let id = std::process::id();
+    let path = dir.join(format!("awkrs_par_order_{id}.txt"));
+    std::fs::write(&path, "a\nb\nc\nd\n").expect("write temp file");
+    let bin = env!("CARGO_BIN_EXE_awkrs");
+    let out = Command::new(bin)
+        .args(["-j", "8", "{ print $1 }"])
+        .arg(&path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("spawn awkrs");
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("not parallel-safe"), "stderr={stderr:?}");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "a\nb\nc\nd\n");
 }

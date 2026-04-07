@@ -1074,6 +1074,11 @@ mod tests {
     }
 
     #[test]
+    fn parses_in_operator_compared() {
+        parse_program("BEGIN { x = (\"a\" in a) == 0 }").unwrap();
+    }
+
+    #[test]
     fn parses_in_operator() {
         let p = parse_program("BEGIN { print (\"k\" in a) }").unwrap();
         let rule = p

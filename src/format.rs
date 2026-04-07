@@ -518,4 +518,24 @@ mod tests {
         let s = awk_sprintf_with_decimal("%f", &[Value::Num(1.5)], ',').unwrap();
         assert_eq!(s, "1,500000");
     }
+
+    #[test]
+    fn lc_numeric_scientific_lowercase_e() {
+        let s = awk_sprintf_with_decimal("%.2e", &[Value::Num(1.0)], ',').unwrap();
+        assert!(s.contains('e'), "got {s:?}");
+        assert!(s.contains(','), "got {s:?}");
+    }
+
+    #[test]
+    fn lc_numeric_scientific_uppercase_e() {
+        let s = awk_sprintf_with_decimal("%.1E", &[Value::Num(1000.0)], ',').unwrap();
+        assert!(s.contains('E'), "got {s:?}");
+        assert!(s.contains(','), "got {s:?}");
+    }
+
+    #[test]
+    fn lc_numeric_general_g() {
+        let s = awk_sprintf_with_decimal("%.4g", &[Value::Num(3.14159)], ',').unwrap();
+        assert!(s.contains(','), "got {s:?}");
+    }
 }
