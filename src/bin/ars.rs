@@ -1,4 +1,4 @@
-//! `awkrs` binary — same engine as `ars` (`src/bin/ars.rs`).
+//! `ars` binary — short alias for the awkrs engine (`awkrs`).
 
 use awkrs::Error;
 use awkrs::run;

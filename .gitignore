@@ -1,1 +1,3 @@
 /target/
+# transient raw capture for termshot (see scripts/gen-help-screenshot.sh)
+assets/help.raw

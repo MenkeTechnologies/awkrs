@@ -9,10 +9,10 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Parser)]
 #[command(
     name = "awkrs",
-    version,
     about = "Pattern-directed scanning and processing (awk-compatible CLI; sequential record engine).",
     trailing_var_arg = true,
-    disable_help_flag = true
+    disable_help_flag = true,
+    disable_version_flag = true
 )]
 pub struct Args {
     // --- POSIX ---
@@ -114,6 +114,10 @@ pub struct Args {
     /// Print help (cyberpunk HUD).
     #[arg(short = 'h', long = "help", action = ArgAction::SetTrue)]
     pub show_help: bool,
+
+    /// Print version.
+    #[arg(short = 'V', long = "version", action = ArgAction::SetTrue)]
+    pub show_version: bool,
 
     /// Inline program and input files (use `--` before files if program starts with `-`).
     #[arg(value_name = "program [file ...]")]

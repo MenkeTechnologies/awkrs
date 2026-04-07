@@ -28,6 +28,10 @@ cargo build --release
 
 `awkrs --help` / `-h` prints a **cyberpunk HUD** (ASCII banner, status box, taglines, footer) in the style of MenkeTechnologies `tp -h`. ANSI colors apply when stdout is a TTY; set `NO_COLOR` to force plain text.
 
+![`awkrs -h` cyberpunk help (termshot)](assets/awkrs-help.png)
+
+Regenerate the screenshot after UI changes: `./scripts/gen-help-screenshot.sh` (needs [termshot](https://github.com/homeport/termshot) on `PATH` and a prior `cargo build`).
+
 ## Test
 
 ```bash

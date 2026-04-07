@@ -90,7 +90,7 @@ fn footer(version: &str) -> String {
 }
 
 /// Full cyberpunk help: banner + clap usage/args + footer.
-pub fn print_cyberpunk_help() {
+pub fn print_cyberpunk_help(bin_name: &str) {
     let version = env!("CARGO_PKG_VERSION");
     let mut out = io::stdout();
     let _ = writeln!(out, "{}", awkrs_logo());
@@ -107,6 +107,7 @@ pub fn print_cyberpunk_help() {
     let _ = writeln!(out);
 
     let _ = Args::command()
+        .bin_name(bin_name)
         .help_template(
             "\
 {usage-heading} {usage}
