@@ -44,6 +44,18 @@ cargo test
 
 Library unit tests cover `format` (including locale decimal radix for float conversions), lexer, and parser; integration tests live in `tests/integration.rs` and `tests/more_integration.rs` with shared helpers in `tests/common.rs`. End-to-end coverage includes the **`in`** operator, **`-N` / `--use-lc-numeric`** with `LC_NUMERIC`, and **stdin vs. file** parallel record behavior.
 
+## Benchmarks (vs awk / gawk)
+
+Results are **not checked into the README as numbers** (they go stale and vary by machine). The latest run from the maintainer’s environment is in [`benchmarks/benchmark-results.md`](benchmarks/benchmark-results.md) (tables produced by [hyperfine](https://github.com/sharkdp/hyperfine)).
+
+Regenerate after `cargo build --release` (requires `hyperfine` on `PATH`; `gawk` is optional but included when found):
+
+```bash
+./scripts/benchmark-vs-awk.sh
+```
+
+This compares **BSD awk**, **gawk** (if present), and **awkrs** (`-j1` and parallel where applicable) on three workloads: line throughput, a CPU-heavy `BEGIN`, and a summing pass with `END`.
+
 ## Still missing or partial
 
 **Two-way pipe** (**`|&`** / **`getline … <&`**): **`sh -c`** with stdin and stdout connected (same command string for both directions). Mixing **`|`** and **`|&`** on the same command string is an error. On **Unix**, string **`==`**, **`!=`**, and relational ordering use **`strcoll`** (honors **`LC_COLLATE`** / **`LC_ALL`** from the environment). With **`-N`** / **`--use-lc-numeric`**, **`LC_NUMERIC`** is applied (`setlocale(LC_NUMERIC, "")`) and **`sprintf`** / **`printf`** (statement and function) use the locale **decimal radix** for **`%f`** / **`%e`** / **`%g`** / **`%E`** / **`%F`** / **`%G`** output; **`print`** still uses the existing numeric-to-string rules (not full POSIX **`OFMT`** on every `print` yet). Without **`-N`**, numeric formatting in **`sprintf`** uses **`.`**. Exotic **`printf`** combinations not covered above may differ from **gawk**. Many gawk-only extensions are absent. `system()` runs commands via `sh -c` (same caveat as other awks). Prefer validating critical scripts against reference `awk`/`gawk`.
