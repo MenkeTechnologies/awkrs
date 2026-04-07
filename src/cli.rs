@@ -9,7 +9,7 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Parser)]
 #[command(
     name = "awkrs",
-    about = "Pattern-directed scanning and processing (awk-compatible CLI; sequential record engine).",
+    about = "Pattern-directed scanning and processing (awk-compatible CLI; parallel record engine when the program is parallel-safe, else sequential).",
     trailing_var_arg = true,
     disable_help_flag = true,
     disable_version_flag = true
