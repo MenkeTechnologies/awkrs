@@ -1,6 +1,6 @@
 # awkrs
 
-Awk-style record processor in Rust (union CLI, sequential engine), created by MenkeTechnologies.
+Awk-style record processor in Rust (union CLI, parallel record engine when safe), created by MenkeTechnologies.
 
 ## What it does
 
@@ -18,7 +18,11 @@ Implemented end-to-end:
 
 ## Multithreading
 
-Record processing is **sequential** (correct `NR` / `FNR` / side effects). Flags **`-j` / `--threads`** and **`--read-ahead`** are accepted for CLI compatibility; the engine does not yet use a background reader thread (reserved for future work).
+By default **`-j`** / **`--threads`** is set to the CPU count (`num_cpus`). When the program is **parallel-safe** (static check: no range patterns, no `exit`, no primary `getline`, no `delete`, no cross-record assignments or other mutating expressions in record rules or user functions), **records are processed in parallel** with **rayon**; `print` / `printf` output is **reordered to input order** so pipelines stay deterministic.
+
+If the program is not parallel-safe, the engine **falls back to sequential** processing and prints a **warning** (use **`-j 1`** to force a single thread and silence the warning). **`END`** still sees only **post-`BEGIN`** global state (record-rule mutations from parallel workers are not merged into the main runtime). Flags **`--read-ahead`** are accepted for CLI compatibility; the prefetch reader thread is not used.
+
+**Tradeoff:** Parallel mode loads the whole input file (or stdin) into memory before executing rules.
 
 ## Build
 

@@ -31,6 +31,27 @@ fn prints_second_field() {
 }
 
 #[test]
+fn parallel_record_mode_preserves_output_order() {
+    let bin = env!("CARGO_BIN_EXE_awkrs");
+    let mut child = Command::new(bin)
+        .args(["-j", "8", "{ print $1 }"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn awkrs");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(b"a\nb\nc\nd\ne\n")
+        .expect("write stdin");
+    let out = child.wait_with_output().expect("wait");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "a\nb\nc\nd\ne\n");
+}
+
+#[test]
 fn begin_end_sum() {
     let (code, stdout, _) =
         run_awkrs_stdin("BEGIN { s=0 } { s += $1 } END { print s }", "1\n2\n3\n");

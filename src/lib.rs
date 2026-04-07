@@ -12,17 +12,18 @@ mod runtime;
 
 pub use error::{Error, Result};
 
+use crate::ast::parallel;
 use crate::ast::{Pattern, Program};
 use crate::cli::{Args, MawkWAction};
 use crate::interp::{pattern_matches, range_step, run_begin, run_end, run_rule_on_record, Flow};
 use crate::parser::parse_program;
 use crate::runtime::{Runtime, Value};
 use clap::Parser;
-use std::cell::RefCell;
+use rayon::prelude::*;
 use std::fs::File;
-use std::io::{BufRead, BufReader, Read};
-use std::path::PathBuf;
-use std::rc::Rc;
+use std::io::{self, BufRead, BufReader, Read, Write};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// Run the interpreter. `bin_name` is used for diagnostics and help (e.g. `"awkrs"` or `"ars"`).
 pub fn run(bin_name: &str) -> Result<()> {
@@ -61,11 +62,11 @@ pub fn run(bin_name: &str) -> Result<()> {
     if args.debug.is_some() {
         eprintln!("{bin_name}: warning: --debug is not fully implemented");
     }
-    let threads = args.threads.unwrap_or_else(num_cpus::get);
-    let _ = threads;
+    let threads = args.threads.unwrap_or_else(num_cpus::get).max(1);
 
     let (program_text, files) = resolve_program_and_files(&args)?;
     let prog = parse_program(&program_text)?;
+    let parallel_ok = parallel::record_rules_parallel_safe(&prog);
 
     let mut rt = Runtime::new();
     apply_assigns(&args, &mut rt)?;
@@ -90,19 +91,49 @@ pub fn run(bin_name: &str) -> Result<()> {
 
     let mut range_state: Vec<bool> = vec![false; prog.rules.len()];
 
+    let use_parallel = threads > 1 && parallel_ok;
+    if threads > 1 && !parallel_ok {
+        eprintln!("{bin_name}: warning: program is not parallel-safe (range patterns, exit, getline without file, cross-record assignments, …); running sequentially (use -j 1 to silence)");
+    }
+
+    let mut nr_global = 0.0f64;
+
     if files.is_empty() {
-        process_file(None, &prog, &record_rule_indices, &mut range_state, &mut rt)?;
+        if use_parallel {
+            process_file_parallel(
+                None,
+                &prog,
+                &record_rule_indices,
+                &mut rt,
+                threads,
+                nr_global,
+            )?;
+        } else {
+            process_file(None, &prog, &record_rule_indices, &mut range_state, &mut rt)?;
+        }
     } else {
         for p in &files {
             rt.filename = p.to_string_lossy().into_owned();
             rt.fnr = 0.0;
-            process_file(
-                Some(p.as_path()),
-                &prog,
-                &record_rule_indices,
-                &mut range_state,
-                &mut rt,
-            )?;
+            let n = if use_parallel {
+                process_file_parallel(
+                    Some(p.as_path()),
+                    &prog,
+                    &record_rule_indices,
+                    &mut rt,
+                    threads,
+                    nr_global,
+                )?
+            } else {
+                process_file(
+                    Some(p.as_path()),
+                    &prog,
+                    &record_rule_indices,
+                    &mut range_state,
+                    &mut rt,
+                )?
+            };
+            nr_global += n as f64;
             if rt.exit_pending {
                 break;
             }
@@ -116,27 +147,168 @@ pub fn run(bin_name: &str) -> Result<()> {
     Ok(())
 }
 
-fn process_file(
-    path: Option<&std::path::Path>,
+struct ParallelRecordOut {
+    prints: Vec<String>,
+    exit_pending: bool,
+    exit_code: i32,
+}
+
+fn read_all_lines<R: Read>(mut r: R) -> Result<Vec<String>> {
+    let mut buf = BufReader::new(&mut r);
+    let mut lines = Vec::new();
+    let mut s = String::new();
+    loop {
+        s.clear();
+        let n = buf.read_line(&mut s).map_err(Error::Io)?;
+        if n == 0 {
+            break;
+        }
+        lines.push(s.clone());
+    }
+    Ok(lines)
+}
+
+fn process_file_parallel(
+    path: Option<&Path>,
     prog: &Program,
     record_rule_indices: &[usize],
-    range_state: &mut [bool],
     rt: &mut Runtime,
-) -> Result<()> {
-    let reader: Box<dyn Read> = if let Some(p) = path {
+    threads: usize,
+    nr_offset: f64,
+) -> Result<usize> {
+    let reader: Box<dyn Read + Send> = if let Some(p) = path {
         Box::new(File::open(p).map_err(|e| Error::ProgramFile(p.to_path_buf(), e))?)
     } else {
         Box::new(std::io::stdin())
     };
-    let br = Rc::new(RefCell::new(BufReader::new(reader)));
-    rt.attach_input_reader(br.clone());
+    let lines = read_all_lines(reader)?;
+    let nlines = lines.len();
+    if nlines == 0 {
+        return Ok(0);
+    }
 
+    let prog_arc = Arc::new(prog.clone());
+    let base = rt.clone();
+    let idxs: Vec<usize> = record_rule_indices.to_vec();
+    let fname = rt.filename.clone();
+
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .build()
+        .map_err(|e| Error::Runtime(format!("rayon pool: {e}")))?;
+
+    let results: Vec<std::result::Result<(usize, ParallelRecordOut), Error>> = pool.install(|| {
+        lines
+            .into_par_iter()
+            .enumerate()
+            .map(|(i, line)| {
+                let prog = Arc::clone(&prog_arc);
+                let mut local = base.clone();
+                local.rand_seed ^= (i as u64).wrapping_mul(0x9e3779b97f4a7c15);
+                local.nr = nr_offset + i as f64 + 1.0;
+                local.fnr = i as f64 + 1.0;
+                local.filename = fname.clone();
+                local.set_record_from_line(&line);
+
+                let mut buf = Vec::new();
+                for &idx in &idxs {
+                    let rule = &prog.rules[idx];
+                    let run = match &rule.pattern {
+                        Pattern::Range(_, _) => {
+                            return Err(Error::Runtime(
+                                "internal: range pattern in parallel path".into(),
+                            ));
+                        }
+                        pat => pattern_matches(pat, &mut local, &prog)?,
+                    };
+                    if run {
+                        match run_rule_on_record(&prog, &mut local, idx, Some(&mut buf)) {
+                            Ok(Flow::Next) => break,
+                            Ok(Flow::ExitPending) => {
+                                return Ok((
+                                    i,
+                                    ParallelRecordOut {
+                                        prints: buf,
+                                        exit_pending: true,
+                                        exit_code: local.exit_code,
+                                    },
+                                ));
+                            }
+                            Ok(Flow::Normal) => {}
+                            Ok(Flow::Break) | Ok(Flow::Continue) => {}
+                            Ok(Flow::Return(_)) => {
+                                return Err(Error::Runtime(
+                                    "`return` used outside function in rule action".into(),
+                                ));
+                            }
+                            Err(Error::Exit(code)) => return Err(Error::Exit(code)),
+                            Err(e) => return Err(e),
+                        }
+                    }
+                }
+                Ok((
+                    i,
+                    ParallelRecordOut {
+                        prints: buf,
+                        exit_pending: local.exit_pending,
+                        exit_code: local.exit_code,
+                    },
+                ))
+            })
+            .collect()
+    });
+
+    let mut outs: Vec<(usize, ParallelRecordOut)> = Vec::with_capacity(results.len());
+    for r in results {
+        outs.push(r?);
+    }
+    outs.sort_by_key(|(i, _)| *i);
+
+    let mut stdout = io::stdout().lock();
+    for (_, out) in &outs {
+        for chunk in &out.prints {
+            stdout.write_all(chunk.as_bytes()).map_err(Error::Io)?;
+        }
+    }
+
+    for (_, out) in &outs {
+        if out.exit_pending {
+            rt.exit_pending = true;
+            rt.exit_code = out.exit_code;
+            break;
+        }
+    }
+
+    Ok(nlines)
+}
+
+fn process_file(
+    path: Option<&Path>,
+    prog: &Program,
+    record_rule_indices: &[usize],
+    range_state: &mut [bool],
+    rt: &mut Runtime,
+) -> Result<usize> {
+    let reader: Box<dyn Read + Send> = if let Some(p) = path {
+        Box::new(File::open(p).map_err(|e| Error::ProgramFile(p.to_path_buf(), e))?)
+    } else {
+        Box::new(std::io::stdin())
+    };
+    let br = Arc::new(std::sync::Mutex::new(BufReader::new(reader)));
+    rt.attach_input_reader(Arc::clone(&br));
+
+    let mut count = 0usize;
     loop {
         let mut line = String::new();
-        let n = br.borrow_mut().read_line(&mut line).map_err(Error::Io)?;
+        let n = br
+            .lock()
+            .map_err(|_| Error::Runtime("input reader lock poisoned".into()))?
+            .read_line(&mut line)
+            .map_err(Error::Io)?;
         if n == 0 {
             break;
         }
+        count += 1;
         rt.nr += 1.0;
         rt.fnr += 1.0;
         rt.set_record_from_line(&line);
@@ -148,11 +320,11 @@ fn process_file(
                 pat => pattern_matches(pat, rt, prog)?,
             };
             if run {
-                match run_rule_on_record(prog, rt, idx) {
+                match run_rule_on_record(prog, rt, idx, None) {
                     Ok(Flow::Next) => break,
                     Ok(Flow::ExitPending) => {
                         rt.detach_input_reader();
-                        return Ok(());
+                        return Ok(count);
                     }
                     Ok(Flow::Normal) => {}
                     Ok(Flow::Break) | Ok(Flow::Continue) => {}
@@ -171,7 +343,7 @@ fn process_file(
         }
     }
     rt.detach_input_reader();
-    Ok(())
+    Ok(count)
 }
 
 fn resolve_program_and_files(args: &Args) -> Result<(String, Vec<PathBuf>)> {

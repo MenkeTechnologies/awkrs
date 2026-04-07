@@ -1,7 +1,7 @@
 //! `ars` binary — short alias for the awkrs engine (`awkrs`).
 
-use awkrs::Error;
 use awkrs::run;
+use awkrs::Error;
 
 fn main() {
     let bin = env!("CARGO_BIN_NAME");

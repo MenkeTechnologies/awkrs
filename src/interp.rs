@@ -22,6 +22,8 @@ pub struct ExecCtx<'a> {
     pub rt: &'a mut Runtime,
     pub locals: Vec<HashMap<String, Value>>,
     pub in_function: bool,
+    /// When set, `print` / `printf` append here instead of stdout (parallel record mode).
+    pub print_out: Option<&'a mut Vec<String>>,
 }
 
 impl<'a> ExecCtx<'a> {
@@ -31,6 +33,29 @@ impl<'a> ExecCtx<'a> {
             rt,
             locals: Vec::new(),
             in_function: false,
+            print_out: None,
+        }
+    }
+
+    pub fn with_print_capture(
+        prog: &'a Program,
+        rt: &'a mut Runtime,
+        out: &'a mut Vec<String>,
+    ) -> Self {
+        Self {
+            prog,
+            rt,
+            locals: Vec::new(),
+            in_function: false,
+            print_out: Some(out),
+        }
+    }
+
+    pub fn emit_print(&mut self, s: &str) {
+        if let Some(buf) = self.print_out.as_mut() {
+            buf.push(s.to_string());
+        } else {
+            print!("{s}");
         }
     }
 
@@ -102,8 +127,16 @@ pub fn run_end(prog: &Program, rt: &mut Runtime) -> Result<()> {
     Ok(())
 }
 
-pub fn run_rule_on_record(prog: &Program, rt: &mut Runtime, rule_idx: usize) -> Result<Flow> {
-    let mut ctx = ExecCtx::new(prog, rt);
+pub fn run_rule_on_record(
+    prog: &Program,
+    rt: &mut Runtime,
+    rule_idx: usize,
+    print_out: Option<&mut Vec<String>>,
+) -> Result<Flow> {
+    let mut ctx = match print_out {
+        Some(buf) => ExecCtx::with_print_capture(prog, rt, buf),
+        None => ExecCtx::new(prog, rt),
+    };
     let rule = &prog.rules[rule_idx];
     for s in &rule.stmts {
         match exec_stmt(s, &mut ctx)? {
@@ -290,7 +323,8 @@ fn exec_stmt(s: &Stmt, ctx: &mut ExecCtx<'_>) -> Result<Flow> {
             } else {
                 parts.join(&ofs)
             };
-            print!("{line}{ors}");
+            let chunk = format!("{line}{ors}");
+            ctx.emit_print(&chunk);
         }
         Stmt::Break => return Ok(Flow::Break),
         Stmt::Continue => return Ok(Flow::Continue),
@@ -802,7 +836,7 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
                 .map(|e| eval_expr(e, ctx))
                 .collect::<Result<_>>()?;
             let s = sprintf_simple(&fmt, &vals)?.as_str();
-            print!("{s}");
+            ctx.emit_print(&s);
             Ok(Value::Num(0.0))
         }
         _ => Err(Error::Runtime(format!("unknown function `{name}`"))),

@@ -1,9 +1,8 @@
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use crate::error::{Error, Result};
 
@@ -69,7 +68,7 @@ pub struct Runtime {
     pub exit_pending: bool,
     pub exit_code: i32,
     /// Primary input stream for `getline` without `< file` (same as main record loop).
-    pub input_reader: Option<Rc<RefCell<BufReader<Box<dyn Read>>>>>,
+    pub input_reader: Option<Arc<Mutex<BufReader<Box<dyn Read + Send>>>>>,
     /// Open files for `getline < path` / `close`.
     pub file_handles: HashMap<String, BufReader<File>>,
     pub rand_seed: u64,
@@ -96,7 +95,7 @@ impl Runtime {
         }
     }
 
-    pub fn attach_input_reader(&mut self, r: Rc<RefCell<BufReader<Box<dyn Read>>>>) {
+    pub fn attach_input_reader(&mut self, r: Arc<Mutex<BufReader<Box<dyn Read + Send>>>>) {
         self.input_reader = Some(r);
     }
 
@@ -112,7 +111,10 @@ impl Runtime {
             ));
         };
         let mut line = String::new();
-        let n = r.borrow_mut().read_line(&mut line).map_err(Error::Io)?;
+        let mut guard = r
+            .lock()
+            .map_err(|_| Error::Runtime("input reader lock poisoned".into()))?;
+        let n = guard.read_line(&mut line).map_err(Error::Io)?;
         if n == 0 {
             return Ok(None);
         }
@@ -260,6 +262,24 @@ impl Runtime {
         self.array_delete(arr_name, None);
         for (i, p) in parts.iter().enumerate() {
             self.array_set(arr_name, format!("{}", i + 1), Value::Str(p.clone()));
+        }
+    }
+}
+
+impl Clone for Runtime {
+    fn clone(&self) -> Self {
+        Self {
+            vars: self.vars.clone(),
+            fields: self.fields.clone(),
+            record: self.record.clone(),
+            nr: self.nr,
+            fnr: self.fnr,
+            filename: self.filename.clone(),
+            exit_pending: self.exit_pending,
+            exit_code: self.exit_code,
+            input_reader: None,
+            file_handles: HashMap::new(),
+            rand_seed: self.rand_seed,
         }
     }
 }

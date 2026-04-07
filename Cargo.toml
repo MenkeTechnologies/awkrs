@@ -2,7 +2,7 @@
 name = "awkrs"
 version = "0.1.0"
 edition = "2021"
-description = "Awk implementation in Rust with broad CLI compatibility and a sequential record engine"
+description = "Awk implementation in Rust with broad CLI compatibility and parallel record processing when safe"
 license = "MIT"
 repository = "https://github.com/MenkeTechnologies/awkrs"
 readme = "README.md"
@@ -24,6 +24,7 @@ path = "src/bin/ars.rs"
 [dependencies]
 clap = { version = "4.5", features = ["derive", "cargo", "env"] }
 num_cpus = "1.16"
+rayon = "1.10"
 regex = "1.10"
 thiserror = "2.0"
 
