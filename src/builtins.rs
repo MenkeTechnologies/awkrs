@@ -140,13 +140,15 @@ fn expand_repl(repl: &str, matched: &str) -> String {
     out
 }
 
-/// `patsplit(string, array [, fieldpat ])` — split `string` into `array` using successive
+/// `patsplit(string, array [, fieldpat [, seps ]])` — split `string` into `array` using successive
 /// matches of `fieldpat`, or `FPAT` when omitted. Empty `FPAT` uses `[^[:space:]]+`.
+/// When `seps` is set, `seps[i]` holds the text between `array[i]` and `array[i+1]` (1-based keys).
 pub fn patsplit(
     rt: &mut Runtime,
     s: &str,
     arr_name: &str,
     fieldpat: Option<&str>,
+    seps_name: Option<&str>,
 ) -> Result<f64> {
     let fp_owned = match fieldpat {
         Some(s) => s.to_string(),
@@ -162,17 +164,33 @@ pub fn patsplit(
         fp_owned.as_str()
     };
     let re = Regex::new(fp).map_err(|e| Error::Runtime(e.to_string()))?;
+    let matches: Vec<regex::Match> = re.find_iter(s).collect();
+    let n = matches.len();
+
     rt.array_delete(arr_name, None);
-    let mut i = 1i32;
-    for m in re.find_iter(s) {
+    for (i, m) in matches.iter().enumerate() {
         rt.array_set(
             arr_name,
-            format!("{i}"),
+            format!("{}", i + 1),
             Value::Str(m.as_str().to_string()),
         );
-        i += 1;
     }
-    Ok((i - 1) as f64)
+
+    if let Some(sep_arr) = seps_name {
+        rt.array_delete(sep_arr, None);
+        for i in 1..n {
+            let prev = &matches[i - 1];
+            let curr = &matches[i];
+            let sep = &s[prev.end()..curr.start()];
+            rt.array_set(
+                sep_arr,
+                format!("{i}"),
+                Value::Str(sep.to_string()),
+            );
+        }
+    }
+
+    Ok(n as f64)
 }
 
 fn apply_record_string(rt: &mut Runtime, s: &str) {

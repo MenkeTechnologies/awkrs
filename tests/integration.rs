@@ -179,3 +179,20 @@ fn patsplit_with_pattern() {
     assert_eq!(code, 0);
     assert_eq!(stdout, "3 a b c\n");
 }
+
+#[test]
+fn patsplit_seps_between_fields() {
+    let (code, stdout, _) = run_awkrs_stdin(
+        "BEGIN { n = patsplit(\"aa  bb\", a, \"[a-z]+\", seps); print n, length(seps[1]) }",
+        "",
+    );
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "2 2\n");
+}
+
+#[test]
+fn sprintf_star_width() {
+    let (code, stdout, _) = run_awkrs_stdin("BEGIN { print sprintf(\"%*d\", 4, 7) }", "");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "   7\n");
+}

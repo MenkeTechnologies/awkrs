@@ -11,54 +11,70 @@ pub fn awk_sprintf(fmt: &str, vals: &[Value]) -> Result<String, String> {
             out.push(c);
             continue;
         }
-        let mut left = false;
-        let mut sign = false;
-        let mut space = false;
-        let mut alt = false;
-        let mut pad_zero = false;
-        while let Some(&ch) = it.peek() {
-            match ch {
-                '-' => {
-                    left = true;
-                    it.next();
-                }
-                '+' => {
-                    sign = true;
-                    it.next();
-                }
-                ' ' => {
-                    space = true;
-                    it.next();
-                }
-                '#' => {
-                    alt = true;
-                    it.next();
-                }
-                '0' => {
-                    pad_zero = true;
-                    it.next();
-                }
-                _ => break,
+        let piece = parse_conversion(&mut it, vals, &mut vi)?;
+        out.push_str(&piece);
+    }
+    Ok(out)
+}
+
+fn take_val<'a>(vals: &'a [Value], vi: &mut usize) -> Result<&'a Value, String> {
+    let v = vals
+        .get(*vi)
+        .ok_or_else(|| "sprintf: not enough arguments".to_string())?;
+    *vi += 1;
+    Ok(v)
+}
+
+fn parse_conversion(
+    it: &mut std::iter::Peekable<std::str::Chars>,
+    vals: &[Value],
+    vi: &mut usize,
+) -> Result<String, String> {
+    let mut left = false;
+    let mut sign = false;
+    let mut space = false;
+    let mut alt = false;
+    let mut pad_zero = false;
+    while let Some(&ch) = it.peek() {
+        match ch {
+            '-' => {
+                left = true;
+                it.next();
             }
-        }
-        let mut width: Option<usize> = None;
-        if let Some(d) = it.peek().copied() {
-            if d.is_ascii_digit() {
-                let mut w = 0usize;
-                while let Some(&d) = it.peek() {
-                    if d.is_ascii_digit() {
-                        w = w * 10 + (d as u8 - b'0') as usize;
-                        it.next();
-                    } else {
-                        break;
-                    }
-                }
-                width = Some(w);
+            '+' => {
+                sign = true;
+                it.next();
             }
+            ' ' => {
+                space = true;
+                it.next();
+            }
+            '#' => {
+                alt = true;
+                it.next();
+            }
+            '0' => {
+                pad_zero = true;
+                it.next();
+            }
+            _ => break,
         }
-        let mut prec: Option<usize> = None;
-        if it.peek() == Some(&'.') {
+    }
+
+    let (width, star_left) = parse_width_or_star(it, vals, vi)?;
+    if star_left {
+        left = true;
+    }
+
+    let mut prec: Option<usize> = None;
+    if it.peek() == Some(&'.') {
+        it.next();
+        if it.peek() == Some(&'*') {
             it.next();
+            let v = take_val(vals, vi)?;
+            let p = v.as_number();
+            prec = Some(if p < 0.0 { 0 } else { p as usize });
+        } else {
             let mut p = 0usize;
             let mut any = false;
             while let Some(&d) = it.peek() {
@@ -70,28 +86,52 @@ pub fn awk_sprintf(fmt: &str, vals: &[Value]) -> Result<String, String> {
                     break;
                 }
             }
-            if any {
-                prec = Some(p);
+            prec = if any { Some(p) } else { Some(0) };
+        }
+    }
+
+    while matches!(it.peek(), Some('h' | 'l' | 'L')) {
+        it.next();
+    }
+    let conv = it.next().ok_or_else(|| "truncated format".to_string())?;
+    if conv == '%' {
+        return Ok("%".to_string());
+    }
+    let v = take_val(vals, vi)?;
+    let piece = format_one(conv, v, left, sign, space, alt, pad_zero, width, prec)?;
+    Ok(piece)
+}
+
+/// Parses field width: digits or `*` (consumes one `sprintf` argument). A negative `*` value sets
+/// `left` (second return value).
+fn parse_width_or_star(
+    it: &mut std::iter::Peekable<std::str::Chars>,
+    vals: &[Value],
+    vi: &mut usize,
+) -> Result<(Option<usize>, bool), String> {
+    if it.peek() == Some(&'*') {
+        it.next();
+        let v = take_val(vals, vi)?;
+        let n = v.as_number();
+        if n < 0.0 {
+            let w = (-n) as usize;
+            return Ok((Some(w), true));
+        }
+        return Ok((Some(n as usize), false));
+    }
+    if it.peek().map_or(false, |c| c.is_ascii_digit()) {
+        let mut w = 0usize;
+        while let Some(&d) = it.peek() {
+            if d.is_ascii_digit() {
+                w = w * 10 + (d as u8 - b'0') as usize;
+                it.next();
             } else {
-                prec = Some(0);
+                break;
             }
         }
-        while matches!(it.peek(), Some('h' | 'l' | 'L')) {
-            it.next();
-        }
-        let conv = it.next().ok_or_else(|| "truncated format".to_string())?;
-        if conv == '%' {
-            out.push('%');
-            continue;
-        }
-        let v = vals
-            .get(vi)
-            .ok_or_else(|| "sprintf: not enough arguments".to_string())?;
-        vi += 1;
-        let piece = format_one(conv, v, left, sign, space, alt, pad_zero, width, prec)?;
-        out.push_str(&piece);
+        return Ok((Some(w), false));
     }
-    Ok(out)
+    Ok((None, false))
 }
 
 fn format_one(
@@ -165,7 +205,7 @@ fn format_one(
         'f' | 'F' => {
             let n = v.as_number();
             let p = prec.unwrap_or(6);
-            let s = format!("{n:.p$}");
+            let s = format!("{:.*}", p, n);
             pad_numeric(&s, w, left, pad_char)
         }
         'e' | 'E' => {
@@ -181,7 +221,7 @@ fn format_one(
         'g' | 'G' => {
             let n = v.as_number();
             let p = prec.unwrap_or(6);
-            let s = format!("{n:.p$}");
+            let s = format!("{:.*}", p, n);
             pad_numeric(&s, w, left, pad_char)
         }
         'c' => {
@@ -219,5 +259,39 @@ fn pad_string(s: &str, width: usize, left: bool, pad: char) -> Result<String, St
         Ok(format!("{s}{pad_s}"))
     } else {
         Ok(format!("{pad_s}{s}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::Value;
+
+    #[test]
+    fn star_width() {
+        let s = awk_sprintf("%*d", &[Value::Num(5.0), Value::Num(3.0)]).unwrap();
+        assert_eq!(s, "    3");
+    }
+
+    #[test]
+    fn star_width_negative_left_justifies() {
+        let s = awk_sprintf("%*d", &[Value::Num(-5.0), Value::Num(3.0)]).unwrap();
+        assert_eq!(s, "3    ");
+    }
+
+    #[test]
+    fn star_precision() {
+        let s = awk_sprintf("%.*f", &[Value::Num(2.0), Value::Num(1.234567)]).unwrap();
+        assert_eq!(s, "1.23");
+    }
+
+    #[test]
+    fn width_and_star_precision() {
+        let s = awk_sprintf(
+            "%*.*f",
+            &[Value::Num(8.0), Value::Num(2.0), Value::Num(3.14159)],
+        )
+        .unwrap();
+        assert_eq!(s, "    3.14");
     }
 }

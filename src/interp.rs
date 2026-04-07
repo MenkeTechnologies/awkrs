@@ -872,8 +872,10 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
             }
         }
         "patsplit" => {
-            if !(2..=3).contains(&args.len()) {
-                return Err(Error::Runtime("patsplit: expected 2 or 3 arguments".into()));
+            if !(2..=4).contains(&args.len()) {
+                return Err(Error::Runtime(
+                    "patsplit: expected 2, 3, or 4 arguments".into(),
+                ));
             }
             let s = eval_expr(&args[0], ctx)?.as_str();
             let arr_name = match &args[1] {
@@ -884,12 +886,24 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
                     ));
                 }
             };
-            let fp = if args.len() == 3 {
+            let fp = if args.len() >= 3 {
                 Some(eval_expr(&args[2], ctx)?.as_str())
             } else {
                 None
             };
-            let n = builtins::patsplit(ctx.rt, &s, &arr_name, fp.as_deref())?;
+            let seps = if args.len() == 4 {
+                match &args[3] {
+                    Expr::Var(n) => Some(n.as_str()),
+                    _ => {
+                        return Err(Error::Runtime(
+                            "patsplit: fourth argument must be array name".into(),
+                        ));
+                    }
+                }
+            } else {
+                None
+            };
+            let n = builtins::patsplit(ctx.rt, &s, &arr_name, fp.as_deref(), seps)?;
             Ok(Value::Num(n))
         }
         "split" => {
