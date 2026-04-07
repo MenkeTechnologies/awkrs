@@ -84,3 +84,33 @@ fn next_skips_following_rules() {
     assert_eq!(code, 0);
     assert_eq!(stdout, "a\n");
 }
+
+#[test]
+fn exit_runs_end_before_process_exit() {
+    let (code, stdout, _) = run_awkrs_stdin(
+        "BEGIN { exit 2 } END { print \"done\" }",
+        "",
+    );
+    assert_eq!(code, 2);
+    assert_eq!(stdout, "done\n");
+}
+
+#[test]
+fn getline_primary_advances_record() {
+    let (code, stdout, _) = run_awkrs_stdin(
+        "{ print $0; getline; print $0 }",
+        "a\nb\n",
+    );
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "a\nb\n");
+}
+
+#[test]
+fn gsub_on_record() {
+    let (code, stdout, _) = run_awkrs_stdin(
+        "{ gsub(\"o\", \"x\"); print }",
+        "hello\n",
+    );
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "hellx\n");
+}

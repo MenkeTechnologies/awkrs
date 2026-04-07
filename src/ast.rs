@@ -66,6 +66,19 @@ pub enum Stmt {
         index: Option<Expr>,
     },
     Return(Option<Expr>),
+    /// `getline` / `getline var` / `getline < file` / `getline var < file`
+    GetLine {
+        var: Option<String>,
+        redir: GetlineRedir,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum GetlineRedir {
+    /// Same stream as main input (or stdin).
+    Primary,
+    /// `getline ... < expr`
+    File(Box<Expr>),
 }
 
 #[derive(Debug, Clone, PartialEq)]

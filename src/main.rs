@@ -1,8 +1,8 @@
 mod ast;
+mod builtins;
 mod cli;
 mod error;
 mod interp;
-mod io;
 mod lexer;
 mod parser;
 mod runtime;
@@ -14,7 +14,11 @@ use crate::interp::{pattern_matches, range_step, run_begin, run_end, run_rule_on
 use crate::parser::parse_program;
 use crate::runtime::{Runtime, Value};
 use clap::{CommandFactory, Parser};
+use std::cell::RefCell;
+use std::fs::File;
+use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
+use std::rc::Rc;
 
 fn main() {
     match run() {
@@ -68,6 +72,10 @@ fn run() -> Result<()> {
     }
 
     run_begin(&prog, &mut rt)?;
+    if rt.exit_pending {
+        run_end(&prog, &mut rt)?;
+        std::process::exit(rt.exit_code);
+    }
 
     let record_rule_indices: Vec<usize> = prog
         .rules
@@ -82,7 +90,6 @@ fn run() -> Result<()> {
     if files.is_empty() {
         process_file(
             None,
-            &args,
             &prog,
             &record_rule_indices,
             &mut range_state,
@@ -94,36 +101,50 @@ fn run() -> Result<()> {
             rt.fnr = 0.0;
             process_file(
                 Some(p.as_path()),
-                &args,
                 &prog,
                 &record_rule_indices,
                 &mut range_state,
                 &mut rt,
             )?;
+            if rt.exit_pending {
+                break;
+            }
         }
     }
 
     run_end(&prog, &mut rt)?;
+    if rt.exit_pending {
+        std::process::exit(rt.exit_code);
+    }
     Ok(())
 }
 
 fn process_file(
     path: Option<&std::path::Path>,
-    args: &Args,
     prog: &Program,
     record_rule_indices: &[usize],
     range_state: &mut [bool],
     rt: &mut Runtime,
 ) -> Result<()> {
-    io::for_each_line(path, args.read_ahead, |line| {
+    let reader: Box<dyn Read> = if let Some(p) = path {
+        Box::new(
+            File::open(p).map_err(|e| Error::ProgramFile(p.to_path_buf(), e))?,
+        )
+    } else {
+        Box::new(std::io::stdin())
+    };
+    let br = Rc::new(RefCell::new(BufReader::new(reader)));
+    rt.attach_input_reader(br.clone());
+
+    loop {
+        let mut line = String::new();
+        let n = br.borrow_mut().read_line(&mut line).map_err(Error::Io)?;
+        if n == 0 {
+            break;
+        }
         rt.nr += 1.0;
         rt.fnr += 1.0;
-        let fs = rt
-            .vars
-            .get("FS")
-            .map(|v| v.as_str())
-            .unwrap_or_else(|| " ".into());
-        rt.set_field_sep_split(&fs, &line);
+        rt.set_record_from_line(&line);
 
         for &idx in record_rule_indices {
             let rule = &prog.rules[idx];
@@ -136,6 +157,10 @@ fn process_file(
             if run {
                 match run_rule_on_record(prog, rt, idx) {
                     Ok(Flow::Next) => break,
+                    Ok(Flow::ExitPending) => {
+                        rt.detach_input_reader();
+                        return Ok(());
+                    }
                     Ok(Flow::Normal) => {}
                     Ok(Flow::Break) | Ok(Flow::Continue) => {}
                     Ok(Flow::Return(_)) => {
@@ -148,8 +173,12 @@ fn process_file(
                 }
             }
         }
-        Ok(())
-    })
+        if rt.exit_pending {
+            break;
+        }
+    }
+    rt.detach_input_reader();
+    Ok(())
 }
 
 fn resolve_program_and_files(args: &Args) -> Result<(String, Vec<PathBuf>)> {

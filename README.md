@@ -1,6 +1,6 @@
 # awkrs
 
-Multithreaded awk-style record processor in Rust, created by MenkeTechnologies.
+Awk-style record processor in Rust (union CLI, sequential engine), created by MenkeTechnologies.
 
 ## What it does
 
@@ -11,14 +11,14 @@ Multithreaded awk-style record processor in Rust, created by MenkeTechnologies.
 Implemented end-to-end:
 
 - **Rules:** `BEGIN`, `END`, empty pattern, `/regex/`, expression patterns, **range patterns** (`/a/,/b/` or `NR==1,NR==5`).
-- **Statements:** `if` / `while` / `for` (C-style and `for (i in arr)`), blocks, `print`, `break`, `continue`, **`next`**, **`exit`**, **`delete`**, **`return`** (inside functions).
+- **Statements:** `if` / `while` / `for` (C-style and `for (i in arr)`), blocks, **`print`** (with no expressions, prints **`$0`**), `break`, `continue`, **`next`**, **`exit`**, **`delete`**, **`return`** (inside functions), **`getline`** (primary input and `getline < file`).
 - **Data:** fields (`$n`, `$NF`), scalars, **associative arrays** (`a[k]`), `split`, string/number values.
-- **Functions:** builtins (`length`, `index`, `substr`, **`split`**, **`sprintf`**, **`printf`** with basic `%s` / `%d` / `%f` / `%%`), and **user-defined `function`** with parameters and locals (parameters are local; other names assign to globals, matching classic awk).
-- **I/O model:** `exit` terminates the process with the given status. **`exit` inside `BEGIN` does not run `END`** (differs from POSIX/gawk, which still run `END` unless you use `exit` in a specific way).
+- **Functions:** builtins (`length`, `index`, `substr`, **`split`**, **`sprintf`**, **`printf`** (basic `%s` / `%d` / `%f` / `%%`), **`gsub`** / **`sub`** / **`match`**, `tolower` / `toupper`, `int`, `sqrt`, `rand` / `srand`, `system`, `close`), and **user-defined `function`** with parameters and locals (parameters are local; other names assign to globals, matching classic awk).
+- **I/O model:** The main record loop and **`getline` with no redirection** share one **`BufReader`** on stdin or the current input file so line order matches POSIX expectations. **`exit`** sets the process status; **`END` rules still run** after `exit` from `BEGIN` or a pattern action (POSIX-style), then the process exits with the requested code.
 
 ## Multithreading
 
-Record processing is **sequential** (correct `NR` / `FNR` / side effects). A **reader thread** fills a bounded queue so execution can overlap input; use **`--read-ahead`** and **`-j` / `--threads`** for tuning (defaults to CPU count).
+Record processing is **sequential** (correct `NR` / `FNR` / side effects). Flags **`-j` / `--threads`** and **`--read-ahead`** are accepted for CLI compatibility; the engine does not yet use a background reader thread (reserved for future work).
 
 ## Build
 
@@ -34,7 +34,7 @@ cargo test
 
 ## Still missing or partial
 
-`getline`, `system`, `fflush`, full `printf`/`sprintf` spec, `gsub`/`sub`/`match`, `patsplit`, multidimensional arrays, `BEGINFILE`/`ENDFILE`, exact POSIX comparison rules for strings vs numbers, and many gawk-only extensions. Prefer validating critical scripts against reference `awk`/`gawk`.
+`fflush`, full `printf`/`sprintf` spec, `patsplit`, multidimensional arrays, `BEGINFILE`/`ENDFILE`, coprocesses and two-way pipes, exact POSIX locale/comparison edge cases, and many gawk-only extensions. `system()` runs commands via `sh -c` (same caveat as other awks). Prefer validating critical scripts against reference `awk`/`gawk`.
 
 ## License
 

@@ -10,7 +10,7 @@ use std::path::PathBuf;
 #[command(
     name = "awkrs",
     version,
-    about = "Pattern-directed scanning and processing (awk-compatible CLI; multithreaded runtime).",
+    about = "Pattern-directed scanning and processing (awk-compatible CLI; sequential record engine).",
     trailing_var_arg = true
 )]
 pub struct Args {

@@ -18,6 +18,7 @@ pub enum Token {
     Function,
     Return,
     Delete,
+    Getline,
     Ident(String),
     Number(f64),
     String(String),
@@ -257,6 +258,7 @@ impl<'a> Lexer<'a> {
                 "function" => Token::Function,
                 "return" => Token::Return,
                 "delete" => Token::Delete,
+                "getline" => Token::Getline,
                 _ => Token::Ident(name),
             };
             return Ok(tok);

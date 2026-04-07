@@ -1,4 +1,4 @@
-use crate::ast::*;
+use crate::ast::{GetlineRedir, *};
 use crate::error::{Error, Result};
 use crate::lexer::{Lexer, Token};
 use std::collections::HashMap;
@@ -421,6 +421,30 @@ impl<'a> Parser<'a> {
                     self.consume_stmt_end()?;
                     Ok(Stmt::Delete { name, index: None })
                 }
+            }
+            Token::Getline => {
+                self.bump(false)?;
+                let var = if let Token::Ident(name) = &self.cur.clone() {
+                    let n = name.clone();
+                    self.bump(false)?;
+                    Some(n)
+                } else {
+                    None
+                };
+                if self.cur == Token::Lt {
+                    self.bump(false)?;
+                    let fe = self.parse_expr(false)?;
+                    self.consume_stmt_end()?;
+                    return Ok(Stmt::GetLine {
+                        var,
+                        redir: GetlineRedir::File(Box::new(fe)),
+                    });
+                }
+                self.consume_stmt_end()?;
+                Ok(Stmt::GetLine {
+                    var,
+                    redir: GetlineRedir::Primary,
+                })
             }
             Token::LBrace => {
                 self.bump(false)?;

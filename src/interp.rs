@@ -1,11 +1,11 @@
 use crate::ast::*;
+use crate::builtins;
 use crate::error::{Error, Result};
 use crate::runtime::{Runtime, Value};
 use regex::Regex;
 use std::collections::HashMap;
 
 /// Control flow from executing statements (loops, rules, functions).
-/// `exit` uses [`Error::Exit`](crate::error::Error::Exit) instead of `Flow`.
 #[derive(Debug)]
 pub enum Flow {
     Normal,
@@ -13,6 +13,8 @@ pub enum Flow {
     Continue,
     Next,
     Return(Value),
+    /// POSIX: run `END`, then exit with `Runtime.exit_code`.
+    ExitPending,
 }
 
 pub struct ExecCtx<'a> {
@@ -72,6 +74,7 @@ pub fn run_begin(prog: &Program, rt: &mut Runtime) -> Result<()> {
                     Flow::Return(_) => {
                         return Err(Error::Runtime("`return` outside function".into()));
                     }
+                    Flow::ExitPending => return Ok(()),
                     _ => {}
                 }
             }
@@ -90,6 +93,7 @@ pub fn run_end(prog: &Program, rt: &mut Runtime) -> Result<()> {
                     Flow::Return(_) => {
                         return Err(Error::Runtime("`return` outside function".into()));
                     }
+                    Flow::ExitPending => return Ok(()),
                     _ => {}
                 }
             }
@@ -104,7 +108,9 @@ pub fn run_rule_on_record(prog: &Program, rt: &mut Runtime, rule_idx: usize) -> 
     for s in &rule.stmts {
         match exec_stmt(s, &mut ctx)? {
             Flow::Normal => {}
-            f @ (Flow::Break | Flow::Continue | Flow::Next | Flow::Return(_)) => return Ok(f),
+            f @ (Flow::Break | Flow::Continue | Flow::Next | Flow::Return(_) | Flow::ExitPending) => {
+                return Ok(f);
+            }
         }
     }
     Ok(Flow::Normal)
@@ -199,7 +205,7 @@ fn exec_stmt(s: &Stmt, ctx: &mut ExecCtx<'_>) -> Result<Flow> {
                         Flow::Normal => {}
                         Flow::Break => break,
                         Flow::Continue => continue,
-                        f @ (Flow::Next | Flow::Return(_)) => return Ok(f),
+                        f @ (Flow::Next | Flow::Return(_) | Flow::ExitPending) => return Ok(f),
                     }
                 }
             }
@@ -229,7 +235,7 @@ fn exec_stmt(s: &Stmt, ctx: &mut ExecCtx<'_>) -> Result<Flow> {
                             }
                             continue 'outer;
                         }
-                        f @ (Flow::Next | Flow::Return(_)) => return Ok(f),
+                        f @ (Flow::Next | Flow::Return(_) | Flow::ExitPending) => return Ok(f),
                     }
                 }
                 if let Some(it) = iter {
@@ -246,7 +252,7 @@ fn exec_stmt(s: &Stmt, ctx: &mut ExecCtx<'_>) -> Result<Flow> {
                         Flow::Normal => {}
                         Flow::Break => break 'outer,
                         Flow::Continue => continue 'outer,
-                        f @ (Flow::Next | Flow::Return(_)) => return Ok(f),
+                        f @ (Flow::Next | Flow::Return(_) | Flow::ExitPending) => return Ok(f),
                     }
                 }
             }
@@ -280,7 +286,7 @@ fn exec_stmt(s: &Stmt, ctx: &mut ExecCtx<'_>) -> Result<Flow> {
                 parts.push(eval_expr(a, ctx)?.as_str());
             }
             let line = if parts.is_empty() {
-                String::new()
+                ctx.rt.record.clone()
             } else {
                 parts.join(&ofs)
             };
@@ -300,7 +306,42 @@ fn exec_stmt(s: &Stmt, ctx: &mut ExecCtx<'_>) -> Result<Flow> {
             } else {
                 0
             };
-            return Err(Error::Exit(code));
+            ctx.rt.exit_code = code;
+            ctx.rt.exit_pending = true;
+            return Ok(Flow::ExitPending);
+        }
+        Stmt::GetLine { var, redir } => {
+            let line = match &redir {
+                GetlineRedir::Primary => ctx.rt.read_line_primary()?,
+                GetlineRedir::File(path_expr) => {
+                    let path = eval_expr(path_expr, ctx)?.as_str();
+                    ctx.rt.read_line_file(&path)?
+                }
+            };
+            if let Some(l) = line {
+                let trimmed = l.trim_end_matches(['\n', '\r']).to_string();
+                if let Some(ref name) = var {
+                    ctx.set_var(name, Value::Str(trimmed));
+                } else {
+                    let fs = ctx
+                        .rt
+                        .vars
+                        .get("FS")
+                        .map(|v| v.as_str())
+                        .unwrap_or_else(|| " ".into());
+                    ctx.rt.set_field_sep_split(&fs, &trimmed);
+                }
+                match &redir {
+                    GetlineRedir::Primary => {
+                        ctx.rt.nr += 1.0;
+                        ctx.rt.fnr += 1.0;
+                    }
+                    GetlineRedir::File(_) => {}
+                }
+            }
+            ctx.rt
+                .vars
+                .insert("NF".into(), Value::Num(ctx.rt.fields.len() as f64));
         }
         Stmt::Delete { name, index } => {
             if let Some(ix) = index {
@@ -426,14 +467,16 @@ fn eval_binary(op: BinOp, left: &Expr, right: &Expr, ctx: &mut ExecCtx<'_>) -> R
         return Ok(Value::Num(if res { 1.0 } else { 0.0 }));
     }
     if op == BinOp::Eq {
-        let ls = eval_expr(left, ctx)?.as_str();
-        let rs = eval_expr(right, ctx)?.as_str();
-        return Ok(Value::Num(if ls == rs { 1.0 } else { 0.0 }));
+        return awk_eq(left, right, ctx);
     }
     if op == BinOp::Ne {
-        let ls = eval_expr(left, ctx)?.as_str();
-        let rs = eval_expr(right, ctx)?.as_str();
-        return Ok(Value::Num(if ls != rs { 1.0 } else { 0.0 }));
+        return awk_ne(left, right, ctx);
+    }
+    if matches!(
+        op,
+        BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
+    ) {
+        return awk_rel(op, left, right, ctx);
     }
     let a = eval_expr(left, ctx)?.as_number();
     let b = eval_expr(right, ctx)?.as_number();
@@ -443,15 +486,67 @@ fn eval_binary(op: BinOp, left: &Expr, right: &Expr, ctx: &mut ExecCtx<'_>) -> R
         BinOp::Mul => a * b,
         BinOp::Div => a / b,
         BinOp::Mod => a % b,
-        BinOp::Lt => return Ok(Value::Num(if a < b { 1.0 } else { 0.0 })),
-        BinOp::Le => return Ok(Value::Num(if a <= b { 1.0 } else { 0.0 })),
-        BinOp::Gt => return Ok(Value::Num(if a > b { 1.0 } else { 0.0 })),
-        BinOp::Ge => return Ok(Value::Num(if a >= b { 1.0 } else { 0.0 })),
-        BinOp::Eq | BinOp::Ne | BinOp::Concat | BinOp::Match | BinOp::NotMatch | BinOp::And | BinOp::Or => {
+        BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge | BinOp::Concat
+        | BinOp::Match | BinOp::NotMatch | BinOp::And | BinOp::Or => {
             unreachable!()
         }
     };
     Ok(Value::Num(n))
+}
+
+fn awk_eq(left: &Expr, right: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {
+    let lv = eval_expr(left, ctx)?;
+    let rv = eval_expr(right, ctx)?;
+    if lv.is_numeric_str() && rv.is_numeric_str() {
+        let a = lv.as_number();
+        let b = rv.as_number();
+        return Ok(Value::Num(if (a - b).abs() < f64::EPSILON {
+            1.0
+        } else {
+            0.0
+        }));
+    }
+    Ok(Value::Num(if lv.as_str() == rv.as_str() {
+        1.0
+    } else {
+        0.0
+    }))
+}
+
+fn awk_ne(left: &Expr, right: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {
+    let v = awk_eq(left, right, ctx)?;
+    Ok(Value::Num(if v.as_number() != 0.0 {
+        0.0
+    } else {
+        1.0
+    }))
+}
+
+fn awk_rel(op: BinOp, left: &Expr, right: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {
+    let lv = eval_expr(left, ctx)?;
+    let rv = eval_expr(right, ctx)?;
+    if lv.is_numeric_str() && rv.is_numeric_str() {
+        let a = lv.as_number();
+        let b = rv.as_number();
+        let ok = match op {
+            BinOp::Lt => a < b,
+            BinOp::Le => a <= b,
+            BinOp::Gt => a > b,
+            BinOp::Ge => a >= b,
+            _ => unreachable!(),
+        };
+        return Ok(Value::Num(if ok { 1.0 } else { 0.0 }));
+    }
+    let ls = lv.as_str();
+    let rs = rv.as_str();
+    let ok = match op {
+        BinOp::Lt => ls < rs,
+        BinOp::Le => ls <= rs,
+        BinOp::Gt => ls > rs,
+        BinOp::Ge => ls >= rs,
+        _ => unreachable!(),
+    };
+    Ok(Value::Num(if ok { 1.0 } else { 0.0 }))
 }
 
 fn eval_unary(op: UnaryOp, expr: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {
@@ -516,6 +611,128 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
             let start0 = start - 1;
             let slice: String = s.chars().skip(start0).take(len).collect();
             Ok(Value::Str(slice))
+        }
+        "gsub" => {
+            let re = eval_expr(&args[0], ctx)?.as_str();
+            let rep = eval_expr(&args[1], ctx)?.as_str();
+            if args.len() >= 3 {
+                match &args[2] {
+                    Expr::Var(name) => {
+                        let mut s = ctx.get_var(name).as_str();
+                        let n = builtins::gsub(ctx.rt, &re, &rep, Some(&mut s))?;
+                        ctx.set_var(name, Value::Str(s));
+                        return Ok(Value::Num(n));
+                    }
+                    Expr::Field(inner) => {
+                        let i = eval_expr(inner, ctx)?.as_number() as i32;
+                        let mut s = ctx.rt.field(i).as_str();
+                        let n = builtins::gsub(ctx.rt, &re, &rep, Some(&mut s))?;
+                        ctx.rt.set_field(i, &s);
+                        return Ok(Value::Num(n));
+                    }
+                    Expr::Index { name, index } => {
+                        let k = eval_expr(index, ctx)?.as_str();
+                        let mut s = ctx.rt.array_get(name, &k).as_str();
+                        let n = builtins::gsub(ctx.rt, &re, &rep, Some(&mut s))?;
+                        ctx.rt.array_set(name, k, Value::Str(s));
+                        return Ok(Value::Num(n));
+                    }
+                    _ => {
+                        return Err(Error::Runtime(
+                            "gsub: third argument must be variable, field, or array element".into(),
+                        ));
+                    }
+                }
+            }
+            let n = builtins::gsub(ctx.rt, &re, &rep, None)?;
+            Ok(Value::Num(n))
+        }
+        "sub" => {
+            let re = eval_expr(&args[0], ctx)?.as_str();
+            let rep = eval_expr(&args[1], ctx)?.as_str();
+            if args.len() >= 3 {
+                match &args[2] {
+                    Expr::Var(name) => {
+                        let mut s = ctx.get_var(name).as_str();
+                        let n = builtins::sub_fn(ctx.rt, &re, &rep, Some(&mut s))?;
+                        ctx.set_var(name, Value::Str(s));
+                        return Ok(Value::Num(n));
+                    }
+                    Expr::Field(inner) => {
+                        let i = eval_expr(inner, ctx)?.as_number() as i32;
+                        let mut s = ctx.rt.field(i).as_str();
+                        let n = builtins::sub_fn(ctx.rt, &re, &rep, Some(&mut s))?;
+                        ctx.rt.set_field(i, &s);
+                        return Ok(Value::Num(n));
+                    }
+                    Expr::Index { name, index } => {
+                        let k = eval_expr(index, ctx)?.as_str();
+                        let mut s = ctx.rt.array_get(name, &k).as_str();
+                        let n = builtins::sub_fn(ctx.rt, &re, &rep, Some(&mut s))?;
+                        ctx.rt.array_set(name, k, Value::Str(s));
+                        return Ok(Value::Num(n));
+                    }
+                    _ => {
+                        return Err(Error::Runtime(
+                            "sub: third argument must be variable, field, or array element".into(),
+                        ));
+                    }
+                }
+            }
+            let n = builtins::sub_fn(ctx.rt, &re, &rep, None)?;
+            Ok(Value::Num(n))
+        }
+        "match" => {
+            let s = eval_expr(&args[0], ctx)?.as_str();
+            let re = eval_expr(&args[1], ctx)?.as_str();
+            let arr = args.get(2).and_then(|e| {
+                if let Expr::Var(n) = e {
+                    Some(n.as_str())
+                } else {
+                    None
+                }
+            });
+            let r = builtins::match_fn(ctx.rt, &s, &re, arr)?;
+            Ok(Value::Num(r))
+        }
+        "tolower" if args.len() == 1 => {
+            let s = eval_expr(&args[0], ctx)?.as_str();
+            Ok(Value::Str(s.to_lowercase()))
+        }
+        "toupper" if args.len() == 1 => {
+            let s = eval_expr(&args[0], ctx)?.as_str();
+            Ok(Value::Str(s.to_uppercase()))
+        }
+        "int" if args.len() == 1 => {
+            let n = eval_expr(&args[0], ctx)?.as_number();
+            Ok(Value::Num(n.trunc()))
+        }
+        "sqrt" if args.len() == 1 => {
+            let n = eval_expr(&args[0], ctx)?.as_number();
+            Ok(Value::Num(n.sqrt()))
+        }
+        "rand" if args.is_empty() => Ok(Value::Num(ctx.rt.rand())),
+        "srand" => {
+            let n = if let Some(e) = args.first() {
+                Some(eval_expr(e, ctx)?.as_number() as u32)
+            } else {
+                None
+            };
+            Ok(Value::Num(ctx.rt.srand(n)))
+        }
+        "system" if args.len() == 1 => {
+            use std::process::Command;
+            let cmd = eval_expr(&args[0], ctx)?.as_str();
+            let st = Command::new("sh")
+                .arg("-c")
+                .arg(&cmd)
+                .status()
+                .map_err(Error::Io)?;
+            Ok(Value::Num(st.code().unwrap_or(-1) as f64))
+        }
+        "close" if args.len() == 1 => {
+            let path = eval_expr(&args[0], ctx)?.as_str();
+            Ok(Value::Num(ctx.rt.close_handle(&path)))
         }
         "split" => {
             let s = eval_expr(args.first().ok_or_else(|| Error::Runtime("split".into()))?, ctx)?
@@ -644,10 +861,10 @@ fn call_user(fd: &FunctionDef, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<V
                     "invalid jump out of function (break/continue/next)".into(),
                 ));
             }
-            Err(Error::Exit(c)) => {
+            Ok(Flow::ExitPending) => {
                 ctx.locals.pop();
                 ctx.in_function = was_fn;
-                return Err(Error::Exit(c));
+                return Err(Error::Exit(ctx.rt.exit_code));
             }
             Err(e) => {
                 ctx.locals.pop();
