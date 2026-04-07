@@ -245,10 +245,8 @@ pub fn range_step(
     rt: &mut Runtime,
     prog: &Program,
 ) -> Result<bool> {
-    if !*state {
-        if match_pattern(p1, rt, prog)? {
-            *state = true;
-        }
+    if !*state && match_pattern(p1, rt, prog)? {
+        *state = true;
     }
     if *state {
         let run = true;

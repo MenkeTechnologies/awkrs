@@ -642,7 +642,7 @@ impl<'a> Parser<'a> {
             Token::Assign => {
                 self.bump(false)?;
                 let rhs = self.parse_assign(false)?;
-                return assign_expr(lhs, None, rhs, self.line);
+                assign_expr(lhs, None, rhs, self.line)
             }
             Token::AddAssign
             | Token::SubAssign
@@ -659,7 +659,7 @@ impl<'a> Parser<'a> {
                 };
                 self.bump(false)?;
                 let rhs = self.parse_assign(false)?;
-                return assign_expr(lhs, Some(op), rhs, self.line);
+                assign_expr(lhs, Some(op), rhs, self.line)
             }
             _ => Ok(lhs),
         }

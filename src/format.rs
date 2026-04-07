@@ -227,6 +227,7 @@ fn parse_width_or_star(
     Ok((None, false, i))
 }
 
+#[allow(clippy::too_many_arguments)] // mirrors sprintf flag bundle (width, prec, pad, …)
 fn format_one(
     conv: char,
     v: &Value,
@@ -264,11 +265,7 @@ fn format_one(
         }
         'o' => {
             let n = v.as_number() as i64;
-            let un = if n < 0 {
-                (n as u64) & 0xffff_ffff_ffff_ffff
-            } else {
-                n as u64
-            };
+            let un = n as u64;
             let mut s = format!("{un:o}");
             if alt && s != "0" {
                 s = format!("0{s}");
@@ -277,11 +274,7 @@ fn format_one(
         }
         'x' | 'X' => {
             let n = v.as_number() as i64;
-            let un = if n < 0 {
-                (n as u64) & 0xffff_ffff_ffff_ffff
-            } else {
-                n as u64
-            };
+            let un = n as u64;
             let mut s = if conv == 'x' {
                 format!("{un:x}")
             } else {
@@ -348,7 +341,7 @@ fn pad_string(s: &str, width: usize, left: bool, pad: char) -> Result<String, St
         return Ok(s.to_string());
     }
     let padn = width - len;
-    let pad_s: String = std::iter::repeat(pad).take(padn).collect();
+    let pad_s: String = std::iter::repeat_n(pad, padn).collect();
     if left {
         Ok(format!("{s}{pad_s}"))
     } else {
@@ -358,6 +351,8 @@ fn pad_string(s: &str, width: usize, left: bool, pad: char) -> Result<String, St
 
 #[cfg(test)]
 mod tests {
+    use std::f64::consts::PI;
+
     use super::*;
     use crate::runtime::Value;
 
@@ -381,11 +376,7 @@ mod tests {
 
     #[test]
     fn width_and_star_precision() {
-        let s = awk_sprintf(
-            "%*.*f",
-            &[Value::Num(8.0), Value::Num(2.0), Value::Num(3.14159)],
-        )
-        .unwrap();
+        let s = awk_sprintf("%*.*f", &[Value::Num(8.0), Value::Num(2.0), Value::Num(PI)]).unwrap();
         assert_eq!(s, "    3.14");
     }
 
@@ -449,7 +440,7 @@ mod tests {
     fn star_precision_positional_second_arg() {
         let s = awk_sprintf(
             "%.*2$f",
-            &[Value::Num(9.0), Value::Num(2.0), Value::Num(3.14159)],
+            &[Value::Num(9.0), Value::Num(2.0), Value::Num(PI)],
         )
         .unwrap();
         assert_eq!(s, "3.14");
@@ -535,7 +526,7 @@ mod tests {
 
     #[test]
     fn lc_numeric_general_g() {
-        let s = awk_sprintf_with_decimal("%.4g", &[Value::Num(3.14159)], ',').unwrap();
+        let s = awk_sprintf_with_decimal("%.4g", &[Value::Num(PI)], ',').unwrap();
         assert!(s.contains(','), "got {s:?}");
     }
 }

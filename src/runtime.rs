@@ -7,6 +7,8 @@ use std::sync::{Arc, Mutex};
 
 use crate::error::{Error, Result};
 
+type SharedInputReader = Arc<Mutex<BufReader<Box<dyn Read + Send>>>>;
+
 /// Open two-way pipe to `sh -c` (gawk-style `|&` / `<&`).
 pub struct CoprocHandle {
     pub child: Child,
@@ -79,7 +81,7 @@ pub struct Runtime {
     pub exit_pending: bool,
     pub exit_code: i32,
     /// Primary input stream for `getline` without `< file` (same as main record loop).
-    pub input_reader: Option<Arc<Mutex<BufReader<Box<dyn Read + Send>>>>>,
+    pub input_reader: Option<SharedInputReader>,
     /// Open files for `getline < path` / `close`.
     pub file_handles: HashMap<String, BufReader<File>>,
     /// Open files for `print … > path` / `print … >> path` / `fflush` / `close`.
@@ -254,11 +256,7 @@ impl Runtime {
             return Ok(());
         }
         let f = if append {
-            OpenOptions::new()
-                .create(true)
-                .append(true)
-                .write(true)
-                .open(path)
+            OpenOptions::new().create(true).append(true).open(path)
         } else {
             OpenOptions::new()
                 .create(true)
@@ -291,7 +289,7 @@ impl Runtime {
         )))
     }
 
-    pub fn attach_input_reader(&mut self, r: Arc<Mutex<BufReader<Box<dyn Read + Send>>>>) {
+    pub fn attach_input_reader(&mut self, r: SharedInputReader) {
         self.input_reader = Some(r);
     }
 
@@ -372,15 +370,13 @@ impl Runtime {
         if fs.is_empty() {
             self.fields = line.chars().map(|c| c.to_string()).collect();
         } else if fs == " " {
-            let mut fields = Vec::new();
-            fields.reserve(line.split_whitespace().count().max(8));
+            let mut fields = Vec::with_capacity(line.split_whitespace().count().max(8));
             for w in line.split_whitespace() {
                 fields.push(w.to_string());
             }
             self.fields = fields;
         } else {
-            let mut fields = Vec::new();
-            fields.reserve(8);
+            let mut fields = Vec::with_capacity(8);
             for p in line.split(fs) {
                 fields.push(p.to_string());
             }
