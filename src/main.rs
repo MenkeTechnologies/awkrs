@@ -10,16 +10,20 @@ mod runtime;
 use crate::ast::{Pattern, Program};
 use crate::cli::{Args, MawkWAction};
 use crate::error::{Error, Result};
-use crate::interp::{pattern_matches, run_begin, run_end, run_rule_on_record};
+use crate::interp::{pattern_matches, range_step, run_begin, run_end, run_rule_on_record, Flow};
 use crate::parser::parse_program;
 use crate::runtime::{Runtime, Value};
 use clap::{CommandFactory, Parser};
 use std::path::PathBuf;
 
 fn main() {
-    if let Err(e) = run() {
-        eprintln!("awkrs: {e}");
-        std::process::exit(1);
+    match run() {
+        Ok(()) => {}
+        Err(Error::Exit(code)) => std::process::exit(code),
+        Err(e) => {
+            eprintln!("awkrs: {e}");
+            std::process::exit(1);
+        }
     }
 }
 
@@ -52,7 +56,7 @@ fn run() -> Result<()> {
         eprintln!("awkrs: warning: --debug is not fully implemented");
     }
     let threads = args.threads.unwrap_or_else(num_cpus::get);
-    let _ = threads; // reserved for future parallel stages / pools
+    let _ = threads;
 
     let (program_text, files) = resolve_program_and_files(&args)?;
     let prog = parse_program(&program_text)?;
@@ -69,22 +73,33 @@ fn run() -> Result<()> {
         .rules
         .iter()
         .enumerate()
-        .filter(|(_, r)| {
-            !matches!(
-                r.pattern,
-                Pattern::Begin | Pattern::End
-            )
-        })
+        .filter(|(_, r)| !matches!(r.pattern, Pattern::Begin | Pattern::End))
         .map(|(i, _)| i)
         .collect();
 
+    let mut range_state: Vec<bool> = vec![false; prog.rules.len()];
+
     if files.is_empty() {
-        process_file(None, &args, &prog, &record_rule_indices, &mut rt)?;
+        process_file(
+            None,
+            &args,
+            &prog,
+            &record_rule_indices,
+            &mut range_state,
+            &mut rt,
+        )?;
     } else {
         for p in &files {
             rt.filename = p.to_string_lossy().into_owned();
             rt.fnr = 0.0;
-            process_file(Some(p.as_path()), &args, &prog, &record_rule_indices, &mut rt)?;
+            process_file(
+                Some(p.as_path()),
+                &args,
+                &prog,
+                &record_rule_indices,
+                &mut range_state,
+                &mut rt,
+            )?;
         }
     }
 
@@ -97,6 +112,7 @@ fn process_file(
     args: &Args,
     prog: &Program,
     record_rule_indices: &[usize],
+    range_state: &mut [bool],
     rt: &mut Runtime,
 ) -> Result<()> {
     io::for_each_line(path, args.read_ahead, |line| {
@@ -110,9 +126,26 @@ fn process_file(
         rt.set_field_sep_split(&fs, &line);
 
         for &idx in record_rule_indices {
-            let pat = &prog.rules[idx].pattern;
-            if pattern_matches(pat, rt)? {
-                run_rule_on_record(prog, rt, idx)?;
+            let rule = &prog.rules[idx];
+            let run = match &rule.pattern {
+                Pattern::Range(p1, p2) => {
+                    range_step(&mut range_state[idx], p1, p2, rt, prog)?
+                }
+                pat => pattern_matches(pat, rt, prog)?,
+            };
+            if run {
+                match run_rule_on_record(prog, rt, idx) {
+                    Ok(Flow::Next) => break,
+                    Ok(Flow::Normal) => {}
+                    Ok(Flow::Break) | Ok(Flow::Continue) => {}
+                    Ok(Flow::Return(_)) => {
+                        return Err(Error::Runtime(
+                            "`return` used outside function in rule action".into(),
+                        ));
+                    }
+                    Err(Error::Exit(code)) => return Err(Error::Exit(code)),
+                    Err(e) => return Err(e),
+                }
             }
         }
         Ok(())

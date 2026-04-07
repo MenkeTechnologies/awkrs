@@ -2,12 +2,78 @@ use crate::ast::*;
 use crate::error::{Error, Result};
 use crate::runtime::{Runtime, Value};
 use regex::Regex;
+use std::collections::HashMap;
+
+/// Control flow from executing statements (loops, rules, functions).
+/// `exit` uses [`Error::Exit`](crate::error::Error::Exit) instead of `Flow`.
+#[derive(Debug)]
+pub enum Flow {
+    Normal,
+    Break,
+    Continue,
+    Next,
+    Return(Value),
+}
+
+pub struct ExecCtx<'a> {
+    pub prog: &'a Program,
+    pub rt: &'a mut Runtime,
+    pub locals: Vec<HashMap<String, Value>>,
+    pub in_function: bool,
+}
+
+impl<'a> ExecCtx<'a> {
+    pub fn new(prog: &'a Program, rt: &'a mut Runtime) -> Self {
+        Self {
+            prog,
+            rt,
+            locals: Vec::new(),
+            in_function: false,
+        }
+    }
+
+    fn get_var(&self, name: &str) -> Value {
+        for frame in self.locals.iter().rev() {
+            if let Some(v) = frame.get(name) {
+                return v.clone();
+            }
+        }
+        self.rt
+            .vars
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| match name {
+                "NR" => Value::Num(self.rt.nr),
+                "FNR" => Value::Num(self.rt.fnr),
+                "NF" => Value::Num(self.rt.fields.len() as f64),
+                "FILENAME" => Value::Str(self.rt.filename.clone()),
+                _ => Value::Str(String::new()),
+            })
+    }
+
+    fn set_var(&mut self, name: &str, val: Value) {
+        for frame in self.locals.iter_mut().rev() {
+            if frame.contains_key(name) {
+                frame.insert(name.to_string(), val);
+                return;
+            }
+        }
+        self.rt.vars.insert(name.to_string(), val);
+    }
+}
 
 pub fn run_begin(prog: &Program, rt: &mut Runtime) -> Result<()> {
+    let mut ctx = ExecCtx::new(prog, rt);
     for rule in &prog.rules {
         if matches!(rule.pattern, Pattern::Begin) {
             for s in &rule.stmts {
-                exec_stmt(s, rt)?;
+                match exec_stmt(s, &mut ctx)? {
+                    Flow::Next => return Err(Error::Runtime("`next` is invalid in BEGIN".into())),
+                    Flow::Return(_) => {
+                        return Err(Error::Runtime("`return` outside function".into()));
+                    }
+                    _ => {}
+                }
             }
         }
     }
@@ -15,25 +81,53 @@ pub fn run_begin(prog: &Program, rt: &mut Runtime) -> Result<()> {
 }
 
 pub fn run_end(prog: &Program, rt: &mut Runtime) -> Result<()> {
+    let mut ctx = ExecCtx::new(prog, rt);
     for rule in &prog.rules {
         if matches!(rule.pattern, Pattern::End) {
             for s in &rule.stmts {
-                exec_stmt(s, rt)?;
+                match exec_stmt(s, &mut ctx)? {
+                    Flow::Next => return Err(Error::Runtime("`next` is invalid in END".into())),
+                    Flow::Return(_) => {
+                        return Err(Error::Runtime("`return` outside function".into()));
+                    }
+                    _ => {}
+                }
             }
         }
     }
     Ok(())
 }
 
-pub fn run_rule_on_record(prog: &Program, rt: &mut Runtime, rule_idx: usize) -> Result<()> {
+pub fn run_rule_on_record(prog: &Program, rt: &mut Runtime, rule_idx: usize) -> Result<Flow> {
+    let mut ctx = ExecCtx::new(prog, rt);
     let rule = &prog.rules[rule_idx];
     for s in &rule.stmts {
-        exec_stmt(s, rt)?;
+        match exec_stmt(s, &mut ctx)? {
+            Flow::Normal => {}
+            f @ (Flow::Break | Flow::Continue | Flow::Next | Flow::Return(_)) => return Ok(f),
+        }
     }
-    Ok(())
+    Ok(Flow::Normal)
 }
 
-pub fn pattern_matches(pat: &Pattern, rt: &mut Runtime) -> Result<bool> {
+/// Whether a record rule pattern matches (not used for `Range` — handled in `main`).
+pub fn pattern_matches(pat: &Pattern, rt: &mut Runtime, prog: &Program) -> Result<bool> {
+    let mut ctx = ExecCtx::new(prog, rt);
+    Ok(match pat {
+        Pattern::Begin | Pattern::End => false,
+        Pattern::Range(_, _) => false,
+        Pattern::Empty => true,
+        Pattern::Regexp(re) => {
+            let r = Regex::new(re).map_err(|e| Error::Runtime(e.to_string()))?;
+            r.is_match(&ctx.rt.record)
+        }
+        Pattern::Expr(e) => truthy(&eval_expr(e, &mut ctx)?),
+    })
+}
+
+/// Match any pattern kind (used for range endpoints).
+pub fn match_pattern(pat: &Pattern, rt: &mut Runtime, prog: &Program) -> Result<bool> {
+    let mut ctx = ExecCtx::new(prog, rt);
     Ok(match pat {
         Pattern::Begin | Pattern::End => false,
         Pattern::Empty => true,
@@ -41,58 +135,149 @@ pub fn pattern_matches(pat: &Pattern, rt: &mut Runtime) -> Result<bool> {
             let r = Regex::new(re).map_err(|e| Error::Runtime(e.to_string()))?;
             r.is_match(&rt.record)
         }
-        Pattern::Expr(e) => truthy(&eval_expr(e, rt)?),
+        Pattern::Expr(e) => truthy(&eval_expr(e, &mut ctx)?),
         Pattern::Range(_, _) => {
-            return Err(Error::Runtime("range patterns are not implemented yet".into()));
+            return Err(Error::Runtime("nested range pattern".into()));
         }
     })
 }
 
-fn truthy(v: &Value) -> bool {
-    match v {
-        Value::Num(n) => *n != 0.0,
-        Value::Str(s) => !s.is_empty() && s.parse::<f64>().map(|n| n != 0.0).unwrap_or(true),
+/// Range pattern: `state` is false until `p1` matches, then true until `p2` matches after a run.
+pub fn range_step(
+    state: &mut bool,
+    p1: &Pattern,
+    p2: &Pattern,
+    rt: &mut Runtime,
+    prog: &Program,
+) -> Result<bool> {
+    if !*state {
+        if match_pattern(p1, rt, prog)? {
+            *state = true;
+        }
     }
+    if *state {
+        let run = true;
+        if match_pattern(p2, rt, prog)? {
+            *state = false;
+        }
+        return Ok(run);
+    }
+    Ok(false)
 }
 
-fn exec_stmt(s: &Stmt, rt: &mut Runtime) -> Result<()> {
+fn truthy(v: &Value) -> bool {
+    v.truthy()
+}
+
+fn exec_stmt(s: &Stmt, ctx: &mut ExecCtx<'_>) -> Result<Flow> {
     match s {
         Stmt::If {
             cond,
             then_,
             else_,
         } => {
-            if truthy(&eval_expr(cond, rt)?) {
+            if truthy(&eval_expr(cond, ctx)?) {
                 for t in then_ {
-                    exec_stmt(t, rt)?;
+                    match exec_stmt(t, ctx)? {
+                        Flow::Normal => {}
+                        f => return Ok(f),
+                    }
                 }
             } else {
                 for t in else_ {
-                    exec_stmt(t, rt)?;
+                    match exec_stmt(t, ctx)? {
+                        Flow::Normal => {}
+                        f => return Ok(f),
+                    }
                 }
             }
         }
         Stmt::While { cond, body } => {
-            while truthy(&eval_expr(cond, rt)?) {
+            while truthy(&eval_expr(cond, ctx)?) {
                 for t in body {
-                    exec_stmt(t, rt)?;
+                    match exec_stmt(t, ctx)? {
+                        Flow::Normal => {}
+                        Flow::Break => break,
+                        Flow::Continue => continue,
+                        f @ (Flow::Next | Flow::Return(_)) => return Ok(f),
+                    }
+                }
+            }
+        }
+        Stmt::ForC {
+            init,
+            cond,
+            iter,
+            body,
+        } => {
+            if let Some(e) = init {
+                eval_expr(e, ctx)?;
+            }
+            'outer: loop {
+                if let Some(c) = cond {
+                    if !truthy(&eval_expr(c, ctx)?) {
+                        break 'outer;
+                    }
+                }
+                for t in body {
+                    match exec_stmt(t, ctx)? {
+                        Flow::Normal => {}
+                        Flow::Break => break 'outer,
+                        Flow::Continue => {
+                            if let Some(it) = iter {
+                                eval_expr(it, ctx)?;
+                            }
+                            continue 'outer;
+                        }
+                        f @ (Flow::Next | Flow::Return(_)) => return Ok(f),
+                    }
+                }
+                if let Some(it) = iter {
+                    eval_expr(it, ctx)?;
+                }
+            }
+        }
+        Stmt::ForIn { var, arr, body } => {
+            let keys = ctx.rt.array_keys(arr);
+            'outer: for k in keys {
+                ctx.set_var(var, Value::Str(k.clone()));
+                for t in body {
+                    match exec_stmt(t, ctx)? {
+                        Flow::Normal => {}
+                        Flow::Break => break 'outer,
+                        Flow::Continue => continue 'outer,
+                        f @ (Flow::Next | Flow::Return(_)) => return Ok(f),
+                    }
                 }
             }
         }
         Stmt::Block(ss) => {
             for t in ss {
-                exec_stmt(t, rt)?;
+                match exec_stmt(t, ctx)? {
+                    Flow::Normal => {}
+                    f => return Ok(f),
+                }
             }
         }
         Stmt::Expr(e) => {
-            eval_expr(e, rt)?;
+            eval_expr(e, ctx)?;
         }
         Stmt::Print(args) => {
-            let ofs = rt.vars.get("OFS").map(|v| v.as_str()).unwrap_or_else(|| " ".into());
-            let ors = rt.vars.get("ORS").map(|v| v.as_str()).unwrap_or_else(|| "\n".into());
+            let ofs = ctx
+                .rt
+                .vars
+                .get("OFS")
+                .map(|v| v.as_str())
+                .unwrap_or_else(|| " ".into());
+            let ors = ctx
+                .rt
+                .vars
+                .get("ORS")
+                .map(|v| v.as_str())
+                .unwrap_or_else(|| "\n".into());
             let mut parts = Vec::new();
             for a in args {
-                parts.push(eval_expr(a, rt)?.as_str());
+                parts.push(eval_expr(a, ctx)?.as_str());
             }
             let line = if parts.is_empty() {
                 String::new()
@@ -101,29 +286,64 @@ fn exec_stmt(s: &Stmt, rt: &mut Runtime) -> Result<()> {
             };
             print!("{line}{ors}");
         }
+        Stmt::Break => return Ok(Flow::Break),
+        Stmt::Continue => return Ok(Flow::Continue),
+        Stmt::Next => {
+            if ctx.in_function {
+                return Err(Error::Runtime("`next` used inside a function".into()));
+            }
+            return Ok(Flow::Next);
+        }
+        Stmt::Exit(e) => {
+            let code = if let Some(x) = e {
+                eval_expr(x, ctx)?.as_number() as i32
+            } else {
+                0
+            };
+            return Err(Error::Exit(code));
+        }
+        Stmt::Delete { name, index } => {
+            if let Some(ix) = index {
+                let k = eval_expr(ix, ctx)?.as_str();
+                ctx.rt.array_delete(name, Some(&k));
+            } else {
+                ctx.rt.array_delete(name, None);
+            }
+        }
+        Stmt::Return(e) => {
+            if !ctx.in_function {
+                return Err(Error::Runtime("`return` outside function".into()));
+            }
+            let v = if let Some(ex) = e {
+                eval_expr(ex, ctx)?
+            } else {
+                Value::Str(String::new())
+            };
+            return Ok(Flow::Return(v));
+        }
     }
-    Ok(())
+    Ok(Flow::Normal)
 }
 
-pub fn eval_expr(e: &Expr, rt: &mut Runtime) -> Result<Value> {
+pub fn eval_expr(e: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {
     if let Expr::Binary { op, left, right } = e {
         if *op == BinOp::And {
-            let lv = eval_expr(left, rt)?;
+            let lv = eval_expr(left, ctx)?;
             if !truthy(&lv) {
                 return Ok(Value::Num(0.0));
             }
-            return Ok(Value::Num(if truthy(&eval_expr(right, rt)?) {
+            return Ok(Value::Num(if truthy(&eval_expr(right, ctx)?) {
                 1.0
             } else {
                 0.0
             }));
         }
         if *op == BinOp::Or {
-            let lv = eval_expr(left, rt)?;
+            let lv = eval_expr(left, ctx)?;
             if truthy(&lv) {
                 return Ok(Value::Num(1.0));
             }
-            return Ok(Value::Num(if truthy(&eval_expr(right, rt)?) {
+            return Ok(Value::Num(if truthy(&eval_expr(right, ctx)?) {
                 1.0
             } else {
                 0.0
@@ -133,89 +353,90 @@ pub fn eval_expr(e: &Expr, rt: &mut Runtime) -> Result<Value> {
     Ok(match e {
         Expr::Number(n) => Value::Num(*n),
         Expr::Str(s) => Value::Str(s.clone()),
-        Expr::Var(name) => rt
-            .vars
-            .get(name)
-            .cloned()
-            .unwrap_or_else(|| match name.as_str() {
-                "NR" => Value::Num(rt.nr),
-                "FNR" => Value::Num(rt.fnr),
-                "NF" => Value::Num(rt.fields.len() as f64),
-                "FILENAME" => Value::Str(rt.filename.clone()),
-                _ => Value::Str(String::new()),
-            }),
-        Expr::Field(inner) => {
-            let i = eval_expr(inner, rt)?.as_number() as i32;
-            rt.field(i)
+        Expr::Var(name) => ctx.get_var(name),
+        Expr::Index { name, index } => {
+            let k = eval_expr(index, ctx)?.as_str();
+            ctx.rt.array_get(name, &k)
         }
-        Expr::Binary { op, left, right } => eval_binary(*op, left, right, rt)?,
-        Expr::Unary { op, expr } => eval_unary(*op, expr, rt)?,
+        Expr::Field(inner) => {
+            let i = eval_expr(inner, ctx)?.as_number() as i32;
+            ctx.rt.field(i)
+        }
+        Expr::Binary { op, left, right } => eval_binary(*op, left, right, ctx)?,
+        Expr::Unary { op, expr } => eval_unary(*op, expr, ctx)?,
         Expr::Assign { name, op, rhs } => {
-            let v = eval_expr(rhs, rt)?;
+            let v = eval_expr(rhs, ctx)?;
             let newv = if let Some(bop) = op {
-                let old = rt
-                    .vars
-                    .get(name)
-                    .cloned()
-                    .unwrap_or(Value::Num(0.0));
+                let old = ctx.get_var(name);
                 apply_binop(*bop, &old, &v)?
             } else {
                 v
             };
-            rt.vars.insert(name.clone(), newv.clone());
+            ctx.set_var(name, newv.clone());
             newv
         }
         Expr::AssignField { field, op, rhs } => {
-            let idx = eval_expr(field, rt)?.as_number() as i32;
-            let v = eval_expr(rhs, rt)?;
+            let idx = eval_expr(field, ctx)?.as_number() as i32;
+            let v = eval_expr(rhs, ctx)?;
             let newv = if let Some(bop) = op {
-                let old = Value::Str(rt.field(idx).as_str());
+                let old = Value::Str(ctx.rt.field(idx).as_str());
                 apply_binop(*bop, &old, &v)?
             } else {
                 v
             };
             let s = newv.as_str();
-            rt.set_field(idx, &s);
+            ctx.rt.set_field(idx, &s);
             newv
         }
-        Expr::Incr { .. } => Value::Num(0.0),
-        Expr::Call { name, args } => eval_call(name, args, rt)?,
-        Expr::Ternary { cond, then_, else_ } => {
-            if truthy(&eval_expr(cond, rt)?) {
-                eval_expr(then_, rt)?
+        Expr::AssignIndex { name, index, op, rhs } => {
+            let k = eval_expr(index, ctx)?.as_str();
+            let v = eval_expr(rhs, ctx)?;
+            let newv = if let Some(bop) = op {
+                let old = ctx.rt.array_get(name, &k);
+                apply_binop(*bop, &old, &v)?
             } else {
-                eval_expr(else_, rt)?
+                v
+            };
+            ctx.rt.array_set(name, k, newv.clone());
+            newv
+        }
+        Expr::Call { name, args } => eval_call(name, args, ctx)?,
+        Expr::Ternary { cond, then_, else_ } => {
+            if truthy(&eval_expr(cond, ctx)?) {
+                eval_expr(then_, ctx)?
+            } else {
+                eval_expr(else_, ctx)?
             }
         }
     })
 }
 
-fn eval_binary(op: BinOp, left: &Expr, right: &Expr, rt: &mut Runtime) -> Result<Value> {
+fn eval_binary(op: BinOp, left: &Expr, right: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {
     if op == BinOp::Concat {
-        let a = eval_expr(left, rt)?.as_str();
-        let b = eval_expr(right, rt)?.as_str();
+        let a = eval_expr(left, ctx)?.as_str();
+        let b = eval_expr(right, ctx)?.as_str();
         return Ok(Value::Str(format!("{a}{b}")));
     }
     if op == BinOp::Match || op == BinOp::NotMatch {
-        let s = eval_expr(left, rt)?.as_str();
-        let pat = eval_expr(right, rt)?.as_str();
+        let s = eval_expr(left, ctx)?.as_str();
+        let pat = eval_expr(right, ctx)?.as_str();
         let r = Regex::new(&pat).map_err(|e| Error::Runtime(e.to_string()))?;
         let m = r.is_match(&s);
         let res = if op == BinOp::Match { m } else { !m };
         return Ok(Value::Num(if res { 1.0 } else { 0.0 }));
     }
     if op == BinOp::Eq {
-        let ls = eval_expr(left, rt)?.as_str();
-        let rs = eval_expr(right, rt)?.as_str();
+        let ls = eval_expr(left, ctx)?.as_str();
+        let rs = eval_expr(right, ctx)?.as_str();
         return Ok(Value::Num(if ls == rs { 1.0 } else { 0.0 }));
     }
     if op == BinOp::Ne {
-        let ls = eval_expr(left, rt)?.as_str();
-        let rs = eval_expr(right, rt)?.as_str();
+        let ls = eval_expr(left, ctx)?.as_str();
+        let rs = eval_expr(right, ctx)?.as_str();
         return Ok(Value::Num(if ls != rs { 1.0 } else { 0.0 }));
     }
-    let a = eval_expr(left, rt)?.as_number();
-    let b = eval_expr(right, rt)?.as_number();
+    let a = eval_expr(left, ctx)?.as_number();
+    let b = eval_expr(right, ctx)?.as_number();
     let n = match op {
         BinOp::Add => a + b,
         BinOp::Sub => a - b,
@@ -233,8 +454,8 @@ fn eval_binary(op: BinOp, left: &Expr, right: &Expr, rt: &mut Runtime) -> Result
     Ok(Value::Num(n))
 }
 
-fn eval_unary(op: UnaryOp, expr: &Expr, rt: &mut Runtime) -> Result<Value> {
-    let v = eval_expr(expr, rt)?;
+fn eval_unary(op: UnaryOp, expr: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {
+    let v = eval_expr(expr, ctx)?;
     Ok(match op {
         UnaryOp::Neg => Value::Num(-v.as_number()),
         UnaryOp::Pos => Value::Num(v.as_number()),
@@ -256,19 +477,22 @@ fn apply_binop(op: BinOp, old: &Value, new: &Value) -> Result<Value> {
     Ok(Value::Num(n))
 }
 
-fn eval_call(name: &str, args: &[Expr], rt: &mut Runtime) -> Result<Value> {
+fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> {
+    if let Some(fd) = ctx.prog.funcs.get(name) {
+        return call_user(fd, args, ctx);
+    }
     match name {
         "length" => {
             let s = if args.is_empty() {
-                rt.record.clone()
+                ctx.rt.record.clone()
             } else {
-                eval_expr(&args[0], rt)?.as_str()
+                eval_expr(&args[0], ctx)?.as_str()
             };
             Ok(Value::Num(s.chars().count() as f64))
         }
         "index" if args.len() == 2 => {
-            let hay = eval_expr(&args[0], rt)?.as_str();
-            let needle = eval_expr(&args[1], rt)?.as_str();
+            let hay = eval_expr(&args[0], ctx)?.as_str();
+            let needle = eval_expr(&args[1], ctx)?.as_str();
             if needle.is_empty() {
                 return Ok(Value::Num(0.0));
             }
@@ -276,10 +500,13 @@ fn eval_call(name: &str, args: &[Expr], rt: &mut Runtime) -> Result<Value> {
             Ok(Value::Num(pos as f64))
         }
         "substr" => {
-            let s = eval_expr(args.first().ok_or_else(|| Error::Runtime("substr".into()))?, rt)?.as_str();
-            let start = eval_expr(args.get(1).ok_or_else(|| Error::Runtime("substr".into()))?, rt)?.as_number() as usize;
+            let s = eval_expr(args.first().ok_or_else(|| Error::Runtime("substr".into()))?, ctx)?
+                .as_str();
+            let start =
+                eval_expr(args.get(1).ok_or_else(|| Error::Runtime("substr".into()))?, ctx)?
+                    .as_number() as usize;
             let len = if let Some(e) = args.get(2) {
-                eval_expr(e, rt)?.as_number() as usize
+                eval_expr(e, ctx)?.as_number() as usize
             } else {
                 usize::MAX
             };
@@ -290,9 +517,146 @@ fn eval_call(name: &str, args: &[Expr], rt: &mut Runtime) -> Result<Value> {
             let slice: String = s.chars().skip(start0).take(len).collect();
             Ok(Value::Str(slice))
         }
-        "split" => Err(Error::Runtime(
-            "`split` is not implemented yet".into(),
-        )),
+        "split" => {
+            let s = eval_expr(args.first().ok_or_else(|| Error::Runtime("split".into()))?, ctx)?
+                .as_str();
+            let arr_name = match &args.get(1) {
+                Some(Expr::Var(n)) => n.clone(),
+                _ => {
+                    return Err(Error::Runtime(
+                        "split: second argument must be array name".into(),
+                    ));
+                }
+            };
+            let fs = if let Some(e) = args.get(2) {
+                eval_expr(e, ctx)?.as_str()
+            } else {
+                ctx.rt
+                    .vars
+                    .get("FS")
+                    .map(|v| v.as_str())
+                    .unwrap_or_else(|| " ".into())
+            };
+            let parts: Vec<String> = if fs.is_empty() {
+                s.chars().map(|c| c.to_string()).collect()
+            } else if fs == " " {
+                s.split_whitespace().map(String::from).collect()
+            } else {
+                s.split(&fs).map(String::from).collect()
+            };
+            let n = parts.len();
+            ctx.rt.split_into_array(&arr_name, &parts);
+            Ok(Value::Num(n as f64))
+        }
+        "sprintf" => {
+            if args.is_empty() {
+                return Err(Error::Runtime("sprintf: need format".into()));
+            }
+            let fmt = eval_expr(&args[0], ctx)?.as_str();
+            let vals: Vec<Value> = args[1..]
+                .iter()
+                .map(|e| eval_expr(e, ctx))
+                .collect::<Result<_>>()?;
+            sprintf_simple(&fmt, &vals)
+        }
+        "printf" => {
+            if args.is_empty() {
+                return Err(Error::Runtime("printf: need format".into()));
+            }
+            let fmt = eval_expr(&args[0], ctx)?.as_str();
+            let vals: Vec<Value> = args[1..]
+                .iter()
+                .map(|e| eval_expr(e, ctx))
+                .collect::<Result<_>>()?;
+            let s = sprintf_simple(&fmt, &vals)?.as_str();
+            print!("{s}");
+            Ok(Value::Num(0.0))
+        }
         _ => Err(Error::Runtime(format!("unknown function `{name}`"))),
     }
+}
+
+fn sprintf_simple(fmt: &str, vals: &[Value]) -> Result<Value> {
+    let mut out = String::new();
+    let mut vi = 0usize;
+    let mut chars = fmt.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '%' {
+            match chars.next() {
+                Some('%') => out.push('%'),
+                Some('s') => {
+                    let v = vals.get(vi).ok_or_else(|| Error::Runtime("sprintf: not enough args".into()))?;
+                    vi += 1;
+                    out.push_str(&v.as_str());
+                }
+                Some('d') | Some('i') => {
+                    let v = vals.get(vi).ok_or_else(|| Error::Runtime("sprintf: not enough args".into()))?;
+                    vi += 1;
+                    out.push_str(&format!("{}", v.as_number() as i64));
+                }
+                Some('f') | Some('g') | Some('e') => {
+                    let v = vals.get(vi).ok_or_else(|| Error::Runtime("sprintf: not enough args".into()))?;
+                    vi += 1;
+                    out.push_str(&format!("{}", v.as_number()));
+                }
+                Some(x) => {
+                    return Err(Error::Runtime(format!(
+                        "unsupported sprintf conversion %{x}"
+                    )));
+                }
+                None => return Err(Error::Runtime("truncated format".into())),
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    Ok(Value::Str(out))
+}
+
+fn call_user(fd: &FunctionDef, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> {
+    let mut vals: Vec<Value> = args
+        .iter()
+        .map(|e| eval_expr(e, ctx))
+        .collect::<Result<_>>()?;
+    while vals.len() < fd.params.len() {
+        vals.push(Value::Str(String::new()));
+    }
+    vals.truncate(fd.params.len());
+    let mut frame = HashMap::new();
+    for (p, v) in fd.params.iter().zip(vals.into_iter()) {
+        frame.insert(p.clone(), v);
+    }
+    ctx.locals.push(frame);
+    let was_fn = ctx.in_function;
+    ctx.in_function = true;
+    let mut result = Value::Str(String::new());
+    for s in &fd.body {
+        match exec_stmt(s, ctx) {
+            Ok(Flow::Normal) => {}
+            Ok(Flow::Return(v)) => {
+                result = v;
+                break;
+            }
+            Ok(Flow::Next) | Ok(Flow::Break) | Ok(Flow::Continue) => {
+                ctx.locals.pop();
+                ctx.in_function = was_fn;
+                return Err(Error::Runtime(
+                    "invalid jump out of function (break/continue/next)".into(),
+                ));
+            }
+            Err(Error::Exit(c)) => {
+                ctx.locals.pop();
+                ctx.in_function = was_fn;
+                return Err(Error::Exit(c));
+            }
+            Err(e) => {
+                ctx.locals.pop();
+                ctx.in_function = was_fn;
+                return Err(e);
+            }
+        }
+    }
+    ctx.locals.pop();
+    ctx.in_function = was_fn;
+    Ok(result)
 }

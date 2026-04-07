@@ -1,6 +1,7 @@
 use crate::ast::*;
 use crate::error::{Error, Result};
 use crate::lexer::{Lexer, Token};
+use std::collections::HashMap;
 
 fn assign_expr(lhs: Expr, op: Option<BinOp>, rhs: Expr, line: usize) -> Result<Expr> {
     match lhs {
@@ -11,6 +12,12 @@ fn assign_expr(lhs: Expr, op: Option<BinOp>, rhs: Expr, line: usize) -> Result<E
         }),
         Expr::Field(inner) => Ok(Expr::AssignField {
             field: inner,
+            op,
+            rhs: Box::new(rhs),
+        }),
+        Expr::Index { name, index } => Ok(Expr::AssignIndex {
+            name,
+            index,
             op,
             rhs: Box::new(rhs),
         }),
@@ -59,12 +66,83 @@ impl<'a> Parser<'a> {
 
     fn parse_program(&mut self) -> Result<Program> {
         let mut rules = Vec::new();
+        let mut funcs = HashMap::new();
         self.skip_newlines()?;
         while !matches!(self.cur, Token::Eof) {
-            rules.push(self.parse_rule()?);
+            if matches!(self.cur, Token::Function) {
+                let f = self.parse_function_def()?;
+                if funcs.insert(f.name.clone(), f).is_some() {
+                    return Err(Error::Parse {
+                        line: self.line,
+                        msg: "duplicate function name".into(),
+                    });
+                }
+            } else {
+                rules.push(self.parse_rule()?);
+            }
             self.skip_newlines()?;
         }
-        Ok(Program { rules })
+        Ok(Program { rules, funcs })
+    }
+
+    fn parse_function_def(&mut self) -> Result<FunctionDef> {
+        self.bump(false)?;
+        let Token::Ident(name) = &self.cur.clone() else {
+            return Err(Error::Parse {
+                line: self.line,
+                msg: "expected function name".into(),
+            });
+        };
+        let name = name.clone();
+        self.bump(false)?;
+        if self.cur != Token::LParen {
+            return Err(Error::Parse {
+                line: self.line,
+                msg: "expected `(` after function name".into(),
+            });
+        }
+        self.bump(false)?;
+        let mut params = Vec::new();
+        if self.cur != Token::RParen {
+            loop {
+                let Token::Ident(p) = &self.cur.clone() else {
+                    return Err(Error::Parse {
+                        line: self.line,
+                        msg: "expected parameter name".into(),
+                    });
+                };
+                params.push(p.clone());
+                self.bump(false)?;
+                if self.cur == Token::Comma {
+                    self.bump(false)?;
+                    continue;
+                }
+                break;
+            }
+        }
+        if self.cur != Token::RParen {
+            return Err(Error::Parse {
+                line: self.line,
+                msg: "expected `)` after parameters".into(),
+            });
+        }
+        self.bump(false)?;
+        if self.cur != Token::LBrace {
+            return Err(Error::Parse {
+                line: self.line,
+                msg: "expected `{` before function body".into(),
+            });
+        }
+        self.bump(false)?;
+        let body = self.parse_stmt_list()?;
+        if self.cur != Token::RBrace {
+            return Err(Error::Parse {
+                line: self.line,
+                msg: "expected `}` after function body".into(),
+            });
+        }
+        self.bump(true)?;
+        Ok(FunctionDef { name, params, body })
     }
 
     fn parse_rule(&mut self) -> Result<Rule> {
@@ -89,7 +167,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_pattern(&mut self) -> Result<Pattern> {
-        match &self.cur {
+        match &self.cur.clone() {
             Token::Begin => {
                 self.bump(true)?;
                 Ok(Pattern::Begin)
@@ -101,6 +179,14 @@ impl<'a> Parser<'a> {
             Token::Regexp(s) => {
                 let s = s.clone();
                 self.bump(true)?;
+                if self.cur == Token::Comma {
+                    self.bump(false)?;
+                    let p2 = self.parse_pattern()?;
+                    return Ok(Pattern::Range(
+                        Box::new(Pattern::Regexp(s)),
+                        Box::new(p2),
+                    ));
+                }
                 Ok(Pattern::Regexp(s))
             }
             Token::LBrace => Ok(Pattern::Empty),
@@ -109,7 +195,10 @@ impl<'a> Parser<'a> {
                 if self.cur == Token::Comma {
                     self.bump(false)?;
                     let e2 = self.parse_expr(false)?;
-                    Ok(Pattern::Range(Box::new(e), Box::new(e2)))
+                    Ok(Pattern::Range(
+                        Box::new(Pattern::Expr(e)),
+                        Box::new(Pattern::Expr(e2)),
+                    ))
                 } else {
                     Ok(Pattern::Expr(e))
                 }
@@ -178,6 +267,160 @@ impl<'a> Parser<'a> {
                 self.bump(false)?;
                 let body = self.parse_stmt_block()?;
                 Ok(Stmt::While { cond, body })
+            }
+            Token::For => {
+                self.bump(false)?;
+                if self.cur != Token::LParen {
+                    return Err(Error::Parse {
+                        line: self.line,
+                        msg: "expected `(` after `for`".into(),
+                    });
+                }
+                self.bump(false)?;
+                if let Token::Ident(var) = &self.cur.clone() {
+                    let mut peek = self.lexer.clone();
+                    if peek.next_token(false)? == Token::In {
+                        let var = var.clone();
+                        self.bump(false)?;
+                        self.bump(false)?;
+                        let Token::Ident(arr) = &self.cur.clone() else {
+                            return Err(Error::Parse {
+                                line: self.line,
+                                msg: "expected array name in `for (x in a)`".into(),
+                            });
+                        };
+                        let arr = arr.clone();
+                        self.bump(false)?;
+                        if self.cur != Token::RParen {
+                            return Err(Error::Parse {
+                                line: self.line,
+                                msg: "expected `)`".into(),
+                            });
+                        }
+                        self.bump(false)?;
+                        let body = self.parse_stmt_block()?;
+                        return Ok(Stmt::ForIn { var, arr, body });
+                    }
+                }
+                let init = if self.cur == Token::Semi {
+                    self.bump(false)?;
+                    None
+                } else {
+                    let e = self.parse_expr(false)?;
+                    if self.cur != Token::Semi {
+                        return Err(Error::Parse {
+                            line: self.line,
+                            msg: "expected `;` in `for`".into(),
+                        });
+                    }
+                    self.bump(false)?;
+                    Some(e)
+                };
+                let cond = if self.cur == Token::Semi {
+                    self.bump(false)?;
+                    None
+                } else {
+                    let e = self.parse_expr(false)?;
+                    if self.cur != Token::Semi {
+                        return Err(Error::Parse {
+                            line: self.line,
+                            msg: "expected `;` in `for`".into(),
+                        });
+                    }
+                    self.bump(false)?;
+                    Some(e)
+                };
+                let iter = if self.cur == Token::RParen {
+                    None
+                } else {
+                    let e = self.parse_expr(false)?;
+                    Some(e)
+                };
+                if self.cur != Token::RParen {
+                    return Err(Error::Parse {
+                        line: self.line,
+                        msg: "expected `)`".into(),
+                    });
+                }
+                self.bump(false)?;
+                let body = self.parse_stmt_block()?;
+                Ok(Stmt::ForC {
+                    init,
+                    cond,
+                    iter,
+                    body,
+                })
+            }
+            Token::Break => {
+                self.bump(false)?;
+                self.consume_stmt_end()?;
+                Ok(Stmt::Break)
+            }
+            Token::Continue => {
+                self.bump(false)?;
+                self.consume_stmt_end()?;
+                Ok(Stmt::Continue)
+            }
+            Token::Next => {
+                self.bump(false)?;
+                self.consume_stmt_end()?;
+                Ok(Stmt::Next)
+            }
+            Token::Exit => {
+                self.bump(false)?;
+                let e = if matches!(
+                    self.cur,
+                    Token::Semi | Token::Newline | Token::RBrace | Token::Eof
+                ) {
+                    None
+                } else {
+                    Some(self.parse_expr(false)?)
+                };
+                self.consume_stmt_end()?;
+                Ok(Stmt::Exit(e))
+            }
+            Token::Return => {
+                self.bump(false)?;
+                let e = if matches!(
+                    self.cur,
+                    Token::Semi | Token::Newline | Token::RBrace | Token::Eof
+                ) {
+                    None
+                } else {
+                    Some(self.parse_expr(false)?)
+                };
+                self.consume_stmt_end()?;
+                Ok(Stmt::Return(e))
+            }
+            Token::Delete => {
+                self.bump(false)?;
+                let Token::Ident(name) = &self.cur.clone() else {
+                    return Err(Error::Parse {
+                        line: self.line,
+                        msg: "expected array name after `delete`".into(),
+                    });
+                };
+                let name = name.clone();
+                self.bump(false)?;
+                if self.cur == Token::LBracket {
+                    self.bump(false)?;
+                    let ix = self.parse_expr(false)?;
+                    if self.cur != Token::RBracket {
+                        return Err(Error::Parse {
+                            line: self.line,
+                            msg: "expected `]`".into(),
+                        });
+                    }
+                    self.bump(false)?;
+                    self.consume_stmt_end()?;
+                    Ok(Stmt::Delete {
+                        name,
+                        index: Some(ix),
+                    })
+                } else {
+                    self.consume_stmt_end()?;
+                    Ok(Stmt::Delete { name, index: None })
+                }
             }
             Token::LBrace => {
                 self.bump(false)?;
@@ -521,7 +764,21 @@ impl<'a> Parser<'a> {
             Token::Ident(name) => {
                 let name = name.clone();
                 self.bump(false)?;
-                if self.cur == Token::LParen {
+                if self.cur == Token::LBracket {
+                    self.bump(false)?;
+                    let ix = self.parse_expr(false)?;
+                    if self.cur != Token::RBracket {
+                        return Err(Error::Parse {
+                            line: self.line,
+                            msg: "expected `]` after array index".into(),
+                        });
+                    }
+                    self.bump(false)?;
+                    Ok(Expr::Index {
+                        name,
+                        index: Box::new(ix),
+                    })
+                } else if self.cur == Token::LParen {
                     self.bump(false)?;
                     let mut args = Vec::new();
                     if self.cur != Token::RParen {

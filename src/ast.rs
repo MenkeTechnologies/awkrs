@@ -1,8 +1,18 @@
-//! Abstract syntax tree for a minimal awk subset (extensible).
+//! Abstract syntax tree for awk programs (rules + optional user functions).
+
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Program {
     pub rules: Vec<Rule>,
+    pub funcs: HashMap<String, FunctionDef>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FunctionDef {
+    pub name: String,
+    pub params: Vec<String>,
+    pub body: Vec<Stmt>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -17,8 +27,9 @@ pub enum Pattern {
     End,
     Expr(Expr),
     Regexp(String),
-    Range(Box<Expr>, Box<Expr>),
-    Empty, // `{ ... }` matches every record
+    /// Inclusive range: two patterns (`/a/,/b/` or `NR==1,NR==5`).
+    Range(Box<Pattern>, Box<Pattern>),
+    Empty,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -32,9 +43,29 @@ pub enum Stmt {
         cond: Expr,
         body: Vec<Stmt>,
     },
+    ForC {
+        init: Option<Expr>,
+        cond: Option<Expr>,
+        iter: Option<Expr>,
+        body: Vec<Stmt>,
+    },
+    ForIn {
+        var: String,
+        arr: String,
+        body: Vec<Stmt>,
+    },
     Block(Vec<Stmt>),
     Expr(Expr),
     Print(Vec<Expr>),
+    Break,
+    Continue,
+    Next,
+    Exit(Option<Expr>),
+    Delete {
+        name: String,
+        index: Option<Expr>,
+    },
+    Return(Option<Expr>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -43,6 +74,10 @@ pub enum Expr {
     Str(String),
     Var(String),
     Field(Box<Expr>),
+    Index {
+        name: String,
+        index: Box<Expr>,
+    },
     Binary {
         op: BinOp,
         left: Box<Expr>,
@@ -54,7 +89,7 @@ pub enum Expr {
     },
     Assign {
         name: String,
-        op: Option<BinOp>, // None for `=`, Some for `+=` etc.
+        op: Option<BinOp>,
         rhs: Box<Expr>,
     },
     AssignField {
@@ -62,11 +97,11 @@ pub enum Expr {
         op: Option<BinOp>,
         rhs: Box<Expr>,
     },
-    #[allow(dead_code)] // reserved for `++` / `--` in the lexer/parser
-    Incr {
+    AssignIndex {
         name: String,
-        delta: i8,
-        pre: bool,
+        index: Box<Expr>,
+        op: Option<BinOp>,
+        rhs: Box<Expr>,
     },
     Call {
         name: String,

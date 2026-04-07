@@ -54,3 +54,33 @@ fn unknown_function_errors() {
         "stderr={stderr:?}"
     );
 }
+
+#[test]
+fn split_populates_array() {
+    let (code, stdout, _) = run_awkrs_stdin(
+        "BEGIN { n = split(\"a:b:c\", parts, \":\"); print n, parts[1], parts[2], parts[3] }",
+        "",
+    );
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "3 a b c\n");
+}
+
+#[test]
+fn user_function() {
+    let (code, stdout, _) = run_awkrs_stdin(
+        "function add(x,y){ return x+y } { print add($1, $2) }",
+        "3 4\n",
+    );
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "7\n");
+}
+
+#[test]
+fn next_skips_following_rules() {
+    let (code, stdout, _) = run_awkrs_stdin(
+        "{ print \"a\"; next } { print \"b\" }",
+        "x\n",
+    );
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "a\n");
+}

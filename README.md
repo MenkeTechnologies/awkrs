@@ -4,11 +4,21 @@ Multithreaded awk-style record processor in Rust, created by MenkeTechnologies.
 
 ## What it does
 
-`awkrs` runs a **pattern → action** program over input records (lines by default), similar to POSIX `awk`, GNU `gawk`, and `mawk`. The CLI accepts a **union** of common options from those implementations so scripts can pass flags through; not every extension flag changes behavior yet—see `--help`.
+`awkrs` runs **pattern → action** programs over input records (lines by default), similar to POSIX `awk`, GNU `gawk`, and `mawk`. The CLI accepts a **union** of common options from those implementations so scripts can pass flags through; not every extension flag changes behavior yet—see `--help`.
+
+## Language coverage
+
+Implemented end-to-end:
+
+- **Rules:** `BEGIN`, `END`, empty pattern, `/regex/`, expression patterns, **range patterns** (`/a/,/b/` or `NR==1,NR==5`).
+- **Statements:** `if` / `while` / `for` (C-style and `for (i in arr)`), blocks, `print`, `break`, `continue`, **`next`**, **`exit`**, **`delete`**, **`return`** (inside functions).
+- **Data:** fields (`$n`, `$NF`), scalars, **associative arrays** (`a[k]`), `split`, string/number values.
+- **Functions:** builtins (`length`, `index`, `substr`, **`split`**, **`sprintf`**, **`printf`** with basic `%s` / `%d` / `%f` / `%%`), and **user-defined `function`** with parameters and locals (parameters are local; other names assign to globals, matching classic awk).
+- **I/O model:** `exit` terminates the process with the given status. **`exit` inside `BEGIN` does not run `END`** (differs from POSIX/gawk, which still run `END` unless you use `exit` in a specific way).
 
 ## Multithreading
 
-Record processing is **sequential** (awk semantics depend on `NR`, `FNR`, and side effects). Parallelism is used for **I/O**: a dedicated reader thread fills a bounded queue so the interpreter can overlap reads with execution. Tune queue depth with `--read-ahead` and reserve worker capacity with `-j` / `--threads` (used for future pools; defaults to CPU count).
+Record processing is **sequential** (correct `NR` / `FNR` / side effects). A **reader thread** fills a bounded queue so execution can overlap input; use **`--read-ahead`** and **`-j` / `--threads`** for tuning (defaults to CPU count).
 
 ## Build
 
@@ -22,9 +32,9 @@ cargo build --release
 cargo test
 ```
 
-## Limitations
+## Still missing or partial
 
-This is a **real** lexer/parser/interpreter, but it is **not** a complete drop-in for every awk program: arrays, many builtins, `getline`, user `function`, `nextfile`, and several gawk/mawk-only semantics are incomplete or absent. Prefer validating critical scripts against reference `awk`/`gawk`.
+`getline`, `system`, `fflush`, full `printf`/`sprintf` spec, `gsub`/`sub`/`match`, `patsplit`, multidimensional arrays, `BEGINFILE`/`ENDFILE`, exact POSIX comparison rules for strings vs numbers, and many gawk-only extensions. Prefer validating critical scripts against reference `awk`/`gawk`.
 
 ## License
 
