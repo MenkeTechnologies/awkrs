@@ -41,6 +41,8 @@ pub enum Token {
     Lt,
     Le,
     Gt,
+    /// `>>` (append redirect; distinct from two `>` tokens).
+    GtGt,
     Ge,
     Assign,
     Pipe,
@@ -363,6 +365,9 @@ impl<'a> Lexer<'a> {
                 if self.peek() == Some('=') {
                     self.bump();
                     Token::Ge
+                } else if self.peek() == Some('>') {
+                    self.bump();
+                    Token::GtGt
                 } else {
                     Token::Gt
                 }

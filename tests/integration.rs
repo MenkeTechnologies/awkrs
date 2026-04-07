@@ -196,3 +196,28 @@ fn sprintf_star_width() {
     assert_eq!(code, 0);
     assert_eq!(stdout, "   7\n");
 }
+
+#[test]
+fn sprintf_positional_args() {
+    let (code, stdout, _) = run_awkrs_stdin(
+        "BEGIN { print sprintf(\"%2$s %1$s\", \"a\", \"b\") }",
+        "",
+    );
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "b a\n");
+}
+
+#[test]
+fn print_redirect_and_fflush() {
+    let dir = std::env::temp_dir();
+    let path = dir.join(format!("awkrs_out_{}.txt", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let p = path.to_string_lossy().replace('\\', "/");
+    let prog = format!("BEGIN {{ print \"hello\" > \"{p}\" ; fflush(\"{p}\") }}");
+    let (code, stdout, stderr) = run_awkrs_stdin(&prog, "");
+    assert_eq!(code, 0, "stderr={stderr:?}");
+    assert!(stdout.is_empty());
+    let contents = std::fs::read_to_string(&path).expect("read redirected output");
+    assert_eq!(contents, "hello\n");
+    let _ = std::fs::remove_file(&path);
+}

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{BufRead, BufReader, Read};
+use std::fs::{File, OpenOptions};
+use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -71,6 +71,8 @@ pub struct Runtime {
     pub input_reader: Option<Arc<Mutex<BufReader<Box<dyn Read + Send>>>>>,
     /// Open files for `getline < path` / `close`.
     pub file_handles: HashMap<String, BufReader<File>>,
+    /// Open files for `print … > path` / `print … >> path` / `fflush` / `close`.
+    pub output_handles: HashMap<String, BufWriter<File>>,
     pub rand_seed: u64,
 }
 
@@ -93,8 +95,52 @@ impl Runtime {
             exit_code: 0,
             input_reader: None,
             file_handles: HashMap::new(),
+            output_handles: HashMap::new(),
             rand_seed: 1,
         }
+    }
+
+    /// Write one `print` line (including `ORS`) to `path`. First open uses truncate (`>`) or
+    /// append (`>>`); later writes reuse the same handle until `close`.
+    pub fn write_output_line(&mut self, path: &str, data: &str, append: bool) -> Result<()> {
+        self.ensure_output_writer(path, append)?;
+        let w = self.output_handles.get_mut(path).unwrap();
+        w.write_all(data.as_bytes()).map_err(Error::Io)?;
+        Ok(())
+    }
+
+    fn ensure_output_writer(&mut self, path: &str, append: bool) -> Result<()> {
+        if self.output_handles.contains_key(path) {
+            return Ok(());
+        }
+        let f = if append {
+            OpenOptions::new()
+                .create(true)
+                .append(true)
+                .write(true)
+                .open(path)
+        } else {
+            OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(path)
+        }
+        .map_err(|e| Error::Runtime(format!("open {path}: {e}")))?;
+        self.output_handles
+            .insert(path.to_string(), BufWriter::new(f));
+        Ok(())
+    }
+
+    /// Flush buffered output for a path opened with `print` redirection.
+    pub fn flush_output_file(&mut self, path: &str) -> Result<()> {
+        let Some(w) = self.output_handles.get_mut(path) else {
+            return Err(Error::Runtime(format!(
+                "fflush: {path} is not open for writing"
+            )));
+        };
+        w.flush().map_err(Error::Io)?;
+        Ok(())
     }
 
     pub fn attach_input_reader(&mut self, r: Arc<Mutex<BufReader<Box<dyn Read + Send>>>>) {
@@ -141,6 +187,9 @@ impl Runtime {
     }
 
     pub fn close_handle(&mut self, path: &str) -> f64 {
+        if let Some(mut w) = self.output_handles.remove(path) {
+            let _ = w.flush();
+        }
         let _ = self.file_handles.remove(path);
         0.0
     }
@@ -281,7 +330,16 @@ impl Clone for Runtime {
             exit_code: self.exit_code,
             input_reader: None,
             file_handles: HashMap::new(),
+            output_handles: HashMap::new(),
             rand_seed: self.rand_seed,
+        }
+    }
+}
+
+impl Drop for Runtime {
+    fn drop(&mut self) {
+        for (_, mut w) in self.output_handles.drain() {
+            let _ = w.flush();
         }
     }
 }

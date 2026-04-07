@@ -355,7 +355,7 @@ fn exec_stmt(s: &Stmt, ctx: &mut ExecCtx<'_>) -> Result<Flow> {
         Stmt::Expr(e) => {
             eval_expr(e, ctx)?;
         }
-        Stmt::Print(args) => {
+        Stmt::Print { args, redir } => {
             let ofs = ctx
                 .rt
                 .vars
@@ -378,7 +378,17 @@ fn exec_stmt(s: &Stmt, ctx: &mut ExecCtx<'_>) -> Result<Flow> {
                 parts.join(&ofs)
             };
             let chunk = format!("{line}{ors}");
-            ctx.emit_print(&chunk);
+            match redir {
+                None => ctx.emit_print(&chunk),
+                Some(PrintRedir::Overwrite(e)) => {
+                    let path = eval_expr(e, ctx)?.as_str();
+                    ctx.rt.write_output_line(&path, &chunk, false)?;
+                }
+                Some(PrintRedir::Append(e)) => {
+                    let path = eval_expr(e, ctx)?.as_str();
+                    ctx.rt.write_output_line(&path, &chunk, true)?;
+                }
+            }
         }
         Stmt::Break => return Ok(Flow::Break),
         Stmt::Continue => return Ok(Flow::Continue),
@@ -853,22 +863,23 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
             Ok(Value::Num(ctx.rt.close_handle(&path)))
         }
         "fflush" => {
-            let flush_stdout = match args.len() {
-                0 => true,
-                1 => eval_expr(&args[0], ctx)?.as_str().is_empty(),
-                _ => {
-                    return Err(Error::Runtime(
-                        "fflush: expected 0 or 1 arguments".into(),
-                    ));
+            match args.len() {
+                0 => {
+                    ctx.emit_flush()?;
+                    Ok(Value::Num(0.0))
                 }
-            };
-            if flush_stdout {
-                ctx.emit_flush()?;
-                Ok(Value::Num(0.0))
-            } else {
-                Err(Error::Runtime(
-                    "fflush: only default/empty (stdout) is supported".into(),
-                ))
+                1 => {
+                    let path = eval_expr(&args[0], ctx)?.as_str();
+                    if path.is_empty() {
+                        ctx.emit_flush()?;
+                    } else {
+                        ctx.rt.flush_output_file(&path)?;
+                    }
+                    Ok(Value::Num(0.0))
+                }
+                _ => Err(Error::Runtime(
+                    "fflush: expected 0 or 1 arguments".into(),
+                )),
             }
         }
         "patsplit" => {

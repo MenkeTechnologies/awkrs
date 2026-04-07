@@ -60,7 +60,11 @@ pub enum Stmt {
     },
     Block(Vec<Stmt>),
     Expr(Expr),
-    Print(Vec<Expr>),
+    /// `print` / `print expr-list` with optional `> file` or `>> file`.
+    Print {
+        args: Vec<Expr>,
+        redir: Option<PrintRedir>,
+    },
     Break,
     Continue,
     Next,
@@ -76,6 +80,15 @@ pub enum Stmt {
         var: Option<String>,
         redir: GetlineRedir,
     },
+}
+
+/// Output redirection on `print` (not `printf` — use `sprintf` + redirection when needed).
+#[derive(Debug, Clone, PartialEq)]
+pub enum PrintRedir {
+    /// Truncate on first open (same as POSIX `>`).
+    Overwrite(Box<Expr>),
+    /// Append on first open (`>>`).
+    Append(Box<Expr>),
 }
 
 #[derive(Debug, Clone, PartialEq)]

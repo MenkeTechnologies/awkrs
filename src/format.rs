@@ -3,15 +3,41 @@
 use crate::runtime::Value;
 
 pub fn awk_sprintf(fmt: &str, vals: &[Value]) -> Result<String, String> {
+    let chars: Vec<char> = fmt.chars().collect();
     let mut out = String::new();
     let mut vi = 0usize;
-    let mut it = fmt.chars().peekable();
-    while let Some(c) = it.next() {
-        if c != '%' {
-            out.push(c);
+    let mut i = 0usize;
+    while i < chars.len() {
+        if chars[i] != '%' {
+            out.push(chars[i]);
+            i += 1;
             continue;
         }
-        let piece = parse_conversion(&mut it, vals, &mut vi)?;
+        i += 1;
+        if i >= chars.len() {
+            return Err("truncated format".into());
+        }
+        // Optional `%m$` — digits must be followed by `$` or we rewind and treat as flags/width.
+        let start_after_pct = i;
+        let mut m = 0usize;
+        let mut has_digits = false;
+        while i < chars.len() && chars[i].is_ascii_digit() {
+            has_digits = true;
+            m = m * 10 + (chars[i] as u8 - b'0') as usize;
+            i += 1;
+        }
+        let val_pos = if has_digits && i < chars.len() && chars[i] == '$' {
+            i += 1;
+            if m == 0 {
+                return Err("sprintf: positional argument was 0".into());
+            }
+            Some(m)
+        } else {
+            i = start_after_pct;
+            None
+        };
+        let (piece, new_i) = parse_conversion_rest(&chars, i, vals, &mut vi, val_pos)?;
+        i = new_i;
         out.push_str(&piece);
     }
     Ok(out)
@@ -25,63 +51,72 @@ fn take_val<'a>(vals: &'a [Value], vi: &mut usize) -> Result<&'a Value, String> 
     Ok(v)
 }
 
-fn parse_conversion(
-    it: &mut std::iter::Peekable<std::str::Chars>,
+fn val_at(vals: &[Value], one_based: usize) -> Result<&Value, String> {
+    vals.get(one_based - 1)
+        .ok_or_else(|| "sprintf: invalid positional argument".to_string())
+}
+
+fn parse_conversion_rest(
+    chars: &[char],
+    mut i: usize,
     vals: &[Value],
     vi: &mut usize,
-) -> Result<String, String> {
+    val_pos: Option<usize>,
+) -> Result<(String, usize), String> {
     let mut left = false;
     let mut sign = false;
     let mut space = false;
     let mut alt = false;
     let mut pad_zero = false;
-    while let Some(&ch) = it.peek() {
-        match ch {
+    while i < chars.len() {
+        match chars[i] {
             '-' => {
                 left = true;
-                it.next();
+                i += 1;
             }
             '+' => {
                 sign = true;
-                it.next();
+                i += 1;
             }
             ' ' => {
                 space = true;
-                it.next();
+                i += 1;
             }
             '#' => {
                 alt = true;
-                it.next();
+                i += 1;
             }
             '0' => {
                 pad_zero = true;
-                it.next();
+                i += 1;
             }
             _ => break,
         }
     }
 
-    let (width, star_left) = parse_width_or_star(it, vals, vi)?;
+    let (width, star_left, i2) = parse_width_or_star(chars, i, vals, vi)?;
+    i = i2;
     if star_left {
         left = true;
     }
 
     let mut prec: Option<usize> = None;
-    if it.peek() == Some(&'.') {
-        it.next();
-        if it.peek() == Some(&'*') {
-            it.next();
+    if i < chars.len() && chars[i] == '.' {
+        i += 1;
+        if i < chars.len() && chars[i] == '*' {
+            i += 1;
             let v = take_val(vals, vi)?;
             let p = v.as_number();
             prec = Some(if p < 0.0 { 0 } else { p as usize });
         } else {
             let mut p = 0usize;
             let mut any = false;
-            while let Some(&d) = it.peek() {
+            while i < chars.len() {
+                let d = chars[i];
                 if d.is_ascii_digit() {
                     p = p * 10 + (d as u8 - b'0') as usize;
                     any = true;
-                    it.next();
+                    i += 1;
                 } else {
                     break;
                 }
@@ -90,48 +125,59 @@ fn parse_conversion(
         }
     }
 
-    while matches!(it.peek(), Some('h' | 'l' | 'L')) {
-        it.next();
+    while i < chars.len() && matches!(chars[i], 'h' | 'l' | 'L') {
+        i += 1;
     }
-    let conv = it.next().ok_or_else(|| "truncated format".to_string())?;
+
+    let conv = chars
+        .get(i)
+        .copied()
+        .ok_or_else(|| "truncated format".to_string())?;
+    i += 1;
+
     if conv == '%' {
-        return Ok("%".to_string());
+        return Ok(("%".to_string(), i));
     }
-    let v = take_val(vals, vi)?;
+
+    let v = if let Some(p) = val_pos {
+        val_at(vals, p)?
+    } else {
+        take_val(vals, vi)?
+    };
     let piece = format_one(conv, v, left, sign, space, alt, pad_zero, width, prec)?;
-    Ok(piece)
+    Ok((piece, i))
 }
 
-/// Parses field width: digits or `*` (consumes one `sprintf` argument). A negative `*` value sets
-/// `left` (second return value).
 fn parse_width_or_star(
-    it: &mut std::iter::Peekable<std::str::Chars>,
+    chars: &[char],
+    mut i: usize,
     vals: &[Value],
     vi: &mut usize,
-) -> Result<(Option<usize>, bool), String> {
-    if it.peek() == Some(&'*') {
-        it.next();
+) -> Result<(Option<usize>, bool, usize), String> {
+    if i < chars.len() && chars[i] == '*' {
+        i += 1;
         let v = take_val(vals, vi)?;
         let n = v.as_number();
         if n < 0.0 {
             let w = (-n) as usize;
-            return Ok((Some(w), true));
+            return Ok((Some(w), true, i));
         }
-        return Ok((Some(n as usize), false));
+        return Ok((Some(n as usize), false, i));
     }
-    if it.peek().map_or(false, |c| c.is_ascii_digit()) {
+    if i < chars.len() && chars[i].is_ascii_digit() {
         let mut w = 0usize;
-        while let Some(&d) = it.peek() {
+        while i < chars.len() {
+            let d = chars[i];
             if d.is_ascii_digit() {
                 w = w * 10 + (d as u8 - b'0') as usize;
-                it.next();
+                i += 1;
             } else {
                 break;
             }
         }
-        return Ok((Some(w), false));
+        return Ok((Some(w), false, i));
     }
-    Ok((None, false))
+    Ok((None, false, i))
 }
 
 fn format_one(
@@ -293,5 +339,27 @@ mod tests {
         )
         .unwrap();
         assert_eq!(s, "    3.14");
+    }
+
+    #[test]
+    fn positional_swap() {
+        let s = awk_sprintf(
+            "%2$d %1$d",
+            &[Value::Num(10.0), Value::Num(20.0)],
+        )
+        .unwrap();
+        assert_eq!(s, "20 10");
+    }
+
+    #[test]
+    fn positional_with_width() {
+        let s = awk_sprintf("%2$5d", &[Value::Num(1.0), Value::Num(2.0)]).unwrap();
+        assert_eq!(s, "    2");
+    }
+
+    #[test]
+    fn positional_and_sequential_mixed() {
+        let s = awk_sprintf("%d %3$d %d", &[Value::Num(1.0), Value::Num(2.0), Value::Num(3.0)]).unwrap();
+        assert_eq!(s, "1 3 2");
     }
 }

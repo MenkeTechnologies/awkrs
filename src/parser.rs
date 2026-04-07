@@ -37,6 +37,8 @@ struct Parser<'a> {
     lexer: Lexer<'a>,
     cur: Token,
     line: usize,
+    /// When true, `>` / `>>` stay available for `print` redirection (not `a > b` comparison).
+    in_print_arg: bool,
 }
 
 impl<'a> Parser<'a> {
@@ -44,7 +46,20 @@ impl<'a> Parser<'a> {
         let mut lexer = Lexer::new(src);
         let cur = lexer.next_token(true).unwrap_or(Token::Eof);
         let line = lexer.line();
-        Self { lexer, cur, line }
+        Self {
+            lexer,
+            cur,
+            line,
+            in_print_arg: false,
+        }
+    }
+
+    fn parse_expr_allow_gt(&mut self, regex_mode: bool) -> Result<Expr> {
+        let saved = self.in_print_arg;
+        self.in_print_arg = false;
+        let e = self.parse_expr(regex_mode);
+        self.in_print_arg = saved;
+        e
     }
 
     fn bump(&mut self, regex_mode: bool) -> Result<()> {
@@ -476,8 +491,19 @@ impl<'a> Parser<'a> {
                         break;
                     }
                 }
+                let redir = match self.cur {
+                    Token::Gt => {
+                        self.bump(false)?;
+                        Some(PrintRedir::Overwrite(Box::new(self.parse_expr(false)?)))
+                    }
+                    Token::GtGt => {
+                        self.bump(false)?;
+                        Some(PrintRedir::Append(Box::new(self.parse_expr(false)?)))
+                    }
+                    _ => None,
+                };
                 self.consume_stmt_end()?;
-                Ok(Stmt::Print(args))
+                Ok(Stmt::Print { args, redir })
             }
             _ => {
                 let e = self.parse_expr(false)?;
@@ -525,22 +551,34 @@ impl<'a> Parser<'a> {
 
     /// Inside `print`, space-separated items concatenate.
     fn parse_print_expr(&mut self) -> Result<Expr> {
-        let mut e = self.parse_expr(false)?;
-        loop {
-            if matches!(
-                self.cur,
-                Token::Semi | Token::Newline | Token::Comma | Token::RBrace | Token::Eof
-            ) {
-                break;
+        let saved = self.in_print_arg;
+        self.in_print_arg = true;
+        let res = (|| -> Result<Expr> {
+            let mut e = self.parse_expr(false)?;
+            loop {
+                if matches!(
+                    self.cur,
+                    Token::Semi
+                        | Token::Newline
+                        | Token::Comma
+                        | Token::RBrace
+                        | Token::Eof
+                        | Token::Gt
+                        | Token::GtGt
+                ) {
+                    break;
+                }
+                let rhs = self.parse_expr(false)?;
+                e = Expr::Binary {
+                    op: BinOp::Concat,
+                    left: Box::new(e),
+                    right: Box::new(rhs),
+                };
             }
-            let rhs = self.parse_expr(false)?;
-            e = Expr::Binary {
-                op: BinOp::Concat,
-                left: Box::new(e),
-                right: Box::new(rhs),
-            };
-        }
-        Ok(e)
+            Ok(e)
+        })();
+        self.in_print_arg = saved;
+        res
     }
 
     fn parse_expr(&mut self, regex_mode: bool) -> Result<Expr> {
@@ -633,6 +671,9 @@ impl<'a> Parser<'a> {
 
     fn parse_cmp(&mut self, regex_mode: bool) -> Result<Expr> {
         let mut e = self.parse_concat(regex_mode)?;
+        if self.in_print_arg && matches!(self.cur, Token::Gt | Token::GtGt) {
+            return Ok(e);
+        }
         loop {
             let op = match &self.cur {
                 Token::Eq => Some(BinOp::Eq),
@@ -779,10 +820,10 @@ impl<'a> Parser<'a> {
 
     fn parse_index_list(&mut self) -> Result<Vec<Expr>> {
         let mut v = Vec::new();
-        v.push(self.parse_expr(false)?);
+        v.push(self.parse_expr_allow_gt(false)?);
         while self.cur == Token::Comma {
             self.bump(false)?;
-            v.push(self.parse_expr(false)?);
+            v.push(self.parse_expr_allow_gt(false)?);
         }
         Ok(v)
     }
@@ -823,7 +864,7 @@ impl<'a> Parser<'a> {
                     let mut args = Vec::new();
                     if self.cur != Token::RParen {
                         loop {
-                            args.push(self.parse_expr(false)?);
+                            args.push(self.parse_expr_allow_gt(false)?);
                             if self.cur == Token::Comma {
                                 self.bump(false)?;
                                 continue;
@@ -847,7 +888,7 @@ impl<'a> Parser<'a> {
                 self.bump(false)?;
                 if self.cur == Token::LParen {
                     self.bump(false)?;
-                    let e = self.parse_expr(false)?;
+                    let e = self.parse_expr_allow_gt(false)?;
                     if self.cur != Token::RParen {
                         return Err(Error::Parse {
                             line: self.line,
@@ -863,7 +904,7 @@ impl<'a> Parser<'a> {
             }
             Token::LParen => {
                 self.bump(false)?;
-                let e = self.parse_expr(false)?;
+                let e = self.parse_expr_allow_gt(false)?;
                 if self.cur != Token::RParen {
                     return Err(Error::Parse {
                         line: self.line,
