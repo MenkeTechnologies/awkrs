@@ -66,6 +66,7 @@ name = "awkrs"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "libc",
  "num_cpus",
  "rayon",
  "regex",

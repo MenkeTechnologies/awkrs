@@ -2,10 +2,17 @@ use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{Arc, Mutex};
 
 use crate::error::{Error, Result};
+
+/// Open two-way pipe to `sh -c` (gawk-style `|&` / `<&`).
+pub struct CoprocHandle {
+    pub child: Child,
+    pub stdin: BufWriter<ChildStdin>,
+    pub stdout: BufReader<ChildStdout>,
+}
 
 #[derive(Debug, Clone)]
 pub enum Value {
@@ -75,8 +82,10 @@ pub struct Runtime {
     /// Open files for `print … > path` / `print … >> path` / `fflush` / `close`.
     pub output_handles: HashMap<String, BufWriter<File>>,
     /// `print`/`printf` `| "cmd"` — stdin of `sh -c cmd` (key is the command string).
-    pub pipe_stdin: HashMap<String, BufWriter<std::process::ChildStdin>>,
+    pub pipe_stdin: HashMap<String, BufWriter<ChildStdin>>,
     pub pipe_children: HashMap<String, Child>,
+    /// `print`/`printf` `|& "cmd"` / `getline <& "cmd"` — two-way `sh -c` (same key for both directions).
+    pub coproc_handles: HashMap<String, CoprocHandle>,
     pub rand_seed: u64,
 }
 
@@ -102,12 +111,18 @@ impl Runtime {
             output_handles: HashMap::new(),
             pipe_stdin: HashMap::new(),
             pipe_children: HashMap::new(),
+            coproc_handles: HashMap::new(),
             rand_seed: 1,
         }
     }
 
     /// `print … | "cmd"` / `printf … | "cmd"` — append bytes to the coprocess stdin (spawn on first use).
     pub fn write_pipe_line(&mut self, cmd: &str, data: &str) -> Result<()> {
+        if self.coproc_handles.contains_key(cmd) {
+            return Err(Error::Runtime(format!(
+                "one-way pipe `|` conflicts with two-way `|&` for `{cmd}`"
+            )));
+        }
         if !self.pipe_stdin.contains_key(cmd) {
             let mut child = Command::new("sh")
                 .arg("-c")
@@ -126,6 +141,61 @@ impl Runtime {
         let w = self.pipe_stdin.get_mut(cmd).unwrap();
         w.write_all(data.as_bytes()).map_err(Error::Io)?;
         Ok(())
+    }
+
+    fn ensure_coproc(&mut self, cmd: &str) -> Result<()> {
+        if self.coproc_handles.contains_key(cmd) {
+            return Ok(());
+        }
+        if self.pipe_stdin.contains_key(cmd) {
+            return Err(Error::Runtime(format!(
+                "two-way pipe `|&` conflicts with one-way `|` for `{cmd}`"
+            )));
+        }
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg(cmd)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .map_err(|e| Error::Runtime(format!("coprocess `{cmd}`: {e}")))?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| Error::Runtime(format!("coprocess `{cmd}`: no stdin")))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| Error::Runtime(format!("coprocess `{cmd}`: no stdout")))?;
+        self.coproc_handles.insert(
+            cmd.to_string(),
+            CoprocHandle {
+                child,
+                stdin: BufWriter::new(stdin),
+                stdout: BufReader::new(stdout),
+            },
+        );
+        Ok(())
+    }
+
+    /// `print … |& "cmd"` / `printf … |& "cmd"` — append bytes to the two-way pipe stdin.
+    pub fn write_coproc_line(&mut self, cmd: &str, data: &str) -> Result<()> {
+        self.ensure_coproc(cmd)?;
+        let w = self.coproc_handles.get_mut(cmd).unwrap();
+        w.stdin.write_all(data.as_bytes()).map_err(Error::Io)?;
+        Ok(())
+    }
+
+    /// `getline … <& "cmd"` — one line from the coprocess stdout.
+    pub fn read_line_coproc(&mut self, cmd: &str) -> Result<Option<String>> {
+        self.ensure_coproc(cmd)?;
+        let h = self.coproc_handles.get_mut(cmd).unwrap();
+        let mut line = String::new();
+        let n = h.stdout.read_line(&mut line).map_err(Error::Io)?;
+        if n == 0 {
+            return Ok(None);
+        }
+        Ok(Some(line))
     }
 
     /// Write one `print` line (including `ORS`) to `path`. First open uses truncate (`>`) or
@@ -170,8 +240,12 @@ impl Runtime {
             w.flush().map_err(Error::Io)?;
             return Ok(());
         }
+        if let Some(h) = self.coproc_handles.get_mut(key) {
+            h.stdin.flush().map_err(Error::Io)?;
+            return Ok(());
+        }
         Err(Error::Runtime(format!(
-            "fflush: {key} is not an open output file or pipe"
+            "fflush: {key} is not an open output file, pipe, or coprocess"
         )))
     }
 
@@ -219,6 +293,9 @@ impl Runtime {
     }
 
     pub fn close_handle(&mut self, path: &str) -> f64 {
+        if let Some(h) = self.coproc_handles.remove(path) {
+            let _ = shutdown_coproc(h);
+        }
         if let Some(mut w) = self.output_handles.remove(path) {
             let _ = w.flush();
         }
@@ -355,6 +432,22 @@ impl Runtime {
     }
 }
 
+fn shutdown_coproc(mut h: CoprocHandle) -> Result<()> {
+    h.stdin.flush().map_err(Error::Io)?;
+    drop(h.stdin);
+    let mut buf = String::new();
+    loop {
+        buf.clear();
+        let n = h.stdout.read_line(&mut buf).map_err(Error::Io)?;
+        if n == 0 {
+            break;
+        }
+    }
+    drop(h.stdout);
+    let _ = h.child.wait();
+    Ok(())
+}
+
 impl Clone for Runtime {
     fn clone(&self) -> Self {
         Self {
@@ -371,6 +464,7 @@ impl Clone for Runtime {
             output_handles: HashMap::new(),
             pipe_stdin: HashMap::new(),
             pipe_children: HashMap::new(),
+            coproc_handles: HashMap::new(),
             rand_seed: self.rand_seed,
         }
     }
@@ -378,6 +472,9 @@ impl Clone for Runtime {
 
 impl Drop for Runtime {
     fn drop(&mut self) {
+        for (_, h) in self.coproc_handles.drain() {
+            let _ = shutdown_coproc(h);
+        }
         for (_, mut w) in self.output_handles.drain() {
             let _ = w.flush();
         }

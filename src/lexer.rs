@@ -40,11 +40,13 @@ pub enum Token {
     Eq,
     Ne,
     Lt,
+    /// `<&` (gawk-style coprocess read redirect).
+    LtAmp,
     Le,
     Gt,
     /// `>>` (append redirect; distinct from two `>` tokens).
     GtGt,
-    /// `|&` (gawk coprocess — not implemented; tokenized for a clear parse error).
+    /// `|&` (gawk coprocess / two-way pipe).
     PipeCoproc,
     Ge,
     Assign,
@@ -364,6 +366,9 @@ impl<'a> Lexer<'a> {
                 if self.peek() == Some('=') {
                     self.bump();
                     Token::Le
+                } else if self.peek() == Some('&') {
+                    self.bump();
+                    Token::LtAmp
                 } else {
                     Token::Lt
                 }

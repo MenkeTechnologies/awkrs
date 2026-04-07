@@ -4,6 +4,7 @@ use crate::error::{Error, Result};
 use crate::format;
 use crate::runtime::{Runtime, Value};
 use regex::Regex;
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::io::Write;
 
@@ -64,9 +65,7 @@ impl<'a> ExecCtx<'a> {
     /// Flush stdout when not capturing prints (parallel workers buffer; flush is a no-op there).
     pub fn emit_flush(&mut self) -> Result<()> {
         if self.print_out.is_none() {
-            std::io::stdout()
-                .flush()
-                .map_err(Error::Io)?;
+            std::io::stdout().flush().map_err(Error::Io)?;
         }
         Ok(())
     }
@@ -392,6 +391,10 @@ fn exec_stmt(s: &Stmt, ctx: &mut ExecCtx<'_>) -> Result<Flow> {
                     let cmd = eval_expr(e, ctx)?.as_str();
                     ctx.rt.write_pipe_line(&cmd, &chunk)?;
                 }
+                Some(PrintRedir::Coproc(e)) => {
+                    let cmd = eval_expr(e, ctx)?.as_str();
+                    ctx.rt.write_coproc_line(&cmd, &chunk)?;
+                }
             }
         }
         Stmt::Printf { args, redir } => {
@@ -418,6 +421,10 @@ fn exec_stmt(s: &Stmt, ctx: &mut ExecCtx<'_>) -> Result<Flow> {
                 Some(PrintRedir::Pipe(e)) => {
                     let cmd = eval_expr(e, ctx)?.as_str();
                     ctx.rt.write_pipe_line(&cmd, &s)?;
+                }
+                Some(PrintRedir::Coproc(e)) => {
+                    let cmd = eval_expr(e, ctx)?.as_str();
+                    ctx.rt.write_coproc_line(&cmd, &s)?;
                 }
             }
         }
@@ -446,6 +453,10 @@ fn exec_stmt(s: &Stmt, ctx: &mut ExecCtx<'_>) -> Result<Flow> {
                     let path = eval_expr(path_expr, ctx)?.as_str();
                     ctx.rt.read_line_file(&path)?
                 }
+                GetlineRedir::Coproc(cmd_expr) => {
+                    let cmd = eval_expr(cmd_expr, ctx)?.as_str();
+                    ctx.rt.read_line_coproc(&cmd)?
+                }
             };
             if let Some(l) = line {
                 let trimmed = l.trim_end_matches(['\n', '\r']).to_string();
@@ -465,7 +476,7 @@ fn exec_stmt(s: &Stmt, ctx: &mut ExecCtx<'_>) -> Result<Flow> {
                         ctx.rt.nr += 1.0;
                         ctx.rt.fnr += 1.0;
                     }
-                    GetlineRedir::File(_) => {}
+                    GetlineRedir::File(_) | GetlineRedir::Coproc(_) => {}
                 }
             }
             ctx.rt
@@ -651,6 +662,25 @@ fn eval_binary(op: BinOp, left: &Expr, right: &Expr, ctx: &mut ExecCtx<'_>) -> R
     Ok(Value::Num(n))
 }
 
+/// POSIX string compare: `strcoll` when available (honors process `LC_*`), else Rust byte order.
+fn locale_str_cmp(a: &str, b: &str) -> Ordering {
+    #[cfg(unix)]
+    {
+        use std::ffi::CString;
+        match (CString::new(a), CString::new(b)) {
+            (Ok(ca), Ok(cb)) => unsafe {
+                let r = libc::strcoll(ca.as_ptr(), cb.as_ptr());
+                r.cmp(&0)
+            },
+            _ => a.cmp(b),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        a.cmp(b)
+    }
+}
+
 fn awk_eq(left: &Expr, right: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {
     let lv = eval_expr(left, ctx)?;
     let rv = eval_expr(right, ctx)?;
@@ -663,11 +693,13 @@ fn awk_eq(left: &Expr, right: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {
             0.0
         }));
     }
-    Ok(Value::Num(if lv.as_str() == rv.as_str() {
-        1.0
-    } else {
-        0.0
-    }))
+    Ok(Value::Num(
+        if locale_str_cmp(&lv.as_str(), &rv.as_str()) == Ordering::Equal {
+            1.0
+        } else {
+            0.0
+        },
+    ))
 }
 
 fn awk_ne(left: &Expr, right: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {
@@ -692,11 +724,12 @@ fn awk_rel(op: BinOp, left: &Expr, right: &Expr, ctx: &mut ExecCtx<'_>) -> Resul
     }
     let ls = lv.as_str();
     let rs = rv.as_str();
+    let ord = locale_str_cmp(&ls, &rs);
     let ok = match op {
-        BinOp::Lt => ls < rs,
-        BinOp::Le => ls <= rs,
-        BinOp::Gt => ls > rs,
-        BinOp::Ge => ls >= rs,
+        BinOp::Lt => ord == Ordering::Less,
+        BinOp::Le => matches!(ord, Ordering::Less | Ordering::Equal),
+        BinOp::Gt => ord == Ordering::Greater,
+        BinOp::Ge => matches!(ord, Ordering::Greater | Ordering::Equal),
         _ => unreachable!(),
     };
     Ok(Value::Num(if ok { 1.0 } else { 0.0 }))
@@ -893,26 +926,22 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
             let path = eval_expr(&args[0], ctx)?.as_str();
             Ok(Value::Num(ctx.rt.close_handle(&path)))
         }
-        "fflush" => {
-            match args.len() {
-                0 => {
-                    ctx.emit_flush()?;
-                    Ok(Value::Num(0.0))
-                }
-                1 => {
-                    let path = eval_expr(&args[0], ctx)?.as_str();
-                    if path.is_empty() {
-                        ctx.emit_flush()?;
-                    } else {
-                        ctx.rt.flush_redirect_target(&path)?;
-                    }
-                    Ok(Value::Num(0.0))
-                }
-                _ => Err(Error::Runtime(
-                    "fflush: expected 0 or 1 arguments".into(),
-                )),
+        "fflush" => match args.len() {
+            0 => {
+                ctx.emit_flush()?;
+                Ok(Value::Num(0.0))
             }
-        }
+            1 => {
+                let path = eval_expr(&args[0], ctx)?.as_str();
+                if path.is_empty() {
+                    ctx.emit_flush()?;
+                } else {
+                    ctx.rt.flush_redirect_target(&path)?;
+                }
+                Ok(Value::Num(0.0))
+            }
+            _ => Err(Error::Runtime("fflush: expected 0 or 1 arguments".into())),
+        },
         "patsplit" => {
             if !(2..=4).contains(&args.len()) {
                 return Err(Error::Runtime(

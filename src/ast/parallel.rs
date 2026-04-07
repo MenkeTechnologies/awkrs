@@ -3,8 +3,8 @@
 use super::{Expr, GetlineRedir, Pattern, Program, Stmt};
 
 /// True when record rules can run in parallel: no range patterns, no `exit`, no primary `getline`,
-/// no cross-record mutations (assignments / `delete`), and no constructs that require sequential
-/// input across records.
+/// no `getline <&` coprocess, no cross-record mutations (assignments / `delete`), and no constructs
+/// that require sequential input across records.
 pub fn record_rules_parallel_safe(prog: &Program) -> bool {
     for rule in &prog.rules {
         if matches!(rule.pattern, Pattern::Range(_, _)) {
@@ -39,6 +39,10 @@ fn stmt_blocks_parallel(s: &Stmt) -> bool {
             redir: GetlineRedir::Primary,
             ..
         } => true,
+        Stmt::GetLine {
+            redir: GetlineRedir::Coproc(_),
+            ..
+        } => true,
         Stmt::GetLine { .. } => false,
         Stmt::If { then_, else_, .. } => {
             then_.iter().any(stmt_blocks_parallel) || else_.iter().any(stmt_blocks_parallel)
@@ -48,12 +52,8 @@ fn stmt_blocks_parallel(s: &Stmt) -> bool {
         Stmt::ForIn { body, .. } => body.iter().any(stmt_blocks_parallel),
         Stmt::Block(ss) => ss.iter().any(stmt_blocks_parallel),
         Stmt::Expr(e) => expr_blocks_parallel(e),
-        Stmt::Print { args, redir } => {
-            redir.is_some() || args.iter().any(expr_blocks_parallel)
-        }
-        Stmt::Printf { args, redir } => {
-            redir.is_some() || args.iter().any(expr_blocks_parallel)
-        }
+        Stmt::Print { args, redir } => redir.is_some() || args.iter().any(expr_blocks_parallel),
+        Stmt::Printf { args, redir } => redir.is_some() || args.iter().any(expr_blocks_parallel),
         Stmt::Break | Stmt::Continue | Stmt::Next | Stmt::Return(_) => false,
         Stmt::Delete { .. } => true,
     }

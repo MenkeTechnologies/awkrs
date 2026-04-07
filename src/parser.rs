@@ -446,6 +446,15 @@ impl<'a> Parser<'a> {
                 } else {
                     None
                 };
+                if self.cur == Token::LtAmp {
+                    self.bump(false)?;
+                    let fe = self.parse_expr(false)?;
+                    self.consume_stmt_end()?;
+                    return Ok(Stmt::GetLine {
+                        var,
+                        redir: GetlineRedir::Coproc(Box::new(fe)),
+                    });
+                }
                 if self.cur == Token::Lt {
                     self.bump(false)?;
                     let fe = self.parse_expr(false)?;
@@ -568,7 +577,9 @@ impl<'a> Parser<'a> {
         match self.cur {
             Token::Gt => {
                 self.bump(false)?;
-                Ok(Some(PrintRedir::Overwrite(Box::new(self.parse_expr(false)?))))
+                Ok(Some(PrintRedir::Overwrite(Box::new(
+                    self.parse_expr(false)?,
+                ))))
             }
             Token::GtGt => {
                 self.bump(false)?;
@@ -578,10 +589,10 @@ impl<'a> Parser<'a> {
                 self.bump(false)?;
                 Ok(Some(PrintRedir::Pipe(Box::new(self.parse_expr(false)?))))
             }
-            Token::PipeCoproc => Err(Error::Parse {
-                line: self.line,
-                msg: "coprocess two-way pipe `|&` is not implemented".into(),
-            }),
+            Token::PipeCoproc => {
+                self.bump(false)?;
+                Ok(Some(PrintRedir::Coproc(Box::new(self.parse_expr(false)?))))
+            }
             _ => Ok(None),
         }
     }
@@ -602,6 +613,7 @@ impl<'a> Parser<'a> {
                         | Token::Gt
                         | Token::GtGt
                         | Token::Pipe
+                        | Token::PipeCoproc
                 ) {
                     break;
                 }
@@ -708,7 +720,12 @@ impl<'a> Parser<'a> {
 
     fn parse_cmp(&mut self, regex_mode: bool) -> Result<Expr> {
         let mut e = self.parse_concat(regex_mode)?;
-        if self.in_print_arg && matches!(self.cur, Token::Gt | Token::GtGt | Token::Pipe) {
+        if self.in_print_arg
+            && matches!(
+                self.cur,
+                Token::Gt | Token::GtGt | Token::Pipe | Token::PipeCoproc
+            )
+        {
             return Ok(e);
         }
         loop {
@@ -749,6 +766,7 @@ impl<'a> Parser<'a> {
                     | Token::Colon
                     | Token::Eof
                     | Token::Pipe
+                    | Token::PipeCoproc
             ) {
                 break;
             }

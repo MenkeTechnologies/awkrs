@@ -370,11 +370,7 @@ mod tests {
 
     #[test]
     fn positional_swap() {
-        let s = awk_sprintf(
-            "%2$d %1$d",
-            &[Value::Num(10.0), Value::Num(20.0)],
-        )
-        .unwrap();
+        let s = awk_sprintf("%2$d %1$d", &[Value::Num(10.0), Value::Num(20.0)]).unwrap();
         assert_eq!(s, "20 10");
     }
 
@@ -386,7 +382,11 @@ mod tests {
 
     #[test]
     fn positional_and_sequential_mixed() {
-        let s = awk_sprintf("%d %3$d %d", &[Value::Num(1.0), Value::Num(2.0), Value::Num(3.0)]).unwrap();
+        let s = awk_sprintf(
+            "%d %3$d %d",
+            &[Value::Num(1.0), Value::Num(2.0), Value::Num(3.0)],
+        )
+        .unwrap();
         assert_eq!(s, "1 3 2");
     }
 
@@ -400,5 +400,15 @@ mod tests {
     fn star_positional_precision() {
         let s = awk_sprintf("%.*1$f", &[Value::Num(3.0), Value::Num(1.234567)]).unwrap();
         assert_eq!(s, "1.235");
+    }
+
+    #[test]
+    fn star_width_second_positional_arg() {
+        let s = awk_sprintf(
+            "%*2$d",
+            &[Value::Num(5.0), Value::Num(4.0), Value::Num(9.0)],
+        )
+        .unwrap();
+        assert_eq!(s, "   9");
     }
 }

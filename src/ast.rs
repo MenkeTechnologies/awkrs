@@ -96,6 +96,8 @@ pub enum PrintRedir {
     Append(Box<Expr>),
     /// One-way pipe: `| expr` runs `sh -c` with that string; writes go to the subprocess stdin.
     Pipe(Box<Expr>),
+    /// Two-way pipe: `|& expr` — same shell command model; stdin and stdout are both connected.
+    Coproc(Box<Expr>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -104,6 +106,8 @@ pub enum GetlineRedir {
     Primary,
     /// `getline ... < expr`
     File(Box<Expr>),
+    /// `getline ... <& expr` — read from the stdout of the coprocess (same command string as `|&`).
+    Coproc(Box<Expr>),
 }
 
 #[derive(Debug, Clone, PartialEq)]

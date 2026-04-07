@@ -145,10 +145,7 @@ fn gsub_on_record() {
 
 #[test]
 fn multidimensional_array_subsep() {
-    let (code, stdout, _) = run_awkrs_stdin(
-        "BEGIN { a[1,2] = 42; print a[1,2] }",
-        "",
-    );
+    let (code, stdout, _) = run_awkrs_stdin("BEGIN { a[1,2] = 42; print a[1,2] }", "");
     assert_eq!(code, 0);
     assert_eq!(stdout, "42\n");
 }
@@ -199,10 +196,8 @@ fn sprintf_star_width() {
 
 #[test]
 fn sprintf_positional_args() {
-    let (code, stdout, _) = run_awkrs_stdin(
-        "BEGIN { print sprintf(\"%2$s %1$s\", \"a\", \"b\") }",
-        "",
-    );
+    let (code, stdout, _) =
+        run_awkrs_stdin("BEGIN { print sprintf(\"%2$s %1$s\", \"a\", \"b\") }", "");
     assert_eq!(code, 0);
     assert_eq!(stdout, "b a\n");
 }
@@ -216,22 +211,26 @@ fn printf_statement_no_parens() {
 
 #[test]
 fn sprintf_star_positional_width() {
-    let (code, stdout, _) = run_awkrs_stdin(
-        "BEGIN { print sprintf(\"%*1$d\", 4, 9) }",
-        "",
-    );
+    let (code, stdout, _) = run_awkrs_stdin("BEGIN { print sprintf(\"%*1$d\", 4, 9) }", "");
     assert_eq!(code, 0);
     assert_eq!(stdout, "   9\n");
 }
 
 #[test]
 fn print_pipe_to_cat() {
+    let (code, stdout, stderr) = run_awkrs_stdin("BEGIN { print \"hello\" | \"cat\" }", "");
+    assert_eq!(code, 0, "stderr={stderr:?}");
+    assert_eq!(stdout, "hello\n");
+}
+
+#[test]
+fn print_coproc_getline_cat() {
     let (code, stdout, stderr) = run_awkrs_stdin(
-        "BEGIN { print \"hello\" | \"cat\" }",
+        "BEGIN { print \"hi\" |& \"cat\"; fflush(\"cat\"); getline x <& \"cat\"; print x }",
         "",
     );
     assert_eq!(code, 0, "stderr={stderr:?}");
-    assert_eq!(stdout, "hello\n");
+    assert_eq!(stdout, "hi\n");
 }
 
 #[test]

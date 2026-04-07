@@ -102,7 +102,7 @@ pub fn run(bin_name: &str) -> Result<()> {
 
     let use_parallel = threads > 1 && parallel_ok;
     if threads > 1 && !parallel_ok {
-        eprintln!("{bin_name}: warning: program is not parallel-safe (range patterns, exit, getline without file, cross-record assignments, …); running sequentially (use -j 1 to silence)");
+        eprintln!("{bin_name}: warning: program is not parallel-safe (range patterns, exit, getline without file, getline coprocess, cross-record assignments, …); running sequentially (use -j 1 to silence)");
     }
 
     let mut nr_global = 0.0f64;

@@ -28,3 +28,6 @@ rayon = "1.10"
 regex = "1.10"
 thiserror = "2.0"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
