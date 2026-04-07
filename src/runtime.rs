@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::Path;
+use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 
 use crate::error::{Error, Result};
@@ -73,6 +74,9 @@ pub struct Runtime {
     pub file_handles: HashMap<String, BufReader<File>>,
     /// Open files for `print … > path` / `print … >> path` / `fflush` / `close`.
     pub output_handles: HashMap<String, BufWriter<File>>,
+    /// `print`/`printf` `| "cmd"` — stdin of `sh -c cmd` (key is the command string).
+    pub pipe_stdin: HashMap<String, BufWriter<std::process::ChildStdin>>,
+    pub pipe_children: HashMap<String, Child>,
     pub rand_seed: u64,
 }
 
@@ -96,8 +100,32 @@ impl Runtime {
             input_reader: None,
             file_handles: HashMap::new(),
             output_handles: HashMap::new(),
+            pipe_stdin: HashMap::new(),
+            pipe_children: HashMap::new(),
             rand_seed: 1,
         }
+    }
+
+    /// `print … | "cmd"` / `printf … | "cmd"` — append bytes to the coprocess stdin (spawn on first use).
+    pub fn write_pipe_line(&mut self, cmd: &str, data: &str) -> Result<()> {
+        if !self.pipe_stdin.contains_key(cmd) {
+            let mut child = Command::new("sh")
+                .arg("-c")
+                .arg(cmd)
+                .stdin(Stdio::piped())
+                .spawn()
+                .map_err(|e| Error::Runtime(format!("pipe `{cmd}`: {e}")))?;
+            let stdin = child
+                .stdin
+                .take()
+                .ok_or_else(|| Error::Runtime(format!("pipe `{cmd}`: no stdin")))?;
+            self.pipe_children.insert(cmd.to_string(), child);
+            self.pipe_stdin
+                .insert(cmd.to_string(), BufWriter::new(stdin));
+        }
+        let w = self.pipe_stdin.get_mut(cmd).unwrap();
+        w.write_all(data.as_bytes()).map_err(Error::Io)?;
+        Ok(())
     }
 
     /// Write one `print` line (including `ORS`) to `path`. First open uses truncate (`>`) or
@@ -132,15 +160,19 @@ impl Runtime {
         Ok(())
     }
 
-    /// Flush buffered output for a path opened with `print` redirection.
-    pub fn flush_output_file(&mut self, path: &str) -> Result<()> {
-        let Some(w) = self.output_handles.get_mut(path) else {
-            return Err(Error::Runtime(format!(
-                "fflush: {path} is not open for writing"
-            )));
-        };
-        w.flush().map_err(Error::Io)?;
-        Ok(())
+    /// Flush buffered output for a file or pipe opened with `print`/`printf` redirection.
+    pub fn flush_redirect_target(&mut self, key: &str) -> Result<()> {
+        if let Some(w) = self.output_handles.get_mut(key) {
+            w.flush().map_err(Error::Io)?;
+            return Ok(());
+        }
+        if let Some(w) = self.pipe_stdin.get_mut(key) {
+            w.flush().map_err(Error::Io)?;
+            return Ok(());
+        }
+        Err(Error::Runtime(format!(
+            "fflush: {key} is not an open output file or pipe"
+        )))
     }
 
     pub fn attach_input_reader(&mut self, r: Arc<Mutex<BufReader<Box<dyn Read + Send>>>>) {
@@ -189,6 +221,12 @@ impl Runtime {
     pub fn close_handle(&mut self, path: &str) -> f64 {
         if let Some(mut w) = self.output_handles.remove(path) {
             let _ = w.flush();
+        }
+        if let Some(mut w) = self.pipe_stdin.remove(path) {
+            let _ = w.flush();
+        }
+        if let Some(mut ch) = self.pipe_children.remove(path) {
+            let _ = ch.wait();
         }
         let _ = self.file_handles.remove(path);
         0.0
@@ -331,6 +369,8 @@ impl Clone for Runtime {
             input_reader: None,
             file_handles: HashMap::new(),
             output_handles: HashMap::new(),
+            pipe_stdin: HashMap::new(),
+            pipe_children: HashMap::new(),
             rand_seed: self.rand_seed,
         }
     }
@@ -340,6 +380,12 @@ impl Drop for Runtime {
     fn drop(&mut self) {
         for (_, mut w) in self.output_handles.drain() {
             let _ = w.flush();
+        }
+        for (_, mut w) in self.pipe_stdin.drain() {
+            let _ = w.flush();
+        }
+        for (_, mut ch) in self.pipe_children.drain() {
+            let _ = ch.wait();
         }
     }
 }

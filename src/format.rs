@@ -56,6 +56,33 @@ fn val_at(vals: &[Value], one_based: usize) -> Result<&Value, String> {
         .ok_or_else(|| "sprintf: invalid positional argument".to_string())
 }
 
+/// After a `*` in width or precision: either `n$` (positional) or sequential `take_val`.
+/// Updates `vi` to at least `n` when `n$` is used so following sequential args align with POSIX.
+fn parse_star_value(
+    chars: &[char],
+    mut i: usize,
+    vals: &[Value],
+    vi: &mut usize,
+) -> Result<(f64, usize), String> {
+    let start = i;
+    let mut n = 0usize;
+    let mut has_digits = false;
+    while i < chars.len() && chars[i].is_ascii_digit() {
+        has_digits = true;
+        n = n * 10 + (chars[i] as u8 - b'0') as usize;
+        i += 1;
+    }
+    if has_digits && i < chars.len() && chars[i] == '$' {
+        i += 1;
+        let v = val_at(vals, n)?;
+        *vi = (*vi).max(n);
+        return Ok((v.as_number(), i));
+    }
+    i = start;
+    let v = take_val(vals, vi)?;
+    Ok((v.as_number(), i))
+}
+
 fn parse_conversion_rest(
     chars: &[char],
     mut i: usize,
@@ -105,8 +132,8 @@ fn parse_conversion_rest(
         i += 1;
         if i < chars.len() && chars[i] == '*' {
             i += 1;
-            let v = take_val(vals, vi)?;
-            let p = v.as_number();
+            let (p, i2) = parse_star_value(chars, i, vals, vi)?;
+            i = i2;
             prec = Some(if p < 0.0 { 0 } else { p as usize });
         } else {
             let mut p = 0usize;
@@ -156,8 +183,8 @@ fn parse_width_or_star(
 ) -> Result<(Option<usize>, bool, usize), String> {
     if i < chars.len() && chars[i] == '*' {
         i += 1;
-        let v = take_val(vals, vi)?;
-        let n = v.as_number();
+        let (n, i2) = parse_star_value(chars, i, vals, vi)?;
+        i = i2;
         if n < 0.0 {
             let w = (-n) as usize;
             return Ok((Some(w), true, i));
@@ -361,5 +388,17 @@ mod tests {
     fn positional_and_sequential_mixed() {
         let s = awk_sprintf("%d %3$d %d", &[Value::Num(1.0), Value::Num(2.0), Value::Num(3.0)]).unwrap();
         assert_eq!(s, "1 3 2");
+    }
+
+    #[test]
+    fn star_positional_width() {
+        let s = awk_sprintf("%*1$d", &[Value::Num(4.0), Value::Num(7.0)]).unwrap();
+        assert_eq!(s, "   7");
+    }
+
+    #[test]
+    fn star_positional_precision() {
+        let s = awk_sprintf("%.*1$f", &[Value::Num(3.0), Value::Num(1.234567)]).unwrap();
+        assert_eq!(s, "1.235");
     }
 }

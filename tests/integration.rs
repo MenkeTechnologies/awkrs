@@ -208,6 +208,33 @@ fn sprintf_positional_args() {
 }
 
 #[test]
+fn printf_statement_no_parens() {
+    let (code, stdout, _) = run_awkrs_stdin("BEGIN { printf \"%d\\n\", 42 }", "");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "42\n");
+}
+
+#[test]
+fn sprintf_star_positional_width() {
+    let (code, stdout, _) = run_awkrs_stdin(
+        "BEGIN { print sprintf(\"%*1$d\", 4, 9) }",
+        "",
+    );
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "   9\n");
+}
+
+#[test]
+fn print_pipe_to_cat() {
+    let (code, stdout, stderr) = run_awkrs_stdin(
+        "BEGIN { print \"hello\" | \"cat\" }",
+        "",
+    );
+    assert_eq!(code, 0, "stderr={stderr:?}");
+    assert_eq!(stdout, "hello\n");
+}
+
+#[test]
 fn print_redirect_and_fflush() {
     let dir = std::env::temp_dir();
     let path = dir.join(format!("awkrs_out_{}.txt", std::process::id()));

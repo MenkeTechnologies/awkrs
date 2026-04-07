@@ -491,19 +491,33 @@ impl<'a> Parser<'a> {
                         break;
                     }
                 }
-                let redir = match self.cur {
-                    Token::Gt => {
-                        self.bump(false)?;
-                        Some(PrintRedir::Overwrite(Box::new(self.parse_expr(false)?)))
-                    }
-                    Token::GtGt => {
-                        self.bump(false)?;
-                        Some(PrintRedir::Append(Box::new(self.parse_expr(false)?)))
-                    }
-                    _ => None,
-                };
+                let redir = self.parse_print_redir()?;
                 self.consume_stmt_end()?;
                 Ok(Stmt::Print { args, redir })
+            }
+            Token::Printf => {
+                self.bump(false)?;
+                let mut args = Vec::new();
+                if matches!(
+                    self.cur,
+                    Token::Semi | Token::Newline | Token::RBrace | Token::Eof
+                ) {
+                    return Err(Error::Parse {
+                        line: self.line,
+                        msg: "`printf` requires at least a format string".into(),
+                    });
+                }
+                loop {
+                    args.push(self.parse_print_expr()?);
+                    if self.cur == Token::Comma {
+                        self.bump(false)?;
+                        continue;
+                    }
+                    break;
+                }
+                let redir = self.parse_print_redir()?;
+                self.consume_stmt_end()?;
+                Ok(Stmt::Printf { args, redir })
             }
             _ => {
                 let e = self.parse_expr(false)?;
@@ -550,6 +564,28 @@ impl<'a> Parser<'a> {
     }
 
     /// Inside `print`, space-separated items concatenate.
+    fn parse_print_redir(&mut self) -> Result<Option<PrintRedir>> {
+        match self.cur {
+            Token::Gt => {
+                self.bump(false)?;
+                Ok(Some(PrintRedir::Overwrite(Box::new(self.parse_expr(false)?))))
+            }
+            Token::GtGt => {
+                self.bump(false)?;
+                Ok(Some(PrintRedir::Append(Box::new(self.parse_expr(false)?))))
+            }
+            Token::Pipe => {
+                self.bump(false)?;
+                Ok(Some(PrintRedir::Pipe(Box::new(self.parse_expr(false)?))))
+            }
+            Token::PipeCoproc => Err(Error::Parse {
+                line: self.line,
+                msg: "coprocess two-way pipe `|&` is not implemented".into(),
+            }),
+            _ => Ok(None),
+        }
+    }
+
     fn parse_print_expr(&mut self) -> Result<Expr> {
         let saved = self.in_print_arg;
         self.in_print_arg = true;
@@ -565,6 +601,7 @@ impl<'a> Parser<'a> {
                         | Token::Eof
                         | Token::Gt
                         | Token::GtGt
+                        | Token::Pipe
                 ) {
                     break;
                 }
@@ -671,7 +708,7 @@ impl<'a> Parser<'a> {
 
     fn parse_cmp(&mut self, regex_mode: bool) -> Result<Expr> {
         let mut e = self.parse_concat(regex_mode)?;
-        if self.in_print_arg && matches!(self.cur, Token::Gt | Token::GtGt) {
+        if self.in_print_arg && matches!(self.cur, Token::Gt | Token::GtGt | Token::Pipe) {
             return Ok(e);
         }
         loop {
@@ -711,6 +748,7 @@ impl<'a> Parser<'a> {
                     | Token::RBracket
                     | Token::Colon
                     | Token::Eof
+                    | Token::Pipe
             ) {
                 break;
             }

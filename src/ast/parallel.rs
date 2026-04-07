@@ -51,6 +51,9 @@ fn stmt_blocks_parallel(s: &Stmt) -> bool {
         Stmt::Print { args, redir } => {
             redir.is_some() || args.iter().any(expr_blocks_parallel)
         }
+        Stmt::Printf { args, redir } => {
+            redir.is_some() || args.iter().any(expr_blocks_parallel)
+        }
         Stmt::Break | Stmt::Continue | Stmt::Next | Stmt::Return(_) => false,
         Stmt::Delete { .. } => true,
     }

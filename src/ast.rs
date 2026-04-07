@@ -65,6 +65,11 @@ pub enum Stmt {
         args: Vec<Expr>,
         redir: Option<PrintRedir>,
     },
+    /// `printf fmt, expr-list` (statement form, like `print`) with the same redirections.
+    Printf {
+        args: Vec<Expr>,
+        redir: Option<PrintRedir>,
+    },
     Break,
     Continue,
     Next,
@@ -82,13 +87,15 @@ pub enum Stmt {
     },
 }
 
-/// Output redirection on `print` (not `printf` — use `sprintf` + redirection when needed).
+/// Output redirection on `print` / `printf` statements.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PrintRedir {
     /// Truncate on first open (same as POSIX `>`).
     Overwrite(Box<Expr>),
     /// Append on first open (`>>`).
     Append(Box<Expr>),
+    /// One-way pipe: `| expr` runs `sh -c` with that string; writes go to the subprocess stdin.
+    Pipe(Box<Expr>),
 }
 
 #[derive(Debug, Clone, PartialEq)]

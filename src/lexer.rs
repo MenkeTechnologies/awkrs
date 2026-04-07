@@ -7,6 +7,7 @@ pub enum Token {
     BeginFile,
     EndFile,
     Print,
+    Printf,
     If,
     Else,
     While,
@@ -43,6 +44,8 @@ pub enum Token {
     Gt,
     /// `>>` (append redirect; distinct from two `>` tokens).
     GtGt,
+    /// `|&` (gawk coprocess — not implemented; tokenized for a clear parse error).
+    PipeCoproc,
     Ge,
     Assign,
     Pipe,
@@ -251,6 +254,7 @@ impl<'a> Lexer<'a> {
                 "END" => Token::End,
                 "ENDFILE" => Token::EndFile,
                 "print" => Token::Print,
+                "printf" => Token::Printf,
                 "if" => Token::If,
                 "else" => Token::Else,
                 "while" => Token::While,
@@ -319,6 +323,9 @@ impl<'a> Lexer<'a> {
                 if self.peek() == Some('|') {
                     self.bump();
                     Token::Or
+                } else if self.peek() == Some('&') {
+                    self.bump();
+                    Token::PipeCoproc
                 } else {
                     Token::Pipe
                 }

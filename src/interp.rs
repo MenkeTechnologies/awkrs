@@ -388,6 +388,37 @@ fn exec_stmt(s: &Stmt, ctx: &mut ExecCtx<'_>) -> Result<Flow> {
                     let path = eval_expr(e, ctx)?.as_str();
                     ctx.rt.write_output_line(&path, &chunk, true)?;
                 }
+                Some(PrintRedir::Pipe(e)) => {
+                    let cmd = eval_expr(e, ctx)?.as_str();
+                    ctx.rt.write_pipe_line(&cmd, &chunk)?;
+                }
+            }
+        }
+        Stmt::Printf { args, redir } => {
+            if args.is_empty() {
+                return Err(Error::Runtime("`printf` needs a format string".into()));
+            }
+            let fmt = eval_expr(&args[0], ctx)?.as_str();
+            let vals: Vec<Value> = args[1..]
+                .iter()
+                .map(|e| eval_expr(e, ctx))
+                .collect::<Result<_>>()?;
+            let out = sprintf_simple(&fmt, &vals)?;
+            let s = out.as_str();
+            match redir {
+                None => ctx.emit_print(&s),
+                Some(PrintRedir::Overwrite(e)) => {
+                    let path = eval_expr(e, ctx)?.as_str();
+                    ctx.rt.write_output_line(&path, &s, false)?;
+                }
+                Some(PrintRedir::Append(e)) => {
+                    let path = eval_expr(e, ctx)?.as_str();
+                    ctx.rt.write_output_line(&path, &s, true)?;
+                }
+                Some(PrintRedir::Pipe(e)) => {
+                    let cmd = eval_expr(e, ctx)?.as_str();
+                    ctx.rt.write_pipe_line(&cmd, &s)?;
+                }
             }
         }
         Stmt::Break => return Ok(Flow::Break),
@@ -873,7 +904,7 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
                     if path.is_empty() {
                         ctx.emit_flush()?;
                     } else {
-                        ctx.rt.flush_output_file(&path)?;
+                        ctx.rt.flush_redirect_target(&path)?;
                     }
                     Ok(Value::Num(0.0))
                 }
