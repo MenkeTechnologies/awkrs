@@ -730,6 +730,22 @@ impl<'a> Parser<'a> {
             return Ok(e);
         }
         loop {
+            if self.cur == Token::In {
+                self.bump(false)?;
+                let Token::Ident(arr) = &self.cur.clone() else {
+                    return Err(Error::Parse {
+                        line: self.line,
+                        msg: "expected array name after `in`".into(),
+                    });
+                };
+                let arr = arr.clone();
+                self.bump(false)?;
+                e = Expr::In {
+                    key: Box::new(e),
+                    arr,
+                };
+                continue;
+            }
             let op = match &self.cur {
                 Token::Eq => Some(BinOp::Eq),
                 Token::Ne => Some(BinOp::Ne),
@@ -795,6 +811,7 @@ impl<'a> Parser<'a> {
                     | Token::DivAssign
                     | Token::ModAssign
                     | Token::Question
+                    | Token::In
             ) {
                 break;
             }
@@ -986,7 +1003,7 @@ impl<'a> Parser<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::{GetlineRedir, Pattern, PrintRedir, Stmt};
+    use crate::ast::{Expr, GetlineRedir, Pattern, PrintRedir, Stmt};
 
     fn first_begin_stmt(prog: &crate::ast::Program) -> &Stmt {
         let rule = prog
@@ -1054,5 +1071,28 @@ mod tests {
     #[test]
     fn parses_match_expr_with_slash_regex() {
         parse_program("BEGIN { x = $0 ~ /z/ }").unwrap();
+    }
+
+    #[test]
+    fn parses_in_operator() {
+        let p = parse_program("BEGIN { print (\"k\" in a) }").unwrap();
+        let rule = p
+            .rules
+            .iter()
+            .find(|r| matches!(r.pattern, Pattern::Begin))
+            .unwrap();
+        match rule.stmts.first() {
+            Some(Stmt::Print { args, .. }) => {
+                assert_eq!(args.len(), 1);
+                match &args[0] {
+                    Expr::In { key, arr } => {
+                        assert_eq!(arr, "a");
+                        assert!(matches!(key.as_ref(), Expr::Str(s) if s == "k"));
+                    }
+                    _ => panic!("expected `in` expr"),
+                }
+            }
+            _ => panic!("expected print"),
+        }
     }
 }

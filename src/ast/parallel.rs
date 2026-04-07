@@ -72,6 +72,7 @@ fn expr_blocks_parallel(e: &Expr) -> bool {
         Expr::Ternary { cond, then_, else_ } => {
             expr_blocks_parallel(cond) || expr_blocks_parallel(then_) || expr_blocks_parallel(else_)
         }
+        Expr::In { key, .. } => expr_blocks_parallel(key),
         Expr::Number(_) | Expr::Str(_) | Expr::Var(_) => false,
     }
 }

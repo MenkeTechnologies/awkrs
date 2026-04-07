@@ -8,6 +8,7 @@ mod error;
 mod format;
 mod interp;
 mod lexer;
+mod locale_numeric;
 mod parser;
 mod runtime;
 
@@ -73,6 +74,10 @@ pub fn run(bin_name: &str) -> Result<()> {
     let parallel_ok = parallel::record_rules_parallel_safe(&prog);
 
     let mut rt = Runtime::new();
+    if args.use_lc_numeric {
+        locale_numeric::set_locale_numeric_from_env();
+        rt.numeric_decimal = locale_numeric::decimal_point_from_locale();
+    }
     apply_assigns(&args, &mut rt)?;
     if let Some(fs) = &args.field_sep {
         rt.vars
@@ -100,7 +105,8 @@ pub fn run(bin_name: &str) -> Result<()> {
 
     let mut range_state: Vec<bool> = vec![false; prog.rules.len()];
 
-    let use_parallel = threads > 1 && parallel_ok;
+    // Parallel record mode only reads regular files fully; stdin is always streamed line-by-line.
+    let use_parallel = threads > 1 && parallel_ok && !files.is_empty();
     if threads > 1 && !parallel_ok {
         eprintln!("{bin_name}: warning: program is not parallel-safe (range patterns, exit, getline without file, getline coprocess, cross-record assignments, …); running sequentially (use -j 1 to silence)");
     }
@@ -115,18 +121,7 @@ pub fn run(bin_name: &str) -> Result<()> {
             run_end(&prog, &mut rt)?;
             std::process::exit(rt.exit_code);
         }
-        if use_parallel {
-            process_file_parallel(
-                None,
-                &prog,
-                &record_rule_indices,
-                &mut rt,
-                threads,
-                nr_global,
-            )?;
-        } else {
-            process_file(None, &prog, &record_rule_indices, &mut range_state, &mut rt)?;
-        }
+        process_file(None, &prog, &record_rule_indices, &mut range_state, &mut rt)?;
         run_endfile(&prog, &mut rt)?;
     } else {
         for p in &files {

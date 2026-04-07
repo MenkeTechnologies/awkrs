@@ -155,6 +155,11 @@ pub enum Expr {
         then_: Box<Expr>,
         else_: Box<Expr>,
     },
+    /// `key in array` — membership test (array is a name, not an expression).
+    In {
+        key: Box<Expr>,
+        arr: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

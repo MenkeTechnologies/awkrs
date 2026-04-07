@@ -144,6 +144,16 @@ fn continue_in_for() {
 }
 
 #[test]
+fn in_operator_membership() {
+    let (c, o, _) = run_awkrs_stdin(
+        "BEGIN { a[\"k\"] = 1; print (\"k\" in a), (\"z\" in a) }",
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "1 0\n");
+}
+
+#[test]
 fn delete_array_element() {
     let (c, o, _) = run_awkrs_stdin("BEGIN { a[1] = 1; delete a[1]; print length(a) }", "");
     assert_eq!(c, 0);

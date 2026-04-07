@@ -2,7 +2,16 @@
 
 use crate::runtime::Value;
 
+/// Default C-locale radix (`.`). Use [`awk_sprintf_with_decimal`] when `-N` applies.
 pub fn awk_sprintf(fmt: &str, vals: &[Value]) -> Result<String, String> {
+    awk_sprintf_with_decimal(fmt, vals, '.')
+}
+
+pub fn awk_sprintf_with_decimal(
+    fmt: &str,
+    vals: &[Value],
+    decimal: char,
+) -> Result<String, String> {
     let chars: Vec<char> = fmt.chars().collect();
     let mut out = String::new();
     let mut vi = 0usize;
@@ -36,7 +45,7 @@ pub fn awk_sprintf(fmt: &str, vals: &[Value]) -> Result<String, String> {
             i = start_after_pct;
             None
         };
-        let (piece, new_i) = parse_conversion_rest(&chars, i, vals, &mut vi, val_pos)?;
+        let (piece, new_i) = parse_conversion_rest(&chars, i, vals, &mut vi, val_pos, decimal)?;
         i = new_i;
         out.push_str(&piece);
     }
@@ -89,6 +98,7 @@ fn parse_conversion_rest(
     vals: &[Value],
     vi: &mut usize,
     val_pos: Option<usize>,
+    decimal: char,
 ) -> Result<(String, usize), String> {
     let mut left = false;
     let mut sign = false;
@@ -171,8 +181,18 @@ fn parse_conversion_rest(
     } else {
         take_val(vals, vi)?
     };
-    let piece = format_one(conv, v, left, sign, space, alt, pad_zero, width, prec)?;
+    let piece = format_one(
+        conv, v, left, sign, space, alt, pad_zero, width, prec, decimal,
+    )?;
     Ok((piece, i))
+}
+
+fn localize_float_radix(s: String, decimal: char) -> String {
+    if decimal == '.' {
+        return s;
+    }
+    let rep = decimal.to_string();
+    s.replacen('.', &rep, 1)
 }
 
 fn parse_width_or_star(
@@ -217,6 +237,7 @@ fn format_one(
     pad_zero: bool,
     width: Option<usize>,
     prec: Option<usize>,
+    decimal: char,
 ) -> Result<String, String> {
     let pad_char = if pad_zero && !left { '0' } else { ' ' };
     let w = width.unwrap_or(0);
@@ -278,23 +299,23 @@ fn format_one(
         'f' | 'F' => {
             let n = v.as_number();
             let p = prec.unwrap_or(6);
-            let s = format!("{:.*}", p, n);
+            let s = localize_float_radix(format!("{:.*}", p, n), decimal);
             pad_numeric(&s, w, left, pad_char)
         }
         'e' | 'E' => {
             let n = v.as_number();
             let p = prec.unwrap_or(6);
             let s = if conv == 'e' {
-                format!("{:.*e}", p, n)
+                localize_float_radix(format!("{:.*e}", p, n), decimal)
             } else {
-                format!("{:.*E}", p, n)
+                localize_float_radix(format!("{:.*E}", p, n), decimal)
             };
             pad_numeric(&s, w, left, pad_char)
         }
         'g' | 'G' => {
             let n = v.as_number();
             let p = prec.unwrap_or(6);
-            let s = format!("{:.*}", p, n);
+            let s = localize_float_radix(format!("{:.*}", p, n), decimal);
             pad_numeric(&s, w, left, pad_char)
         }
         'c' => {
@@ -490,5 +511,11 @@ mod tests {
     fn invalid_positional_zero_errors() {
         let e = awk_sprintf("%0$d", &[Value::Num(1.0)]).unwrap_err();
         assert!(e.contains("0"), "{e:?}");
+    }
+
+    #[test]
+    fn lc_numeric_replaces_float_radix() {
+        let s = awk_sprintf_with_decimal("%f", &[Value::Num(1.5)], ',').unwrap();
+        assert_eq!(s, "1,500000");
     }
 }

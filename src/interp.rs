@@ -406,7 +406,7 @@ fn exec_stmt(s: &Stmt, ctx: &mut ExecCtx<'_>) -> Result<Flow> {
                 .iter()
                 .map(|e| eval_expr(e, ctx))
                 .collect::<Result<_>>()?;
-            let out = sprintf_simple(&fmt, &vals)?;
+            let out = sprintf_simple(&fmt, &vals, ctx.rt.numeric_decimal)?;
             let s = out.as_str();
             match redir {
                 None => ctx.emit_print(&s),
@@ -610,6 +610,10 @@ pub fn eval_expr(e: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {
             } else {
                 eval_expr(else_, ctx)?
             }
+        }
+        Expr::In { key, arr } => {
+            let k = eval_expr(key, ctx)?.as_str();
+            Value::Num(if ctx.rt.array_has(arr, &k) { 1.0 } else { 0.0 })
         }
     })
 }
@@ -1020,7 +1024,7 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
                 .iter()
                 .map(|e| eval_expr(e, ctx))
                 .collect::<Result<_>>()?;
-            sprintf_simple(&fmt, &vals)
+            sprintf_simple(&fmt, &vals, ctx.rt.numeric_decimal)
         }
         "printf" => {
             if args.is_empty() {
@@ -1031,7 +1035,7 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
                 .iter()
                 .map(|e| eval_expr(e, ctx))
                 .collect::<Result<_>>()?;
-            let s = sprintf_simple(&fmt, &vals)?.as_str();
+            let s = sprintf_simple(&fmt, &vals, ctx.rt.numeric_decimal)?.as_str();
             ctx.emit_print(&s);
             Ok(Value::Num(0.0))
         }
@@ -1039,10 +1043,13 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
     }
 }
 
-fn sprintf_simple(fmt: &str, vals: &[Value]) -> Result<Value> {
-    format::awk_sprintf(fmt, vals)
-        .map(Value::Str)
-        .map_err(Error::Runtime)
+fn sprintf_simple(fmt: &str, vals: &[Value], dec: char) -> Result<Value> {
+    let s = if dec == '.' {
+        format::awk_sprintf(fmt, vals)
+    } else {
+        format::awk_sprintf_with_decimal(fmt, vals, dec)
+    };
+    s.map(Value::Str).map_err(Error::Runtime)
 }
 
 fn call_user(fd: &FunctionDef, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> {

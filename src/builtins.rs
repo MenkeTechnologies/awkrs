@@ -152,11 +152,7 @@ pub fn patsplit(
 ) -> Result<f64> {
     let fp_owned = match fieldpat {
         Some(s) => s.to_string(),
-        None => rt
-            .vars
-            .get("FPAT")
-            .map(|v| v.as_str())
-            .unwrap_or_default(),
+        None => rt.vars.get("FPAT").map(|v| v.as_str()).unwrap_or_default(),
     };
     let fp = if fp_owned.is_empty() {
         "[^[:space:]]+"
@@ -182,11 +178,7 @@ pub fn patsplit(
             let prev = &matches[i - 1];
             let curr = &matches[i];
             let sep = &s[prev.end()..curr.start()];
-            rt.array_set(
-                sep_arr,
-                format!("{i}"),
-                Value::Str(sep.to_string()),
-            );
+            rt.array_set(sep_arr, format!("{i}"), Value::Str(sep.to_string()));
         }
     }
 

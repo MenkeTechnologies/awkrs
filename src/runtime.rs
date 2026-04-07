@@ -87,6 +87,8 @@ pub struct Runtime {
     /// `print`/`printf` `|& "cmd"` / `getline <& "cmd"` — two-way `sh -c` (same key for both directions).
     pub coproc_handles: HashMap<String, CoprocHandle>,
     pub rand_seed: u64,
+    /// Radix for `%f` / `%g` / etc. and `print` of numbers when `-N` / `--use-lc-numeric` is set (Unix).
+    pub numeric_decimal: char,
 }
 
 impl Runtime {
@@ -113,6 +115,7 @@ impl Runtime {
             pipe_children: HashMap::new(),
             coproc_handles: HashMap::new(),
             rand_seed: 1,
+            numeric_decimal: '.',
         }
     }
 
@@ -424,6 +427,14 @@ impl Runtime {
         }
     }
 
+    /// `key in arr` — true iff `arr` is an array that has `key` (POSIX: subscript was used).
+    pub fn array_has(&self, name: &str, key: &str) -> bool {
+        match self.vars.get(name) {
+            Some(Value::Array(a)) => a.contains_key(key),
+            _ => false,
+        }
+    }
+
     pub fn split_into_array(&mut self, arr_name: &str, parts: &[String]) {
         self.array_delete(arr_name, None);
         for (i, p) in parts.iter().enumerate() {
@@ -466,6 +477,7 @@ impl Clone for Runtime {
             pipe_children: HashMap::new(),
             coproc_handles: HashMap::new(),
             rand_seed: self.rand_seed,
+            numeric_decimal: self.numeric_decimal,
         }
     }
 }
