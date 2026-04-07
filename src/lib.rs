@@ -5,6 +5,7 @@ mod builtins;
 mod cli;
 mod cyber_help;
 mod error;
+mod format;
 mod interp;
 mod lexer;
 mod parser;
@@ -15,7 +16,10 @@ pub use error::{Error, Result};
 use crate::ast::parallel;
 use crate::ast::{Pattern, Program};
 use crate::cli::{Args, MawkWAction};
-use crate::interp::{pattern_matches, range_step, run_begin, run_end, run_rule_on_record, Flow};
+use crate::interp::{
+    pattern_matches, range_step, run_begin, run_beginfile, run_end, run_endfile,
+    run_rule_on_record, Flow,
+};
 use crate::parser::parse_program;
 use crate::runtime::{Runtime, Value};
 use clap::Parser;
@@ -85,7 +89,12 @@ pub fn run(bin_name: &str) -> Result<()> {
         .rules
         .iter()
         .enumerate()
-        .filter(|(_, r)| !matches!(r.pattern, Pattern::Begin | Pattern::End))
+        .filter(|(_, r)| {
+            !matches!(
+                r.pattern,
+                Pattern::Begin | Pattern::End | Pattern::BeginFile | Pattern::EndFile
+            )
+        })
         .map(|(i, _)| i)
         .collect();
 
@@ -99,6 +108,13 @@ pub fn run(bin_name: &str) -> Result<()> {
     let mut nr_global = 0.0f64;
 
     if files.is_empty() {
+        rt.filename = "-".into();
+        run_beginfile(&prog, &mut rt)?;
+        if rt.exit_pending {
+            run_endfile(&prog, &mut rt)?;
+            run_end(&prog, &mut rt)?;
+            std::process::exit(rt.exit_code);
+        }
         if use_parallel {
             process_file_parallel(
                 None,
@@ -111,10 +127,17 @@ pub fn run(bin_name: &str) -> Result<()> {
         } else {
             process_file(None, &prog, &record_rule_indices, &mut range_state, &mut rt)?;
         }
+        run_endfile(&prog, &mut rt)?;
     } else {
         for p in &files {
             rt.filename = p.to_string_lossy().into_owned();
             rt.fnr = 0.0;
+            run_beginfile(&prog, &mut rt)?;
+            if rt.exit_pending {
+                run_endfile(&prog, &mut rt)?;
+                run_end(&prog, &mut rt)?;
+                std::process::exit(rt.exit_code);
+            }
             let n = if use_parallel {
                 process_file_parallel(
                     Some(p.as_path()),
@@ -134,6 +157,7 @@ pub fn run(bin_name: &str) -> Result<()> {
                 )?
             };
             nr_global += n as f64;
+            run_endfile(&prog, &mut rt)?;
             if rt.exit_pending {
                 break;
             }

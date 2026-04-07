@@ -10,7 +10,10 @@ pub fn record_rules_parallel_safe(prog: &Program) -> bool {
         if matches!(rule.pattern, Pattern::Range(_, _)) {
             return false;
         }
-        if matches!(rule.pattern, Pattern::Begin | Pattern::End) {
+        if matches!(
+            rule.pattern,
+            Pattern::Begin | Pattern::End | Pattern::BeginFile | Pattern::EndFile
+        ) {
             continue;
         }
         for s in &rule.stmts {
@@ -59,7 +62,7 @@ fn expr_blocks_parallel(e: &Expr) -> bool {
         }
         Expr::Unary { expr, .. } => expr_blocks_parallel(expr),
         Expr::Call { args, .. } => args.iter().any(expr_blocks_parallel),
-        Expr::Index { index, .. } => expr_blocks_parallel(index),
+        Expr::Index { indices, .. } => indices.iter().any(expr_blocks_parallel),
         Expr::Field(inner) => expr_blocks_parallel(inner),
         Expr::Ternary { cond, then_, else_ } => {
             expr_blocks_parallel(cond) || expr_blocks_parallel(then_) || expr_blocks_parallel(else_)

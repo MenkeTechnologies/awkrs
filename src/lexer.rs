@@ -4,6 +4,8 @@ use crate::error::{Error, Result};
 pub enum Token {
     Begin,
     End,
+    BeginFile,
+    EndFile,
     Print,
     If,
     Else,
@@ -243,7 +245,9 @@ impl<'a> Lexer<'a> {
             let name = self.input[start..self.pos].to_string();
             let tok = match name.as_str() {
                 "BEGIN" => Token::Begin,
+                "BEGINFILE" => Token::BeginFile,
                 "END" => Token::End,
+                "ENDFILE" => Token::EndFile,
                 "print" => Token::Print,
                 "if" => Token::If,
                 "else" => Token::Else,

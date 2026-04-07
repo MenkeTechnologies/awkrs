@@ -1,9 +1,11 @@
 use crate::ast::*;
 use crate::builtins;
 use crate::error::{Error, Result};
+use crate::format;
 use crate::runtime::{Runtime, Value};
 use regex::Regex;
 use std::collections::HashMap;
+use std::io::Write;
 
 /// Control flow from executing statements (loops, rules, functions).
 #[derive(Debug)]
@@ -57,6 +59,16 @@ impl<'a> ExecCtx<'a> {
         } else {
             print!("{s}");
         }
+    }
+
+    /// Flush stdout when not capturing prints (parallel workers buffer; flush is a no-op there).
+    pub fn emit_flush(&mut self) -> Result<()> {
+        if self.print_out.is_none() {
+            std::io::stdout()
+                .flush()
+                .map_err(Error::Io)?;
+        }
+        Ok(())
     }
 
     fn get_var(&self, name: &str) -> Value {
@@ -127,6 +139,48 @@ pub fn run_end(prog: &Program, rt: &mut Runtime) -> Result<()> {
     Ok(())
 }
 
+pub fn run_beginfile(prog: &Program, rt: &mut Runtime) -> Result<()> {
+    let mut ctx = ExecCtx::new(prog, rt);
+    for rule in &prog.rules {
+        if matches!(rule.pattern, Pattern::BeginFile) {
+            for s in &rule.stmts {
+                match exec_stmt(s, &mut ctx)? {
+                    Flow::Next => {
+                        return Err(Error::Runtime("`next` is invalid in BEGINFILE".into()));
+                    }
+                    Flow::Return(_) => {
+                        return Err(Error::Runtime("`return` outside function".into()));
+                    }
+                    Flow::ExitPending => return Ok(()),
+                    _ => {}
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+pub fn run_endfile(prog: &Program, rt: &mut Runtime) -> Result<()> {
+    let mut ctx = ExecCtx::new(prog, rt);
+    for rule in &prog.rules {
+        if matches!(rule.pattern, Pattern::EndFile) {
+            for s in &rule.stmts {
+                match exec_stmt(s, &mut ctx)? {
+                    Flow::Next => {
+                        return Err(Error::Runtime("`next` is invalid in ENDFILE".into()));
+                    }
+                    Flow::Return(_) => {
+                        return Err(Error::Runtime("`return` outside function".into()));
+                    }
+                    Flow::ExitPending => return Ok(()),
+                    _ => {}
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn run_rule_on_record(
     prog: &Program,
     rt: &mut Runtime,
@@ -157,7 +211,7 @@ pub fn run_rule_on_record(
 pub fn pattern_matches(pat: &Pattern, rt: &mut Runtime, prog: &Program) -> Result<bool> {
     let mut ctx = ExecCtx::new(prog, rt);
     Ok(match pat {
-        Pattern::Begin | Pattern::End => false,
+        Pattern::Begin | Pattern::End | Pattern::BeginFile | Pattern::EndFile => false,
         Pattern::Range(_, _) => false,
         Pattern::Empty => true,
         Pattern::Regexp(re) => {
@@ -172,7 +226,7 @@ pub fn pattern_matches(pat: &Pattern, rt: &mut Runtime, prog: &Program) -> Resul
 pub fn match_pattern(pat: &Pattern, rt: &mut Runtime, prog: &Program) -> Result<bool> {
     let mut ctx = ExecCtx::new(prog, rt);
     Ok(match pat {
-        Pattern::Begin | Pattern::End => false,
+        Pattern::Begin | Pattern::End | Pattern::BeginFile | Pattern::EndFile => false,
         Pattern::Empty => true,
         Pattern::Regexp(re) => {
             let r = Regex::new(re).map_err(|e| Error::Runtime(e.to_string()))?;
@@ -377,14 +431,13 @@ fn exec_stmt(s: &Stmt, ctx: &mut ExecCtx<'_>) -> Result<Flow> {
                 .vars
                 .insert("NF".into(), Value::Num(ctx.rt.fields.len() as f64));
         }
-        Stmt::Delete { name, index } => {
-            if let Some(ix) = index {
-                let k = eval_expr(ix, ctx)?.as_str();
+        Stmt::Delete { name, indices } => match indices {
+            None => ctx.rt.array_delete(name, None),
+            Some(ixs) => {
+                let k = array_key(ctx, ixs)?;
                 ctx.rt.array_delete(name, Some(&k));
-            } else {
-                ctx.rt.array_delete(name, None);
             }
-        }
+        },
         Stmt::Return(e) => {
             if !ctx.in_function {
                 return Err(Error::Runtime("`return` outside function".into()));
@@ -398,6 +451,24 @@ fn exec_stmt(s: &Stmt, ctx: &mut ExecCtx<'_>) -> Result<Flow> {
         }
     }
     Ok(Flow::Normal)
+}
+
+fn array_key(ctx: &mut ExecCtx<'_>, indices: &[Expr]) -> Result<String> {
+    if indices.is_empty() {
+        return Err(Error::Runtime("empty array index".into()));
+    }
+    let sep = ctx
+        .rt
+        .vars
+        .get("SUBSEP")
+        .map(|v| v.as_str())
+        .unwrap_or_else(|| "\x1c".into());
+    let mut acc = eval_expr(&indices[0], ctx)?.as_str();
+    for ix in &indices[1..] {
+        acc.push_str(&sep);
+        acc.push_str(&eval_expr(ix, ctx)?.as_str());
+    }
+    Ok(acc)
 }
 
 pub fn eval_expr(e: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {
@@ -429,8 +500,8 @@ pub fn eval_expr(e: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {
         Expr::Number(n) => Value::Num(*n),
         Expr::Str(s) => Value::Str(s.clone()),
         Expr::Var(name) => ctx.get_var(name),
-        Expr::Index { name, index } => {
-            let k = eval_expr(index, ctx)?.as_str();
+        Expr::Index { name, indices } => {
+            let k = array_key(ctx, indices)?;
             ctx.rt.array_get(name, &k)
         }
         Expr::Field(inner) => {
@@ -465,11 +536,11 @@ pub fn eval_expr(e: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {
         }
         Expr::AssignIndex {
             name,
-            index,
+            indices,
             op,
             rhs,
         } => {
-            let k = eval_expr(index, ctx)?.as_str();
+            let k = array_key(ctx, indices)?;
             let v = eval_expr(rhs, ctx)?;
             let newv = if let Some(bop) = op {
                 let old = ctx.rt.array_get(name, &k);
@@ -677,8 +748,8 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
                         ctx.rt.set_field(i, &s);
                         return Ok(Value::Num(n));
                     }
-                    Expr::Index { name, index } => {
-                        let k = eval_expr(index, ctx)?.as_str();
+                    Expr::Index { name, indices } => {
+                        let k = array_key(ctx, indices)?;
                         let mut s = ctx.rt.array_get(name, &k).as_str();
                         let n = builtins::gsub(ctx.rt, &re, &rep, Some(&mut s))?;
                         ctx.rt.array_set(name, k, Value::Str(s));
@@ -712,8 +783,8 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
                         ctx.rt.set_field(i, &s);
                         return Ok(Value::Num(n));
                     }
-                    Expr::Index { name, index } => {
-                        let k = eval_expr(index, ctx)?.as_str();
+                    Expr::Index { name, indices } => {
+                        let k = array_key(ctx, indices)?;
                         let mut s = ctx.rt.array_get(name, &k).as_str();
                         let n = builtins::sub_fn(ctx.rt, &re, &rep, Some(&mut s))?;
                         ctx.rt.array_set(name, k, Value::Str(s));
@@ -781,6 +852,46 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
             let path = eval_expr(&args[0], ctx)?.as_str();
             Ok(Value::Num(ctx.rt.close_handle(&path)))
         }
+        "fflush" => {
+            let flush_stdout = match args.len() {
+                0 => true,
+                1 => eval_expr(&args[0], ctx)?.as_str().is_empty(),
+                _ => {
+                    return Err(Error::Runtime(
+                        "fflush: expected 0 or 1 arguments".into(),
+                    ));
+                }
+            };
+            if flush_stdout {
+                ctx.emit_flush()?;
+                Ok(Value::Num(0.0))
+            } else {
+                Err(Error::Runtime(
+                    "fflush: only default/empty (stdout) is supported".into(),
+                ))
+            }
+        }
+        "patsplit" => {
+            if !(2..=3).contains(&args.len()) {
+                return Err(Error::Runtime("patsplit: expected 2 or 3 arguments".into()));
+            }
+            let s = eval_expr(&args[0], ctx)?.as_str();
+            let arr_name = match &args[1] {
+                Expr::Var(n) => n.clone(),
+                _ => {
+                    return Err(Error::Runtime(
+                        "patsplit: second argument must be array name".into(),
+                    ));
+                }
+            };
+            let fp = if args.len() == 3 {
+                Some(eval_expr(&args[2], ctx)?.as_str())
+            } else {
+                None
+            };
+            let n = builtins::patsplit(ctx.rt, &s, &arr_name, fp.as_deref())?;
+            Ok(Value::Num(n))
+        }
         "split" => {
             let s = eval_expr(
                 args.first().ok_or_else(|| Error::Runtime("split".into()))?,
@@ -844,46 +955,9 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
 }
 
 fn sprintf_simple(fmt: &str, vals: &[Value]) -> Result<Value> {
-    let mut out = String::new();
-    let mut vi = 0usize;
-    let mut chars = fmt.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '%' {
-            match chars.next() {
-                Some('%') => out.push('%'),
-                Some('s') => {
-                    let v = vals
-                        .get(vi)
-                        .ok_or_else(|| Error::Runtime("sprintf: not enough args".into()))?;
-                    vi += 1;
-                    out.push_str(&v.as_str());
-                }
-                Some('d') | Some('i') => {
-                    let v = vals
-                        .get(vi)
-                        .ok_or_else(|| Error::Runtime("sprintf: not enough args".into()))?;
-                    vi += 1;
-                    out.push_str(&format!("{}", v.as_number() as i64));
-                }
-                Some('f') | Some('g') | Some('e') => {
-                    let v = vals
-                        .get(vi)
-                        .ok_or_else(|| Error::Runtime("sprintf: not enough args".into()))?;
-                    vi += 1;
-                    out.push_str(&format!("{}", v.as_number()));
-                }
-                Some(x) => {
-                    return Err(Error::Runtime(format!(
-                        "unsupported sprintf conversion %{x}"
-                    )));
-                }
-                None => return Err(Error::Runtime("truncated format".into())),
-            }
-        } else {
-            out.push(c);
-        }
-    }
-    Ok(Value::Str(out))
+    format::awk_sprintf(fmt, vals)
+        .map(Value::Str)
+        .map_err(Error::Runtime)
 }
 
 fn call_user(fd: &FunctionDef, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> {

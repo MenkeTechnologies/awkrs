@@ -10,10 +10,10 @@ Awk-style record processor in Rust (union CLI, parallel record engine when safe)
 
 Implemented end-to-end:
 
-- **Rules:** `BEGIN`, `END`, empty pattern, `/regex/`, expression patterns, **range patterns** (`/a/,/b/` or `NR==1,NR==5`).
+- **Rules:** `BEGIN`, `END`, **`BEGINFILE`** / **`ENDFILE`** (gawk-style, per input file), empty pattern, `/regex/`, expression patterns, **range patterns** (`/a/,/b/` or `NR==1,NR==5`).
 - **Statements:** `if` / `while` / `for` (C-style and `for (i in arr)`), blocks, **`print`** (with no expressions, prints **`$0`**), `break`, `continue`, **`next`**, **`exit`**, **`delete`**, **`return`** (inside functions), **`getline`** (primary input and `getline < file`).
-- **Data:** fields (`$n`, `$NF`), scalars, **associative arrays** (`a[k]`), `split`, string/number values.
-- **Functions:** builtins (`length`, `index`, `substr`, **`split`**, **`sprintf`**, **`printf`** (basic `%s` / `%d` / `%f` / `%%`), **`gsub`** / **`sub`** / **`match`**, `tolower` / `toupper`, `int`, `sqrt`, `rand` / `srand`, `system`, `close`), and **user-defined `function`** with parameters and locals (parameters are local; other names assign to globals, matching classic awk).
+- **Data:** fields (`$n`, `$NF`), scalars, **associative arrays** (`a[k]`, **`a[i,j]`** with **`SUBSEP`**), `split`, **`patsplit`** (2–3 args; optional fourth-arg `seps` array not implemented), string/number values.
+- **Functions:** builtins (`length`, `index`, `substr`, **`split`**, **`sprintf`** / **`printf`** (common flags and `%s` `%d` `%i` `%u` `%o` `%x` `%X` `%f` `%e` `%E` `%g` `%G` `%c` `%%`), **`gsub`** / **`sub`** / **`match`**, `tolower` / `toupper`, `int`, `sqrt`, `rand` / `srand`, `system`, `close`, **`fflush`** (stdout / empty string only)), and **user-defined `function`** with parameters and locals (parameters are local; other names assign to globals, matching classic awk).
 - **I/O model:** The main record loop and **`getline` with no redirection** share one **`BufReader`** on stdin or the current input file so line order matches POSIX expectations. **`exit`** sets the process status; **`END` rules still run** after `exit` from `BEGIN` or a pattern action (POSIX-style), then the process exits with the requested code.
 
 ## Multithreading
@@ -44,7 +44,7 @@ cargo test
 
 ## Still missing or partial
 
-`fflush`, full `printf`/`sprintf` spec, `patsplit`, multidimensional arrays, `BEGINFILE`/`ENDFILE`, coprocesses and two-way pipes, exact POSIX locale/comparison edge cases, and many gawk-only extensions. `system()` runs commands via `sh -c` (same caveat as other awks). Prefer validating critical scripts against reference `awk`/`gawk`.
+**`fflush(filename)`** for user-opened output streams (only default / `fflush("")` / `fflush()` flush stdout here). **`patsplit`** without the optional fourth `seps` array. Full POSIX `printf`/`sprintf` parity (positional specifiers, dynamic width from `*`, etc.). Coprocesses and two-way pipes, exact POSIX locale/comparison edge cases, and many gawk-only extensions. `system()` runs commands via `sh -c` (same caveat as other awks). Prefer validating critical scripts against reference `awk`/`gawk`.
 
 ## License
 

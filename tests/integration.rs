@@ -142,3 +142,40 @@ fn gsub_on_record() {
     assert_eq!(code, 0);
     assert_eq!(stdout, "hellx\n");
 }
+
+#[test]
+fn multidimensional_array_subsep() {
+    let (code, stdout, _) = run_awkrs_stdin(
+        "BEGIN { a[1,2] = 42; print a[1,2] }",
+        "",
+    );
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "42\n");
+}
+
+#[test]
+fn beginfile_endfile_stdin() {
+    let (code, stdout, _) = run_awkrs_stdin(
+        "BEGINFILE { s = s \"B\" } ENDFILE { s = s \"E\" } END { print s }",
+        "x\n",
+    );
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "BE\n");
+}
+
+#[test]
+fn sprintf_width_zero_pad() {
+    let (code, stdout, _) = run_awkrs_stdin("BEGIN { print sprintf(\"%05d\", 7) }", "");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "00007\n");
+}
+
+#[test]
+fn patsplit_with_pattern() {
+    let (code, stdout, _) = run_awkrs_stdin(
+        "BEGIN { n = patsplit(\"a b c\", p, \"[^ ]+\"); print n, p[1], p[2], p[3] }",
+        "",
+    );
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "3 a b c\n");
+}

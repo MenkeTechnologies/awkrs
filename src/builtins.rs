@@ -140,6 +140,41 @@ fn expand_repl(repl: &str, matched: &str) -> String {
     out
 }
 
+/// `patsplit(string, array [, fieldpat ])` — split `string` into `array` using successive
+/// matches of `fieldpat`, or `FPAT` when omitted. Empty `FPAT` uses `[^[:space:]]+`.
+pub fn patsplit(
+    rt: &mut Runtime,
+    s: &str,
+    arr_name: &str,
+    fieldpat: Option<&str>,
+) -> Result<f64> {
+    let fp_owned = match fieldpat {
+        Some(s) => s.to_string(),
+        None => rt
+            .vars
+            .get("FPAT")
+            .map(|v| v.as_str())
+            .unwrap_or_default(),
+    };
+    let fp = if fp_owned.is_empty() {
+        "[^[:space:]]+"
+    } else {
+        fp_owned.as_str()
+    };
+    let re = Regex::new(fp).map_err(|e| Error::Runtime(e.to_string()))?;
+    rt.array_delete(arr_name, None);
+    let mut i = 1i32;
+    for m in re.find_iter(s) {
+        rt.array_set(
+            arr_name,
+            format!("{i}"),
+            Value::Str(m.as_str().to_string()),
+        );
+        i += 1;
+    }
+    Ok((i - 1) as f64)
+}
+
 fn apply_record_string(rt: &mut Runtime, s: &str) {
     let fs = rt
         .vars

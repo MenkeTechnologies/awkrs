@@ -15,9 +15,9 @@ fn assign_expr(lhs: Expr, op: Option<BinOp>, rhs: Expr, line: usize) -> Result<E
             op,
             rhs: Box::new(rhs),
         }),
-        Expr::Index { name, index } => Ok(Expr::AssignIndex {
+        Expr::Index { name, indices } => Ok(Expr::AssignIndex {
             name,
-            index,
+            indices,
             op,
             rhs: Box::new(rhs),
         }),
@@ -168,9 +168,17 @@ impl<'a> Parser<'a> {
                 self.bump(true)?;
                 Ok(Pattern::Begin)
             }
+            Token::BeginFile => {
+                self.bump(true)?;
+                Ok(Pattern::BeginFile)
+            }
             Token::End => {
                 self.bump(true)?;
                 Ok(Pattern::End)
+            }
+            Token::EndFile => {
+                self.bump(true)?;
+                Ok(Pattern::EndFile)
             }
             Token::Regexp(s) => {
                 let s = s.clone();
@@ -393,7 +401,7 @@ impl<'a> Parser<'a> {
                 self.bump(false)?;
                 if self.cur == Token::LBracket {
                     self.bump(false)?;
-                    let ix = self.parse_expr(false)?;
+                    let indices = self.parse_index_list()?;
                     if self.cur != Token::RBracket {
                         return Err(Error::Parse {
                             line: self.line,
@@ -404,11 +412,14 @@ impl<'a> Parser<'a> {
                     self.consume_stmt_end()?;
                     Ok(Stmt::Delete {
                         name,
-                        index: Some(ix),
+                        indices: Some(indices),
                     })
                 } else {
                     self.consume_stmt_end()?;
-                    Ok(Stmt::Delete { name, index: None })
+                    Ok(Stmt::Delete {
+                        name,
+                        indices: None,
+                    })
                 }
             }
             Token::Getline => {
@@ -766,6 +777,16 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn parse_index_list(&mut self) -> Result<Vec<Expr>> {
+        let mut v = Vec::new();
+        v.push(self.parse_expr(false)?);
+        while self.cur == Token::Comma {
+            self.bump(false)?;
+            v.push(self.parse_expr(false)?);
+        }
+        Ok(v)
+    }
+
     fn parse_primary(&mut self, _regex_mode: bool) -> Result<Expr> {
         match &self.cur.clone() {
             Token::Number(n) => {
@@ -788,7 +809,7 @@ impl<'a> Parser<'a> {
                 self.bump(false)?;
                 if self.cur == Token::LBracket {
                     self.bump(false)?;
-                    let ix = self.parse_expr(false)?;
+                    let indices = self.parse_index_list()?;
                     if self.cur != Token::RBracket {
                         return Err(Error::Parse {
                             line: self.line,
@@ -796,10 +817,7 @@ impl<'a> Parser<'a> {
                         });
                     }
                     self.bump(false)?;
-                    Ok(Expr::Index {
-                        name,
-                        index: Box::new(ix),
-                    })
+                    Ok(Expr::Index { name, indices })
                 } else if self.cur == Token::LParen {
                     self.bump(false)?;
                     let mut args = Vec::new();

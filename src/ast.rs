@@ -25,6 +25,10 @@ pub struct Rule {
 pub enum Pattern {
     Begin,
     End,
+    /// gawk-style: run before each input file (after `BEGIN`).
+    BeginFile,
+    /// gawk-style: run after each input file (before `END`).
+    EndFile,
     Expr(Expr),
     Regexp(String),
     /// Inclusive range: two patterns (`/a/,/b/` or `NR==1,NR==5`).
@@ -63,7 +67,8 @@ pub enum Stmt {
     Exit(Option<Expr>),
     Delete {
         name: String,
-        index: Option<Expr>,
+        /// `None` = delete entire array; `Some(vec)` = delete one key (possibly multidimensional).
+        indices: Option<Vec<Expr>>,
     },
     Return(Option<Expr>),
     /// `getline` / `getline var` / `getline < file` / `getline var < file`
@@ -89,7 +94,8 @@ pub enum Expr {
     Field(Box<Expr>),
     Index {
         name: String,
-        index: Box<Expr>,
+        /// One or more indices; multiple are joined with `SUBSEP` (multidimensional arrays).
+        indices: Vec<Expr>,
     },
     Binary {
         op: BinOp,
@@ -112,7 +118,7 @@ pub enum Expr {
     },
     AssignIndex {
         name: String,
-        index: Box<Expr>,
+        indices: Vec<Expr>,
         op: Option<BinOp>,
         rhs: Box<Expr>,
     },

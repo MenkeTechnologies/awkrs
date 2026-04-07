@@ -80,6 +80,8 @@ impl Runtime {
         vars.insert("OFS".into(), Value::Str(" ".into()));
         vars.insert("ORS".into(), Value::Str("\n".into()));
         vars.insert("OFMT".into(), Value::Str("%.6g".into()));
+        // POSIX octal \034 — multidimensional array subscript separator
+        vars.insert("SUBSEP".into(), Value::Str("\x1c".into()));
         Self {
             vars,
             fields: Vec::new(),
