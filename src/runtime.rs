@@ -112,10 +112,7 @@ impl Runtime {
             ));
         };
         let mut line = String::new();
-        let n = r
-            .borrow_mut()
-            .read_line(&mut line)
-            .map_err(Error::Io)?;
+        let n = r.borrow_mut().read_line(&mut line).map_err(Error::Io)?;
         if n == 0 {
             return Ok(None);
         }
@@ -262,11 +259,7 @@ impl Runtime {
     pub fn split_into_array(&mut self, arr_name: &str, parts: &[String]) {
         self.array_delete(arr_name, None);
         for (i, p) in parts.iter().enumerate() {
-            self.array_set(
-                arr_name,
-                format!("{}", i + 1),
-                Value::Str(p.clone()),
-            );
+            self.array_set(arr_name, format!("{}", i + 1), Value::Str(p.clone()));
         }
     }
 }

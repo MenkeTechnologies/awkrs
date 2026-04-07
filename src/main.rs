@@ -1,6 +1,7 @@
 mod ast;
 mod builtins;
 mod cli;
+mod cyber_help;
 mod error;
 mod interp;
 mod lexer;
@@ -13,7 +14,7 @@ use crate::error::{Error, Result};
 use crate::interp::{pattern_matches, range_step, run_begin, run_end, run_rule_on_record, Flow};
 use crate::parser::parse_program;
 use crate::runtime::{Runtime, Value};
-use clap::{CommandFactory, Parser};
+use clap::Parser;
 use std::cell::RefCell;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read};
@@ -33,12 +34,15 @@ fn main() {
 
 fn run() -> Result<()> {
     let mut args = Args::parse();
+    if args.show_help {
+        cyber_help::print_cyberpunk_help();
+        return Ok(());
+    }
     args.normalize();
     match args.apply_mawk_w() {
         Ok(()) => {}
         Err(MawkWAction::Help) => {
-            let mut cmd = Args::command();
-            let _ = cmd.print_help();
+            cyber_help::print_cyberpunk_help();
             return Ok(());
         }
         Err(MawkWAction::Version) => {
@@ -68,7 +72,8 @@ fn run() -> Result<()> {
     let mut rt = Runtime::new();
     apply_assigns(&args, &mut rt)?;
     if let Some(fs) = &args.field_sep {
-        rt.vars.insert("FS".into(), Value::Str(String::from(fs.as_str())));
+        rt.vars
+            .insert("FS".into(), Value::Str(String::from(fs.as_str())));
     }
 
     run_begin(&prog, &mut rt)?;
@@ -88,13 +93,7 @@ fn run() -> Result<()> {
     let mut range_state: Vec<bool> = vec![false; prog.rules.len()];
 
     if files.is_empty() {
-        process_file(
-            None,
-            &prog,
-            &record_rule_indices,
-            &mut range_state,
-            &mut rt,
-        )?;
+        process_file(None, &prog, &record_rule_indices, &mut range_state, &mut rt)?;
     } else {
         for p in &files {
             rt.filename = p.to_string_lossy().into_owned();
@@ -127,9 +126,7 @@ fn process_file(
     rt: &mut Runtime,
 ) -> Result<()> {
     let reader: Box<dyn Read> = if let Some(p) = path {
-        Box::new(
-            File::open(p).map_err(|e| Error::ProgramFile(p.to_path_buf(), e))?,
-        )
+        Box::new(File::open(p).map_err(|e| Error::ProgramFile(p.to_path_buf(), e))?)
     } else {
         Box::new(std::io::stdin())
     };
@@ -149,9 +146,7 @@ fn process_file(
         for &idx in record_rule_indices {
             let rule = &prog.rules[idx];
             let run = match &rule.pattern {
-                Pattern::Range(p1, p2) => {
-                    range_step(&mut range_state[idx], p1, p2, rt, prog)?
-                }
+                Pattern::Range(p1, p2) => range_step(&mut range_state[idx], p1, p2, rt, prog)?,
                 pat => pattern_matches(pat, rt, prog)?,
             };
             if run {
@@ -184,14 +179,10 @@ fn process_file(
 fn resolve_program_and_files(args: &Args) -> Result<(String, Vec<PathBuf>)> {
     let mut prog = String::new();
     for p in &args.include {
-        prog.push_str(
-            &std::fs::read_to_string(p).map_err(|e| Error::ProgramFile(p.clone(), e))?,
-        );
+        prog.push_str(&std::fs::read_to_string(p).map_err(|e| Error::ProgramFile(p.clone(), e))?);
     }
     for p in &args.progfiles {
-        prog.push_str(
-            &std::fs::read_to_string(p).map_err(|e| Error::ProgramFile(p.clone(), e))?,
-        );
+        prog.push_str(&std::fs::read_to_string(p).map_err(|e| Error::ProgramFile(p.clone(), e))?);
     }
     for e in &args.source {
         prog.push_str(e);
@@ -219,12 +210,10 @@ fn resolve_program_and_files(args: &Args) -> Result<(String, Vec<PathBuf>)> {
 
 fn apply_assigns(args: &Args, rt: &mut Runtime) -> Result<()> {
     for a in &args.assigns {
-        let (name, val) = a
-            .split_once('=')
-            .ok_or_else(|| Error::Parse {
-                line: 1,
-                msg: format!("invalid -v `{a}`, expected name=value"),
-            })?;
+        let (name, val) = a.split_once('=').ok_or_else(|| Error::Parse {
+            line: 1,
+            msg: format!("invalid -v `{a}`, expected name=value"),
+        })?;
         rt.vars
             .insert(name.to_string(), Value::Str(val.to_string()));
     }

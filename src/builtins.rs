@@ -64,12 +64,7 @@ pub fn sub_fn(
 }
 
 /// `match(s, ere [, arr])` — returns 0-based start index in awk as **1-based RSTART**, sets RSTART, RLENGTH.
-pub fn match_fn(
-    rt: &mut Runtime,
-    s: &str,
-    re_pat: &str,
-    arr_name: Option<&str>,
-) -> Result<f64> {
+pub fn match_fn(rt: &mut Runtime, s: &str, re_pat: &str, arr_name: Option<&str>) -> Result<f64> {
     let re = Regex::new(re_pat).map_err(|e| Error::Runtime(e.to_string()))?;
     if let Some(m) = re.find(s) {
         let rstart = (m.start() + 1) as f64;

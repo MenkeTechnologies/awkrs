@@ -26,6 +26,8 @@ Record processing is **sequential** (correct `NR` / `FNR` / side effects). Flags
 cargo build --release
 ```
 
+`awkrs --help` / `-h` prints a **cyberpunk HUD** (ASCII banner, status box, taglines, footer) in the style of MenkeTechnologies `tp -h`. ANSI colors apply when stdout is a TTY; set `NO_COLOR` to force plain text.
+
 ## Test
 
 ```bash

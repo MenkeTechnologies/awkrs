@@ -49,10 +49,7 @@ fn regex_pattern_matches_line() {
 fn unknown_function_errors() {
     let (code, _, stderr) = run_awkrs_stdin("{nosuch()}", "a\n");
     assert_ne!(code, 0);
-    assert!(
-        stderr.contains("unknown function"),
-        "stderr={stderr:?}"
-    );
+    assert!(stderr.contains("unknown function"), "stderr={stderr:?}");
 }
 
 #[test]
@@ -77,40 +74,50 @@ fn user_function() {
 
 #[test]
 fn next_skips_following_rules() {
-    let (code, stdout, _) = run_awkrs_stdin(
-        "{ print \"a\"; next } { print \"b\" }",
-        "x\n",
-    );
+    let (code, stdout, _) = run_awkrs_stdin("{ print \"a\"; next } { print \"b\" }", "x\n");
     assert_eq!(code, 0);
     assert_eq!(stdout, "a\n");
 }
 
 #[test]
 fn exit_runs_end_before_process_exit() {
-    let (code, stdout, _) = run_awkrs_stdin(
-        "BEGIN { exit 2 } END { print \"done\" }",
-        "",
-    );
+    let (code, stdout, _) = run_awkrs_stdin("BEGIN { exit 2 } END { print \"done\" }", "");
     assert_eq!(code, 2);
     assert_eq!(stdout, "done\n");
 }
 
 #[test]
 fn getline_primary_advances_record() {
-    let (code, stdout, _) = run_awkrs_stdin(
-        "{ print $0; getline; print $0 }",
-        "a\nb\n",
-    );
+    let (code, stdout, _) = run_awkrs_stdin("{ print $0; getline; print $0 }", "a\nb\n");
     assert_eq!(code, 0);
     assert_eq!(stdout, "a\nb\n");
 }
 
 #[test]
-fn gsub_on_record() {
-    let (code, stdout, _) = run_awkrs_stdin(
-        "{ gsub(\"o\", \"x\"); print }",
-        "hello\n",
+fn cyberpunk_help_banner() {
+    let out = Command::new(env!("CARGO_BIN_EXE_awkrs"))
+        .arg("--help")
+        .output()
+        .expect("spawn awkrs --help");
+    assert!(
+        out.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
     );
+    let s = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        s.contains("STATUS: ONLINE") && s.contains("SIGNAL:"),
+        "expected HUD status line, got: {s:?}"
+    );
+    assert!(
+        s.contains("TEXT HAX") || s.contains("████"),
+        "expected tagline or logo, got: {s:?}"
+    );
+}
+
+#[test]
+fn gsub_on_record() {
+    let (code, stdout, _) = run_awkrs_stdin("{ gsub(\"o\", \"x\"); print }", "hello\n");
     assert_eq!(code, 0);
     assert_eq!(stdout, "hellx\n");
 }

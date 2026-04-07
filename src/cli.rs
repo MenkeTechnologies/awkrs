@@ -11,7 +11,8 @@ use std::path::PathBuf;
     name = "awkrs",
     version,
     about = "Pattern-directed scanning and processing (awk-compatible CLI; sequential record engine).",
-    trailing_var_arg = true
+    trailing_var_arg = true,
+    disable_help_flag = true
 )]
 pub struct Args {
     // --- POSIX ---
@@ -109,6 +110,10 @@ pub struct Args {
     /// Read-ahead queue depth between reader thread and engine (lines).
     #[arg(long = "read-ahead", default_value_t = 1024usize)]
     pub read_ahead: usize,
+
+    /// Print help (cyberpunk HUD).
+    #[arg(short = 'h', long = "help", action = ArgAction::SetTrue)]
+    pub show_help: bool,
 
     /// Inline program and input files (use `--` before files if program starts with `-`).
     #[arg(value_name = "program [file ...]")]

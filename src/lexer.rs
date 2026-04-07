@@ -387,7 +387,10 @@ impl<'a> Lexer<'a> {
         if i >= self.input.len() {
             return false;
         }
-        self.input[i..].chars().next().is_some_and(|c| c.is_ascii_digit())
+        self.input[i..]
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_digit())
     }
 }
 

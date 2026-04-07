@@ -44,11 +44,7 @@ impl<'a> Parser<'a> {
         let mut lexer = Lexer::new(src);
         let cur = lexer.next_token(true).unwrap_or(Token::Eof);
         let line = lexer.line();
-        Self {
-            lexer,
-            cur,
-            line,
-        }
+        Self { lexer, cur, line }
     }
 
     fn bump(&mut self, regex_mode: bool) -> Result<()> {
@@ -182,10 +178,7 @@ impl<'a> Parser<'a> {
                 if self.cur == Token::Comma {
                     self.bump(false)?;
                     let p2 = self.parse_pattern()?;
-                    return Ok(Pattern::Range(
-                        Box::new(Pattern::Regexp(s)),
-                        Box::new(p2),
-                    ));
+                    return Ok(Pattern::Range(Box::new(Pattern::Regexp(s)), Box::new(p2)));
                 }
                 Ok(Pattern::Regexp(s))
             }
@@ -242,11 +235,7 @@ impl<'a> Parser<'a> {
                 } else {
                     vec![]
                 };
-                Ok(Stmt::If {
-                    cond,
-                    then_,
-                    else_,
-                })
+                Ok(Stmt::If { cond, then_, else_ })
             }
             Token::While => {
                 self.bump(false)?;
@@ -529,11 +518,7 @@ impl<'a> Parser<'a> {
         loop {
             if matches!(
                 self.cur,
-                Token::Semi
-                    | Token::Newline
-                    | Token::Comma
-                    | Token::RBrace
-                    | Token::Eof
+                Token::Semi | Token::Newline | Token::Comma | Token::RBrace | Token::Eof
             ) {
                 break;
             }
@@ -680,10 +665,23 @@ impl<'a> Parser<'a> {
             // implicit concat: next token starts a new expr
             if matches!(
                 self.cur,
-                Token::Or | Token::And | Token::Eq | Token::Ne | Token::Lt | Token::Le
-                    | Token::Gt | Token::Ge | Token::Tilde | Token::NotTilde | Token::Assign
-                    | Token::AddAssign | Token::SubAssign | Token::MulAssign | Token::DivAssign
-                    | Token::ModAssign | Token::Question
+                Token::Or
+                    | Token::And
+                    | Token::Eq
+                    | Token::Ne
+                    | Token::Lt
+                    | Token::Le
+                    | Token::Gt
+                    | Token::Ge
+                    | Token::Tilde
+                    | Token::NotTilde
+                    | Token::Assign
+                    | Token::AddAssign
+                    | Token::SubAssign
+                    | Token::MulAssign
+                    | Token::DivAssign
+                    | Token::ModAssign
+                    | Token::Question
             ) {
                 break;
             }

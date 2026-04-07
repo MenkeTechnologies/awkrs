@@ -108,7 +108,11 @@ pub fn run_rule_on_record(prog: &Program, rt: &mut Runtime, rule_idx: usize) -> 
     for s in &rule.stmts {
         match exec_stmt(s, &mut ctx)? {
             Flow::Normal => {}
-            f @ (Flow::Break | Flow::Continue | Flow::Next | Flow::Return(_) | Flow::ExitPending) => {
+            f @ (Flow::Break
+            | Flow::Continue
+            | Flow::Next
+            | Flow::Return(_)
+            | Flow::ExitPending) => {
                 return Ok(f);
             }
         }
@@ -177,11 +181,7 @@ fn truthy(v: &Value) -> bool {
 
 fn exec_stmt(s: &Stmt, ctx: &mut ExecCtx<'_>) -> Result<Flow> {
     match s {
-        Stmt::If {
-            cond,
-            then_,
-            else_,
-        } => {
+        Stmt::If { cond, then_, else_ } => {
             if truthy(&eval_expr(cond, ctx)?) {
                 for t in then_ {
                     match exec_stmt(t, ctx)? {
@@ -429,7 +429,12 @@ pub fn eval_expr(e: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {
             ctx.rt.set_field(idx, &s);
             newv
         }
-        Expr::AssignIndex { name, index, op, rhs } => {
+        Expr::AssignIndex {
+            name,
+            index,
+            op,
+            rhs,
+        } => {
             let k = eval_expr(index, ctx)?.as_str();
             let v = eval_expr(rhs, ctx)?;
             let newv = if let Some(bop) = op {
@@ -472,10 +477,7 @@ fn eval_binary(op: BinOp, left: &Expr, right: &Expr, ctx: &mut ExecCtx<'_>) -> R
     if op == BinOp::Ne {
         return awk_ne(left, right, ctx);
     }
-    if matches!(
-        op,
-        BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
-    ) {
+    if matches!(op, BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge) {
         return awk_rel(op, left, right, ctx);
     }
     let a = eval_expr(left, ctx)?.as_number();
@@ -486,8 +488,17 @@ fn eval_binary(op: BinOp, left: &Expr, right: &Expr, ctx: &mut ExecCtx<'_>) -> R
         BinOp::Mul => a * b,
         BinOp::Div => a / b,
         BinOp::Mod => a % b,
-        BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge | BinOp::Concat
-        | BinOp::Match | BinOp::NotMatch | BinOp::And | BinOp::Or => {
+        BinOp::Eq
+        | BinOp::Ne
+        | BinOp::Lt
+        | BinOp::Le
+        | BinOp::Gt
+        | BinOp::Ge
+        | BinOp::Concat
+        | BinOp::Match
+        | BinOp::NotMatch
+        | BinOp::And
+        | BinOp::Or => {
             unreachable!()
         }
     };
@@ -515,11 +526,7 @@ fn awk_eq(left: &Expr, right: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {
 
 fn awk_ne(left: &Expr, right: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {
     let v = awk_eq(left, right, ctx)?;
-    Ok(Value::Num(if v.as_number() != 0.0 {
-        0.0
-    } else {
-        1.0
-    }))
+    Ok(Value::Num(if v.as_number() != 0.0 { 0.0 } else { 1.0 }))
 }
 
 fn awk_rel(op: BinOp, left: &Expr, right: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {
@@ -595,11 +602,17 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
             Ok(Value::Num(pos as f64))
         }
         "substr" => {
-            let s = eval_expr(args.first().ok_or_else(|| Error::Runtime("substr".into()))?, ctx)?
-                .as_str();
-            let start =
-                eval_expr(args.get(1).ok_or_else(|| Error::Runtime("substr".into()))?, ctx)?
-                    .as_number() as usize;
+            let s = eval_expr(
+                args.first()
+                    .ok_or_else(|| Error::Runtime("substr".into()))?,
+                ctx,
+            )?
+            .as_str();
+            let start = eval_expr(
+                args.get(1).ok_or_else(|| Error::Runtime("substr".into()))?,
+                ctx,
+            )?
+            .as_number() as usize;
             let len = if let Some(e) = args.get(2) {
                 eval_expr(e, ctx)?.as_number() as usize
             } else {
@@ -735,8 +748,11 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
             Ok(Value::Num(ctx.rt.close_handle(&path)))
         }
         "split" => {
-            let s = eval_expr(args.first().ok_or_else(|| Error::Runtime("split".into()))?, ctx)?
-                .as_str();
+            let s = eval_expr(
+                args.first().ok_or_else(|| Error::Runtime("split".into()))?,
+                ctx,
+            )?
+            .as_str();
             let arr_name = match &args.get(1) {
                 Some(Expr::Var(n)) => n.clone(),
                 _ => {
@@ -802,17 +818,23 @@ fn sprintf_simple(fmt: &str, vals: &[Value]) -> Result<Value> {
             match chars.next() {
                 Some('%') => out.push('%'),
                 Some('s') => {
-                    let v = vals.get(vi).ok_or_else(|| Error::Runtime("sprintf: not enough args".into()))?;
+                    let v = vals
+                        .get(vi)
+                        .ok_or_else(|| Error::Runtime("sprintf: not enough args".into()))?;
                     vi += 1;
                     out.push_str(&v.as_str());
                 }
                 Some('d') | Some('i') => {
-                    let v = vals.get(vi).ok_or_else(|| Error::Runtime("sprintf: not enough args".into()))?;
+                    let v = vals
+                        .get(vi)
+                        .ok_or_else(|| Error::Runtime("sprintf: not enough args".into()))?;
                     vi += 1;
                     out.push_str(&format!("{}", v.as_number() as i64));
                 }
                 Some('f') | Some('g') | Some('e') => {
-                    let v = vals.get(vi).ok_or_else(|| Error::Runtime("sprintf: not enough args".into()))?;
+                    let v = vals
+                        .get(vi)
+                        .ok_or_else(|| Error::Runtime("sprintf: not enough args".into()))?;
                     vi += 1;
                     out.push_str(&format!("{}", v.as_number()));
                 }
