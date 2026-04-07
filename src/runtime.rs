@@ -67,6 +67,9 @@ impl Value {
 
 pub struct Runtime {
     pub vars: HashMap<String, Value>,
+    /// Post-`BEGIN` globals shared across parallel record workers (`Arc` clone is O(1)).
+    /// Reads resolve `vars` first (per-record overlay), then this map. Not used in the main thread.
+    pub global_readonly: Option<Arc<HashMap<String, Value>>>,
     pub fields: Vec<String>,
     pub record: String,
     pub nr: f64,
@@ -101,6 +104,7 @@ impl Runtime {
         vars.insert("SUBSEP".into(), Value::Str("\x1c".into()));
         Self {
             vars,
+            global_readonly: None,
             fields: Vec::new(),
             record: String::new(),
             nr: 0.0,
@@ -117,6 +121,41 @@ impl Runtime {
             rand_seed: 1,
             numeric_decimal: '.',
         }
+    }
+
+    /// Worker runtime for parallel record processing: empty overlay `vars`, shared read-only globals.
+    pub fn for_parallel_worker(
+        shared_globals: Arc<HashMap<String, Value>>,
+        filename: String,
+        rand_seed: u64,
+        numeric_decimal: char,
+    ) -> Self {
+        Self {
+            vars: HashMap::new(),
+            global_readonly: Some(shared_globals),
+            fields: Vec::new(),
+            record: String::new(),
+            nr: 0.0,
+            fnr: 0.0,
+            filename,
+            exit_pending: false,
+            exit_code: 0,
+            input_reader: None,
+            file_handles: HashMap::new(),
+            output_handles: HashMap::new(),
+            pipe_stdin: HashMap::new(),
+            pipe_children: HashMap::new(),
+            coproc_handles: HashMap::new(),
+            rand_seed,
+            numeric_decimal,
+        }
+    }
+
+    /// Resolve a global name: per-record overlay, then shared `BEGIN` snapshot.
+    pub fn get_global_var(&self, name: &str) -> Option<&Value> {
+        self.vars
+            .get(name)
+            .or_else(|| self.global_readonly.as_ref()?.get(name))
     }
 
     /// `print … | "cmd"` / `printf … | "cmd"` — append bytes to the coprocess stdin (spawn on first use).
@@ -333,9 +372,19 @@ impl Runtime {
         if fs.is_empty() {
             self.fields = line.chars().map(|c| c.to_string()).collect();
         } else if fs == " " {
-            self.fields = line.split_whitespace().map(String::from).collect();
+            let mut fields = Vec::new();
+            fields.reserve(line.split_whitespace().count().max(8));
+            for w in line.split_whitespace() {
+                fields.push(w.to_string());
+            }
+            self.fields = fields;
         } else {
-            self.fields = line.split(fs).map(String::from).collect();
+            let mut fields = Vec::new();
+            fields.reserve(8);
+            for p in line.split(fs) {
+                fields.push(p.to_string());
+            }
+            self.fields = fields;
         }
         let nf = self.fields.len() as f64;
         self.vars.insert("NF".into(), Value::Num(nf));
@@ -389,13 +438,18 @@ impl Runtime {
     }
 
     pub fn array_get(&self, name: &str, key: &str) -> Value {
-        match self.vars.get(name) {
+        match self.get_global_var(name) {
             Some(Value::Array(a)) => a.get(key).cloned().unwrap_or(Value::Str(String::new())),
             _ => Value::Str(String::new()),
         }
     }
 
     pub fn array_set(&mut self, name: &str, key: String, val: Value) {
+        if !self.vars.contains_key(name) {
+            if let Some(Value::Array(a)) = self.global_readonly.as_ref().and_then(|g| g.get(name)) {
+                self.vars.insert(name.to_string(), Value::Array(a.clone()));
+            }
+        }
         let e = self
             .vars
             .entry(name.to_string())
@@ -414,14 +468,28 @@ impl Runtime {
         if let Some(k) = key {
             if let Some(Value::Array(a)) = self.vars.get_mut(name) {
                 a.remove(k);
+            } else if let Some(Value::Array(a)) =
+                self.global_readonly.as_ref().and_then(|g| g.get(name))
+            {
+                let mut copy = a.clone();
+                copy.remove(k);
+                self.vars.insert(name.to_string(), Value::Array(copy));
             }
         } else {
             self.vars.remove(name);
+            if self
+                .global_readonly
+                .as_ref()
+                .is_some_and(|g| g.contains_key(name))
+            {
+                self.vars
+                    .insert(name.to_string(), Value::Array(HashMap::new()));
+            }
         }
     }
 
     pub fn array_keys(&self, name: &str) -> Vec<String> {
-        match self.vars.get(name) {
+        match self.get_global_var(name) {
             Some(Value::Array(a)) => a.keys().cloned().collect(),
             _ => Vec::new(),
         }
@@ -429,7 +497,7 @@ impl Runtime {
 
     /// `key in arr` — true iff `arr` is an array that has `key` (POSIX: subscript was used).
     pub fn array_has(&self, name: &str, key: &str) -> bool {
-        match self.vars.get(name) {
+        match self.get_global_var(name) {
             Some(Value::Array(a)) => a.contains_key(key),
             _ => false,
         }
@@ -463,6 +531,7 @@ impl Clone for Runtime {
     fn clone(&self) -> Self {
         Self {
             vars: self.vars.clone(),
+            global_readonly: self.global_readonly.clone(),
             fields: self.fields.clone(),
             record: self.record.clone(),
             nr: self.nr,

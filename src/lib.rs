@@ -207,9 +207,11 @@ fn process_file_parallel(
     }
 
     let prog_arc = Arc::new(prog.clone());
-    let base = rt.clone();
+    let shared_globals = Arc::new(rt.vars.clone());
     let idxs: Vec<usize> = record_rule_indices.to_vec();
     let fname = rt.filename.clone();
+    let seed_base = rt.rand_seed;
+    let numeric_dec = rt.numeric_decimal;
 
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(threads)
@@ -222,11 +224,14 @@ fn process_file_parallel(
             .enumerate()
             .map(|(i, line)| {
                 let prog = Arc::clone(&prog_arc);
-                let mut local = base.clone();
-                local.rand_seed ^= (i as u64).wrapping_mul(0x9e3779b97f4a7c15);
+                let mut local = Runtime::for_parallel_worker(
+                    Arc::clone(&shared_globals),
+                    fname.clone(),
+                    seed_base ^ (i as u64).wrapping_mul(0x9e3779b97f4a7c15),
+                    numeric_dec,
+                );
                 local.nr = nr_offset + i as f64 + 1.0;
                 local.fnr = i as f64 + 1.0;
-                local.filename = fname.clone();
                 local.set_record_from_line(&line);
 
                 let mut buf = Vec::new();

@@ -152,7 +152,10 @@ pub fn patsplit(
 ) -> Result<f64> {
     let fp_owned = match fieldpat {
         Some(s) => s.to_string(),
-        None => rt.vars.get("FPAT").map(|v| v.as_str()).unwrap_or_default(),
+        None => rt
+            .get_global_var("FPAT")
+            .map(|v| v.as_str())
+            .unwrap_or_default(),
     };
     let fp = if fp_owned.is_empty() {
         "[^[:space:]]+"

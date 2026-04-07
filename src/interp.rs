@@ -77,8 +77,7 @@ impl<'a> ExecCtx<'a> {
             }
         }
         self.rt
-            .vars
-            .get(name)
+            .get_global_var(name)
             .cloned()
             .unwrap_or_else(|| match name {
                 "NR" => Value::Num(self.rt.nr),
