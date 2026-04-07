@@ -422,3 +422,22 @@ fn is_ident_start(c: char) -> bool {
 fn is_ident_continue(c: char) -> bool {
     is_ident_start(c) || c.is_ascii_digit()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lex_lt_amp() {
+        let mut l = Lexer::new("<&");
+        assert_eq!(l.next_token(false).unwrap(), Token::LtAmp);
+        assert_eq!(l.next_token(false).unwrap(), Token::Eof);
+    }
+
+    #[test]
+    fn lex_pipe_coproc() {
+        let mut l = Lexer::new("|&");
+        assert_eq!(l.next_token(false).unwrap(), Token::PipeCoproc);
+        assert_eq!(l.next_token(false).unwrap(), Token::Eof);
+    }
+}

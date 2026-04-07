@@ -411,4 +411,26 @@ mod tests {
         .unwrap();
         assert_eq!(s, "   9");
     }
+
+    #[test]
+    fn percent_sign_escape() {
+        let s = awk_sprintf("ok%% done", &[]).unwrap();
+        assert_eq!(s, "ok% done");
+    }
+
+    #[test]
+    fn not_enough_arguments_errors() {
+        let e = awk_sprintf("%d", &[]).unwrap_err();
+        assert!(e.contains("not enough"), "got {e:?}");
+    }
+
+    #[test]
+    fn star_precision_positional_second_arg() {
+        let s = awk_sprintf(
+            "%.*2$f",
+            &[Value::Num(9.0), Value::Num(2.0), Value::Num(3.14159)],
+        )
+        .unwrap();
+        assert_eq!(s, "3.14");
+    }
 }

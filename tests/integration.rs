@@ -234,6 +234,116 @@ fn print_coproc_getline_cat() {
 }
 
 #[test]
+fn printf_coproc_getline_cat() {
+    let (code, stdout, stderr) = run_awkrs_stdin(
+        "BEGIN { printf \"%s\\n\", \"q\" |& \"cat\"; fflush(\"cat\"); getline x <& \"cat\"; print x }",
+        "",
+    );
+    assert_eq!(code, 0, "stderr={stderr:?}");
+    assert_eq!(stdout, "q\n");
+}
+
+#[test]
+fn coproc_two_lines_roundtrip() {
+    let (code, stdout, stderr) = run_awkrs_stdin(
+        r#"BEGIN {
+  print "first" |& "cat"
+  print "second" |& "cat"
+  fflush("cat")
+  getline a <& "cat"
+  getline b <& "cat"
+  print a
+  print b
+}"#,
+        "",
+    );
+    assert_eq!(code, 0, "stderr={stderr:?}");
+    assert_eq!(stdout, "first\nsecond\n");
+}
+
+#[test]
+fn coproc_close_after_roundtrip() {
+    let (code, stdout, stderr) = run_awkrs_stdin(
+        r#"BEGIN {
+  print "x" |& "cat"
+  fflush("cat")
+  getline v <& "cat"
+  print v
+  close("cat")
+}"#,
+        "",
+    );
+    assert_eq!(code, 0, "stderr={stderr:?}");
+    assert_eq!(stdout, "x\n");
+}
+
+#[test]
+fn pipe_then_coproc_same_cmd_errors() {
+    let (code, _, stderr) =
+        run_awkrs_stdin(r#"BEGIN { print "a" | "cat"; print "b" |& "cat" }"#, "");
+    assert_ne!(code, 0);
+    assert!(
+        stderr.contains("two-way pipe") && stderr.contains("conflicts"),
+        "stderr={stderr:?}"
+    );
+}
+
+#[test]
+fn coproc_then_pipe_same_cmd_errors() {
+    let (code, _, stderr) =
+        run_awkrs_stdin(r#"BEGIN { print "a" |& "cat"; print "b" | "cat" }"#, "");
+    assert_ne!(code, 0);
+    assert!(
+        stderr.contains("one-way pipe") && stderr.contains("conflicts"),
+        "stderr={stderr:?}"
+    );
+}
+
+#[test]
+fn fflush_unknown_target_errors() {
+    let (code, _, stderr) = run_awkrs_stdin(r#"BEGIN { fflush("not_an_open_redirection") }"#, "");
+    assert_ne!(code, 0);
+    assert!(stderr.contains("fflush"), "stderr={stderr:?}");
+}
+
+#[test]
+fn sprintf_star_width_second_arg_end_to_end() {
+    let (code, stdout, _) = run_awkrs_stdin(r#"BEGIN { print sprintf("%*2$d", 5, 4, 9) }"#, "");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "   9\n");
+}
+
+#[test]
+fn threads_with_print_coproc_warns_not_parallel_safe() {
+    let bin = env!("CARGO_BIN_EXE_awkrs");
+    let mut child = Command::new(bin)
+        .args(["-j", "8", r#"{ print $1 |& "cat" }"#])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn awkrs");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(b"a\n")
+        .expect("write stdin");
+    let out = child.wait_with_output().expect("wait");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("not parallel-safe"),
+        "expected warning, stderr={stderr:?}"
+    );
+}
+
+#[test]
 fn print_redirect_and_fflush() {
     let dir = std::env::temp_dir();
     let path = dir.join(format!("awkrs_out_{}.txt", std::process::id()));

@@ -977,3 +977,52 @@ impl<'a> Parser<'a> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ast::{GetlineRedir, Pattern, PrintRedir, Stmt};
+
+    fn first_begin_stmt(prog: &crate::ast::Program) -> &Stmt {
+        let rule = prog
+            .rules
+            .iter()
+            .find(|r| matches!(r.pattern, Pattern::Begin))
+            .expect("BEGIN rule");
+        rule.stmts.first().expect("stmt")
+    }
+
+    #[test]
+    fn parses_getline_coproc() {
+        let p = parse_program("BEGIN { getline x <& \"cat\" }").unwrap();
+        match first_begin_stmt(&p) {
+            Stmt::GetLine { var, redir } => {
+                assert_eq!(var.as_deref(), Some("x"));
+                assert!(matches!(redir, GetlineRedir::Coproc(_)));
+            }
+            _ => panic!("expected GetLine"),
+        }
+    }
+
+    #[test]
+    fn parses_print_coproc() {
+        let p = parse_program("BEGIN { print \"y\" |& \"cat\" }").unwrap();
+        match first_begin_stmt(&p) {
+            Stmt::Print { redir, .. } => {
+                assert!(matches!(redir, Some(PrintRedir::Coproc(_))));
+            }
+            _ => panic!("expected Print"),
+        }
+    }
+
+    #[test]
+    fn parses_printf_coproc() {
+        let p = parse_program("BEGIN { printf \"%s\\n\", \"z\" |& \"cat\" }").unwrap();
+        match first_begin_stmt(&p) {
+            Stmt::Printf { redir, .. } => {
+                assert!(matches!(redir, Some(PrintRedir::Coproc(_))));
+            }
+            _ => panic!("expected Printf"),
+        }
+    }
+}
