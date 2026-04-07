@@ -199,7 +199,8 @@ impl<'a> Parser<'a> {
                 let s = s.clone();
                 self.bump(true)?;
                 if self.cur == Token::Comma {
-                    self.bump(false)?;
+                    // After `,`, the next pattern may start with `/…/` — needs regex lexer mode.
+                    self.bump(true)?;
                     let p2 = self.parse_pattern()?;
                     return Ok(Pattern::Range(Box::new(Pattern::Regexp(s)), Box::new(p2)));
                 }
@@ -209,7 +210,7 @@ impl<'a> Parser<'a> {
             _ => {
                 let e = self.parse_expr(false)?;
                 if self.cur == Token::Comma {
-                    self.bump(false)?;
+                    self.bump(true)?;
                     let e2 = self.parse_expr(false)?;
                     Ok(Pattern::Range(
                         Box::new(Pattern::Expr(e)),
@@ -741,7 +742,9 @@ impl<'a> Parser<'a> {
                 _ => None,
             };
             let Some(op) = op else { break };
-            self.bump(false)?;
+            // RHS of `~` / `!~` may be `/regex/`; lexer must use regex mode for the next token.
+            let regex_rhs = matches!(op, BinOp::Match | BinOp::NotMatch);
+            self.bump(regex_rhs)?;
             let r = self.parse_concat(false)?;
             e = Expr::Binary {
                 op,
@@ -760,6 +763,7 @@ impl<'a> Parser<'a> {
                 Token::Semi
                     | Token::Newline
                     | Token::Comma
+                    | Token::LBrace
                     | Token::RBrace
                     | Token::RParen
                     | Token::RBracket
@@ -780,6 +784,7 @@ impl<'a> Parser<'a> {
                     | Token::Lt
                     | Token::Le
                     | Token::Gt
+                    | Token::GtGt
                     | Token::Ge
                     | Token::Tilde
                     | Token::NotTilde
@@ -1024,5 +1029,30 @@ mod tests {
             }
             _ => panic!("expected Printf"),
         }
+    }
+
+    #[test]
+    fn parses_range_pattern_two_regexps() {
+        let p = parse_program("/a/,/b/ { print 1 }").unwrap();
+        let rule = p
+            .rules
+            .iter()
+            .find(|r| matches!(r.pattern, Pattern::Range(_, _)))
+            .expect("range rule");
+        match &rule.pattern {
+            Pattern::Range(b1, b2) => match (b1.as_ref(), b2.as_ref()) {
+                (Pattern::Regexp(a), Pattern::Regexp(b)) => {
+                    assert_eq!(a, "a");
+                    assert_eq!(b, "b");
+                }
+                _ => panic!("expected two regexps"),
+            },
+            _ => panic!("expected range"),
+        }
+    }
+
+    #[test]
+    fn parses_match_expr_with_slash_regex() {
+        parse_program("BEGIN { x = $0 ~ /z/ }").unwrap();
     }
 }

@@ -433,4 +433,62 @@ mod tests {
         .unwrap();
         assert_eq!(s, "3.14");
     }
+
+    #[test]
+    fn hex_lower() {
+        let s = awk_sprintf("%x", &[Value::Num(255.0)]).unwrap();
+        assert_eq!(s, "ff");
+    }
+
+    #[test]
+    fn hex_alt_prefix() {
+        let s = awk_sprintf("%#x", &[Value::Num(255.0)]).unwrap();
+        assert_eq!(s, "0xff");
+    }
+
+    #[test]
+    fn string_precision_truncates() {
+        let s = awk_sprintf("%.3s", &[Value::Str("abcdef".into())]).unwrap();
+        assert_eq!(s, "abc");
+    }
+
+    #[test]
+    fn signed_positive_d() {
+        let s = awk_sprintf("%+d", &[Value::Num(5.0)]).unwrap();
+        assert_eq!(s, "+5");
+    }
+
+    #[test]
+    fn space_sign_positive_d() {
+        let s = awk_sprintf("% d", &[Value::Num(5.0)]).unwrap();
+        assert_eq!(s, " 5");
+    }
+
+    #[test]
+    fn scientific_upper() {
+        let s = awk_sprintf("%.1E", &[Value::Num(1000.0)]).unwrap();
+        assert!(s.contains('E'), "got {s:?}");
+    }
+
+    #[test]
+    fn float_default_precision_six() {
+        let s = awk_sprintf("%f", &[Value::Num(1.0)]).unwrap();
+        assert_eq!(s, "1.000000");
+    }
+
+    #[test]
+    fn positional_value_only() {
+        let s = awk_sprintf(
+            "%2$s",
+            &[Value::Str("skip".into()), Value::Str("use".into())],
+        )
+        .unwrap();
+        assert_eq!(s, "use");
+    }
+
+    #[test]
+    fn invalid_positional_zero_errors() {
+        let e = awk_sprintf("%0$d", &[Value::Num(1.0)]).unwrap_err();
+        assert!(e.contains("0"), "{e:?}");
+    }
 }

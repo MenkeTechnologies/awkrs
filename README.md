@@ -42,6 +42,8 @@ Regenerate the screenshot after UI changes: `./scripts/gen-help-screenshot.sh` (
 cargo test
 ```
 
+Library unit tests cover `format`, lexer, and parser; integration tests live in `tests/integration.rs` and `tests/more_integration.rs` with shared helpers in `tests/common.rs`.
+
 ## Still missing or partial
 
 **Two-way pipe** (**`|&`** / **`getline … <&`**): **`sh -c`** with stdin and stdout connected (same command string for both directions). Mixing **`|`** and **`|&`** on the same command string is an error. On **Unix**, string **`==`**, **`!=`**, and relational ordering use **`strcoll`** (honors **`LC_COLLATE`** / **`LC_ALL`** from the environment). **`LC_NUMERIC`** (locale decimal radix in **`OFMT`** / **`sprintf`**) is **not** applied—numeric formatting still uses **`.`**. Exotic **`printf`** combinations not covered above may differ from **gawk**. Many gawk-only extensions are absent. `system()` runs commands via `sh -c` (same caveat as other awks). Prefer validating critical scripts against reference `awk`/`gawk`.

@@ -285,12 +285,12 @@ fn exec_stmt(s: &Stmt, ctx: &mut ExecCtx<'_>) -> Result<Flow> {
             }
         }
         Stmt::While { cond, body } => {
-            while truthy(&eval_expr(cond, ctx)?) {
+            'outer: while truthy(&eval_expr(cond, ctx)?) {
                 for t in body {
                     match exec_stmt(t, ctx)? {
                         Flow::Normal => {}
-                        Flow::Break => break,
-                        Flow::Continue => continue,
+                        Flow::Break => break 'outer,
+                        Flow::Continue => continue 'outer,
                         f @ (Flow::Next | Flow::Return(_) | Flow::ExitPending) => return Ok(f),
                     }
                 }

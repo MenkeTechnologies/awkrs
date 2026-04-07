@@ -1,27 +1,8 @@
+mod common;
+
+use common::run_awkrs_stdin;
 use std::io::Write;
 use std::process::{Command, Stdio};
-
-fn run_awkrs_stdin(program: &str, stdin: &str) -> (i32, String, String) {
-    let bin = env!("CARGO_BIN_EXE_awkrs");
-    let mut child = Command::new(bin)
-        .arg(program)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn awkrs");
-    child
-        .stdin
-        .take()
-        .expect("stdin")
-        .write_all(stdin.as_bytes())
-        .expect("write stdin");
-    let out = child.wait_with_output().expect("wait");
-    let code = out.status.code().unwrap_or(-1);
-    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
-    (code, stdout, stderr)
-}
 
 #[test]
 fn prints_second_field() {
