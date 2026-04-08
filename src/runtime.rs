@@ -155,6 +155,8 @@ pub struct Runtime {
     pub ofs_bytes: Vec<u8>,
     /// Cached ORS bytes — avoids HashMap lookup + Vec alloc on every `print` call.
     pub ors_bytes: Vec<u8>,
+    /// Reusable VM stack — avoids malloc/free per VmCtx creation.
+    pub vm_stack: Vec<Value>,
 }
 
 impl Runtime {
@@ -191,6 +193,7 @@ impl Runtime {
             print_buf: Vec::with_capacity(65536),
             ofs_bytes: b" ".to_vec(),
             ors_bytes: b"\n".to_vec(),
+            vm_stack: Vec::with_capacity(64),
         }
     }
 
@@ -227,6 +230,7 @@ impl Runtime {
             print_buf: Vec::new(),
             ofs_bytes: b" ".to_vec(),
             ors_bytes: b"\n".to_vec(),
+            vm_stack: Vec::with_capacity(64),
         }
     }
 
@@ -790,6 +794,7 @@ impl Clone for Runtime {
             print_buf: Vec::new(),
             ofs_bytes: self.ofs_bytes.clone(),
             ors_bytes: self.ors_bytes.clone(),
+            vm_stack: Vec::with_capacity(64),
         }
     }
 }

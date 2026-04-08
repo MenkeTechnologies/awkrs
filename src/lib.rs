@@ -378,6 +378,35 @@ fn process_file(
     Ok(count)
 }
 
+/// Detect programs that can bypass the full VM dispatch loop entirely.
+/// Returns `Some(action)` for single Always-pattern rules with a single fused opcode body.
+#[derive(Clone, Copy)]
+enum InlineAction {
+    PrintFieldStdout(u16),
+    AddFieldToSlot { field: u16, slot: u16 },
+}
+
+fn detect_inline_action(cp: &CompiledProgram) -> Option<InlineAction> {
+    if cp.record_rules.len() != 1 {
+        return None;
+    }
+    let rule = &cp.record_rules[0];
+    if !matches!(rule.pattern, CompiledPattern::Always) {
+        return None;
+    }
+    let ops = &rule.body.ops;
+    if ops.len() != 1 {
+        return None;
+    }
+    match ops[0] {
+        bytecode::Op::PrintFieldStdout(f) => Some(InlineAction::PrintFieldStdout(f)),
+        bytecode::Op::AddFieldToSlot { field, slot } => {
+            Some(InlineAction::AddFieldToSlot { field, slot })
+        }
+        _ => None,
+    }
+}
+
 /// Fast file processing: read entire file into memory, iterate lines by byte-scanning.
 /// No Mutex, no BufReader, no syscall per line, no per-line buffer allocation.
 fn process_file_slurp(
@@ -394,6 +423,11 @@ fn process_file_slurp(
         .get("FS")
         .map(|v| v.as_str())
         .unwrap_or_else(|| " ".into());
+
+    // Try the inlined fast path for trivial single-rule programs.
+    if let Some(action) = detect_inline_action(cp) {
+        return process_file_slurp_inline(data, &fs, action, rt);
+    }
 
     let mut count = 0usize;
     let mut pos = 0;
@@ -429,6 +463,65 @@ fn process_file_slurp(
 
         if dispatch_rules(prog, cp, range_state, rt)? {
             break;
+        }
+
+        pos = eol + 1;
+    }
+    Ok(count)
+}
+
+/// Ultra-fast inlined record loop for single-rule programs with one fused opcode.
+/// Bypasses VmCtx creation, dispatch_rules, pattern matching, and the execute loop entirely.
+fn process_file_slurp_inline(
+    data: Vec<u8>,
+    fs: &str,
+    action: InlineAction,
+    rt: &mut Runtime,
+) -> Result<usize> {
+    let mut count = 0usize;
+    let mut pos = 0;
+    let len = data.len();
+
+    // Pre-copy ORS to stack for the print path.
+    let mut ors_local = [0u8; 64];
+    let ors_len = rt.ors_bytes.len().min(64);
+    ors_local[..ors_len].copy_from_slice(&rt.ors_bytes[..ors_len]);
+
+    while pos < len {
+        let eol = data[pos..]
+            .iter()
+            .position(|&b| b == b'\n')
+            .map(|i| pos + i)
+            .unwrap_or(len);
+
+        let end = if eol > pos && data[eol - 1] == b'\r' {
+            eol - 1
+        } else {
+            eol
+        };
+
+        count += 1;
+        rt.nr += 1.0;
+        rt.fnr += 1.0;
+
+        match std::str::from_utf8(&data[pos..end]) {
+            Ok(line) => rt.set_field_sep_split(fs, line),
+            Err(_) => {
+                let lossy = String::from_utf8_lossy(&data[pos..end]);
+                rt.set_field_sep_split(fs, &lossy);
+            }
+        }
+
+        match action {
+            InlineAction::PrintFieldStdout(field) => {
+                rt.print_field_to_buf(field as usize);
+                rt.print_buf.extend_from_slice(&ors_local[..ors_len]);
+            }
+            InlineAction::AddFieldToSlot { field, slot } => {
+                let fv = rt.field_as_number(field as i32);
+                let sv = rt.slots[slot as usize].as_number();
+                rt.slots[slot as usize] = Value::Num(sv + fv);
+            }
         }
 
         pos = eol + 1;

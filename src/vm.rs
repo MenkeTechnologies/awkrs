@@ -30,6 +30,9 @@ pub struct VmCtx<'a> {
 
 impl<'a> VmCtx<'a> {
     pub fn new(cp: &'a CompiledProgram, rt: &'a mut Runtime) -> Self {
+        // Take the pre-allocated stack from Runtime to avoid per-call malloc.
+        let mut stack = std::mem::take(&mut rt.vm_stack);
+        stack.clear();
         Self {
             cp,
             rt,
@@ -37,7 +40,7 @@ impl<'a> VmCtx<'a> {
             in_function: false,
             print_out: None,
             for_in_iters: Vec::new(),
-            stack: Vec::with_capacity(64),
+            stack,
         }
     }
 
@@ -46,6 +49,8 @@ impl<'a> VmCtx<'a> {
         rt: &'a mut Runtime,
         out: &'a mut Vec<String>,
     ) -> Self {
+        let mut stack = std::mem::take(&mut rt.vm_stack);
+        stack.clear();
         Self {
             cp,
             rt,
@@ -53,8 +58,14 @@ impl<'a> VmCtx<'a> {
             in_function: false,
             print_out: Some(out),
             for_in_iters: Vec::new(),
-            stack: Vec::with_capacity(64),
+            stack,
         }
+    }
+
+    /// Return the stack buffer to Runtime for reuse.
+    fn recycle(mut self) {
+        self.stack.clear();
+        self.rt.vm_stack = std::mem::take(&mut self.stack);
     }
 
     fn emit_print(&mut self, s: &str) {
@@ -159,10 +170,14 @@ pub fn vm_run_begin(cp: &CompiledProgram, rt: &mut Runtime) -> Result<()> {
         match execute(chunk, &mut ctx)? {
             VmSignal::Next => return Err(Error::Runtime("`next` is invalid in BEGIN".into())),
             VmSignal::Return(_) => return Err(Error::Runtime("`return` outside function".into())),
-            VmSignal::ExitPending => return Ok(()),
+            VmSignal::ExitPending => {
+                ctx.recycle();
+                return Ok(());
+            }
             VmSignal::Normal => {}
         }
     }
+    ctx.recycle();
     Ok(())
 }
 
@@ -172,10 +187,14 @@ pub fn vm_run_end(cp: &CompiledProgram, rt: &mut Runtime) -> Result<()> {
         match execute(chunk, &mut ctx)? {
             VmSignal::Next => return Err(Error::Runtime("`next` is invalid in END".into())),
             VmSignal::Return(_) => return Err(Error::Runtime("`return` outside function".into())),
-            VmSignal::ExitPending => return Ok(()),
+            VmSignal::ExitPending => {
+                ctx.recycle();
+                return Ok(());
+            }
             VmSignal::Normal => {}
         }
     }
+    ctx.recycle();
     Ok(())
 }
 
@@ -185,10 +204,14 @@ pub fn vm_run_beginfile(cp: &CompiledProgram, rt: &mut Runtime) -> Result<()> {
         match execute(chunk, &mut ctx)? {
             VmSignal::Next => return Err(Error::Runtime("`next` is invalid in BEGINFILE".into())),
             VmSignal::Return(_) => return Err(Error::Runtime("`return` outside function".into())),
-            VmSignal::ExitPending => return Ok(()),
+            VmSignal::ExitPending => {
+                ctx.recycle();
+                return Ok(());
+            }
             VmSignal::Normal => {}
         }
     }
+    ctx.recycle();
     Ok(())
 }
 
@@ -198,10 +221,14 @@ pub fn vm_run_endfile(cp: &CompiledProgram, rt: &mut Runtime) -> Result<()> {
         match execute(chunk, &mut ctx)? {
             VmSignal::Next => return Err(Error::Runtime("`next` is invalid in ENDFILE".into())),
             VmSignal::Return(_) => return Err(Error::Runtime("`return` outside function".into())),
-            VmSignal::ExitPending => return Ok(()),
+            VmSignal::ExitPending => {
+                ctx.recycle();
+                return Ok(());
+            }
             VmSignal::Normal => {}
         }
     }
+    ctx.recycle();
     Ok(())
 }
 
@@ -220,8 +247,12 @@ pub fn vm_pattern_matches(
         }
         CompiledPattern::Expr(chunk) => {
             let mut ctx = VmCtx::new(cp, rt);
-            execute(chunk, &mut ctx)?;
-            Ok(truthy(&ctx.pop()))
+            let r = execute(chunk, &mut ctx)?;
+            let val = truthy(&ctx.pop());
+            // Drop VmSignal — Expr patterns can't produce Next/Exit
+            let _ = r;
+            ctx.recycle();
+            Ok(val)
         }
         CompiledPattern::Range => Ok(false), // handled externally via range_step
     }
@@ -239,14 +270,16 @@ pub fn vm_run_rule(
         Some(buf) => VmCtx::with_print_capture(cp, rt, buf),
         None => VmCtx::new(cp, rt),
     };
-    match execute(&rule.body, &mut ctx)? {
+    let result = match execute(&rule.body, &mut ctx)? {
         VmSignal::Normal => Ok(Flow::Normal),
         VmSignal::Next => Ok(Flow::Next),
         VmSignal::Return(_) => Err(Error::Runtime(
             "`return` used outside function in rule action".into(),
         )),
         VmSignal::ExitPending => Ok(Flow::ExitPending),
-    }
+    };
+    ctx.recycle();
+    result
 }
 
 // ── Core VM loop ────────────────────────────────────────────────────────────

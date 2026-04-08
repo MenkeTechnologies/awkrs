@@ -63,9 +63,9 @@ Measured with [hyperfine](https://github.com/sharkdp/hyperfine) on **Apple M5 Ma
 
 | Command | Mean | Min | Max | Relative |
 |:---|---:|---:|---:|---:|
-| BSD awk | 79.5 ms | 70.1 ms | 93.8 ms | 5.77× |
-| gawk | 26.4 ms | 23.8 ms | 31.8 ms | 1.91× |
-| awkrs `-j1` | 13.8 ms | 13.0 ms | 15.9 ms | **1.00×** |
+| BSD awk | 75.6 ms | 70.2 ms | 103.2 ms | 8.54× |
+| gawk | 27.1 ms | 24.0 ms | 34.1 ms | 3.06× |
+| awkrs `-j1` | 8.9 ms | 8.1 ms | 9.3 ms | **1.00×** |
 
 ### 2. CPU-bound BEGIN (no input)
 
@@ -73,9 +73,9 @@ Measured with [hyperfine](https://github.com/sharkdp/hyperfine) on **Apple M5 Ma
 
 | Command | Mean | Min | Max | Relative |
 |:---|---:|---:|---:|---:|
-| BSD awk | 14.8 ms | 13.2 ms | 16.8 ms | 1.36× |
-| gawk | 19.6 ms | 17.5 ms | 22.4 ms | 1.81× |
-| awkrs | 10.9 ms | 9.8 ms | 12.3 ms | **1.00×** |
+| BSD awk | 14.5 ms | 13.0 ms | 16.4 ms | 1.45× |
+| gawk | 19.1 ms | 17.1 ms | 20.7 ms | 1.91× |
+| awkrs | 10.0 ms | 9.5 ms | 10.6 ms | **1.00×** |
 
 ### 3. Sum first column (`{ s += $1 } END { print s }`, 200 K lines)
 
@@ -83,16 +83,16 @@ Cross-record state is not parallel-safe, so awkrs is `-j1` only.
 
 | Command | Mean | Min | Max | Relative |
 |:---|---:|---:|---:|---:|
-| BSD awk | 68.4 ms | 61.0 ms | 80.1 ms | 5.06× |
-| gawk | 16.9 ms | 15.5 ms | 18.0 ms | 1.25× |
-| awkrs `-j1` | 13.5 ms | 12.7 ms | 16.0 ms | **1.00×** |
+| BSD awk | 68.1 ms | 62.8 ms | 110.4 ms | 7.13× |
+| gawk | 18.2 ms | 16.9 ms | 20.4 ms | 1.90× |
+| awkrs `-j1` | 9.5 ms | 8.8 ms | 10.7 ms | **1.00×** |
 
 > Regenerate after `cargo build --release` (requires `hyperfine`; `gawk` optional):
 > ```bash
 > ./scripts/benchmark-vs-awk.sh
 > ```
 
-**Bytecode VM:** the engine compiles AWK programs into a flat bytecode instruction stream, then runs them on a stack-based virtual machine. This eliminates the recursive AST-walking overhead of a tree interpreter — no per-node pattern matching, no heap pointer chasing through `Box<Expr>`, and better CPU cache locality from contiguous instruction arrays. Short-circuit `&&`/`||` and all control flow (loops, break/continue, if/else) are resolved to jump-patched offsets at compile time. The string pool interns all variable names and string constants so the VM refers to them by cheap `u32` index. **Peephole optimizer:** a post-compilation pass fuses common multi-op sequences into single opcodes — `print $N` becomes `PrintFieldStdout` (writes field bytes directly to the output buffer, zero allocations), `s += $N` becomes `AddFieldToSlot` (parses the field as a number in-place without creating an intermediate `String`), `i = i + 1` becomes `IncrSlot` (one f64 add instead of 5 opcodes with multiple `Value::clone()`), and `s += i` between slot variables becomes `AddSlotToSlot` (two f64 reads + one write, no stack traffic). Jump targets are adjusted automatically after fusion. **Indexed variable slots:** scalar variables are assigned `u16` slot indices at compile time and stored in a flat `Vec<Value>` — variable reads and writes are direct array indexing instead of `HashMap` lookups. Special awk variables (`NR`, `FS`, `OFS`, …) and array names remain on the HashMap path. **Zero-copy field splitting:** fields are stored as `(u32, u32)` byte-range pairs into the record string instead of per-field `String` allocations. Owned `String`s are only materialized when a field is modified via `set_field`. **Direct-to-buffer print:** the stdout print path writes `Value::write_to()` directly into a persistent 64 KB `Vec<u8>` buffer (flushed at file boundaries), eliminating per-record `String` allocations, `format!()` calls, and stdout locking. **Cached separators:** OFS/ORS bytes are cached on the runtime and updated only when assigned, eliminating per-`print` HashMap lookups. **Byte-level input:** records are read with `read_until(b'\n')` into a reusable `Vec<u8>` buffer, skipping per-line UTF-8 validation and `String` allocation. **Regex cache:** compiled `Regex` objects are cached in a `HashMap<String, Regex>` so patterns are compiled once, not per-record. **Parallel** mode shares the compiled program via **`Arc`** across rayon workers (zero-copy); each worker gets its own stack, slots, and runtime overlay.
+**Bytecode VM:** the engine compiles AWK programs into a flat bytecode instruction stream, then runs them on a stack-based virtual machine. This eliminates the recursive AST-walking overhead of a tree interpreter — no per-node pattern matching, no heap pointer chasing through `Box<Expr>`, and better CPU cache locality from contiguous instruction arrays. Short-circuit `&&`/`||` and all control flow (loops, break/continue, if/else) are resolved to jump-patched offsets at compile time. The string pool interns all variable names and string constants so the VM refers to them by cheap `u32` index. **Peephole optimizer:** a post-compilation pass fuses common multi-op sequences into single opcodes — `print $N` becomes `PrintFieldStdout` (writes field bytes directly to the output buffer, zero allocations), `s += $N` becomes `AddFieldToSlot` (parses the field as a number in-place without creating an intermediate `String`), `i = i + 1` becomes `IncrSlot` (one f64 add instead of 5 opcodes with multiple `Value::clone()`), and `s += i` between slot variables becomes `AddSlotToSlot` (two f64 reads + one write, no stack traffic). Jump targets are adjusted automatically after fusion. **Inline fast path:** single-rule programs with one fused opcode (e.g. `{ print $1 }`, `{ s += $1 }`) bypass VmCtx creation, pattern dispatch, and the bytecode execute loop entirely — the operation runs as a direct function call in the record loop. **Indexed variable slots:** scalar variables are assigned `u16` slot indices at compile time and stored in a flat `Vec<Value>` — variable reads and writes are direct array indexing instead of `HashMap` lookups. Special awk variables (`NR`, `FS`, `OFS`, …) and array names remain on the HashMap path. **Zero-copy field splitting:** fields are stored as `(u32, u32)` byte-range pairs into the record string instead of per-field `String` allocations. Owned `String`s are only materialized when a field is modified via `set_field`. **Direct-to-buffer print:** the stdout print path writes `Value::write_to()` directly into a persistent 64 KB `Vec<u8>` buffer (flushed at file boundaries), eliminating per-record `String` allocations, `format!()` calls, and stdout locking. **Cached separators:** OFS/ORS bytes are cached on the runtime and updated only when assigned, eliminating per-`print` HashMap lookups. **Byte-level input:** records are read with `read_until(b'\n')` into a reusable `Vec<u8>` buffer, skipping per-line UTF-8 validation and `String` allocation. **Regex cache:** compiled `Regex` objects are cached in a `HashMap<String, Regex>` so patterns are compiled once, not per-record. **Parallel** mode shares the compiled program via **`Arc`** across rayon workers (zero-copy); each worker gets its own stack, slots, and runtime overlay.
 
 ## Still missing or partial
 
