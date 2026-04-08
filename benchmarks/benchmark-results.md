@@ -9,6 +9,7 @@ This file is **generated** by `./scripts/benchmark-vs-awk.sh`. Do not edit by ha
 - **CPU (macOS sysctl):** Apple M5 Max
 - **awk:** `/usr/bin/awk`
 - **gawk:** `/opt/homebrew/bin/gawk` (`GNU Awk 5.4.0, API 4.1, PMA Avon 8-g1, (GNU MPFR 4.2.2, GNU MP 6.3.0)`)
+- **mawk:** `/opt/homebrew/bin/mawk` (`mawk 1.3.4`)
 - **awkrs:** `/Users/wizard/RustroverProjects/awkrs/target/release/awkrs` (`awkrs 0.1.0`)
 
 ## 1. Throughput: print first field
@@ -17,9 +18,10 @@ Input: **200000** lines from `seq 1 200000` (one field per line). Program: `{ pr
 
 | Command | Mean [ms] | Min [ms] | Max [ms] | Relative |
 |:---|---:|---:|---:|---:|
-| `BSD awk` | 75.6 ± 7.9 | 70.2 | 103.2 | 8.54 ± 0.95 |
-| `gawk` | 27.1 ± 2.4 | 24.0 | 34.1 | 3.06 ± 0.29 |
-| `awkrs -j1` | 8.9 ± 0.3 | 8.1 | 9.3 | 1.00 |
+| `BSD awk` | 75.8 ± 7.8 | 69.5 | 95.3 | 9.44 ± 1.26 |
+| `gawk` | 25.2 ± 1.2 | 24.0 | 28.4 | 3.14 ± 0.31 |
+| `mawk` | 17.2 ± 0.6 | 16.4 | 18.8 | 2.14 ± 0.20 |
+| `awkrs -j1` | 8.0 ± 0.7 | 7.5 | 9.6 | 1.00 |
 
 ## 2. CPU-bound BEGIN (no input)
 
@@ -27,9 +29,10 @@ Program: `BEGIN { s = 0; for (i = 1; i < 400001; i = i + 1) s += i; print s }` (
 
 | Command | Mean [ms] | Min [ms] | Max [ms] | Relative |
 |:---|---:|---:|---:|---:|
-| `BSD awk` | 14.5 ± 1.1 | 13.0 | 16.4 | 1.45 ± 0.12 |
-| `gawk` | 19.1 ± 1.1 | 17.1 | 20.7 | 1.91 ± 0.12 |
-| `awkrs` | 10.0 ± 0.3 | 9.5 | 10.6 | 1.00 |
+| `BSD awk` | 14.5 ± 0.8 | 13.2 | 16.5 | 1.45 ± 0.11 |
+| `gawk` | 19.5 ± 0.8 | 17.9 | 21.2 | 1.95 ± 0.12 |
+| `mawk` | 10.0 ± 0.5 | 9.5 | 11.1 | 1.00 |
+| `awkrs` | 10.9 ± 0.5 | 9.9 | 12.0 | 1.09 ± 0.07 |
 
 ## 3. Sum first column (single-threaded)
 
@@ -37,9 +40,10 @@ Same input as §1. Program: `{ s += $1 } END { print s }`. (Cross-record state i
 
 | Command | Mean [ms] | Min [ms] | Max [ms] | Relative |
 |:---|---:|---:|---:|---:|
-| `BSD awk` | 68.1 ± 10.7 | 62.8 | 110.4 | 7.13 ± 1.17 |
-| `gawk` | 18.2 ± 0.8 | 16.9 | 20.4 | 1.90 ± 0.12 |
-| `awkrs -j1` | 9.5 ± 0.4 | 8.8 | 10.7 | 1.00 |
+| `BSD awk` | 66.6 ± 5.3 | 61.6 | 82.1 | 7.60 ± 0.68 |
+| `gawk` | 17.5 ± 0.7 | 16.6 | 18.9 | 2.00 ± 0.11 |
+| `mawk` | 11.4 ± 0.6 | 10.4 | 12.4 | 1.31 ± 0.08 |
+| `awkrs -j1` | 8.8 ± 0.4 | 7.9 | 9.3 | 1.00 |
 
 ---
 

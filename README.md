@@ -55,17 +55,18 @@ On pushes and pull requests to `main`, [GitHub Actions](.github/workflows/ci.yml
 
 Library unit tests cover `format` (including locale decimal radix for float conversions), lexer, and parser; integration tests live in `tests/integration.rs` and `tests/more_integration.rs` with shared helpers in `tests/common.rs`. End-to-end coverage includes the **`in`** operator, **`-N` / `--use-lc-numeric`** with `LC_NUMERIC`, and **stdin vs. file** parallel record behavior.
 
-## Benchmarks (vs awk / gawk)
+## Benchmarks (vs awk / gawk / mawk)
 
-Measured with [hyperfine](https://github.com/sharkdp/hyperfine) on **Apple M5 Max** (macOS, `arm64`). BSD awk (`/usr/bin/awk`), GNU awk 5.4.0, awkrs 0.1.0. Full raw output in [`benchmarks/benchmark-results.md`](benchmarks/benchmark-results.md).
+Measured with [hyperfine](https://github.com/sharkdp/hyperfine) on **Apple M5 Max** (macOS, `arm64`). BSD awk (`/usr/bin/awk`), GNU awk 5.4.0, mawk 1.3.4, awkrs 0.1.0. Full raw output in [`benchmarks/benchmark-results.md`](benchmarks/benchmark-results.md).
 
 ### 1. Throughput: `{ print $1 }` over 200 K lines
 
 | Command | Mean | Min | Max | Relative |
 |:---|---:|---:|---:|---:|
-| BSD awk | 75.6 ms | 70.2 ms | 103.2 ms | 8.54× |
-| gawk | 27.1 ms | 24.0 ms | 34.1 ms | 3.06× |
-| awkrs `-j1` | 8.9 ms | 8.1 ms | 9.3 ms | **1.00×** |
+| BSD awk | 75.8 ms | 69.5 ms | 95.3 ms | 9.44× |
+| gawk | 25.2 ms | 24.0 ms | 28.4 ms | 3.14× |
+| mawk | 17.2 ms | 16.4 ms | 18.8 ms | 2.14× |
+| awkrs `-j1` | 8.0 ms | 7.5 ms | 9.6 ms | **1.00×** |
 
 ### 2. CPU-bound BEGIN (no input)
 
@@ -73,9 +74,10 @@ Measured with [hyperfine](https://github.com/sharkdp/hyperfine) on **Apple M5 Ma
 
 | Command | Mean | Min | Max | Relative |
 |:---|---:|---:|---:|---:|
-| BSD awk | 14.5 ms | 13.0 ms | 16.4 ms | 1.45× |
-| gawk | 19.1 ms | 17.1 ms | 20.7 ms | 1.91× |
-| awkrs | 10.0 ms | 9.5 ms | 10.6 ms | **1.00×** |
+| BSD awk | 14.5 ms | 13.2 ms | 16.5 ms | 1.45× |
+| gawk | 19.5 ms | 17.9 ms | 21.2 ms | 1.95× |
+| mawk | 10.0 ms | 9.5 ms | 11.1 ms | **1.00×** |
+| awkrs | 10.9 ms | 9.9 ms | 12.0 ms | 1.09× |
 
 ### 3. Sum first column (`{ s += $1 } END { print s }`, 200 K lines)
 
@@ -83,9 +85,10 @@ Cross-record state is not parallel-safe, so awkrs is `-j1` only.
 
 | Command | Mean | Min | Max | Relative |
 |:---|---:|---:|---:|---:|
-| BSD awk | 68.1 ms | 62.8 ms | 110.4 ms | 7.13× |
-| gawk | 18.2 ms | 16.9 ms | 20.4 ms | 1.90× |
-| awkrs `-j1` | 9.5 ms | 8.8 ms | 10.7 ms | **1.00×** |
+| BSD awk | 66.6 ms | 61.6 ms | 82.1 ms | 7.60× |
+| gawk | 17.5 ms | 16.6 ms | 18.9 ms | 2.00× |
+| mawk | 11.4 ms | 10.4 ms | 12.4 ms | 1.31× |
+| awkrs `-j1` | 8.8 ms | 7.9 ms | 9.3 ms | **1.00×** |
 
 > Regenerate after `cargo build --release` (requires `hyperfine`; `gawk` optional):
 > ```bash
