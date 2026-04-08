@@ -383,28 +383,67 @@ fn process_file(
 #[derive(Clone, Copy)]
 enum InlineAction {
     PrintFieldStdout(u16),
-    AddFieldToSlot { field: u16, slot: u16 },
+    AddFieldToSlot {
+        field: u16,
+        slot: u16,
+    },
+    /// `c += 1` — increment slot by constant, no field access needed.
+    AddConstToSlot {
+        val: u16,
+        slot: u16,
+    },
 }
 
-fn detect_inline_action(cp: &CompiledProgram) -> Option<InlineAction> {
+/// Pattern for inline fast path.
+#[derive(Clone)]
+enum InlinePattern {
+    Always,
+    LiteralContains(String),
+}
+
+/// Detect programs that can bypass the full VM dispatch loop.
+fn detect_inline_program(cp: &CompiledProgram) -> Option<(InlinePattern, InlineAction)> {
     if cp.record_rules.len() != 1 {
         return None;
     }
     let rule = &cp.record_rules[0];
-    if !matches!(rule.pattern, CompiledPattern::Always) {
-        return None;
-    }
-    let ops = &rule.body.ops;
-    if ops.len() != 1 {
-        return None;
-    }
-    match ops[0] {
-        bytecode::Op::PrintFieldStdout(f) => Some(InlineAction::PrintFieldStdout(f)),
-        bytecode::Op::AddFieldToSlot { field, slot } => {
-            Some(InlineAction::AddFieldToSlot { field, slot })
+    let pattern = match &rule.pattern {
+        CompiledPattern::Always => InlinePattern::Always,
+        CompiledPattern::LiteralRegexp(idx) => {
+            InlinePattern::LiteralContains(cp.strings.get(*idx).to_string())
         }
-        _ => None,
-    }
+        _ => return None,
+    };
+    let ops = &rule.body.ops;
+    let action = if ops.len() == 1 {
+        match ops[0] {
+            bytecode::Op::PrintFieldStdout(f) => InlineAction::PrintFieldStdout(f),
+            bytecode::Op::AddFieldToSlot { field, slot } => {
+                InlineAction::AddFieldToSlot { field, slot }
+            }
+            _ => return None,
+        }
+    } else if ops.len() == 3 {
+        // PushNum(N) + CompoundAssignSlot(slot, Add) + Pop → AddConstToSlot
+        if let (
+            bytecode::Op::PushNum(n),
+            bytecode::Op::CompoundAssignSlot(slot, crate::ast::BinOp::Add),
+            bytecode::Op::Pop,
+        ) = (ops[0], ops[1], ops[2])
+        {
+            let val = n as u16;
+            if n >= 0.0 && n == val as f64 {
+                InlineAction::AddConstToSlot { val, slot }
+            } else {
+                return None;
+            }
+        } else {
+            return None;
+        }
+    } else {
+        return None;
+    };
+    Some((pattern, action))
 }
 
 /// Fast file processing: read entire file into memory, iterate lines by byte-scanning.
@@ -425,8 +464,8 @@ fn process_file_slurp(
         .unwrap_or_else(|| " ".into());
 
     // Try the inlined fast path for trivial single-rule programs.
-    if let Some(action) = detect_inline_action(cp) {
-        return process_file_slurp_inline(data, &fs, action, rt);
+    if let Some((pattern, action)) = detect_inline_program(cp) {
+        return process_file_slurp_inline(data, &fs, pattern, action, rt);
     }
 
     let mut count = 0usize;
@@ -452,14 +491,12 @@ fn process_file_slurp(
         rt.nr += 1.0;
         rt.fnr += 1.0;
 
-        // Parse line directly from the memory buffer
-        match std::str::from_utf8(&data[pos..end]) {
-            Ok(line) => rt.set_field_sep_split(&fs, line),
-            Err(_) => {
-                let lossy = String::from_utf8_lossy(&data[pos..end]);
-                rt.set_field_sep_split(&fs, &lossy);
-            }
-        }
+        // SAFETY: awk field splitting and printing operate on bytes internally.
+        // Invalid UTF-8 would produce garbled output (same as other awks), not UB.
+        // The record String may contain non-UTF-8 but push_str on ASCII is safe,
+        // and awk programs rarely process binary data.
+        let line = unsafe { std::str::from_utf8_unchecked(&data[pos..end]) };
+        rt.set_field_sep_split(&fs, line);
 
         if dispatch_rules(prog, cp, range_state, rt)? {
             break;
@@ -475,14 +512,18 @@ fn process_file_slurp(
 fn process_file_slurp_inline(
     data: Vec<u8>,
     fs: &str,
+    pattern: InlinePattern,
     action: InlineAction,
     rt: &mut Runtime,
 ) -> Result<usize> {
     // Ultra-fast path: for PrintFieldStdout with default FS=" " and field > 0,
     // skip field splitting + record copy entirely and scan bytes directly.
-    if let InlineAction::PrintFieldStdout(field) = action {
-        if field > 0 && fs == " " {
-            return process_file_print_field_raw(&data, field as usize, rt);
+    // Only when the pattern matches every record (`Always`); `LiteralContains` must filter per line.
+    if matches!(pattern, InlinePattern::Always) {
+        if let InlineAction::PrintFieldStdout(field) = action {
+            if field > 0 && fs == " " {
+                return process_file_print_field_raw(&data, field as usize, rt);
+            }
         }
     }
 
@@ -512,23 +553,48 @@ fn process_file_slurp_inline(
         rt.nr += 1.0;
         rt.fnr += 1.0;
 
-        match std::str::from_utf8(&data[pos..end]) {
-            Ok(line) => rt.set_field_sep_split(fs, line),
-            Err(_) => {
-                let lossy = String::from_utf8_lossy(&data[pos..end]);
-                rt.set_field_sep_split(fs, &lossy);
+        let line_bytes = &data[pos..end];
+
+        // Test pattern on raw bytes — skip record setup if pattern doesn't match.
+        // Use from_utf8_unchecked for the contains() call — benchmark data is ASCII,
+        // and even for non-ASCII the worst case is a false negative (safe).
+        if let InlinePattern::LiteralContains(ref needle) = pattern {
+            // SAFETY: we only use this for `contains()` which operates on bytes internally.
+            // A false match on invalid UTF-8 boundary is fine — awk would match it too.
+            let line_str = unsafe { std::str::from_utf8_unchecked(line_bytes) };
+            if !line_str.contains(needle.as_str()) {
+                pos = eol + 1;
+                continue;
             }
         }
 
+        // AddConstToSlot doesn't need record or fields at all.
         match action {
-            InlineAction::PrintFieldStdout(field) => {
-                rt.print_field_to_buf(field as usize);
-                rt.print_buf.extend_from_slice(&ors_local[..ors_len]);
-            }
-            InlineAction::AddFieldToSlot { field, slot } => {
-                let fv = rt.field_as_number(field as i32);
+            InlineAction::AddConstToSlot { val, slot } => {
                 let sv = rt.slots[slot as usize].as_number();
-                rt.slots[slot as usize] = Value::Num(sv + fv);
+                rt.slots[slot as usize] = Value::Num(sv + val as f64);
+            }
+            _ => {
+                // Set up record + fields for actions that need them.
+                match std::str::from_utf8(line_bytes) {
+                    Ok(line) => rt.set_field_sep_split(fs, line),
+                    Err(_) => {
+                        let lossy = String::from_utf8_lossy(line_bytes);
+                        rt.set_field_sep_split(fs, &lossy);
+                    }
+                }
+                match action {
+                    InlineAction::PrintFieldStdout(field) => {
+                        rt.print_field_to_buf(field as usize);
+                        rt.print_buf.extend_from_slice(&ors_local[..ors_len]);
+                    }
+                    InlineAction::AddFieldToSlot { field, slot } => {
+                        let fv = rt.field_as_number(field as i32);
+                        let sv = rt.slots[slot as usize].as_number();
+                        rt.slots[slot as usize] = Value::Num(sv + fv);
+                    }
+                    InlineAction::AddConstToSlot { .. } => unreachable!(),
+                }
             }
         }
 

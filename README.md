@@ -57,7 +57,7 @@ Library unit tests cover `format` (including locale decimal radix for float conv
 
 ## Benchmarks (vs awk / gawk / mawk)
 
-Measured with [hyperfine](https://github.com/sharkdp/hyperfine) on **Apple M5 Max** (macOS, `arm64`). BSD awk (`/usr/bin/awk`), GNU awk 5.4.0, mawk 1.3.4, awkrs 0.1.0. Full raw output in [`benchmarks/benchmark-results.md`](benchmarks/benchmark-results.md).
+Measured with [hyperfine](https://github.com/sharkdp/hyperfine) on **Apple M5 Max** (macOS, `arm64`). BSD awk (`/usr/bin/awk`), GNU awk 5.4.0, mawk 1.3.4, awkrs 0.1.1. Full raw output in [`benchmarks/benchmark-results.md`](benchmarks/benchmark-results.md).
 
 ### 1. Throughput: `{ print $1 }` over 200 K lines
 
