@@ -229,6 +229,12 @@ pub enum Op {
     /// `$N` as number: push field N parsed as f64 directly, no String allocation.
     /// Eliminates: PushNum(N) + GetField when followed by arithmetic.
     PushFieldNum(u16),
+    /// Push NR directly as Value::Num — avoids HashMap lookup for special variable.
+    GetNR,
+    /// Push FNR directly as Value::Num.
+    GetFNR,
+    /// Push NF directly as Value::Num.
+    GetNF,
     /// `if (slot < limit) goto target` fused loop condition.
     /// Eliminates: GetSlot + PushNum(limit) + CmpLt + JumpIfFalsePop (4 ops → 1).
     JumpIfSlotGeNum {

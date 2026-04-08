@@ -655,6 +655,12 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             }
 
             // ── Fused opcodes ──────────────────────────────────────────
+            Op::GetNR => ctx.push(Value::Num(ctx.rt.nr)),
+            Op::GetFNR => ctx.push(Value::Num(ctx.rt.fnr)),
+            Op::GetNF => {
+                let nf = ctx.rt.nf() as f64;
+                ctx.push(Value::Num(nf));
+            }
             Op::PushFieldNum(field) => {
                 let n = ctx.rt.field_as_number(field as i32);
                 ctx.push(Value::Num(n));

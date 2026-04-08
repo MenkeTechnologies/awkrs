@@ -442,11 +442,19 @@ impl Compiler {
                 ops.push(Op::PushStr(idx));
             }
             Expr::Var(name) => {
-                if let Some(slot) = self.var_slot(name) {
-                    ops.push(Op::GetSlot(slot));
-                } else {
-                    let idx = self.strings.intern(name);
-                    ops.push(Op::GetVar(idx));
+                // Direct opcodes for frequently-accessed special variables.
+                match name.as_str() {
+                    "NR" => ops.push(Op::GetNR),
+                    "FNR" => ops.push(Op::GetFNR),
+                    "NF" => ops.push(Op::GetNF),
+                    _ => {
+                        if let Some(slot) = self.var_slot(name) {
+                            ops.push(Op::GetSlot(slot));
+                        } else {
+                            let idx = self.strings.intern(name);
+                            ops.push(Op::GetVar(idx));
+                        }
+                    }
                 }
             }
             Expr::Field(inner) => {
