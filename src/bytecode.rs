@@ -206,6 +206,17 @@ pub enum Op {
     // ── Pattern helpers ─────────────────────────────────────────────────
     /// Test regex (by pool index) against `$0`, push `Num(0/1)`.
     MatchRegexp(u32),
+
+    // ── Fused opcodes (peephole) ────────────────────────────────────────
+    /// `s += $N` fused: read field N as number, add to slot, discard result.
+    /// Eliminates: PushNum + GetField + CompoundAssignSlot(Add) + Pop.
+    AddFieldToSlot {
+        field: u16,
+        slot: u16,
+    },
+    /// `print $N` to stdout fused: write field N bytes directly to print_buf.
+    /// Eliminates: PushNum + GetField + Print{1,Stdout} (3 ops → 1).
+    PrintFieldStdout(u16),
 }
 
 // ── Compiled structures ─────────────────────────────────────────────────────

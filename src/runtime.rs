@@ -151,6 +151,10 @@ pub struct Runtime {
     pub regex_cache: HashMap<String, Regex>,
     /// Persistent stdout buffer — shared across record iterations, flushed at file boundaries.
     pub print_buf: Vec<u8>,
+    /// Cached OFS bytes — avoids HashMap lookup + Vec alloc on every `print` call.
+    pub ofs_bytes: Vec<u8>,
+    /// Cached ORS bytes — avoids HashMap lookup + Vec alloc on every `print` call.
+    pub ors_bytes: Vec<u8>,
 }
 
 impl Runtime {
@@ -185,6 +189,8 @@ impl Runtime {
             slots: Vec::new(),
             regex_cache: HashMap::new(),
             print_buf: Vec::with_capacity(65536),
+            ofs_bytes: b" ".to_vec(),
+            ors_bytes: b"\n".to_vec(),
         }
     }
 
@@ -219,6 +225,8 @@ impl Runtime {
             slots: Vec::new(),
             regex_cache: HashMap::new(),
             print_buf: Vec::new(),
+            ofs_bytes: b" ".to_vec(),
+            ors_bytes: b"\n".to_vec(),
         }
     }
 
@@ -526,6 +534,45 @@ impl Runtime {
         }
     }
 
+    /// Get field value as f64 directly without allocating a String.
+    #[inline]
+    pub fn field_as_number(&self, i: i32) -> f64 {
+        if i < 0 {
+            return 0.0;
+        }
+        let idx = i as usize;
+        if idx == 0 {
+            return parse_number(&self.record);
+        }
+        if self.fields_dirty {
+            self.fields
+                .get(idx - 1)
+                .map(|s| parse_number(s))
+                .unwrap_or(0.0)
+        } else {
+            self.field_ranges
+                .get(idx - 1)
+                .map(|&(s, e)| parse_number(&self.record[s as usize..e as usize]))
+                .unwrap_or(0.0)
+        }
+    }
+
+    /// Write field bytes directly into print_buf without allocating a String.
+    /// Uses split borrowing within the method to avoid borrow conflicts.
+    #[inline]
+    pub fn print_field_to_buf(&mut self, idx: usize) {
+        if idx == 0 {
+            self.print_buf.extend_from_slice(self.record.as_bytes());
+        } else if self.fields_dirty {
+            if let Some(s) = self.fields.get(idx - 1) {
+                self.print_buf.extend_from_slice(s.as_bytes());
+            }
+        } else if let Some(&(s, e)) = self.field_ranges.get(idx - 1) {
+            self.print_buf
+                .extend_from_slice(&self.record.as_bytes()[s as usize..e as usize]);
+        }
+    }
+
     /// Get a field as &str without allocating (zero-copy from record).
     #[allow(dead_code)]
     pub fn field_str(&self, i: usize) -> &str {
@@ -741,6 +788,8 @@ impl Clone for Runtime {
             slots: self.slots.clone(),
             regex_cache: self.regex_cache.clone(),
             print_buf: Vec::new(),
+            ofs_bytes: self.ofs_bytes.clone(),
+            ors_bytes: self.ors_bytes.clone(),
         }
     }
 }

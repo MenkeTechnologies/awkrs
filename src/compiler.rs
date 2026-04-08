@@ -128,6 +128,7 @@ impl Compiler {
     fn compile_chunk(&mut self, stmts: &[Stmt]) -> Chunk {
         let mut ops = Vec::new();
         self.compile_stmts(stmts, &mut ops);
+        peephole_optimize(&mut ops);
         Chunk { ops }
     }
 
@@ -850,5 +851,55 @@ fn collect_array_names_expr(e: &Expr, names: &mut HashSet<String>) {
             collect_array_names_expr(else_, names);
         }
         Expr::Number(_) | Expr::Str(_) | Expr::Var(_) => {}
+    }
+}
+
+/// Peephole optimizer: fuse common multi-op sequences into single opcodes.
+/// Runs in a single pass over the instruction stream after compilation.
+fn peephole_optimize(ops: &mut Vec<Op>) {
+    let mut i = 0;
+    while i + 3 < ops.len() {
+        // Pattern: PushNum(N) + GetField + Print{argc:1, Stdout} → PrintFieldStdout(N)
+        // where N is a small positive integer (field index).
+        if let (
+            Op::PushNum(n),
+            Op::GetField,
+            Op::Print {
+                argc: 1,
+                redir: RedirKind::Stdout,
+            },
+        ) = (ops[i], ops[i + 1], ops[i + 2])
+        {
+            let field = n as u16;
+            if n >= 0.0 && n == field as f64 {
+                ops[i] = Op::PrintFieldStdout(field);
+                ops.remove(i + 2);
+                ops.remove(i + 1);
+                continue;
+            }
+        }
+
+        // Pattern: PushNum(N) + GetField + CompoundAssignSlot(slot, Add) + Pop
+        //        → AddFieldToSlot { field: N, slot }
+        if i + 4 <= ops.len() {
+            if let (
+                Op::PushNum(n),
+                Op::GetField,
+                Op::CompoundAssignSlot(slot, BinOp::Add),
+                Op::Pop,
+            ) = (ops[i], ops[i + 1], ops[i + 2], ops[i + 3])
+            {
+                let field = n as u16;
+                if n >= 0.0 && n == field as f64 {
+                    ops[i] = Op::AddFieldToSlot { field, slot };
+                    ops.remove(i + 3);
+                    ops.remove(i + 2);
+                    ops.remove(i + 1);
+                    continue;
+                }
+            }
+        }
+
+        i += 1;
     }
 }

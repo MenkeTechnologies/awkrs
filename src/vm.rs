@@ -111,6 +111,12 @@ impl<'a> VmCtx<'a> {
             self.rt.slots[slot as usize] = val;
             return;
         }
+        // Update cached OFS/ORS bytes when those vars change.
+        match name {
+            "OFS" => self.rt.ofs_bytes = val.as_str().into_bytes(),
+            "ORS" => self.rt.ors_bytes = val.as_str().into_bytes(),
+            _ => {}
+        }
         self.rt.vars.insert(name.to_string(), val);
     }
 
@@ -606,6 +612,20 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 let m = ctx.rt.regex_ref(&pat).is_match(&ctx.rt.record);
                 ctx.push(Value::Num(if m { 1.0 } else { 0.0 }));
             }
+
+            // ── Fused opcodes ──────────────────────────────────────────
+            Op::AddFieldToSlot { field, slot } => {
+                let field_val = ctx.rt.field_as_number(field as i32);
+                let old = ctx.rt.slots[slot as usize].as_number();
+                ctx.rt.slots[slot as usize] = Value::Num(old + field_val);
+            }
+            Op::PrintFieldStdout(field) => {
+                ctx.rt.print_field_to_buf(field as usize);
+                let mut ors_local = [0u8; 64];
+                let ors_len = ctx.rt.ors_bytes.len().min(64);
+                ors_local[..ors_len].copy_from_slice(&ctx.rt.ors_bytes[..ors_len]);
+                ctx.rt.print_buf.extend_from_slice(&ors_local[..ors_len]);
+            }
         }
         pc += 1;
     }
@@ -726,52 +746,31 @@ fn exec_print(ctx: &mut VmCtx<'_>, argc: u16, redir: RedirKind, is_printf: bool)
         emit_with_redir(ctx, &s, redir, redir_path.as_deref())?;
     } else if redir == RedirKind::Stdout && ctx.print_out.is_none() {
         // ── Fast path: write directly into rt.print_buf, zero intermediate allocs ──
-        let ofs_bytes: Vec<u8> = ctx
-            .rt
-            .vars
-            .get("OFS")
-            .map(|v| match v {
-                Value::Str(s) => s.as_bytes().to_vec(),
-                _ => b" ".to_vec(),
-            })
-            .unwrap_or_else(|| b" ".to_vec());
-        let ors_bytes: Vec<u8> = ctx
-            .rt
-            .vars
-            .get("ORS")
-            .map(|v| match v {
-                Value::Str(s) => s.as_bytes().to_vec(),
-                _ => b"\n".to_vec(),
-            })
-            .unwrap_or_else(|| b"\n".to_vec());
+        // Copy separators to stack (typically 1-2 bytes) to avoid borrow conflict with print_buf.
+        let mut ofs_local = [0u8; 64];
+        let ofs_len = ctx.rt.ofs_bytes.len().min(64);
+        ofs_local[..ofs_len].copy_from_slice(&ctx.rt.ofs_bytes[..ofs_len]);
+        let mut ors_local = [0u8; 64];
+        let ors_len = ctx.rt.ors_bytes.len().min(64);
+        ors_local[..ors_len].copy_from_slice(&ctx.rt.ors_bytes[..ors_len]);
 
         if argc == 0 {
             ctx.rt.print_buf.extend_from_slice(ctx.rt.record.as_bytes());
         } else {
             let start = ctx.stack.len() - argc;
-            let args: Vec<Value> = ctx.stack.drain(start..).collect();
-            for (i, val) in args.iter().enumerate() {
+            for i in 0..argc {
                 if i > 0 {
-                    ctx.rt.print_buf.extend_from_slice(&ofs_bytes);
+                    ctx.rt.print_buf.extend_from_slice(&ofs_local[..ofs_len]);
                 }
-                val.write_to(&mut ctx.rt.print_buf);
+                ctx.stack[start + i].write_to(&mut ctx.rt.print_buf);
             }
+            ctx.stack.truncate(start);
         }
-        ctx.rt.print_buf.extend_from_slice(&ors_bytes);
+        ctx.rt.print_buf.extend_from_slice(&ors_local[..ors_len]);
     } else {
         // ── Redirect / capture path: build String (I/O dominates, alloc is fine) ──
-        let ofs = ctx
-            .rt
-            .vars
-            .get("OFS")
-            .map(|v| v.as_str())
-            .unwrap_or_else(|| " ".into());
-        let ors = ctx
-            .rt
-            .vars
-            .get("ORS")
-            .map(|v| v.as_str())
-            .unwrap_or_else(|| "\n".into());
+        let ofs = String::from_utf8_lossy(&ctx.rt.ofs_bytes).into_owned();
+        let ors = String::from_utf8_lossy(&ctx.rt.ors_bytes).into_owned();
 
         let line = if argc == 0 {
             ctx.rt.record.clone()
