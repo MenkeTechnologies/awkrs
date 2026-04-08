@@ -217,6 +217,15 @@ pub enum Op {
     /// `print $N` to stdout fused: write field N bytes directly to print_buf.
     /// Eliminates: PushNum + GetField + Print{1,Stdout} (3 ops → 1).
     PrintFieldStdout(u16),
+    /// `i = i + 1` fused: increment slot by 1.0 in-place.
+    /// Eliminates: GetSlot + PushNum(1) + Add + SetSlot + Pop (5 ops → 1).
+    IncrSlot(u16),
+    /// `s += i` fused: add src slot value to dst slot, discard result.
+    /// Eliminates: GetSlot + CompoundAssignSlot(Add) + Pop (3 ops → 1).
+    AddSlotToSlot {
+        src: u16,
+        dst: u16,
+    },
 }
 
 // ── Compiled structures ─────────────────────────────────────────────────────

@@ -626,6 +626,16 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 ors_local[..ors_len].copy_from_slice(&ctx.rt.ors_bytes[..ors_len]);
                 ctx.rt.print_buf.extend_from_slice(&ors_local[..ors_len]);
             }
+            Op::IncrSlot(slot) => {
+                let s = slot as usize;
+                let n = ctx.rt.slots[s].as_number();
+                ctx.rt.slots[s] = Value::Num(n + 1.0);
+            }
+            Op::AddSlotToSlot { src, dst } => {
+                let sv = ctx.rt.slots[src as usize].as_number();
+                let dv = ctx.rt.slots[dst as usize].as_number();
+                ctx.rt.slots[dst as usize] = Value::Num(dv + sv);
+            }
         }
         pc += 1;
     }

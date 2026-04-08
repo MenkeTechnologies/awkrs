@@ -855,27 +855,31 @@ fn collect_array_names_expr(e: &Expr, names: &mut HashSet<String>) {
 }
 
 /// Peephole optimizer: fuse common multi-op sequences into single opcodes.
-/// Runs in a single pass over the instruction stream after compilation.
+/// Runs in a single pass, recording removals, then adjusting jump targets.
 fn peephole_optimize(ops: &mut Vec<Op>) {
+    // Phase 1: identify fusions. We build a list of (position, replacement_op, count_removed).
+    // To avoid invalidating indices, we scan and collect, then apply in reverse order.
+    let mut fusions: Vec<(usize, Op, usize)> = Vec::new(); // (pos, new_op, ops_removed_after_pos)
+
     let mut i = 0;
-    while i + 3 < ops.len() {
+    while i < ops.len() {
         // Pattern: PushNum(N) + GetField + Print{argc:1, Stdout} → PrintFieldStdout(N)
-        // where N is a small positive integer (field index).
-        if let (
-            Op::PushNum(n),
-            Op::GetField,
-            Op::Print {
-                argc: 1,
-                redir: RedirKind::Stdout,
-            },
-        ) = (ops[i], ops[i + 1], ops[i + 2])
-        {
-            let field = n as u16;
-            if n >= 0.0 && n == field as f64 {
-                ops[i] = Op::PrintFieldStdout(field);
-                ops.remove(i + 2);
-                ops.remove(i + 1);
-                continue;
+        if i + 3 <= ops.len() {
+            if let (
+                Op::PushNum(n),
+                Op::GetField,
+                Op::Print {
+                    argc: 1,
+                    redir: RedirKind::Stdout,
+                },
+            ) = (ops[i], ops[i + 1], ops[i + 2])
+            {
+                let field = n as u16;
+                if n >= 0.0 && n == field as f64 {
+                    fusions.push((i, Op::PrintFieldStdout(field), 2));
+                    i += 3;
+                    continue;
+                }
             }
         }
 
@@ -891,15 +895,91 @@ fn peephole_optimize(ops: &mut Vec<Op>) {
             {
                 let field = n as u16;
                 if n >= 0.0 && n == field as f64 {
-                    ops[i] = Op::AddFieldToSlot { field, slot };
-                    ops.remove(i + 3);
-                    ops.remove(i + 2);
-                    ops.remove(i + 1);
+                    fusions.push((i, Op::AddFieldToSlot { field, slot }, 3));
+                    i += 4;
+                    continue;
+                }
+            }
+        }
+
+        // Pattern: GetSlot(src) + CompoundAssignSlot(dst, Add) + Pop
+        //        → AddSlotToSlot { src, dst }
+        if i + 3 <= ops.len() {
+            if let (Op::GetSlot(src), Op::CompoundAssignSlot(dst, BinOp::Add), Op::Pop) =
+                (ops[i], ops[i + 1], ops[i + 2])
+            {
+                fusions.push((i, Op::AddSlotToSlot { src, dst }, 2));
+                i += 3;
+                continue;
+            }
+        }
+
+        // Pattern: GetSlot(s) + PushNum(1.0) + Add + SetSlot(s) + Pop
+        //        → IncrSlot(s)
+        if i + 5 <= ops.len() {
+            if let (Op::GetSlot(s1), Op::PushNum(n), Op::Add, Op::SetSlot(s2), Op::Pop) =
+                (ops[i], ops[i + 1], ops[i + 2], ops[i + 3], ops[i + 4])
+            {
+                if s1 == s2 && n == 1.0 {
+                    fusions.push((i, Op::IncrSlot(s1), 4));
+                    i += 5;
                     continue;
                 }
             }
         }
 
         i += 1;
+    }
+
+    if fusions.is_empty() {
+        return;
+    }
+
+    // Phase 2: build index mapping (old position → new position).
+    // Each fusion at pos removes `removed` ops starting at pos+1.
+    let old_len = ops.len();
+    let mut offset_map = vec![0usize; old_len + 1]; // +1 for end-of-chunk targets
+    let mut adjustment: usize = 0;
+    let mut fi = 0;
+    for pos in 0..=old_len {
+        if fi < fusions.len() {
+            let (fpos, _, removed) = fusions[fi];
+            // The removed ops are at positions fpos+1 .. fpos+removed (inclusive).
+            if pos > fpos && pos <= fpos + removed {
+                // This position is being removed — map to the fused op position.
+                offset_map[pos] = fpos - adjustment;
+                if pos == fpos + removed {
+                    adjustment += removed;
+                    fi += 1;
+                }
+                continue;
+            }
+            if pos == fpos + removed {
+                adjustment += removed;
+                fi += 1;
+            }
+        }
+        offset_map[pos] = pos - adjustment;
+    }
+
+    // Phase 3: apply fusions in reverse order to preserve indices.
+    for &(pos, ref new_op, removed) in fusions.iter().rev() {
+        ops[pos] = *new_op;
+        for _ in 0..removed {
+            ops.remove(pos + 1);
+        }
+    }
+
+    // Phase 4: adjust all jump targets using the offset map.
+    for op in ops.iter_mut() {
+        match op {
+            Op::Jump(ref mut t) => *t = offset_map[*t],
+            Op::JumpIfFalsePop(ref mut t) => *t = offset_map[*t],
+            Op::JumpIfTruePop(ref mut t) => *t = offset_map[*t],
+            Op::ForInNext {
+                ref mut end_jump, ..
+            } => *end_jump = offset_map[*end_jump],
+            _ => {}
+        }
     }
 }
