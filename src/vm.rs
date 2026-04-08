@@ -89,13 +89,11 @@ impl<'a> VmCtx<'a> {
             .unwrap_or_else(|| match name {
                 "NR" => Value::Num(self.rt.nr),
                 "FNR" => Value::Num(self.rt.fnr),
-                "NF" => Value::Num(
-                    if self.rt.fields_dirty {
-                        self.rt.fields.len()
-                    } else {
-                        self.rt.field_ranges.len()
-                    } as f64,
-                ),
+                "NF" => Value::Num(if self.rt.fields_dirty {
+                    self.rt.fields.len()
+                } else {
+                    self.rt.field_ranges.len()
+                } as f64),
                 "FILENAME" => Value::Str(self.rt.filename.clone()),
                 _ => Value::Str(String::new()),
             })
@@ -154,9 +152,7 @@ pub fn vm_run_begin(cp: &CompiledProgram, rt: &mut Runtime) -> Result<()> {
     for chunk in &cp.begin_chunks {
         match execute(chunk, &mut ctx)? {
             VmSignal::Next => return Err(Error::Runtime("`next` is invalid in BEGIN".into())),
-            VmSignal::Return(_) => {
-                return Err(Error::Runtime("`return` outside function".into()))
-            }
+            VmSignal::Return(_) => return Err(Error::Runtime("`return` outside function".into())),
             VmSignal::ExitPending => return Ok(()),
             VmSignal::Normal => {}
         }
@@ -169,9 +165,7 @@ pub fn vm_run_end(cp: &CompiledProgram, rt: &mut Runtime) -> Result<()> {
     for chunk in &cp.end_chunks {
         match execute(chunk, &mut ctx)? {
             VmSignal::Next => return Err(Error::Runtime("`next` is invalid in END".into())),
-            VmSignal::Return(_) => {
-                return Err(Error::Runtime("`return` outside function".into()))
-            }
+            VmSignal::Return(_) => return Err(Error::Runtime("`return` outside function".into())),
             VmSignal::ExitPending => return Ok(()),
             VmSignal::Normal => {}
         }
@@ -183,12 +177,8 @@ pub fn vm_run_beginfile(cp: &CompiledProgram, rt: &mut Runtime) -> Result<()> {
     let mut ctx = VmCtx::new(cp, rt);
     for chunk in &cp.beginfile_chunks {
         match execute(chunk, &mut ctx)? {
-            VmSignal::Next => {
-                return Err(Error::Runtime("`next` is invalid in BEGINFILE".into()))
-            }
-            VmSignal::Return(_) => {
-                return Err(Error::Runtime("`return` outside function".into()))
-            }
+            VmSignal::Next => return Err(Error::Runtime("`next` is invalid in BEGINFILE".into())),
+            VmSignal::Return(_) => return Err(Error::Runtime("`return` outside function".into())),
             VmSignal::ExitPending => return Ok(()),
             VmSignal::Normal => {}
         }
@@ -201,9 +191,7 @@ pub fn vm_run_endfile(cp: &CompiledProgram, rt: &mut Runtime) -> Result<()> {
     for chunk in &cp.endfile_chunks {
         match execute(chunk, &mut ctx)? {
             VmSignal::Next => return Err(Error::Runtime("`next` is invalid in ENDFILE".into())),
-            VmSignal::Return(_) => {
-                return Err(Error::Runtime("`return` outside function".into()))
-            }
+            VmSignal::Return(_) => return Err(Error::Runtime("`return` outside function".into())),
             VmSignal::ExitPending => return Ok(()),
             VmSignal::Normal => {}
         }
@@ -525,8 +513,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                     .unwrap_or_else(|| "\x1c".into());
                 let n = n as usize;
                 let start = ctx.stack.len() - n;
-                let parts: Vec<String> =
-                    ctx.stack.drain(start..).map(|v| v.as_str()).collect();
+                let parts: Vec<String> = ctx.stack.drain(start..).map(|v| v.as_str()).collect();
                 ctx.push(Value::Str(parts.join(&sep)));
             }
 
@@ -563,11 +550,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             }
 
             // ── Patsplit ────────────────────────────────────────────────
-            Op::Patsplit {
-                arr,
-                has_fp,
-                seps,
-            } => {
+            Op::Patsplit { arr, has_fp, seps } => {
                 let fp = if has_fp {
                     Some(ctx.pop().as_str())
                 } else {
@@ -576,13 +559,8 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 let s = ctx.pop().as_str();
                 let arr_name = ctx.str_ref(arr).to_string();
                 let seps_name = seps.map(|i| ctx.str_ref(i).to_string());
-                let n = builtins::patsplit(
-                    ctx.rt,
-                    &s,
-                    &arr_name,
-                    fp.as_deref(),
-                    seps_name.as_deref(),
-                )?;
+                let n =
+                    builtins::patsplit(ctx.rt, &s, &arr_name, fp.as_deref(), seps_name.as_deref())?;
                 ctx.push(Value::Num(n));
             }
 
@@ -981,7 +959,10 @@ fn exec_call_builtin(ctx: &mut VmCtx<'_>, name: &str, argc: u16) -> Result<()> {
         "substr" => {
             let s = args[0].as_str();
             let start = args[1].as_number() as usize;
-            let len = args.get(2).map(|v| v.as_number() as usize).unwrap_or(usize::MAX);
+            let len = args
+                .get(2)
+                .map(|v| v.as_number() as usize)
+                .unwrap_or(usize::MAX);
             if start < 1 {
                 Value::Str(String::new())
             } else {
@@ -1079,9 +1060,7 @@ fn exec_call_user(ctx: &mut VmCtx<'_>, name: &str, argc: u16) -> Result<()> {
         Ok(VmSignal::Next) => {
             ctx.locals.pop();
             ctx.in_function = was_fn;
-            return Err(Error::Runtime(
-                "invalid jump out of function (next)".into(),
-            ));
+            return Err(Error::Runtime("invalid jump out of function (next)".into()));
         }
         Ok(VmSignal::ExitPending) => {
             ctx.locals.pop();

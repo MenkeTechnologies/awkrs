@@ -135,22 +135,9 @@ pub fn run(bin_name: &str) -> Result<()> {
                 std::process::exit(rt.exit_code);
             }
             let n = if use_parallel {
-                process_file_parallel(
-                    Some(p.as_path()),
-                    &prog,
-                    &cp,
-                    &mut rt,
-                    threads,
-                    nr_global,
-                )?
+                process_file_parallel(Some(p.as_path()), &prog, &cp, &mut rt, threads, nr_global)?
             } else {
-                process_file(
-                    Some(p.as_path()),
-                    &prog,
-                    &cp,
-                    &mut range_state,
-                    &mut rt,
-                )?
+                process_file(Some(p.as_path()), &prog, &cp, &mut range_state, &mut rt)?
             };
             nr_global += n as f64;
             vm_run_endfile(&cp, &mut rt)?;
@@ -461,13 +448,7 @@ fn dispatch_rules(
             CompiledPattern::Range => {
                 let orig = &prog.rules[rule.original_index];
                 if let Pattern::Range(p1, p2) = &orig.pattern {
-                    range_step(
-                        &mut range_state[rule.original_index],
-                        p1,
-                        p2,
-                        rt,
-                        prog,
-                    )?
+                    range_step(&mut range_state[rule.original_index], p1, p2, rt, prog)?
                 } else {
                     false
                 }

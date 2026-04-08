@@ -800,9 +800,7 @@ fn collect_array_names_stmt(s: &Stmt, names: &mut HashSet<String>) {
         }
         Stmt::Exit(Some(e)) | Stmt::Return(Some(e)) => collect_array_names_expr(e, names),
         Stmt::GetLine { redir, .. } => match redir {
-            GetlineRedir::File(e) | GetlineRedir::Coproc(e) => {
-                collect_array_names_expr(e, names)
-            }
+            GetlineRedir::File(e) | GetlineRedir::Coproc(e) => collect_array_names_expr(e, names),
             GetlineRedir::Primary => {}
         },
         Stmt::Break | Stmt::Continue | Stmt::Next | Stmt::Exit(None) | Stmt::Return(None) => {}
