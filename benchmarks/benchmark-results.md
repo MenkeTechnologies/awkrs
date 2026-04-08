@@ -4,7 +4,7 @@ This file is **generated** by `./scripts/benchmark-vs-awk.sh`. Do not edit by ha
 
 ## Environment
 
-- **Generated at (UTC):** 2026-04-07 14:18:13
+- **Generated at (UTC):** 2026-04-08 16:29:18
 - **uname:** `Darwin 25.4.0 arm64`
 - **CPU (macOS sysctl):** Apple M5 Max
 - **awk:** `/usr/bin/awk`
@@ -17,10 +17,10 @@ Input: **200000** lines from `seq 1 200000` (one field per line). Program: `{ pr
 
 | Command | Mean [ms] | Min [ms] | Max [ms] | Relative |
 |:---|---:|---:|---:|---:|
-| `BSD awk` | 42.5 ± 4.3 | 38.2 | 59.8 | 1.72 ± 0.21 |
-| `gawk` | 24.8 ± 1.7 | 21.0 | 31.3 | 1.00 |
-| `awkrs -j1` | 128.8 ± 4.0 | 122.3 | 137.5 | 5.20 ± 0.38 |
-| `awkrs (parallel)` | 109.3 ± 1.5 | 106.9 | 113.3 | 4.42 ± 0.30 |
+| `BSD awk` | 38.3 ± 1.7 | 35.8 | 43.4 | 1.53 ± 0.14 |
+| `gawk` | 25.1 ± 2.0 | 22.1 | 32.8 | 1.00 |
+| `awkrs -j1` | 145.0 ± 4.6 | 135.1 | 150.8 | 5.79 ± 0.50 |
+| `awkrs (parallel)` | 115.6 ± 2.4 | 112.3 | 121.5 | 4.62 ± 0.38 |
 
 ## 2. CPU-bound BEGIN (no input)
 
@@ -28,9 +28,9 @@ Program: `BEGIN { s = 0; for (i = 1; i < 400001; i = i + 1) s += i; print s }` (
 
 | Command | Mean [ms] | Min [ms] | Max [ms] | Relative |
 |:---|---:|---:|---:|---:|
-| `BSD awk` | 15.3 ± 0.7 | 13.3 | 16.9 | 1.00 |
-| `gawk` | 20.1 ± 0.7 | 18.5 | 22.0 | 1.32 ± 0.07 |
-| `awkrs` | 70.9 ± 0.7 | 70.0 | 73.2 | 4.65 ± 0.21 |
+| `BSD awk` | 14.9 ± 0.8 | 13.1 | 17.5 | 1.00 |
+| `gawk` | 20.3 ± 1.1 | 18.0 | 22.9 | 1.36 ± 0.10 |
+| `awkrs` | 15.8 ± 0.4 | 15.1 | 17.8 | 1.06 ± 0.06 |
 
 ## 3. Sum first column (single-threaded)
 
@@ -38,9 +38,9 @@ Same input as §1. Program: `{ s += $1 } END { print s }`. (Cross-record state i
 
 | Command | Mean [ms] | Min [ms] | Max [ms] | Relative |
 |:---|---:|---:|---:|---:|
-| `BSD awk` | 33.2 ± 2.9 | 30.4 | 47.7 | 1.68 ± 0.66 |
-| `gawk` | 19.7 ± 7.6 | 16.0 | 62.0 | 1.00 |
-| `awkrs -j1` | 47.1 ± 6.9 | 40.6 | 83.1 | 2.39 ± 0.98 |
+| `BSD awk` | 32.3 ± 3.3 | 27.1 | 43.9 | 1.88 ± 0.24 |
+| `gawk` | 17.1 ± 1.3 | 14.5 | 20.2 | 1.00 |
+| `awkrs -j1` | 42.8 ± 2.7 | 37.2 | 49.5 | 2.50 ± 0.25 |
 
 ---
 
