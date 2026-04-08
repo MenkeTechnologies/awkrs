@@ -94,6 +94,8 @@ pub struct Runtime {
     pub rand_seed: u64,
     /// Radix for `%f` / `%g` / etc. and `print` of numbers when `-N` / `--use-lc-numeric` is set (Unix).
     pub numeric_decimal: char,
+    /// Indexed variable slots for the bytecode VM (fast Vec access instead of HashMap).
+    pub slots: Vec<Value>,
 }
 
 impl Runtime {
@@ -122,6 +124,7 @@ impl Runtime {
             coproc_handles: HashMap::new(),
             rand_seed: 1,
             numeric_decimal: '.',
+            slots: Vec::new(),
         }
     }
 
@@ -150,6 +153,7 @@ impl Runtime {
             coproc_handles: HashMap::new(),
             rand_seed,
             numeric_decimal,
+            slots: Vec::new(),
         }
     }
 
@@ -543,6 +547,7 @@ impl Clone for Runtime {
             coproc_handles: HashMap::new(),
             rand_seed: self.rand_seed,
             numeric_decimal: self.numeric_decimal,
+            slots: self.slots.clone(),
         }
     }
 }

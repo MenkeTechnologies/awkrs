@@ -27,6 +27,8 @@ pub struct VmCtx<'a> {
     print_out: Option<&'a mut Vec<String>>,
     for_in_iters: Vec<ForInState>,
     stack: Vec<Value>,
+    /// Buffered stdout output — flushed once per top-level VM call.
+    print_buf: Vec<u8>,
 }
 
 impl<'a> VmCtx<'a> {
@@ -39,6 +41,7 @@ impl<'a> VmCtx<'a> {
             print_out: None,
             for_in_iters: Vec::new(),
             stack: Vec::with_capacity(64),
+            print_buf: Vec::with_capacity(4096),
         }
     }
 
@@ -55,6 +58,7 @@ impl<'a> VmCtx<'a> {
             print_out: Some(out),
             for_in_iters: Vec::new(),
             stack: Vec::with_capacity(64),
+            print_buf: Vec::new(),
         }
     }
 
@@ -62,13 +66,24 @@ impl<'a> VmCtx<'a> {
         if let Some(buf) = self.print_out.as_mut() {
             buf.push(s.to_string());
         } else {
-            print!("{s}");
+            self.print_buf.extend_from_slice(s.as_bytes());
         }
     }
 
     fn emit_flush(&mut self) -> Result<()> {
         if self.print_out.is_none() {
+            self.flush_print_buf()?;
             std::io::stdout().flush().map_err(Error::Io)?;
+        }
+        Ok(())
+    }
+
+    fn flush_print_buf(&mut self) -> Result<()> {
+        if !self.print_buf.is_empty() {
+            use std::io::Write;
+            let mut out = std::io::stdout().lock();
+            out.write_all(&self.print_buf).map_err(Error::Io)?;
+            self.print_buf.clear();
         }
         Ok(())
     }
@@ -78,6 +93,10 @@ impl<'a> VmCtx<'a> {
             if let Some(v) = frame.get(name) {
                 return v.clone();
             }
+        }
+        // Check slots (for builtins / cold path that access vars by name)
+        if let Some(&slot) = self.cp.slot_map.get(name) {
+            return self.rt.slots[slot as usize].clone();
         }
         self.rt
             .get_global_var(name)
@@ -97,6 +116,11 @@ impl<'a> VmCtx<'a> {
                 frame.insert(name.to_string(), val);
                 return;
             }
+        }
+        // Check slots
+        if let Some(&slot) = self.cp.slot_map.get(name) {
+            self.rt.slots[slot as usize] = val;
+            return;
         }
         self.rt.vars.insert(name.to_string(), val);
     }
@@ -142,10 +166,14 @@ pub fn vm_run_begin(cp: &CompiledProgram, rt: &mut Runtime) -> Result<()> {
             VmSignal::Return(_) => {
                 return Err(Error::Runtime("`return` outside function".into()))
             }
-            VmSignal::ExitPending => return Ok(()),
+            VmSignal::ExitPending => {
+                ctx.flush_print_buf()?;
+                return Ok(());
+            }
             VmSignal::Normal => {}
         }
     }
+    ctx.flush_print_buf()?;
     Ok(())
 }
 
@@ -157,10 +185,14 @@ pub fn vm_run_end(cp: &CompiledProgram, rt: &mut Runtime) -> Result<()> {
             VmSignal::Return(_) => {
                 return Err(Error::Runtime("`return` outside function".into()))
             }
-            VmSignal::ExitPending => return Ok(()),
+            VmSignal::ExitPending => {
+                ctx.flush_print_buf()?;
+                return Ok(());
+            }
             VmSignal::Normal => {}
         }
     }
+    ctx.flush_print_buf()?;
     Ok(())
 }
 
@@ -174,10 +206,14 @@ pub fn vm_run_beginfile(cp: &CompiledProgram, rt: &mut Runtime) -> Result<()> {
             VmSignal::Return(_) => {
                 return Err(Error::Runtime("`return` outside function".into()))
             }
-            VmSignal::ExitPending => return Ok(()),
+            VmSignal::ExitPending => {
+                ctx.flush_print_buf()?;
+                return Ok(());
+            }
             VmSignal::Normal => {}
         }
     }
+    ctx.flush_print_buf()?;
     Ok(())
 }
 
@@ -189,10 +225,14 @@ pub fn vm_run_endfile(cp: &CompiledProgram, rt: &mut Runtime) -> Result<()> {
             VmSignal::Return(_) => {
                 return Err(Error::Runtime("`return` outside function".into()))
             }
-            VmSignal::ExitPending => return Ok(()),
+            VmSignal::ExitPending => {
+                ctx.flush_print_buf()?;
+                return Ok(());
+            }
             VmSignal::Normal => {}
         }
     }
+    ctx.flush_print_buf()?;
     Ok(())
 }
 
@@ -230,7 +270,9 @@ pub fn vm_run_rule(
         Some(buf) => VmCtx::with_print_capture(cp, rt, buf),
         None => VmCtx::new(cp, rt),
     };
-    match execute(&rule.body, &mut ctx)? {
+    let signal = execute(&rule.body, &mut ctx)?;
+    ctx.flush_print_buf()?;
+    match signal {
         VmSignal::Normal => Ok(Flow::Normal),
         VmSignal::Next => Ok(Flow::Next),
         VmSignal::Return(_) => Err(Error::Runtime(
@@ -264,6 +306,12 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 let name = ctx.str_ref(idx).to_string();
                 ctx.set_var(&name, val);
             }
+            Op::GetSlot(slot) => {
+                ctx.push(ctx.rt.slots[slot as usize].clone());
+            }
+            Op::SetSlot(slot) => {
+                ctx.rt.slots[slot as usize] = ctx.peek().clone();
+            }
             Op::GetField => {
                 let i = ctx.pop().as_number() as i32;
                 ctx.push(ctx.rt.field(i));
@@ -296,6 +344,13 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 let old = ctx.get_var(&name);
                 let new_val = apply_binop(bop, &old, &rhs)?;
                 ctx.set_var(&name, new_val.clone());
+                ctx.push(new_val);
+            }
+            Op::CompoundAssignSlot(slot, bop) => {
+                let rhs = ctx.pop();
+                let old = &ctx.rt.slots[slot as usize];
+                let new_val = apply_binop(bop, old, &rhs)?;
+                ctx.rt.slots[slot as usize] = new_val.clone();
                 ctx.push(new_val);
             }
             Op::CompoundAssignField(bop) => {
@@ -832,6 +887,16 @@ fn exec_sub(ctx: &mut VmCtx<'_>, target: SubTarget, is_global: bool) -> Result<(
                 builtins::sub_fn(ctx.rt, &re, &repl, Some(&mut s))?
             };
             ctx.set_var(&name, Value::Str(s));
+            n
+        }
+        SubTarget::SlotVar(slot) => {
+            let mut s = ctx.rt.slots[slot as usize].as_str();
+            let n = if is_global {
+                builtins::gsub(ctx.rt, &re, &repl, Some(&mut s))?
+            } else {
+                builtins::sub_fn(ctx.rt, &re, &repl, Some(&mut s))?
+            };
+            ctx.rt.slots[slot as usize] = Value::Str(s);
             n
         }
         SubTarget::Field => {

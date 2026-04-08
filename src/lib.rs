@@ -93,6 +93,8 @@ pub fn run(bin_name: &str) -> Result<()> {
             .insert("FS".into(), Value::Str(String::from(fs.as_str())));
     }
 
+    rt.slots = cp.init_slots(&rt.vars);
+
     vm_run_begin(&cp, &mut rt)?;
     if rt.exit_pending {
         vm_run_end(&cp, &mut rt)?;
@@ -204,6 +206,7 @@ fn process_file_parallel(
 
     let cp_arc = Arc::new(cp.clone());
     let shared_globals = Arc::new(rt.vars.clone());
+    let shared_slots = Arc::new(rt.slots.clone());
     let fname = rt.filename.clone();
     let seed_base = rt.rand_seed;
     let numeric_dec = rt.numeric_decimal;
@@ -225,6 +228,7 @@ fn process_file_parallel(
                     seed_base ^ (i as u64).wrapping_mul(0x9e3779b97f4a7c15),
                     numeric_dec,
                 );
+                local.slots = (*shared_slots).clone();
                 local.nr = nr_offset + i as f64 + 1.0;
                 local.fnr = i as f64 + 1.0;
                 local.set_record_from_line(&line);

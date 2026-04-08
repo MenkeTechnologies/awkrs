@@ -6,6 +6,7 @@
 //! can refer to them by cheap `u32` index.
 
 use crate::ast::BinOp;
+use crate::runtime::Value;
 use std::collections::HashMap;
 
 // ── Instruction set ──────────────────────────────────────────────────────────
@@ -33,8 +34,10 @@ pub enum GetlineSource {
 pub enum SubTarget {
     /// Operate on `$0` (no third argument).
     Record,
-    /// Named variable.
+    /// Named variable (string pool index, not slotted).
     Var(u32),
+    /// Named variable (slot index, fast path).
+    SlotVar(u16),
     /// `$expr` — field index is on stack.
     Field,
     /// `arr[key]` — key is on stack.
@@ -54,10 +57,14 @@ pub enum Op {
     PushStr(u32),
 
     // ── Variable access ─────────────────────────────────────────────────
-    /// Push variable value (name by pool index).
+    /// Push variable value (name by pool index) — HashMap path for specials.
     GetVar(u32),
-    /// Peek TOS, store in variable. Stack unchanged (assignment is an expression).
+    /// Peek TOS, store in variable — HashMap path for specials.
     SetVar(u32),
+    /// Push variable value — fast Vec-indexed path for user scalars.
+    GetSlot(u16),
+    /// Peek TOS, store in slot — fast Vec-indexed path for user scalars.
+    SetSlot(u16),
     /// Pop field index, push `$idx`.
     GetField,
     /// Pop value, pop field index, store `$idx = val`, push `val`.
@@ -68,8 +75,10 @@ pub enum Op {
     SetArrayElem(u32),
 
     // ── Compound assignment ─────────────────────────────────────────────
-    /// Pop rhs; compute `var op= rhs`; push result. Peek TOS = result.
+    /// Pop rhs; compute `var op= rhs`; push result — HashMap path.
     CompoundAssignVar(u32, BinOp),
+    /// Pop rhs; compute `slot op= rhs`; push result — fast Vec path.
+    CompoundAssignSlot(u16, BinOp),
     /// Pop rhs, pop field idx; compute `$idx op= rhs`; push result.
     CompoundAssignField(BinOp),
     /// Pop rhs, pop key; compute `arr[key] op= rhs`; push result.
@@ -240,6 +249,25 @@ pub struct CompiledProgram {
     pub record_rules: Vec<CompiledRule>,
     pub functions: HashMap<String, CompiledFunc>,
     pub strings: StringPool,
+    /// Number of variable slots (size of the `Runtime::slots` Vec).
+    pub slot_count: u16,
+    /// `slot_names[i]` = variable name for slot `i`.
+    pub slot_names: Vec<String>,
+    /// Reverse map: variable name → slot index (used by cold-path `get_var`/`set_var`).
+    pub slot_map: HashMap<String, u16>,
+}
+
+impl CompiledProgram {
+    /// Create the initial slots Vec from the runtime's current variable state.
+    pub fn init_slots(&self, vars: &HashMap<String, Value>) -> Vec<Value> {
+        let mut slots = vec![Value::Str(String::new()); self.slot_count as usize];
+        for (i, name) in self.slot_names.iter().enumerate() {
+            if let Some(v) = vars.get(name) {
+                slots[i] = v.clone();
+            }
+        }
+        slots
+    }
 }
 
 /// One compiled record-processing rule (pattern + action body).
