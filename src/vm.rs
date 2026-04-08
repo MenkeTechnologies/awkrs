@@ -669,6 +669,17 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 let dv = ctx.rt.slots[dst as usize].as_number();
                 ctx.rt.slots[dst as usize] = Value::Num(dv + sv);
             }
+            Op::JumpIfSlotGeNum {
+                slot,
+                limit,
+                target,
+            } => {
+                let v = ctx.rt.slots[slot as usize].as_number();
+                if v >= limit {
+                    pc = target;
+                    continue;
+                }
+            }
         }
         pc += 1;
     }

@@ -928,6 +928,26 @@ fn peephole_optimize(ops: &mut Vec<Op>) {
             }
         }
 
+        // Pattern: GetSlot(s) + PushNum(limit) + CmpLt + JumpIfFalsePop(target)
+        //        → JumpIfSlotGeNum { slot: s, limit, target }
+        if i + 4 <= ops.len() {
+            if let (Op::GetSlot(slot), Op::PushNum(limit), Op::CmpLt, Op::JumpIfFalsePop(target)) =
+                (ops[i], ops[i + 1], ops[i + 2], ops[i + 3])
+            {
+                fusions.push((
+                    i,
+                    Op::JumpIfSlotGeNum {
+                        slot,
+                        limit,
+                        target,
+                    },
+                    3,
+                ));
+                i += 4;
+                continue;
+            }
+        }
+
         i += 1;
     }
 
@@ -979,6 +999,7 @@ fn peephole_optimize(ops: &mut Vec<Op>) {
             Op::ForInNext {
                 ref mut end_jump, ..
             } => *end_jump = offset_map[*end_jump],
+            Op::JumpIfSlotGeNum { ref mut target, .. } => *target = offset_map[*target],
             _ => {}
         }
     }

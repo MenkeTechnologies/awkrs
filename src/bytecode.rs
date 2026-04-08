@@ -226,6 +226,13 @@ pub enum Op {
         src: u16,
         dst: u16,
     },
+    /// `if (slot < limit) goto target` fused loop condition.
+    /// Eliminates: GetSlot + PushNum(limit) + CmpLt + JumpIfFalsePop (4 ops → 1).
+    JumpIfSlotGeNum {
+        slot: u16,
+        limit: f64,
+        target: usize,
+    },
 }
 
 // ── Compiled structures ─────────────────────────────────────────────────────

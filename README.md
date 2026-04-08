@@ -63,10 +63,10 @@ Measured with [hyperfine](https://github.com/sharkdp/hyperfine) on **Apple M5 Ma
 
 | Command | Mean | Min | Max | Relative |
 |:---|---:|---:|---:|---:|
-| BSD awk | 75.8 ms | 69.5 ms | 95.3 ms | 9.44× |
-| gawk | 25.2 ms | 24.0 ms | 28.4 ms | 3.14× |
-| mawk | 17.2 ms | 16.4 ms | 18.8 ms | 2.14× |
-| awkrs `-j1` | 8.0 ms | 7.5 ms | 9.6 ms | **1.00×** |
+| BSD awk | 80.4 ms | 70.1 ms | 109.2 ms | 9.87× |
+| gawk | 27.1 ms | 25.0 ms | 32.1 ms | 3.32× |
+| mawk | 19.2 ms | 16.8 ms | 22.8 ms | 2.36× |
+| awkrs `-j1` | 8.1 ms | 7.8 ms | 8.8 ms | **1.00×** |
 
 ### 2. CPU-bound BEGIN (no input)
 
@@ -74,10 +74,10 @@ Measured with [hyperfine](https://github.com/sharkdp/hyperfine) on **Apple M5 Ma
 
 | Command | Mean | Min | Max | Relative |
 |:---|---:|---:|---:|---:|
-| BSD awk | 14.5 ms | 13.2 ms | 16.5 ms | 1.45× |
-| gawk | 19.5 ms | 17.9 ms | 21.2 ms | 1.95× |
-| mawk | 10.0 ms | 9.5 ms | 11.1 ms | **1.00×** |
-| awkrs | 10.9 ms | 9.9 ms | 12.0 ms | 1.09× |
+| BSD awk | 14.3 ms | 13.1 ms | 16.0 ms | 2.66× |
+| gawk | 18.9 ms | 17.1 ms | 20.2 ms | 3.52× |
+| mawk | 8.4 ms | 7.4 ms | 9.3 ms | 1.57× |
+| awkrs | 5.4 ms | 4.7 ms | 7.3 ms | **1.00×** |
 
 ### 3. Sum first column (`{ s += $1 } END { print s }`, 200 K lines)
 
@@ -85,10 +85,10 @@ Cross-record state is not parallel-safe, so awkrs is `-j1` only.
 
 | Command | Mean | Min | Max | Relative |
 |:---|---:|---:|---:|---:|
-| BSD awk | 66.6 ms | 61.6 ms | 82.1 ms | 7.60× |
-| gawk | 17.5 ms | 16.6 ms | 18.9 ms | 2.00× |
-| mawk | 11.4 ms | 10.4 ms | 12.4 ms | 1.31× |
-| awkrs `-j1` | 8.8 ms | 7.9 ms | 9.3 ms | **1.00×** |
+| BSD awk | 68.9 ms | 61.8 ms | 84.2 ms | 7.05× |
+| gawk | 16.9 ms | 15.3 ms | 18.3 ms | 1.73× |
+| mawk | 15.4 ms | 10.6 ms | 67.5 ms | 1.58× |
+| awkrs `-j1` | 9.8 ms | 8.6 ms | 17.6 ms | **1.00×** |
 
 > Regenerate after `cargo build --release` (requires `hyperfine`; `gawk` optional):
 > ```bash
