@@ -4,6 +4,46 @@ use crate::error::{Error, Result};
 use crate::runtime::{Runtime, Value};
 use regex::Regex;
 
+/// Check if a regex pattern is a plain literal (no metacharacters).
+fn is_literal_pattern(pat: &str) -> bool {
+    !pat.bytes().any(|b| {
+        matches!(
+            b,
+            b'.' | b'*'
+                | b'+'
+                | b'?'
+                | b'['
+                | b']'
+                | b'('
+                | b')'
+                | b'{'
+                | b'}'
+                | b'|'
+                | b'^'
+                | b'$'
+                | b'\\'
+        )
+    })
+}
+
+/// Literal string gsub — uses stdlib `match_indices` for SIMD-optimized search.
+fn literal_replace_all(s: &str, needle: &str, repl: &str) -> (String, usize) {
+    if needle.is_empty() {
+        return (s.to_string(), 0);
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut count = 0usize;
+    let mut last = 0;
+    for (start, _) in s.match_indices(needle) {
+        out.push_str(&s[last..start]);
+        out.push_str(repl);
+        count += 1;
+        last = start + needle.len();
+    }
+    out.push_str(&s[last..]);
+    (out, count)
+}
+
 /// awk `gsub(ere, repl [, target])` — global replace. `target` defaults to `$0`.
 /// Replacement supports `&` (whole match) and `\\`/`&` escapes (subset).
 pub fn gsub(
@@ -12,14 +52,32 @@ pub fn gsub(
     repl: &str,
     target: Option<&mut String>,
 ) -> Result<f64> {
-    let re = Regex::new(re_pat).map_err(|e| Error::Runtime(e.to_string()))?;
+    let repl_has_special = repl.contains('&') || repl.contains('\\');
+    // Fast path: literal pattern + literal replacement → pure string replacement, no regex.
+    let use_literal = is_literal_pattern(re_pat) && !repl_has_special;
+
     let n = if let Some(t) = target {
-        let (new_s, c) = replace_all_awk(&re, t.as_str(), repl)?;
-        *t = new_s;
-        c
+        if use_literal {
+            let (new_s, c) = literal_replace_all(t.as_str(), re_pat, repl);
+            *t = new_s;
+            c
+        } else {
+            rt.ensure_regex(re_pat).map_err(Error::Runtime)?;
+            let (new_s, c) =
+                replace_all_awk(rt.regex_ref(re_pat), t.as_str(), repl, repl_has_special);
+            *t = new_s;
+            c
+        }
     } else {
-        let cur = rt.record.clone();
-        let (new_s, c) = replace_all_awk(&re, &cur, repl)?;
+        // Swap record out to avoid clone — take ownership, replace back after.
+        let cur = std::mem::take(&mut rt.record);
+        let (new_s, c) = if use_literal {
+            literal_replace_all(&cur, re_pat, repl)
+        } else {
+            rt.ensure_regex(re_pat).map_err(Error::Runtime)?;
+            replace_all_awk(rt.regex_ref(re_pat), &cur, repl, repl_has_special)
+        };
+        rt.record = cur; // restore original in case apply_record_string needs FS split
         apply_record_string(rt, &new_s);
         c
     };
@@ -33,11 +91,16 @@ pub fn sub_fn(
     repl: &str,
     target: Option<&mut String>,
 ) -> Result<f64> {
-    let re = Regex::new(re_pat).map_err(|e| Error::Runtime(e.to_string()))?;
+    rt.ensure_regex(re_pat).map_err(Error::Runtime)?;
+    let repl_has_special = repl.contains('&') || repl.contains('\\');
     let n = if let Some(t) = target {
-        if let Some(m) = re.find(t.as_str()) {
-            let piece = expand_repl(repl, m.as_str());
-            let mut out = String::new();
+        if let Some(m) = rt.regex_ref(re_pat).find(t.as_str()) {
+            let piece = if repl_has_special {
+                expand_repl(repl, m.as_str())
+            } else {
+                repl.to_string()
+            };
+            let mut out = String::with_capacity(t.len() + piece.len());
             out.push_str(&t[..m.start()]);
             out.push_str(&piece);
             out.push_str(&t[m.end()..]);
@@ -48,9 +111,13 @@ pub fn sub_fn(
         }
     } else {
         let cur = rt.record.clone();
-        if let Some(m) = re.find(&cur) {
-            let piece = expand_repl(repl, m.as_str());
-            let mut out = String::new();
+        if let Some(m) = rt.regex_ref(re_pat).find(&cur) {
+            let piece = if repl_has_special {
+                expand_repl(repl, m.as_str())
+            } else {
+                repl.to_string()
+            };
+            let mut out = String::with_capacity(cur.len() + piece.len());
             out.push_str(&cur[..m.start()]);
             out.push_str(&piece);
             out.push_str(&cur[m.end()..]);
@@ -65,7 +132,8 @@ pub fn sub_fn(
 
 /// `match(s, ere [, arr])` — returns 0-based start index in awk as **1-based RSTART**, sets RSTART, RLENGTH.
 pub fn match_fn(rt: &mut Runtime, s: &str, re_pat: &str, arr_name: Option<&str>) -> Result<f64> {
-    let re = Regex::new(re_pat).map_err(|e| Error::Runtime(e.to_string()))?;
+    rt.ensure_regex(re_pat).map_err(Error::Runtime)?;
+    let re = rt.regex_ref(re_pat).clone();
     if let Some(m) = re.find(s) {
         let rstart = (m.start() + 1) as f64;
         let rlength = m.len() as f64;
@@ -96,18 +164,22 @@ pub fn match_fn(rt: &mut Runtime, s: &str, re_pat: &str, arr_name: Option<&str>)
     }
 }
 
-fn replace_all_awk(re: &Regex, s: &str, repl: &str) -> Result<(String, usize)> {
+fn replace_all_awk(re: &Regex, s: &str, repl: &str, repl_has_special: bool) -> (String, usize) {
     let mut count = 0usize;
-    let mut out = String::new();
+    let mut out = String::with_capacity(s.len());
     let mut last = 0;
     for m in re.find_iter(s) {
         count += 1;
         out.push_str(&s[last..m.start()]);
-        out.push_str(&expand_repl(repl, m.as_str()));
+        if repl_has_special {
+            out.push_str(&expand_repl(repl, m.as_str()));
+        } else {
+            out.push_str(repl);
+        }
         last = m.end();
     }
     out.push_str(&s[last..]);
-    Ok((out, count))
+    (out, count)
 }
 
 fn expand_repl(repl: &str, matched: &str) -> String {
