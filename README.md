@@ -58,7 +58,7 @@ Regenerate after `cargo build --release` (requires `hyperfine` on `PATH`; `gawk`
 
 This compares **BSD awk**, **gawk** (if present), and **awkrs** (`-j1` and parallel where applicable) on three workloads: line throughput, a CPU-heavy `BEGIN`, and a summing pass with `END`.
 
-**Why awkrs is often slower than C awks:** the engine is a **Rust AST interpreter** (dispatch per expression/statement), not a decades-tuned C bytecode loop like **gawk**. **Parallel** mode still parses each line into fields, runs pattern/actions, and merges output—work **gawk** avoids on a single core. **Mitigation:** parallel record workers share post-`BEGIN` globals via **`Arc`** (no per-line `HashMap` clone), which speeds up parallel-safe file workloads substantially versus the previous implementation.
+**Bytecode VM:** the engine compiles AWK programs into a flat bytecode instruction stream, then runs them on a stack-based virtual machine. This eliminates the recursive AST-walking overhead of a tree interpreter — no per-node pattern matching, no heap pointer chasing through `Box<Expr>`, and better CPU cache locality from contiguous instruction arrays. Short-circuit `&&`/`||` and all control flow (loops, break/continue, if/else) are resolved to jump-patched offsets at compile time. The string pool interns all variable names and string constants so the VM refers to them by cheap `u32` index. **Parallel** mode shares the compiled program via **`Arc`** across rayon workers (zero-copy); each worker gets its own stack and runtime overlay. The AST interpreter is retained in the source for reference but is no longer on the execution path.
 
 ## Still missing or partial
 

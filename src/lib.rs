@@ -2,27 +2,33 @@
 
 mod ast;
 mod builtins;
+mod bytecode;
 mod cli;
+mod compiler;
 mod cyber_help;
 mod error;
 mod format;
+#[allow(dead_code)]
 mod interp;
 mod lexer;
 mod locale_numeric;
 mod parser;
 mod runtime;
+mod vm;
 
 pub use error::{Error, Result};
 
 use crate::ast::parallel;
 use crate::ast::{Pattern, Program};
+use crate::bytecode::{CompiledPattern, CompiledProgram};
 use crate::cli::{Args, MawkWAction};
-use crate::interp::{
-    pattern_matches, range_step, run_begin, run_beginfile, run_end, run_endfile,
-    run_rule_on_record, Flow,
-};
+use crate::compiler::Compiler;
+use crate::interp::{range_step, Flow};
 use crate::parser::parse_program;
 use crate::runtime::{Runtime, Value};
+use crate::vm::{
+    vm_pattern_matches, vm_run_begin, vm_run_beginfile, vm_run_end, vm_run_endfile, vm_run_rule,
+};
 use clap::Parser;
 use rayon::prelude::*;
 use std::fs::File;
@@ -73,6 +79,9 @@ pub fn run(bin_name: &str) -> Result<()> {
     let prog = parse_program(&program_text)?;
     let parallel_ok = parallel::record_rules_parallel_safe(&prog);
 
+    // Compile AST into bytecode for faster execution.
+    let cp = Compiler::compile_program(&prog);
+
     let mut rt = Runtime::new();
     if args.use_lc_numeric {
         locale_numeric::set_locale_numeric_from_env();
@@ -84,24 +93,11 @@ pub fn run(bin_name: &str) -> Result<()> {
             .insert("FS".into(), Value::Str(String::from(fs.as_str())));
     }
 
-    run_begin(&prog, &mut rt)?;
+    vm_run_begin(&cp, &mut rt)?;
     if rt.exit_pending {
-        run_end(&prog, &mut rt)?;
+        vm_run_end(&cp, &mut rt)?;
         std::process::exit(rt.exit_code);
     }
-
-    let record_rule_indices: Vec<usize> = prog
-        .rules
-        .iter()
-        .enumerate()
-        .filter(|(_, r)| {
-            !matches!(
-                r.pattern,
-                Pattern::Begin | Pattern::End | Pattern::BeginFile | Pattern::EndFile
-            )
-        })
-        .map(|(i, _)| i)
-        .collect();
 
     let mut range_state: Vec<bool> = vec![false; prog.rules.len()];
 
@@ -115,29 +111,29 @@ pub fn run(bin_name: &str) -> Result<()> {
 
     if files.is_empty() {
         rt.filename = "-".into();
-        run_beginfile(&prog, &mut rt)?;
+        vm_run_beginfile(&cp, &mut rt)?;
         if rt.exit_pending {
-            run_endfile(&prog, &mut rt)?;
-            run_end(&prog, &mut rt)?;
+            vm_run_endfile(&cp, &mut rt)?;
+            vm_run_end(&cp, &mut rt)?;
             std::process::exit(rt.exit_code);
         }
-        process_file(None, &prog, &record_rule_indices, &mut range_state, &mut rt)?;
-        run_endfile(&prog, &mut rt)?;
+        process_file(None, &prog, &cp, &mut range_state, &mut rt)?;
+        vm_run_endfile(&cp, &mut rt)?;
     } else {
         for p in &files {
             rt.filename = p.to_string_lossy().into_owned();
             rt.fnr = 0.0;
-            run_beginfile(&prog, &mut rt)?;
+            vm_run_beginfile(&cp, &mut rt)?;
             if rt.exit_pending {
-                run_endfile(&prog, &mut rt)?;
-                run_end(&prog, &mut rt)?;
+                vm_run_endfile(&cp, &mut rt)?;
+                vm_run_end(&cp, &mut rt)?;
                 std::process::exit(rt.exit_code);
             }
             let n = if use_parallel {
                 process_file_parallel(
                     Some(p.as_path()),
                     &prog,
-                    &record_rule_indices,
+                    &cp,
                     &mut rt,
                     threads,
                     nr_global,
@@ -146,20 +142,20 @@ pub fn run(bin_name: &str) -> Result<()> {
                 process_file(
                     Some(p.as_path()),
                     &prog,
-                    &record_rule_indices,
+                    &cp,
                     &mut range_state,
                     &mut rt,
                 )?
             };
             nr_global += n as f64;
-            run_endfile(&prog, &mut rt)?;
+            vm_run_endfile(&cp, &mut rt)?;
             if rt.exit_pending {
                 break;
             }
         }
     }
 
-    run_end(&prog, &mut rt)?;
+    vm_run_end(&cp, &mut rt)?;
     if rt.exit_pending {
         std::process::exit(rt.exit_code);
     }
@@ -189,8 +185,8 @@ fn read_all_lines<R: Read>(mut r: R) -> Result<Vec<String>> {
 
 fn process_file_parallel(
     path: Option<&Path>,
-    prog: &Program,
-    record_rule_indices: &[usize],
+    _prog: &Program,
+    cp: &CompiledProgram,
     rt: &mut Runtime,
     threads: usize,
     nr_offset: f64,
@@ -206,9 +202,8 @@ fn process_file_parallel(
         return Ok(0);
     }
 
-    let prog_arc = Arc::new(prog.clone());
+    let cp_arc = Arc::new(cp.clone());
     let shared_globals = Arc::new(rt.vars.clone());
-    let idxs: Vec<usize> = record_rule_indices.to_vec();
     let fname = rt.filename.clone();
     let seed_base = rt.rand_seed;
     let numeric_dec = rt.numeric_decimal;
@@ -223,7 +218,7 @@ fn process_file_parallel(
             .into_par_iter()
             .enumerate()
             .map(|(i, line)| {
-                let prog = Arc::clone(&prog_arc);
+                let cp = Arc::clone(&cp_arc);
                 let mut local = Runtime::for_parallel_worker(
                     Arc::clone(&shared_globals),
                     fname.clone(),
@@ -235,18 +230,15 @@ fn process_file_parallel(
                 local.set_record_from_line(&line);
 
                 let mut buf = Vec::new();
-                for &idx in &idxs {
-                    let rule = &prog.rules[idx];
-                    let run = match &rule.pattern {
-                        Pattern::Range(_, _) => {
-                            return Err(Error::Runtime(
-                                "internal: range pattern in parallel path".into(),
-                            ));
-                        }
-                        pat => pattern_matches(pat, &mut local, &prog)?,
-                    };
+                for rule in &cp.record_rules {
+                    if matches!(rule.pattern, CompiledPattern::Range) {
+                        return Err(Error::Runtime(
+                            "internal: range pattern in parallel path".into(),
+                        ));
+                    }
+                    let run = vm_pattern_matches(rule, &cp, &mut local)?;
                     if run {
-                        match run_rule_on_record(&prog, &mut local, idx, Some(&mut buf)) {
+                        match vm_run_rule(rule, &cp, &mut local, Some(&mut buf)) {
                             Ok(Flow::Next) => break,
                             Ok(Flow::ExitPending) => {
                                 return Ok((
@@ -309,7 +301,7 @@ fn process_file_parallel(
 fn process_file(
     path: Option<&Path>,
     prog: &Program,
-    record_rule_indices: &[usize],
+    cp: &CompiledProgram,
     range_state: &mut [bool],
     rt: &mut Runtime,
 ) -> Result<usize> {
@@ -337,14 +329,26 @@ fn process_file(
         rt.fnr += 1.0;
         rt.set_record_from_line(&line);
 
-        for &idx in record_rule_indices {
-            let rule = &prog.rules[idx];
+        for rule in &cp.record_rules {
             let run = match &rule.pattern {
-                Pattern::Range(p1, p2) => range_step(&mut range_state[idx], p1, p2, rt, prog)?,
-                pat => pattern_matches(pat, rt, prog)?,
+                CompiledPattern::Range => {
+                    let orig = &prog.rules[rule.original_index];
+                    if let Pattern::Range(p1, p2) = &orig.pattern {
+                        range_step(
+                            &mut range_state[rule.original_index],
+                            p1,
+                            p2,
+                            rt,
+                            prog,
+                        )?
+                    } else {
+                        false
+                    }
+                }
+                _ => vm_pattern_matches(rule, cp, rt)?,
             };
             if run {
-                match run_rule_on_record(prog, rt, idx, None) {
+                match vm_run_rule(rule, cp, rt, None) {
                     Ok(Flow::Next) => break,
                     Ok(Flow::ExitPending) => {
                         rt.detach_input_reader();
