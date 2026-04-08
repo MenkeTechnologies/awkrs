@@ -1,4 +1,8 @@
 use std::collections::HashMap;
+
+/// Fast hash map for awk variables and arrays. Uses FxHash (no DoS resistance,
+/// but ~2× faster than SipHash for short string keys typical in awk programs).
+pub type AwkMap<K, V> = rustc_hash::FxHashMap<K, V>;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::Path;
@@ -21,7 +25,7 @@ pub struct CoprocHandle {
 pub enum Value {
     Str(String),
     Num(f64),
-    Array(HashMap<String, Value>),
+    Array(AwkMap<String, Value>),
 }
 
 impl Value {
@@ -142,10 +146,10 @@ fn parse_number(s: &str) -> f64 {
 }
 
 pub struct Runtime {
-    pub vars: HashMap<String, Value>,
+    pub vars: AwkMap<String, Value>,
     /// Post-`BEGIN` globals shared across parallel record workers (`Arc` clone is O(1)).
     /// Reads resolve `vars` first (per-record overlay), then this map. Not used in the main thread.
-    pub global_readonly: Option<Arc<HashMap<String, Value>>>,
+    pub global_readonly: Option<Arc<AwkMap<String, Value>>>,
     /// Owned field strings — only populated when a field is modified via `set_field`.
     pub fields: Vec<String>,
     /// Zero-copy field byte-ranges into `record`. Each `(start, end)` is a byte offset.
@@ -182,7 +186,7 @@ pub struct Runtime {
     /// Indexed variable slots for the bytecode VM (fast Vec access instead of HashMap).
     pub slots: Vec<Value>,
     /// Compiled regex cache — avoids recompiling the same pattern every record.
-    pub regex_cache: HashMap<String, Regex>,
+    pub regex_cache: AwkMap<String, Regex>,
     /// Persistent stdout buffer — shared across record iterations, flushed at file boundaries.
     pub print_buf: Vec<u8>,
     /// Cached OFS bytes — avoids HashMap lookup + Vec alloc on every `print` call.
@@ -195,7 +199,7 @@ pub struct Runtime {
 
 impl Runtime {
     pub fn new() -> Self {
-        let mut vars = HashMap::new();
+        let mut vars = AwkMap::default();
         vars.insert("OFS".into(), Value::Str(" ".into()));
         vars.insert("ORS".into(), Value::Str("\n".into()));
         vars.insert("OFMT".into(), Value::Str("%.6g".into()));
@@ -225,7 +229,7 @@ impl Runtime {
             rand_seed: 1,
             numeric_decimal: '.',
             slots: Vec::new(),
-            regex_cache: HashMap::new(),
+            regex_cache: AwkMap::default(),
             print_buf: Vec::with_capacity(65536),
             ofs_bytes: b" ".to_vec(),
             ors_bytes: b"\n".to_vec(),
@@ -235,13 +239,13 @@ impl Runtime {
 
     /// Worker runtime for parallel record processing: empty overlay `vars`, shared read-only globals.
     pub fn for_parallel_worker(
-        shared_globals: Arc<HashMap<String, Value>>,
+        shared_globals: Arc<AwkMap<String, Value>>,
         filename: String,
         rand_seed: u64,
         numeric_decimal: char,
     ) -> Self {
         Self {
-            vars: HashMap::new(),
+            vars: AwkMap::default(),
             global_readonly: Some(shared_globals),
             fields: Vec::new(),
             field_ranges: Vec::new(),
@@ -264,7 +268,7 @@ impl Runtime {
             rand_seed,
             numeric_decimal,
             slots: Vec::new(),
-            regex_cache: HashMap::new(),
+            regex_cache: AwkMap::default(),
             print_buf: Vec::new(),
             ofs_bytes: b" ".to_vec(),
             ors_bytes: b"\n".to_vec(),
@@ -748,13 +752,15 @@ impl Runtime {
         let e = self
             .vars
             .entry(name.to_string())
-            .or_insert_with(|| Value::Array(HashMap::new()));
+            .or_insert_with(|| Value::Array(AwkMap::default()));
         match e {
             Value::Array(a) => {
                 a.insert(key, val);
             }
             _ => {
-                *e = Value::Array(HashMap::from([(key, val)]));
+                let mut m = AwkMap::default();
+                m.insert(key, val);
+                *e = Value::Array(m);
             }
         }
     }
@@ -778,7 +784,7 @@ impl Runtime {
                 .is_some_and(|g| g.contains_key(name))
             {
                 self.vars
-                    .insert(name.to_string(), Value::Array(HashMap::new()));
+                    .insert(name.to_string(), Value::Array(AwkMap::default()));
             }
         }
     }

@@ -6,9 +6,9 @@ use crate::bytecode::*;
 use crate::error::{Error, Result};
 use crate::format;
 use crate::interp::Flow;
+use crate::runtime::AwkMap;
 use crate::runtime::{Runtime, Value};
 use std::cmp::Ordering;
-use std::collections::HashMap;
 use std::io::{self, Write};
 
 // ── VM context ──────────────────────────────────────────────────────────────
@@ -21,7 +21,7 @@ struct ForInState {
 pub struct VmCtx<'a> {
     pub cp: &'a CompiledProgram,
     pub rt: &'a mut Runtime,
-    locals: Vec<HashMap<String, Value>>,
+    locals: Vec<AwkMap<String, Value>>,
     in_function: bool,
     print_out: Option<&'a mut Vec<String>>,
     for_in_iters: Vec<ForInState>,
@@ -655,6 +655,10 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             }
 
             // ── Fused opcodes ──────────────────────────────────────────
+            Op::PushFieldNum(field) => {
+                let n = ctx.rt.field_as_number(field as i32);
+                ctx.push(Value::Num(n));
+            }
             Op::AddFieldToSlot { field, slot } => {
                 let field_val = ctx.rt.field_as_number(field as i32);
                 let old = ctx.rt.slots[slot as usize].as_number();
@@ -1115,7 +1119,7 @@ fn exec_call_user(ctx: &mut VmCtx<'_>, name: &str, argc: u16) -> Result<()> {
     }
     vals.truncate(func.params.len());
 
-    let mut frame = HashMap::new();
+    let mut frame = AwkMap::default();
     for (p, v) in func.params.iter().zip(vals) {
         frame.insert(p.clone(), v);
     }

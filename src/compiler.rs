@@ -906,6 +906,41 @@ fn peephole_optimize(ops: &mut Vec<Op>) {
             }
         }
 
+        // Pattern: PushNum(N) + GetField → PushFieldNum(N)
+        // when field value is used as a number (followed by arithmetic/comparison).
+        if i + 2 <= ops.len() {
+            if let (Op::PushNum(n), Op::GetField) = (ops[i], ops[i + 1]) {
+                let field = n as u16;
+                if n >= 0.0 && n == field as f64 {
+                    // Check if next op consumes the value numerically
+                    let next = if i + 2 < ops.len() {
+                        Some(ops[i + 2])
+                    } else {
+                        None
+                    };
+                    let is_numeric_consumer = matches!(
+                        next,
+                        Some(Op::Add)
+                            | Some(Op::Sub)
+                            | Some(Op::Mul)
+                            | Some(Op::Div)
+                            | Some(Op::Mod)
+                            | Some(Op::CmpLt)
+                            | Some(Op::CmpLe)
+                            | Some(Op::CmpGt)
+                            | Some(Op::CmpGe)
+                            | Some(Op::CompoundAssignSlot(_, _))
+                            | Some(Op::CompoundAssignVar(_, _))
+                    );
+                    if is_numeric_consumer {
+                        fusions.push((i, Op::PushFieldNum(field), 1));
+                        i += 2;
+                        continue;
+                    }
+                }
+            }
+        }
+
         // Pattern: GetSlot(src) + CompoundAssignSlot(dst, Add) + Pop
         //        → AddSlotToSlot { src, dst }
         if i + 3 <= ops.len() {

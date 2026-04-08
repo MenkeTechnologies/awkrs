@@ -6,7 +6,7 @@
 //! can refer to them by cheap `u32` index.
 
 use crate::ast::BinOp;
-use crate::runtime::Value;
+use crate::runtime::{AwkMap, Value};
 use std::collections::HashMap;
 
 // ── Instruction set ──────────────────────────────────────────────────────────
@@ -226,6 +226,9 @@ pub enum Op {
         src: u16,
         dst: u16,
     },
+    /// `$N` as number: push field N parsed as f64 directly, no String allocation.
+    /// Eliminates: PushNum(N) + GetField when followed by arithmetic.
+    PushFieldNum(u16),
     /// `if (slot < limit) goto target` fused loop condition.
     /// Eliminates: GetSlot + PushNum(limit) + CmpLt + JumpIfFalsePop (4 ops → 1).
     JumpIfSlotGeNum {
@@ -286,7 +289,7 @@ pub struct CompiledProgram {
 
 impl CompiledProgram {
     /// Create the initial slots Vec from the runtime's current variable state.
-    pub fn init_slots(&self, vars: &HashMap<String, Value>) -> Vec<Value> {
+    pub fn init_slots(&self, vars: &AwkMap<String, Value>) -> Vec<Value> {
         let mut slots = vec![Value::Str(String::new()); self.slot_count as usize];
         for (i, name) in self.slot_names.iter().enumerate() {
             if let Some(v) = vars.get(name) {
