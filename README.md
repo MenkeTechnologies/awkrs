@@ -90,6 +90,69 @@ Cross-record state is not parallel-safe, so awkrs is `-j1` only.
 | mawk | 12.3 ms | 11.3 ms | 13.6 ms | 1.21× |
 | awkrs `-j1` | 10.1 ms | 9.2 ms | 11.0 ms | **1.00×** |
 
+### 4. Multi-field print (`{ print $1, $3, $5 }`, 200 K lines, 5 fields/line)
+
+| Command | Mean | Min | Max | Relative |
+|:---|---:|---:|---:|---:|
+| BSD awk | 116.1 ms | 107.9 ms | 136.4 ms | 3.96× |
+| gawk | 59.5 ms | 55.4 ms | 65.9 ms | 2.03× |
+| mawk | 35.1 ms | 32.1 ms | 45.6 ms | 1.20× |
+| awkrs `-j1` | 29.3 ms | 26.7 ms | 30.4 ms | **1.00×** |
+
+### 5. Regex filter (`/alpha/ { c += 1 } END { print c }`, 200 K lines)
+
+| Command | Mean | Min | Max | Relative |
+|:---|---:|---:|---:|---:|
+| BSD awk | 120.9 ms | 103.9 ms | 144.7 ms | 17.73× |
+| gawk | 86.1 ms | 84.6 ms | 89.6 ms | 12.62× |
+| awkrs `-j1` | 17.3 ms | 16.9 ms | 17.8 ms | 2.54× |
+| mawk | 6.8 ms | 6.6 ms | 7.1 ms | **1.00×** |
+
+### 6. Associative array (`{ a[$5] += 1 } END { for (k in a) print k, a[k] }`, 200 K lines)
+
+| Command | Mean | Min | Max | Relative |
+|:---|---:|---:|---:|---:|
+| BSD awk | 101.8 ms | 89.4 ms | 126.1 ms | 6.46× |
+| awkrs `-j1` | 34.8 ms | 34.3 ms | 35.3 ms | 2.21× |
+| gawk | 23.1 ms | 21.5 ms | 24.8 ms | 1.46× |
+| mawk | 15.8 ms | 15.3 ms | 16.4 ms | **1.00×** |
+
+### 7. Conditional field (`NR % 2 == 0 { print $2 }`, 200 K lines)
+
+| Command | Mean | Min | Max | Relative |
+|:---|---:|---:|---:|---:|
+| BSD awk | 94.9 ms | 88.9 ms | 106.9 ms | 4.87× |
+| gawk | 28.6 ms | 27.2 ms | 30.5 ms | 1.47× |
+| awkrs `-j1` | 24.5 ms | 23.8 ms | 26.1 ms | 1.26× |
+| mawk | 19.5 ms | 18.0 ms | 21.4 ms | **1.00×** |
+
+### 8. Field computation (`{ sum += $1 * $2 } END { print sum }`, 200 K lines)
+
+| Command | Mean | Min | Max | Relative |
+|:---|---:|---:|---:|---:|
+| BSD awk | 93.6 ms | 85.7 ms | 109.3 ms | 4.85× |
+| gawk | 26.6 ms | 25.4 ms | 27.7 ms | 1.38× |
+| awkrs `-j1` | 24.8 ms | 23.8 ms | 27.3 ms | 1.29× |
+| mawk | 19.3 ms | 18.7 ms | 20.1 ms | **1.00×** |
+
+### 9. String concat print (`{ print $3 "-" $5 }`, 200 K lines)
+
+| Command | Mean | Min | Max | Relative |
+|:---|---:|---:|---:|---:|
+| BSD awk | 113.6 ms | 107.1 ms | 122.4 ms | 4.34× |
+| awkrs `-j1` | 49.7 ms | 47.4 ms | 53.2 ms | 1.90× |
+| gawk | 40.6 ms | 38.7 ms | 45.3 ms | 1.55× |
+| mawk | 26.2 ms | 24.7 ms | 31.1 ms | **1.00×** |
+
+### 10. gsub (`{ gsub("alpha", "ALPHA"); print }`, 200 K lines)
+
+| Command | Mean | Min | Max | Relative |
+|:---|---:|---:|---:|---:|
+| mawk | 19.0 ms | 17.7 ms | 23.6 ms | **1.00×** |
+| gawk | 148.5 ms | 145.8 ms | 157.4 ms | 7.82× |
+| BSD awk | 152.5 ms | 143.6 ms | 173.6 ms | 8.03× |
+| awkrs `-j1` | 297.3 ms | 285.7 ms | 321.8 ms | 15.65× |
+
 > Regenerate after `cargo build --release` (requires `hyperfine`; `gawk` optional):
 > ```bash
 > ./scripts/benchmark-vs-awk.sh
