@@ -7,10 +7,9 @@ use crate::error::{Error, Result};
 use crate::format;
 use crate::interp::Flow;
 use crate::runtime::{Runtime, Value};
-use regex::Regex;
 use std::cmp::Ordering;
 use std::collections::HashMap;
-use std::io::Write;
+use std::io::{self, Write};
 
 // ── VM context ──────────────────────────────────────────────────────────────
 
@@ -27,8 +26,6 @@ pub struct VmCtx<'a> {
     print_out: Option<&'a mut Vec<String>>,
     for_in_iters: Vec<ForInState>,
     stack: Vec<Value>,
-    /// Buffered stdout output — flushed once per top-level VM call.
-    print_buf: Vec<u8>,
 }
 
 impl<'a> VmCtx<'a> {
@@ -41,7 +38,6 @@ impl<'a> VmCtx<'a> {
             print_out: None,
             for_in_iters: Vec::new(),
             stack: Vec::with_capacity(64),
-            print_buf: Vec::with_capacity(4096),
         }
     }
 
@@ -58,7 +54,6 @@ impl<'a> VmCtx<'a> {
             print_out: Some(out),
             for_in_iters: Vec::new(),
             stack: Vec::with_capacity(64),
-            print_buf: Vec::new(),
         }
     }
 
@@ -66,24 +61,14 @@ impl<'a> VmCtx<'a> {
         if let Some(buf) = self.print_out.as_mut() {
             buf.push(s.to_string());
         } else {
-            self.print_buf.extend_from_slice(s.as_bytes());
+            self.rt.print_buf.extend_from_slice(s.as_bytes());
         }
     }
 
     fn emit_flush(&mut self) -> Result<()> {
         if self.print_out.is_none() {
-            self.flush_print_buf()?;
+            flush_print_buf(&mut self.rt.print_buf)?;
             std::io::stdout().flush().map_err(Error::Io)?;
-        }
-        Ok(())
-    }
-
-    fn flush_print_buf(&mut self) -> Result<()> {
-        if !self.print_buf.is_empty() {
-            use std::io::Write;
-            let mut out = std::io::stdout().lock();
-            out.write_all(&self.print_buf).map_err(Error::Io)?;
-            self.print_buf.clear();
         }
         Ok(())
     }
@@ -166,14 +151,10 @@ pub fn vm_run_begin(cp: &CompiledProgram, rt: &mut Runtime) -> Result<()> {
             VmSignal::Return(_) => {
                 return Err(Error::Runtime("`return` outside function".into()))
             }
-            VmSignal::ExitPending => {
-                ctx.flush_print_buf()?;
-                return Ok(());
-            }
+            VmSignal::ExitPending => return Ok(()),
             VmSignal::Normal => {}
         }
     }
-    ctx.flush_print_buf()?;
     Ok(())
 }
 
@@ -185,14 +166,10 @@ pub fn vm_run_end(cp: &CompiledProgram, rt: &mut Runtime) -> Result<()> {
             VmSignal::Return(_) => {
                 return Err(Error::Runtime("`return` outside function".into()))
             }
-            VmSignal::ExitPending => {
-                ctx.flush_print_buf()?;
-                return Ok(());
-            }
+            VmSignal::ExitPending => return Ok(()),
             VmSignal::Normal => {}
         }
     }
-    ctx.flush_print_buf()?;
     Ok(())
 }
 
@@ -206,14 +183,10 @@ pub fn vm_run_beginfile(cp: &CompiledProgram, rt: &mut Runtime) -> Result<()> {
             VmSignal::Return(_) => {
                 return Err(Error::Runtime("`return` outside function".into()))
             }
-            VmSignal::ExitPending => {
-                ctx.flush_print_buf()?;
-                return Ok(());
-            }
+            VmSignal::ExitPending => return Ok(()),
             VmSignal::Normal => {}
         }
     }
-    ctx.flush_print_buf()?;
     Ok(())
 }
 
@@ -225,14 +198,10 @@ pub fn vm_run_endfile(cp: &CompiledProgram, rt: &mut Runtime) -> Result<()> {
             VmSignal::Return(_) => {
                 return Err(Error::Runtime("`return` outside function".into()))
             }
-            VmSignal::ExitPending => {
-                ctx.flush_print_buf()?;
-                return Ok(());
-            }
+            VmSignal::ExitPending => return Ok(()),
             VmSignal::Normal => {}
         }
     }
-    ctx.flush_print_buf()?;
     Ok(())
 }
 
@@ -246,8 +215,8 @@ pub fn vm_pattern_matches(
         CompiledPattern::Always => Ok(true),
         CompiledPattern::Regexp(idx) => {
             let pat = cp.strings.get(*idx);
-            let r = Regex::new(pat).map_err(|e| Error::Runtime(e.to_string()))?;
-            Ok(r.is_match(&rt.record))
+            rt.ensure_regex(pat).map_err(Error::Runtime)?;
+            Ok(rt.regex_ref(pat).is_match(&rt.record))
         }
         CompiledPattern::Expr(chunk) => {
             let mut ctx = VmCtx::new(cp, rt);
@@ -270,9 +239,7 @@ pub fn vm_run_rule(
         Some(buf) => VmCtx::with_print_capture(cp, rt, buf),
         None => VmCtx::new(cp, rt),
     };
-    let signal = execute(&rule.body, &mut ctx)?;
-    ctx.flush_print_buf()?;
-    match signal {
+    match execute(&rule.body, &mut ctx)? {
         VmSignal::Normal => Ok(Flow::Normal),
         VmSignal::Next => Ok(Flow::Next),
         VmSignal::Return(_) => Err(Error::Runtime(
@@ -442,14 +409,16 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             Op::RegexMatch => {
                 let pat = ctx.pop().as_str();
                 let s = ctx.pop().as_str();
-                let r = Regex::new(&pat).map_err(|e| Error::Runtime(e.to_string()))?;
-                ctx.push(Value::Num(if r.is_match(&s) { 1.0 } else { 0.0 }));
+                ctx.rt.ensure_regex(&pat).map_err(Error::Runtime)?;
+                let m = ctx.rt.regex_ref(&pat).is_match(&s);
+                ctx.push(Value::Num(if m { 1.0 } else { 0.0 }));
             }
             Op::RegexNotMatch => {
                 let pat = ctx.pop().as_str();
                 let s = ctx.pop().as_str();
-                let r = Regex::new(&pat).map_err(|e| Error::Runtime(e.to_string()))?;
-                ctx.push(Value::Num(if r.is_match(&s) { 0.0 } else { 1.0 }));
+                ctx.rt.ensure_regex(&pat).map_err(Error::Runtime)?;
+                let m = ctx.rt.regex_ref(&pat).is_match(&s);
+                ctx.push(Value::Num(if !m { 1.0 } else { 0.0 }));
             }
 
             // ── Unary ───────────────────────────────────────────────────
@@ -648,9 +617,9 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
 
             // ── Pattern helpers ─────────────────────────────────────────
             Op::MatchRegexp(idx) => {
-                let pat = ctx.str_ref(idx);
-                let r = Regex::new(pat).map_err(|e| Error::Runtime(e.to_string()))?;
-                let m = r.is_match(&ctx.rt.record);
+                let pat = ctx.str_ref(idx).to_string();
+                ctx.rt.ensure_regex(&pat).map_err(Error::Runtime)?;
+                let m = ctx.rt.regex_ref(&pat).is_match(&ctx.rt.record);
                 ctx.push(Value::Num(if m { 1.0 } else { 0.0 }));
             }
         }
@@ -660,6 +629,16 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
 }
 
 // ── Helper functions ────────────────────────────────────────────────────────
+
+/// Flush the persistent stdout buffer. Called at file boundaries, not per-record.
+pub fn flush_print_buf(buf: &mut Vec<u8>) -> Result<()> {
+    if !buf.is_empty() {
+        let mut out = io::stdout().lock();
+        out.write_all(buf).map_err(Error::Io)?;
+        buf.clear();
+    }
+    Ok(())
+}
 
 fn truthy(v: &Value) -> bool {
     v.truthy()

@@ -27,7 +27,8 @@ use crate::interp::{range_step, Flow};
 use crate::parser::parse_program;
 use crate::runtime::{Runtime, Value};
 use crate::vm::{
-    vm_pattern_matches, vm_run_begin, vm_run_beginfile, vm_run_end, vm_run_endfile, vm_run_rule,
+    flush_print_buf, vm_pattern_matches, vm_run_begin, vm_run_beginfile, vm_run_end,
+    vm_run_endfile, vm_run_rule,
 };
 use clap::Parser;
 use rayon::prelude::*;
@@ -96,8 +97,10 @@ pub fn run(bin_name: &str) -> Result<()> {
     rt.slots = cp.init_slots(&rt.vars);
 
     vm_run_begin(&cp, &mut rt)?;
+    flush_print_buf(&mut rt.print_buf)?;
     if rt.exit_pending {
         vm_run_end(&cp, &mut rt)?;
+        flush_print_buf(&mut rt.print_buf)?;
         std::process::exit(rt.exit_code);
     }
 
@@ -157,7 +160,9 @@ pub fn run(bin_name: &str) -> Result<()> {
         }
     }
 
+    flush_print_buf(&mut rt.print_buf)?;
     vm_run_end(&cp, &mut rt)?;
+    flush_print_buf(&mut rt.print_buf)?;
     if rt.exit_pending {
         std::process::exit(rt.exit_code);
     }

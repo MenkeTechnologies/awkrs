@@ -6,6 +6,7 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{Arc, Mutex};
 
 use crate::error::{Error, Result};
+use regex::Regex;
 
 type SharedInputReader = Arc<Mutex<BufReader<Box<dyn Read + Send>>>>;
 
@@ -96,6 +97,10 @@ pub struct Runtime {
     pub numeric_decimal: char,
     /// Indexed variable slots for the bytecode VM (fast Vec access instead of HashMap).
     pub slots: Vec<Value>,
+    /// Compiled regex cache — avoids recompiling the same pattern every record.
+    pub regex_cache: HashMap<String, Regex>,
+    /// Persistent stdout buffer — shared across record iterations, flushed at file boundaries.
+    pub print_buf: Vec<u8>,
 }
 
 impl Runtime {
@@ -125,6 +130,8 @@ impl Runtime {
             rand_seed: 1,
             numeric_decimal: '.',
             slots: Vec::new(),
+            regex_cache: HashMap::new(),
+            print_buf: Vec::with_capacity(65536),
         }
     }
 
@@ -154,7 +161,23 @@ impl Runtime {
             rand_seed,
             numeric_decimal,
             slots: Vec::new(),
+            regex_cache: HashMap::new(),
+            print_buf: Vec::new(),
         }
+    }
+
+    /// Ensure a regex is compiled and cached. Call before `regex_ref()`.
+    pub fn ensure_regex(&mut self, pat: &str) -> std::result::Result<(), String> {
+        if !self.regex_cache.contains_key(pat) {
+            let re = Regex::new(pat).map_err(|e| e.to_string())?;
+            self.regex_cache.insert(pat.to_string(), re);
+        }
+        Ok(())
+    }
+
+    /// Get a cached regex (must call `ensure_regex` first).
+    pub fn regex_ref(&self, pat: &str) -> &Regex {
+        &self.regex_cache[pat]
     }
 
     /// Resolve a global name: per-record overlay, then shared `BEGIN` snapshot.
@@ -548,6 +571,8 @@ impl Clone for Runtime {
             rand_seed: self.rand_seed,
             numeric_decimal: self.numeric_decimal,
             slots: self.slots.clone(),
+            regex_cache: self.regex_cache.clone(),
+            print_buf: Vec::new(),
         }
     }
 }
