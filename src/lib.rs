@@ -324,11 +324,11 @@ fn process_file(
 
     let mut count = 0usize;
     loop {
-        let mut line = String::new();
+        rt.line_buf.clear();
         let n = br
             .lock()
             .map_err(|_| Error::Runtime("input reader lock poisoned".into()))?
-            .read_line(&mut line)
+            .read_until(b'\n', &mut rt.line_buf)
             .map_err(Error::Io)?;
         if n == 0 {
             break;
@@ -336,7 +336,7 @@ fn process_file(
         count += 1;
         rt.nr += 1.0;
         rt.fnr += 1.0;
-        rt.set_record_from_line(&line);
+        rt.set_record_from_line_buf();
 
         for rule in &cp.record_rules {
             let run = match &rule.pattern {

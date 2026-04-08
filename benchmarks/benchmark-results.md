@@ -4,7 +4,7 @@ This file is **generated** by `./scripts/benchmark-vs-awk.sh`. Do not edit by ha
 
 ## Environment
 
-- **Generated at (UTC):** 2026-04-08 16:35:35
+- **Generated at (UTC):** 2026-04-08 16:46:42
 - **uname:** `Darwin 25.4.0 arm64`
 - **CPU (macOS sysctl):** Apple M5 Max
 - **awk:** `/usr/bin/awk`
@@ -17,10 +17,10 @@ Input: **200000** lines from `seq 1 200000` (one field per line). Program: `{ pr
 
 | Command | Mean [ms] | Min [ms] | Max [ms] | Relative |
 |:---|---:|---:|---:|---:|
-| `BSD awk` | 40.3 ± 3.7 | 36.1 | 50.2 | 1.67 ± 0.19 |
-| `gawk` | 24.2 ± 1.5 | 22.2 | 31.3 | 1.00 |
-| `awkrs -j1` | 59.3 ± 11.3 | 51.9 | 99.9 | 2.45 ± 0.49 |
-| `awkrs (parallel)` | 142.1 ± 14.3 | 125.8 | 186.4 | 5.88 ± 0.69 |
+| `BSD awk` | 44.1 ± 4.8 | 37.2 | 62.6 | 1.81 ± 0.30 |
+| `gawk` | 24.4 ± 3.0 | 20.7 | 39.2 | 1.00 |
+| `awkrs -j1` | 37.3 ± 6.4 | 30.4 | 60.9 | 1.53 ± 0.32 |
+| `awkrs (parallel)` | 109.5 ± 2.9 | 105.8 | 116.0 | 4.48 ± 0.56 |
 
 ## 2. CPU-bound BEGIN (no input)
 
@@ -28,9 +28,9 @@ Program: `BEGIN { s = 0; for (i = 1; i < 400001; i = i + 1) s += i; print s }` (
 
 | Command | Mean [ms] | Min [ms] | Max [ms] | Relative |
 |:---|---:|---:|---:|---:|
-| `BSD awk` | 20.0 ± 5.0 | 10.4 | 31.3 | 1.00 |
-| `gawk` | 26.0 ± 6.1 | 17.4 | 55.1 | 1.30 ± 0.45 |
-| `awkrs` | 25.1 ± 6.2 | 13.1 | 46.2 | 1.26 ± 0.44 |
+| `BSD awk` | 18.2 ± 4.5 | 13.5 | 44.3 | 1.05 ± 0.26 |
+| `gawk` | 23.9 ± 2.3 | 20.5 | 33.8 | 1.38 ± 0.15 |
+| `awkrs` | 17.3 ± 0.7 | 15.5 | 19.6 | 1.00 |
 
 ## 3. Sum first column (single-threaded)
 
@@ -38,9 +38,9 @@ Same input as §1. Program: `{ s += $1 } END { print s }`. (Cross-record state i
 
 | Command | Mean [ms] | Min [ms] | Max [ms] | Relative |
 |:---|---:|---:|---:|---:|
-| `BSD awk` | 40.1 ± 4.6 | 29.8 | 54.7 | 2.53 ± 0.98 |
-| `gawk` | 15.8 ± 5.8 | 8.6 | 29.6 | 1.00 |
-| `awkrs -j1` | 35.9 ± 5.5 | 29.6 | 59.3 | 2.27 ± 0.90 |
+| `BSD awk` | 32.8 ± 4.9 | 28.6 | 55.5 | 1.97 ± 0.31 |
+| `gawk` | 16.7 ± 0.9 | 15.0 | 20.3 | 1.00 |
+| `awkrs -j1` | 35.8 ± 5.4 | 23.1 | 53.1 | 2.15 ± 0.35 |
 
 ---
 

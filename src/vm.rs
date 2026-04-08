@@ -733,7 +733,6 @@ fn exec_print(ctx: &mut VmCtx<'_>, argc: u16, redir: RedirKind, is_printf: bool)
         if argc == 0 {
             return Err(Error::Runtime("`printf` needs a format string".into()));
         }
-        // Args are on stack bottom-to-top: fmt, arg1, arg2, ...
         let start = ctx.stack.len() - argc;
         let args: Vec<Value> = ctx.stack.drain(start..).collect();
         let fmt = args[0].as_str();
@@ -741,7 +740,42 @@ fn exec_print(ctx: &mut VmCtx<'_>, argc: u16, redir: RedirKind, is_printf: bool)
         let out = sprintf_simple(&fmt, vals, ctx.rt.numeric_decimal)?;
         let s = out.as_str();
         emit_with_redir(ctx, &s, redir, redir_path.as_deref())?;
+    } else if redir == RedirKind::Stdout && ctx.print_out.is_none() {
+        // ── Fast path: write directly into rt.print_buf, zero intermediate allocs ──
+        let ofs_bytes: Vec<u8> = ctx
+            .rt
+            .vars
+            .get("OFS")
+            .map(|v| match v {
+                Value::Str(s) => s.as_bytes().to_vec(),
+                _ => b" ".to_vec(),
+            })
+            .unwrap_or_else(|| b" ".to_vec());
+        let ors_bytes: Vec<u8> = ctx
+            .rt
+            .vars
+            .get("ORS")
+            .map(|v| match v {
+                Value::Str(s) => s.as_bytes().to_vec(),
+                _ => b"\n".to_vec(),
+            })
+            .unwrap_or_else(|| b"\n".to_vec());
+
+        if argc == 0 {
+            ctx.rt.print_buf.extend_from_slice(ctx.rt.record.as_bytes());
+        } else {
+            let start = ctx.stack.len() - argc;
+            let args: Vec<Value> = ctx.stack.drain(start..).collect();
+            for (i, val) in args.iter().enumerate() {
+                if i > 0 {
+                    ctx.rt.print_buf.extend_from_slice(&ofs_bytes);
+                }
+                val.write_to(&mut ctx.rt.print_buf);
+            }
+        }
+        ctx.rt.print_buf.extend_from_slice(&ors_bytes);
     } else {
+        // ── Redirect / capture path: build String (I/O dominates, alloc is fine) ──
         let ofs = ctx
             .rt
             .vars

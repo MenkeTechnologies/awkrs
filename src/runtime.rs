@@ -28,21 +28,43 @@ impl Value {
     pub fn as_str(&self) -> String {
         match self {
             Value::Str(s) => s.clone(),
+            Value::Num(n) => format_number(*n),
+            Value::Array(_) => String::new(),
+        }
+    }
+
+    /// Borrow the inner string without cloning. Returns `None` for Num/Array.
+    #[inline]
+    #[allow(dead_code)]
+    pub fn str_ref(&self) -> Option<&str> {
+        match self {
+            Value::Str(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    /// Write the string representation directly into a byte buffer — zero allocation
+    /// for the Str case, one `write!` for Num.
+    pub fn write_to(&self, buf: &mut Vec<u8>) {
+        match self {
+            Value::Str(s) => buf.extend_from_slice(s.as_bytes()),
             Value::Num(n) => {
+                use std::io::Write;
+                let n = *n;
                 if n.fract() == 0.0 && n.abs() < 1e15 {
-                    format!("{}", *n as i64)
+                    let _ = write!(buf, "{}", n as i64);
                 } else {
-                    format!("{n}")
+                    let _ = write!(buf, "{n}");
                 }
             }
-            Value::Array(_) => "".into(),
+            Value::Array(_) => {}
         }
     }
 
     pub fn as_number(&self) -> f64 {
         match self {
             Value::Num(n) => *n,
-            Value::Str(s) => s.parse().unwrap_or(0.0),
+            Value::Str(s) => parse_number(s),
             Value::Array(_) => 0.0,
         }
     }
@@ -68,13 +90,41 @@ impl Value {
     }
 }
 
+/// Format a number to string (awk rules: integer form if no fractional part).
+#[inline]
+fn format_number(n: f64) -> String {
+    if n.fract() == 0.0 && n.abs() < 1e15 {
+        format!("{}", n as i64)
+    } else {
+        format!("{n}")
+    }
+}
+
+/// Parse a string to f64, returning 0.0 for non-numeric. Handles leading whitespace.
+#[inline]
+fn parse_number(s: &str) -> f64 {
+    // Fast path: empty string
+    if s.is_empty() {
+        return 0.0;
+    }
+    // awk semantics: parse leading numeric prefix
+    s.trim().parse().unwrap_or(0.0)
+}
+
 pub struct Runtime {
     pub vars: HashMap<String, Value>,
     /// Post-`BEGIN` globals shared across parallel record workers (`Arc` clone is O(1)).
     /// Reads resolve `vars` first (per-record overlay), then this map. Not used in the main thread.
     pub global_readonly: Option<Arc<HashMap<String, Value>>>,
+    /// Owned field strings — only populated when a field is modified via `set_field`.
     pub fields: Vec<String>,
+    /// Zero-copy field byte-ranges into `record`. Each `(start, end)` is a byte offset.
+    pub field_ranges: Vec<(u32, u32)>,
+    /// True when `set_field` has been called and `fields` vec is authoritative.
+    pub fields_dirty: bool,
     pub record: String,
+    /// Reusable buffer for input line reading (avoids per-line allocation).
+    pub line_buf: Vec<u8>,
     pub nr: f64,
     pub fnr: f64,
     pub filename: String,
@@ -115,7 +165,10 @@ impl Runtime {
             vars,
             global_readonly: None,
             fields: Vec::new(),
+            field_ranges: Vec::new(),
+            fields_dirty: false,
             record: String::new(),
+            line_buf: Vec::with_capacity(256),
             nr: 0.0,
             fnr: 0.0,
             filename: String::new(),
@@ -146,7 +199,10 @@ impl Runtime {
             vars: HashMap::new(),
             global_readonly: Some(shared_globals),
             fields: Vec::new(),
+            field_ranges: Vec::new(),
+            fields_dirty: false,
             record: String::new(),
+            line_buf: Vec::new(),
             nr: 0.0,
             fnr: 0.0,
             filename,
@@ -393,24 +449,61 @@ impl Runtime {
     }
 
     pub fn set_field_sep_split(&mut self, fs: &str, line: &str) {
-        self.record = line.to_string();
-        if fs.is_empty() {
-            self.fields = line.chars().map(|c| c.to_string()).collect();
-        } else if fs == " " {
-            let mut fields = Vec::with_capacity(line.split_whitespace().count().max(8));
-            for w in line.split_whitespace() {
-                fields.push(w.to_string());
-            }
-            self.fields = fields;
-        } else {
-            let mut fields = Vec::with_capacity(8);
-            for p in line.split(fs) {
-                fields.push(p.to_string());
-            }
-            self.fields = fields;
-        }
-        let nf = self.fields.len() as f64;
+        self.record.clear();
+        self.record.push_str(line);
+        self.fields_dirty = false;
+        self.fields.clear();
+        self.field_ranges.clear();
+        self.split_record_fields(fs);
+        let nf = self.field_ranges.len() as f64;
         self.vars.insert("NF".into(), Value::Num(nf));
+    }
+
+    /// Split `self.record` into `field_ranges` using separator `fs`.
+    /// Caller must clear `field_ranges` and set `fields_dirty = false` before calling.
+    fn split_record_fields(&mut self, fs: &str) {
+        let record = self.record.as_str();
+        if fs.is_empty() {
+            for (i, c) in record.char_indices() {
+                self.field_ranges
+                    .push((i as u32, (i + c.len_utf8()) as u32));
+            }
+        } else if fs == " " {
+            let bytes = record.as_bytes();
+            let len = bytes.len();
+            let mut i = 0;
+            while i < len && bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            while i < len {
+                let start = i;
+                while i < len && !bytes[i].is_ascii_whitespace() {
+                    i += 1;
+                }
+                self.field_ranges.push((start as u32, i as u32));
+                while i < len && bytes[i].is_ascii_whitespace() {
+                    i += 1;
+                }
+            }
+        } else if fs.len() == 1 {
+            let sep = fs.as_bytes()[0];
+            let bytes = record.as_bytes();
+            let mut start = 0;
+            for (i, &b) in bytes.iter().enumerate() {
+                if b == sep {
+                    self.field_ranges.push((start as u32, i as u32));
+                    start = i + 1;
+                }
+            }
+            self.field_ranges.push((start as u32, bytes.len() as u32));
+        } else {
+            let mut pos = 0;
+            for part in record.split(fs) {
+                let end = pos + part.len();
+                self.field_ranges.push((pos as u32, end as u32));
+                pos = end + fs.len();
+            }
+        }
     }
 
     pub fn field(&self, i: i32) -> Value {
@@ -421,16 +514,59 @@ impl Runtime {
         if idx == 0 {
             return Value::Str(self.record.clone());
         }
-        self.fields
-            .get(idx - 1)
-            .cloned()
-            .map(Value::Str)
-            .unwrap_or_else(|| Value::Str(String::new()))
+        if self.fields_dirty {
+            self.fields
+                .get(idx - 1)
+                .cloned()
+                .map(Value::Str)
+                .unwrap_or_else(|| Value::Str(String::new()))
+        } else {
+            self.field_ranges
+                .get(idx - 1)
+                .map(|&(s, e)| Value::Str(self.record[s as usize..e as usize].to_string()))
+                .unwrap_or_else(|| Value::Str(String::new()))
+        }
+    }
+
+    /// Get a field as &str without allocating (zero-copy from record).
+    #[allow(dead_code)]
+    pub fn field_str(&self, i: usize) -> &str {
+        if i == 0 {
+            return &self.record;
+        }
+        if self.fields_dirty {
+            self.fields.get(i - 1).map(|s| s.as_str()).unwrap_or("")
+        } else {
+            self.field_ranges
+                .get(i - 1)
+                .map(|&(s, e)| &self.record[s as usize..e as usize])
+                .unwrap_or("")
+        }
+    }
+
+    /// Number of fields in the current record.
+    #[inline]
+    #[allow(dead_code)]
+    pub fn nf(&self) -> usize {
+        if self.fields_dirty {
+            self.fields.len()
+        } else {
+            self.field_ranges.len()
+        }
     }
 
     pub fn set_field(&mut self, i: i32, val: &str) {
         if i < 1 {
             return;
+        }
+        // Materialize owned fields from ranges if needed
+        if !self.fields_dirty {
+            self.fields.clear();
+            for &(s, e) in &self.field_ranges {
+                self.fields
+                    .push(self.record[s as usize..e as usize].to_string());
+            }
+            self.fields_dirty = true;
         }
         let idx = (i - 1) as usize;
         if self.fields.len() <= idx {
@@ -452,12 +588,45 @@ impl Runtime {
     }
 
     pub fn set_record_from_line(&mut self, line: &str) {
+        let trimmed = line.trim_end_matches(['\n', '\r']);
         let fs = self
             .vars
             .get("FS")
             .map(|v| v.as_str())
             .unwrap_or_else(|| " ".into());
-        self.set_field_sep_split(&fs, line.trim_end_matches(['\n', '\r']));
+        self.set_field_sep_split(&fs, trimmed);
+    }
+
+    /// Parse the current `line_buf` as a record. Avoids the borrow-checker conflict
+    /// of borrowing `line_buf` and calling `set_field_sep_split` simultaneously.
+    pub fn set_record_from_line_buf(&mut self) {
+        // Trim trailing \n\r
+        let mut end = self.line_buf.len();
+        while end > 0 && (self.line_buf[end - 1] == b'\n' || self.line_buf[end - 1] == b'\r') {
+            end -= 1;
+        }
+        let fs = self
+            .vars
+            .get("FS")
+            .map(|v| v.as_str())
+            .unwrap_or_else(|| " ".into());
+        // Copy the trimmed line into record (reuses allocation)
+        self.record.clear();
+        // Valid UTF-8 fast path (common for text data)
+        match std::str::from_utf8(&self.line_buf[..end]) {
+            Ok(s) => self.record.push_str(s),
+            Err(_) => {
+                let lossy = String::from_utf8_lossy(&self.line_buf[..end]);
+                self.record.push_str(&lossy);
+            }
+        }
+        // Now split the record we just populated
+        self.fields_dirty = false;
+        self.fields.clear();
+        self.field_ranges.clear();
+        self.split_record_fields(&fs);
+        let nf = self.field_ranges.len() as f64;
+        self.vars.insert("NF".into(), Value::Num(nf));
     }
 
     pub fn array_get(&self, name: &str, key: &str) -> Value {
@@ -556,7 +725,10 @@ impl Clone for Runtime {
             vars: self.vars.clone(),
             global_readonly: self.global_readonly.clone(),
             fields: self.fields.clone(),
+            field_ranges: self.field_ranges.clone(),
+            fields_dirty: self.fields_dirty,
             record: self.record.clone(),
+            line_buf: Vec::new(),
             nr: self.nr,
             fnr: self.fnr,
             filename: self.filename.clone(),
