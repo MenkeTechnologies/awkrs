@@ -24,6 +24,15 @@ If the program is not parallel-safe, the engine **falls back to sequential** pro
 
 **Tradeoff:** Parallel mode loads each **input file** fully into memory before executing rules (not stdin).
 
+## Zsh Completion
+
+Add the completions directory to your `fpath` before `compinit`:
+
+```zsh
+fpath=(/path/to/awkrs/completions $fpath)
+autoload -Uz compinit && compinit
+```
+
 ## Build
 
 ```bash
