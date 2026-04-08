@@ -307,6 +307,43 @@ fn process_file_parallel(
     Ok(nlines)
 }
 
+/// Check if compiled bytecode uses `getline` from primary input (no file redirect).
+fn uses_primary_getline(cp: &CompiledProgram) -> bool {
+    use crate::bytecode::{GetlineSource, Op};
+    let check = |ops: &[Op]| {
+        ops.iter().any(|op| {
+            matches!(
+                op,
+                Op::GetLine {
+                    source: GetlineSource::Primary,
+                    ..
+                }
+            )
+        })
+    };
+    for c in &cp.begin_chunks {
+        if check(&c.ops) {
+            return true;
+        }
+    }
+    for c in &cp.end_chunks {
+        if check(&c.ops) {
+            return true;
+        }
+    }
+    for r in &cp.record_rules {
+        if check(&r.body.ops) {
+            return true;
+        }
+    }
+    for f in cp.functions.values() {
+        if check(&f.body.ops) {
+            return true;
+        }
+    }
+    false
+}
+
 fn process_file(
     path: Option<&Path>,
     prog: &Program,
@@ -314,6 +351,15 @@ fn process_file(
     range_state: &mut [bool],
     rt: &mut Runtime,
 ) -> Result<usize> {
+    // Fast path: for files without primary getline, slurp into memory and scan lines.
+    // Eliminates Mutex, BufReader, and syscall-per-line overhead.
+    if let Some(p) = path {
+        if !uses_primary_getline(cp) {
+            return process_file_slurp(p, prog, cp, range_state, rt);
+        }
+    }
+
+    // Streaming path: stdin or programs using primary getline.
     let reader: Box<dyn Read + Send> = if let Some(p) = path {
         Box::new(File::open(p).map_err(|e| Error::ProgramFile(p.to_path_buf(), e))?)
     } else {
@@ -337,50 +383,114 @@ fn process_file(
         rt.nr += 1.0;
         rt.fnr += 1.0;
         rt.set_record_from_line_buf();
-
-        for rule in &cp.record_rules {
-            let run = match &rule.pattern {
-                CompiledPattern::Range => {
-                    let orig = &prog.rules[rule.original_index];
-                    if let Pattern::Range(p1, p2) = &orig.pattern {
-                        range_step(
-                            &mut range_state[rule.original_index],
-                            p1,
-                            p2,
-                            rt,
-                            prog,
-                        )?
-                    } else {
-                        false
-                    }
-                }
-                _ => vm_pattern_matches(rule, cp, rt)?,
-            };
-            if run {
-                match vm_run_rule(rule, cp, rt, None) {
-                    Ok(Flow::Next) => break,
-                    Ok(Flow::ExitPending) => {
-                        rt.detach_input_reader();
-                        return Ok(count);
-                    }
-                    Ok(Flow::Normal) => {}
-                    Ok(Flow::Break) | Ok(Flow::Continue) => {}
-                    Ok(Flow::Return(_)) => {
-                        return Err(Error::Runtime(
-                            "`return` used outside function in rule action".into(),
-                        ));
-                    }
-                    Err(Error::Exit(code)) => return Err(Error::Exit(code)),
-                    Err(e) => return Err(e),
-                }
-            }
-        }
-        if rt.exit_pending {
+        if dispatch_rules(prog, cp, range_state, rt)? {
             break;
         }
     }
     rt.detach_input_reader();
     Ok(count)
+}
+
+/// Fast file processing: read entire file into memory, iterate lines by byte-scanning.
+/// No Mutex, no BufReader, no syscall per line, no per-line buffer allocation.
+fn process_file_slurp(
+    path: &Path,
+    prog: &Program,
+    cp: &CompiledProgram,
+    range_state: &mut [bool],
+    rt: &mut Runtime,
+) -> Result<usize> {
+    let data = std::fs::read(path).map_err(|e| Error::ProgramFile(path.to_path_buf(), e))?;
+    // Cache FS once (only changes if program assigns FS mid-execution, rare).
+    let fs = rt
+        .vars
+        .get("FS")
+        .map(|v| v.as_str())
+        .unwrap_or_else(|| " ".into());
+
+    let mut count = 0usize;
+    let mut pos = 0;
+    let len = data.len();
+
+    while pos < len {
+        // Find end of line
+        let eol = data[pos..]
+            .iter()
+            .position(|&b| b == b'\n')
+            .map(|i| pos + i)
+            .unwrap_or(len);
+
+        // Trim trailing \r
+        let end = if eol > pos && data[eol - 1] == b'\r' {
+            eol - 1
+        } else {
+            eol
+        };
+
+        count += 1;
+        rt.nr += 1.0;
+        rt.fnr += 1.0;
+
+        // Parse line directly from the memory buffer
+        match std::str::from_utf8(&data[pos..end]) {
+            Ok(line) => rt.set_field_sep_split(&fs, line),
+            Err(_) => {
+                let lossy = String::from_utf8_lossy(&data[pos..end]);
+                rt.set_field_sep_split(&fs, &lossy);
+            }
+        }
+
+        if dispatch_rules(prog, cp, range_state, rt)? {
+            break;
+        }
+
+        pos = eol + 1;
+    }
+    Ok(count)
+}
+
+/// Execute all record rules for the current record. Returns true if processing should stop.
+fn dispatch_rules(
+    prog: &Program,
+    cp: &CompiledProgram,
+    range_state: &mut [bool],
+    rt: &mut Runtime,
+) -> Result<bool> {
+    for rule in &cp.record_rules {
+        let run = match &rule.pattern {
+            CompiledPattern::Range => {
+                let orig = &prog.rules[rule.original_index];
+                if let Pattern::Range(p1, p2) = &orig.pattern {
+                    range_step(
+                        &mut range_state[rule.original_index],
+                        p1,
+                        p2,
+                        rt,
+                        prog,
+                    )?
+                } else {
+                    false
+                }
+            }
+            _ => vm_pattern_matches(rule, cp, rt)?,
+        };
+        if run {
+            match vm_run_rule(rule, cp, rt, None) {
+                Ok(Flow::Next) => break,
+                Ok(Flow::ExitPending) => return Ok(true),
+                Ok(Flow::Normal) => {}
+                Ok(Flow::Break) | Ok(Flow::Continue) => {}
+                Ok(Flow::Return(_)) => {
+                    return Err(Error::Runtime(
+                        "`return` used outside function in rule action".into(),
+                    ));
+                }
+                Err(Error::Exit(code)) => return Err(Error::Exit(code)),
+                Err(e) => return Err(e),
+            }
+        }
+    }
+    Ok(rt.exit_pending)
 }
 
 fn resolve_program_and_files(args: &Args) -> Result<(String, Vec<PathBuf>)> {

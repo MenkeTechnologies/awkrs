@@ -455,8 +455,6 @@ impl Runtime {
         self.fields.clear();
         self.field_ranges.clear();
         self.split_record_fields(fs);
-        let nf = self.field_ranges.len() as f64;
-        self.vars.insert("NF".into(), Value::Num(nf));
     }
 
     /// Split `self.record` into `field_ranges` using separator `fs`.
@@ -625,8 +623,6 @@ impl Runtime {
         self.fields.clear();
         self.field_ranges.clear();
         self.split_record_fields(&fs);
-        let nf = self.field_ranges.len() as f64;
-        self.vars.insert("NF".into(), Value::Num(nf));
     }
 
     pub fn array_get(&self, name: &str, key: &str) -> Value {

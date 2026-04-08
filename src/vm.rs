@@ -89,7 +89,13 @@ impl<'a> VmCtx<'a> {
             .unwrap_or_else(|| match name {
                 "NR" => Value::Num(self.rt.nr),
                 "FNR" => Value::Num(self.rt.fnr),
-                "NF" => Value::Num(self.rt.fields.len() as f64),
+                "NF" => Value::Num(
+                    if self.rt.fields_dirty {
+                        self.rt.fields.len()
+                    } else {
+                        self.rt.field_ranges.len()
+                    } as f64,
+                ),
                 "FILENAME" => Value::Str(self.rt.filename.clone()),
                 _ => Value::Str(String::new()),
             })
