@@ -961,6 +961,7 @@ fn peephole_optimize(ops: &mut Vec<Op>) {
     let mut offset_map = vec![0usize; old_len + 1]; // +1 for end-of-chunk targets
     let mut adjustment: usize = 0;
     let mut fi = 0;
+    #[allow(clippy::needless_range_loop)]
     for pos in 0..=old_len {
         if fi < fusions.len() {
             let (fpos, _, removed) = fusions[fi];

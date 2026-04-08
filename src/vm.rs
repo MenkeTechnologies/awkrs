@@ -653,11 +653,19 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 ctx.rt.slots[slot as usize] = Value::Num(old + field_val);
             }
             Op::PrintFieldStdout(field) => {
-                ctx.rt.print_field_to_buf(field as usize);
-                let mut ors_local = [0u8; 64];
-                let ors_len = ctx.rt.ors_bytes.len().min(64);
-                ors_local[..ors_len].copy_from_slice(&ctx.rt.ors_bytes[..ors_len]);
-                ctx.rt.print_buf.extend_from_slice(&ors_local[..ors_len]);
+                if let Some(ref mut buf) = ctx.print_out {
+                    // Parallel capture path: build string, push to capture buffer.
+                    let val = ctx.rt.field(field as i32);
+                    let ors = String::from_utf8_lossy(&ctx.rt.ors_bytes).into_owned();
+                    let s = format!("{}{}", val.as_str(), ors);
+                    buf.push(s);
+                } else {
+                    ctx.rt.print_field_to_buf(field as usize);
+                    let mut ors_local = [0u8; 64];
+                    let ors_len = ctx.rt.ors_bytes.len().min(64);
+                    ors_local[..ors_len].copy_from_slice(&ctx.rt.ors_bytes[..ors_len]);
+                    ctx.rt.print_buf.extend_from_slice(&ors_local[..ors_len]);
+                }
             }
             Op::IncrSlot(slot) => {
                 let s = slot as usize;

@@ -478,6 +478,14 @@ fn process_file_slurp_inline(
     action: InlineAction,
     rt: &mut Runtime,
 ) -> Result<usize> {
+    // Ultra-fast path: for PrintFieldStdout with default FS=" " and field > 0,
+    // skip field splitting + record copy entirely and scan bytes directly.
+    if let InlineAction::PrintFieldStdout(field) = action {
+        if field > 0 && fs == " " {
+            return process_file_print_field_raw(&data, field as usize, rt);
+        }
+    }
+
     let mut count = 0usize;
     let mut pos = 0;
     let len = data.len();
@@ -523,6 +531,84 @@ fn process_file_slurp_inline(
                 rt.slots[slot as usize] = Value::Num(sv + fv);
             }
         }
+
+        pos = eol + 1;
+    }
+    Ok(count)
+}
+
+/// Absolute fastest path: print $N with FS=" " directly from raw bytes.
+/// No record copy, no field_ranges, no UTF-8 validation, no set_field_sep_split.
+/// Scans bytes directly in the mmap'd/slurped buffer.
+fn process_file_print_field_raw(data: &[u8], field_idx: usize, rt: &mut Runtime) -> Result<usize> {
+    let mut count = 0usize;
+    let mut pos = 0;
+    let len = data.len();
+    let ors = b"\n"; // ORS default — fast path only fires when FS is default too
+
+    while pos < len {
+        // Find end of line
+        let eol = data[pos..]
+            .iter()
+            .position(|&b| b == b'\n')
+            .map(|i| pos + i)
+            .unwrap_or(len);
+
+        let end = if eol > pos && data[eol - 1] == b'\r' {
+            eol - 1
+        } else {
+            eol
+        };
+
+        count += 1;
+        rt.nr += 1.0;
+        rt.fnr += 1.0;
+
+        // Find the Nth whitespace-delimited field directly in bytes
+        let line = &data[pos..end];
+        let mut fi = 0usize; // current field index (1-based after first non-ws)
+        let mut i = 0;
+        let llen = line.len();
+
+        // Skip leading whitespace
+        while i < llen && line[i].is_ascii_whitespace() {
+            i += 1;
+        }
+
+        let mut field_start = i;
+        let mut field_end = i;
+        let mut found = false;
+
+        while i <= llen {
+            let at_end = i == llen;
+            let is_ws = !at_end && line[i].is_ascii_whitespace();
+
+            if at_end || is_ws {
+                if field_start < i {
+                    fi += 1;
+                    if fi == field_idx {
+                        field_end = i;
+                        found = true;
+                        break;
+                    }
+                }
+                if is_ws {
+                    // Skip whitespace run
+                    while i < llen && line[i].is_ascii_whitespace() {
+                        i += 1;
+                    }
+                    field_start = i;
+                    continue;
+                }
+            }
+            i += 1;
+        }
+
+        if found {
+            rt.print_buf
+                .extend_from_slice(&line[field_start..field_end]);
+        }
+        rt.print_buf.extend_from_slice(ors);
 
         pos = eol + 1;
     }
