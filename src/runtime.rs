@@ -77,6 +77,36 @@ impl Value {
         }
     }
 
+    /// Take ownership of the inner String, converting numbers to string form.
+    /// Avoids clone when the Value is already a Str variant.
+    #[inline]
+    pub fn into_string(self) -> String {
+        match self {
+            Value::Str(s) => s,
+            Value::Num(n) => format_number(n),
+            Value::Array(_) => String::new(),
+        }
+    }
+
+    /// Append this value's string representation to an existing String.
+    /// Avoids intermediate allocation compared to `format!("{a}{b}")`.
+    #[inline]
+    pub fn append_to_string(&self, buf: &mut String) {
+        match self {
+            Value::Str(s) => buf.push_str(s),
+            Value::Num(n) => {
+                use std::fmt::Write;
+                let n = *n;
+                if n.fract() == 0.0 && n.abs() < 1e15 {
+                    let _ = write!(buf, "{}", n as i64);
+                } else {
+                    let _ = write!(buf, "{n}");
+                }
+            }
+            Value::Array(_) => {}
+        }
+    }
+
     /// POSIX-style: true if the value is numeric (including string that looks like number).
     pub fn is_numeric_str(&self) -> bool {
         match self {
@@ -122,6 +152,10 @@ pub struct Runtime {
     pub field_ranges: Vec<(u32, u32)>,
     /// True when `set_field` has been called and `fields` vec is authoritative.
     pub fields_dirty: bool,
+    /// True when record has been set but fields have not been split yet.
+    pub fields_pending_split: bool,
+    /// Cached FS for lazy field splitting.
+    pub cached_fs: String,
     pub record: String,
     /// Reusable buffer for input line reading (avoids per-line allocation).
     pub line_buf: Vec<u8>,
@@ -173,6 +207,8 @@ impl Runtime {
             fields: Vec::new(),
             field_ranges: Vec::new(),
             fields_dirty: false,
+            fields_pending_split: false,
+            cached_fs: " ".into(),
             record: String::new(),
             line_buf: Vec::with_capacity(256),
             nr: 0.0,
@@ -210,6 +246,8 @@ impl Runtime {
             fields: Vec::new(),
             field_ranges: Vec::new(),
             fields_dirty: false,
+            fields_pending_split: false,
+            cached_fs: " ".into(),
             record: String::new(),
             line_buf: Vec::new(),
             nr: 0.0,
@@ -464,9 +502,21 @@ impl Runtime {
         self.record.clear();
         self.record.push_str(line);
         self.fields_dirty = false;
+        self.fields_pending_split = true;
+        self.cached_fs.clear();
+        self.cached_fs.push_str(fs);
         self.fields.clear();
         self.field_ranges.clear();
-        self.split_record_fields(fs);
+    }
+
+    /// Ensure fields are split. Called lazily before any field access.
+    #[inline]
+    pub fn ensure_fields_split(&mut self) {
+        if self.fields_pending_split {
+            self.fields_pending_split = false;
+            let fs = self.cached_fs.clone();
+            self.split_record_fields(&fs);
+        }
     }
 
     /// Split `self.record` into `field_ranges` using separator `fs`.
@@ -516,7 +566,7 @@ impl Runtime {
         }
     }
 
-    pub fn field(&self, i: i32) -> Value {
+    pub fn field(&mut self, i: i32) -> Value {
         if i < 0 {
             return Value::Str(String::new());
         }
@@ -524,6 +574,7 @@ impl Runtime {
         if idx == 0 {
             return Value::Str(self.record.clone());
         }
+        self.ensure_fields_split();
         if self.fields_dirty {
             self.fields
                 .get(idx - 1)
@@ -540,7 +591,7 @@ impl Runtime {
 
     /// Get field value as f64 directly without allocating a String.
     #[inline]
-    pub fn field_as_number(&self, i: i32) -> f64 {
+    pub fn field_as_number(&mut self, i: i32) -> f64 {
         if i < 0 {
             return 0.0;
         }
@@ -548,6 +599,7 @@ impl Runtime {
         if idx == 0 {
             return parse_number(&self.record);
         }
+        self.ensure_fields_split();
         if self.fields_dirty {
             self.fields
                 .get(idx - 1)
@@ -567,7 +619,10 @@ impl Runtime {
     pub fn print_field_to_buf(&mut self, idx: usize) {
         if idx == 0 {
             self.print_buf.extend_from_slice(self.record.as_bytes());
-        } else if self.fields_dirty {
+            return;
+        }
+        self.ensure_fields_split();
+        if self.fields_dirty {
             if let Some(s) = self.fields.get(idx - 1) {
                 self.print_buf.extend_from_slice(s.as_bytes());
             }
@@ -596,7 +651,8 @@ impl Runtime {
     /// Number of fields in the current record.
     #[inline]
     #[allow(dead_code)]
-    pub fn nf(&self) -> usize {
+    pub fn nf(&mut self) -> usize {
+        self.ensure_fields_split();
         if self.fields_dirty {
             self.fields.len()
         } else {
@@ -774,6 +830,8 @@ impl Clone for Runtime {
             fields: self.fields.clone(),
             field_ranges: self.field_ranges.clone(),
             fields_dirty: self.fields_dirty,
+            fields_pending_split: self.fields_pending_split,
+            cached_fs: self.cached_fs.clone(),
             record: self.record.clone(),
             line_buf: Vec::new(),
             nr: self.nr,

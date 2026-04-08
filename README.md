@@ -103,10 +103,10 @@ Cross-record state is not parallel-safe, so awkrs is `-j1` only.
 
 | Command | Mean | Min | Max | Relative |
 |:---|---:|---:|---:|---:|
-| BSD awk | 120.9 ms | 103.9 ms | 144.7 ms | 17.73× |
-| gawk | 86.1 ms | 84.6 ms | 89.6 ms | 12.62× |
-| awkrs `-j1` | 17.3 ms | 16.9 ms | 17.8 ms | 2.54× |
-| mawk | 6.8 ms | 6.6 ms | 7.1 ms | **1.00×** |
+| BSD awk | 137.7 ms | 125.2 ms | 183.5 ms | 19.80× |
+| gawk | 97.2 ms | 85.0 ms | 113.6 ms | 13.97× |
+| awkrs `-j1` | 14.0 ms | 13.2 ms | 15.5 ms | 2.01× |
+| mawk | 7.0 ms | 6.8 ms | 7.3 ms | **1.00×** |
 
 ### 6. Associative array (`{ a[$5] += 1 } END { for (k in a) print k, a[k] }`, 200 K lines)
 
@@ -139,19 +139,19 @@ Cross-record state is not parallel-safe, so awkrs is `-j1` only.
 
 | Command | Mean | Min | Max | Relative |
 |:---|---:|---:|---:|---:|
-| BSD awk | 113.6 ms | 107.1 ms | 122.4 ms | 4.34× |
-| awkrs `-j1` | 49.7 ms | 47.4 ms | 53.2 ms | 1.90× |
-| gawk | 40.6 ms | 38.7 ms | 45.3 ms | 1.55× |
-| mawk | 26.2 ms | 24.7 ms | 31.1 ms | **1.00×** |
+| BSD awk | 115.2 ms | 105.7 ms | 133.9 ms | 4.33× |
+| gawk | 40.8 ms | 38.9 ms | 42.9 ms | 1.54× |
+| awkrs `-j1` | 33.4 ms | 31.9 ms | 35.0 ms | 1.26× |
+| mawk | 26.6 ms | 25.1 ms | 30.7 ms | **1.00×** |
 
 ### 10. gsub (`{ gsub("alpha", "ALPHA"); print }`, 200 K lines)
 
 | Command | Mean | Min | Max | Relative |
 |:---|---:|---:|---:|---:|
-| mawk | 19.0 ms | 17.7 ms | 23.6 ms | **1.00×** |
-| gawk | 148.5 ms | 145.8 ms | 157.4 ms | 7.82× |
-| BSD awk | 152.5 ms | 143.6 ms | 173.6 ms | 8.03× |
-| awkrs `-j1` | 297.3 ms | 285.7 ms | 321.8 ms | 15.65× |
+| mawk | 18.7 ms | 17.5 ms | 23.4 ms | **1.00×** |
+| awkrs `-j1` | 42.3 ms | 35.9 ms | 47.5 ms | 2.26× |
+| gawk | 149.1 ms | 146.6 ms | 153.0 ms | 7.97× |
+| BSD awk | 151.8 ms | 144.3 ms | 167.1 ms | 8.12× |
 
 > Regenerate after `cargo build --release` (requires `hyperfine`; `gawk` optional):
 > ```bash

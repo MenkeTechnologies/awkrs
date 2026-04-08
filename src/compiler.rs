@@ -137,7 +137,11 @@ impl Compiler {
             Pattern::Empty => CompiledPattern::Always,
             Pattern::Regexp(re) => {
                 let idx = self.strings.intern(re);
-                CompiledPattern::Regexp(idx)
+                if is_literal_regex(re) {
+                    CompiledPattern::LiteralRegexp(idx)
+                } else {
+                    CompiledPattern::Regexp(idx)
+                }
             }
             Pattern::Expr(e) => {
                 let mut ops = Vec::new();
@@ -1004,4 +1008,26 @@ fn peephole_optimize(ops: &mut Vec<Op>) {
             _ => {}
         }
     }
+}
+
+/// Check if a regex pattern is a plain literal (no metacharacters).
+fn is_literal_regex(pat: &str) -> bool {
+    !pat.bytes().any(|b| {
+        matches!(
+            b,
+            b'.' | b'*'
+                | b'+'
+                | b'?'
+                | b'['
+                | b']'
+                | b'('
+                | b')'
+                | b'{'
+                | b'}'
+                | b'|'
+                | b'^'
+                | b'$'
+                | b'\\'
+        )
+    })
 }

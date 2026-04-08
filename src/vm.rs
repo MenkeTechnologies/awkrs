@@ -245,6 +245,10 @@ pub fn vm_pattern_matches(
             rt.ensure_regex(pat).map_err(Error::Runtime)?;
             Ok(rt.regex_ref(pat).is_match(&rt.record))
         }
+        CompiledPattern::LiteralRegexp(idx) => {
+            let pat = cp.strings.get(*idx);
+            Ok(rt.record.contains(pat))
+        }
         CompiledPattern::Expr(chunk) => {
             let mut ctx = VmCtx::new(cp, rt);
             let r = execute(chunk, &mut ctx)?;
@@ -314,7 +318,8 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             }
             Op::GetField => {
                 let i = ctx.pop().as_number() as i32;
-                ctx.push(ctx.rt.field(i));
+                let v = ctx.rt.field(i);
+                ctx.push(v);
             }
             Op::SetField => {
                 let val = ctx.pop();
@@ -435,9 +440,12 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
 
             // ── String / regex ──────────────────────────────────────────
             Op::Concat => {
-                let b = ctx.pop().as_str();
-                let a = ctx.pop().as_str();
-                ctx.push(Value::Str(format!("{a}{b}")));
+                let b = ctx.pop();
+                let a = ctx.pop();
+                // Reuse a's String allocation when possible.
+                let mut s = a.into_string();
+                b.append_to_string(&mut s);
+                ctx.push(Value::Str(s));
             }
             Op::RegexMatch => {
                 let pat = ctx.pop().as_str();

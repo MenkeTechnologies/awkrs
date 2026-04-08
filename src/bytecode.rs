@@ -313,6 +313,8 @@ pub enum CompiledPattern {
     Always,
     /// Regex literal tested against `$0`.
     Regexp(u32),
+    /// Literal string pattern — uses `str::contains` instead of regex engine.
+    LiteralRegexp(u32),
     /// Arbitrary expression; truthy → match.
     Expr(Chunk),
     /// Range pattern — state tracked externally by `original_index`.
