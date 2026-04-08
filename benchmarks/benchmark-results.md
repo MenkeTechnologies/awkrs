@@ -10,7 +10,7 @@ This file is **generated** by `./scripts/benchmark-vs-awk.sh`. Do not edit by ha
 - **awk:** `/usr/bin/awk`
 - **gawk:** `/opt/homebrew/bin/gawk` (`GNU Awk 5.4.0, API 4.1, PMA Avon 8-g1, (GNU MPFR 4.2.2, GNU MP 6.3.0)`)
 - **mawk:** `/opt/homebrew/bin/mawk` (`mawk 1.3.4`)
-- **awkrs:** `/Users/wizard/RustroverProjects/awkrs/target/release/awkrs` (`awkrs 0.1.0`)
+- **awkrs:** `/Users/wizard/RustroverProjects/awkrs/target/release/awkrs` (`awkrs 0.1.1`)
 
 Measured with `hyperfine --shell=none` (no shell overhead in measurement).
 
