@@ -27,6 +27,8 @@
 //! regex `~`, general array ops, `print` with arguments, etc.) compile those
 //! ops through `val_dispatch` (`MIXED_*`). Chunks with `printf`, user/builtin
 //! calls, getline, or other unsupported opcodes still use the bytecode loop.
+//! `typeof` (`TypeofVar` / `TypeofSlot` / `TypeofArrayElem` / `TypeofField` / `TypeofValue`)
+//! compiles to `MIXED_TYPEOF_*` and returns NaN-boxed pool/dynamic strings like other mixed ops.
 
 use crate::ast::{BinOp, IncDecOp};
 use crate::bytecode::Op;
@@ -274,6 +276,16 @@ pub const MIXED_COMPOUND_ASSIGN_FIELD: u32 = 165;
 pub const MIXED_JOIN_KEY_ARG: u32 = 167;
 /// Join `a1` buffered components with `SUBSEP`, return NaN-boxed composite key string.
 pub const MIXED_JOIN_ARRAY_KEY: u32 = 168;
+/// `typeof(name)` — `a1` = pool index of identifier (see [`Op::TypeofVar`]).
+pub const MIXED_TYPEOF_VAR: u32 = 169;
+/// `typeof` for a slotted scalar — `a1` = slot index (see [`Op::TypeofSlot`]).
+pub const MIXED_TYPEOF_SLOT: u32 = 170;
+/// `typeof(arr[key])` — `a1` = array pool index; `a2` = NaN-boxed key (see [`Op::TypeofArrayElem`]).
+pub const MIXED_TYPEOF_ARRAY_ELEM: u32 = 171;
+/// `typeof($n)` — `a2` = field index as `f64` (see [`Op::TypeofField`]).
+pub const MIXED_TYPEOF_FIELD: u32 = 172;
+/// `typeof(expr)` — `a2` = NaN-boxed value (see [`Op::TypeofValue`]).
+pub const MIXED_TYPEOF_VALUE: u32 = 173;
 
 #[inline]
 fn mixed_encode_field_compound_binop(bop: BinOp) -> u32 {
@@ -521,6 +533,11 @@ pub fn needs_mixed_mode(ops: &[Op]) -> bool {
                 | Op::CompoundAssignIndex(_, _)
                 | Op::IncDecIndex(_, _)
                 | Op::JoinArrayKey(_)
+                | Op::TypeofVar(_)
+                | Op::TypeofSlot(_)
+                | Op::TypeofArrayElem(_)
+                | Op::TypeofField
+                | Op::TypeofValue
         ) || matches!(
             op,
             Op::Print {
@@ -758,6 +775,21 @@ pub fn is_jit_eligible(ops: &[Op]) -> bool {
                 depth -= n - 1;
             }
 
+            // ── typeof (push string — mixed mode) ─────────────────────
+            Op::TypeofVar(_) | Op::TypeofSlot(_) => {
+                depth += 1;
+            }
+            Op::TypeofArrayElem(_) => {
+                if depth < 1 {
+                    return false;
+                }
+            }
+            Op::TypeofField | Op::TypeofValue => {
+                if depth < 1 {
+                    return false;
+                }
+            }
+
             // ── Print with args (mixed mode — NaN-boxed values) ───────
             Op::Print {
                 argc,
@@ -884,7 +916,9 @@ pub fn try_compile(ops: &[Op]) -> Option<JitChunk> {
         MIXED_COMPOUND_ASSIGN_FIELD, MIXED_DECR_SLOT, MIXED_INCDEC_SLOT, MIXED_INCR_SLOT,
         MIXED_JOIN_ARRAY_KEY, MIXED_JOIN_KEY_ARG, MIXED_PUSH_STR, MIXED_REGEX_MATCH,
         MIXED_REGEX_NOT_MATCH, MIXED_SET_FIELD, MIXED_SET_VAR, MIXED_SLOT_AS_NUMBER, MIXED_SUB,
-        MIXED_TO_BOOL, MIXED_TRUTHINESS, mixed_encode_array_compound, mixed_encode_array_incdec,
+        MIXED_TO_BOOL, MIXED_TRUTHINESS, MIXED_TYPEOF_ARRAY_ELEM, MIXED_TYPEOF_FIELD,
+        MIXED_TYPEOF_SLOT, MIXED_TYPEOF_VALUE, MIXED_TYPEOF_VAR, mixed_encode_array_compound,
+        mixed_encode_array_incdec,
         mixed_encode_field_slot, mixed_encode_slot_incdec, mixed_encode_slot_pair,
     };
 
@@ -1127,6 +1161,52 @@ pub fn try_compile(ops: &[Op]) -> Option<JitChunk> {
                     let call = builder
                         .ins()
                         .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, s, pat]);
+                    stack.push(builder.inst_results(call)[0]);
+                }
+
+                // ── typeof (push string — mixed `val_dispatch`) ───────
+                Op::TypeofVar(idx) => {
+                    let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_TYPEOF_VAR));
+                    let a1 = builder.ins().iconst(types::I32, i64::from(idx));
+                    let z = builder.ins().f64const(0.0);
+                    let call = builder.ins().call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
+                    stack.push(builder.inst_results(call)[0]);
+                }
+                Op::TypeofSlot(slot) => {
+                    let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_TYPEOF_SLOT));
+                    let a1 = builder.ins().iconst(types::I32, i64::from(slot));
+                    let z = builder.ins().f64const(0.0);
+                    let call = builder.ins().call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
+                    stack.push(builder.inst_results(call)[0]);
+                }
+                Op::TypeofArrayElem(arr) => {
+                    let key = stack.pop().expect("TypeofArrayElem");
+                    let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_TYPEOF_ARRAY_ELEM));
+                    let a1 = builder.ins().iconst(types::I32, i64::from(arr));
+                    let z = builder.ins().f64const(0.0);
+                    let call = builder
+                        .ins()
+                        .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, key, z]);
+                    stack.push(builder.inst_results(call)[0]);
+                }
+                Op::TypeofField => {
+                    let idx = stack.pop().expect("TypeofField");
+                    let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_TYPEOF_FIELD));
+                    let z32 = builder.ins().iconst(types::I32, 0);
+                    let z = builder.ins().f64const(0.0);
+                    let call = builder
+                        .ins()
+                        .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z32, idx, z]);
+                    stack.push(builder.inst_results(call)[0]);
+                }
+                Op::TypeofValue => {
+                    let v = stack.pop().expect("TypeofValue");
+                    let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_TYPEOF_VALUE));
+                    let z32 = builder.ins().iconst(types::I32, 0);
+                    let z = builder.ins().f64const(0.0);
+                    let call = builder
+                        .ins()
+                        .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z32, v, z]);
                     stack.push(builder.inst_results(call)[0]);
                 }
 
@@ -3127,6 +3207,19 @@ mod tests {
         ];
         assert!(is_jit_eligible(&ops));
         assert!(needs_mixed_mode(&ops));
+    }
+
+    #[test]
+    fn jit_eligible_typeof() {
+        let t = [
+            Op::PushNum(1.0),
+            Op::TypeofValue,
+            Op::ReturnVal,
+        ];
+        assert!(is_jit_eligible(&t));
+        assert!(needs_mixed_mode(&t));
+        assert!(is_jit_eligible(&[Op::TypeofVar(0), Op::ReturnVal]));
+        assert!(needs_mixed_mode(&[Op::TypeofVar(0), Op::ReturnVal]));
     }
 
     #[test]

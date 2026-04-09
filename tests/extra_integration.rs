@@ -790,6 +790,30 @@ fn jit_multidim_array_subscript() {
 }
 
 #[test]
+fn jit_typeof_expressions_and_slot() {
+    let (c, o, e) = run_awkrs_stdin_args_env(
+        std::iter::empty::<&str>(),
+        r#"BEGIN { x=1; print typeof(3), typeof("x"), typeof(x) }"#,
+        "",
+        jit_env(),
+    );
+    assert_eq!(c, 0, "stderr: {e}");
+    assert_eq!(o.trim(), "number string number");
+}
+
+#[test]
+fn jit_typeof_field_unassigned() {
+    let (c, o, e) = run_awkrs_stdin_args_env(
+        std::iter::empty::<&str>(),
+        r#"{ print typeof($2) }"#,
+        "a\n",
+        jit_env(),
+    );
+    assert_eq!(c, 0, "stderr: {e}");
+    assert_eq!(o.trim(), "uninitialized");
+}
+
+#[test]
 fn jit_return_from_function() {
     let (c, o, e) = run_awkrs_stdin_args_env(
         std::iter::empty::<&str>(),

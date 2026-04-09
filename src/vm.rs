@@ -378,6 +378,41 @@ fn jit_f64_to_value(ctx: &VmCtx<'_>, x: f64) -> Value {
     }
 }
 
+/// `typeof(name)` for a simple identifier while JIT may hold fresh slot values only in
+/// `JIT_SLOTS_PTR` (mirrors `VmCtx::typeof_scalar_name` but reads slotted scalars from the scratch buffer).
+fn typeof_scalar_name_for_jit(ctx: &mut VmCtx<'_>, name: &str) -> Value {
+    match name {
+        "NR" | "FNR" | "NF" => return Value::Str("number".into()),
+        "FILENAME" => return Value::Str("string".into()),
+        _ => {}
+    }
+    for frame in ctx.locals.iter().rev() {
+        if let Some(v) = frame.get(name) {
+            return Value::Str(builtins::awk_typeof_value(v).into());
+        }
+    }
+    if let Some(&slot) = ctx.cp.slot_map.get(name) {
+        let slot = slot as usize;
+        let ptr = JIT_SLOTS_PTR.get();
+        let len = JIT_SLOTS_LEN.get();
+        let v = if !ptr.is_null() && slot < len {
+            let raw = unsafe { *ptr.add(slot) };
+            jit_f64_to_value(ctx, raw)
+        } else {
+            ctx.rt
+                .slots
+                .get(slot)
+                .cloned()
+                .unwrap_or(Value::Uninit)
+        };
+        return Value::Str(builtins::awk_typeof_value(&v).into());
+    }
+    if let Some(v) = ctx.rt.get_global_var(name) {
+        return Value::Str(builtins::awk_typeof_value(v).into());
+    }
+    Value::Str("uninitialized".into())
+}
+
 fn value_to_jit_f64(_ctx: &mut VmCtx<'_>, v: Value) -> f64 {
     use crate::jit::nan_str_dyn;
     match v {
@@ -414,7 +449,8 @@ fn jit_mixed_op_dispatch(
         MIXED_COMPOUND_ASSIGN_FIELD, MIXED_DECR_SLOT, MIXED_INCDEC_SLOT, MIXED_INCR_SLOT,
         MIXED_JOIN_ARRAY_KEY, MIXED_JOIN_KEY_ARG, MIXED_PUSH_STR, MIXED_REGEX_MATCH,
         MIXED_REGEX_NOT_MATCH, MIXED_SET_FIELD, MIXED_SET_VAR, MIXED_SLOT_AS_NUMBER, MIXED_SUB,
-        MIXED_TO_BOOL, MIXED_TRUTHINESS,
+        MIXED_TO_BOOL, MIXED_TRUTHINESS, MIXED_TYPEOF_ARRAY_ELEM, MIXED_TYPEOF_FIELD,
+        MIXED_TYPEOF_SLOT, MIXED_TYPEOF_VALUE, MIXED_TYPEOF_VAR,
     };
 
     fn mixed_jit_slot_load_raw(slot: usize) -> f64 {
@@ -769,6 +805,48 @@ fn jit_mixed_op_dispatch(
                 let joined = parts.join(&sep);
                 value_to_jit_f64(ctx, Value::Str(joined))
             })
+        }
+        MIXED_TYPEOF_VAR => {
+            let name = ctx.str_ref(a1).to_string();
+            let v = typeof_scalar_name_for_jit(ctx, name.as_str());
+            value_to_jit_f64(ctx, v)
+        }
+        MIXED_TYPEOF_SLOT => {
+            let slot = a1 as usize;
+            let ptr = JIT_SLOTS_PTR.get();
+            let len = JIT_SLOTS_LEN.get();
+            let v = if !ptr.is_null() && slot < len {
+                let raw = unsafe { *ptr.add(slot) };
+                jit_f64_to_value(ctx, raw)
+            } else {
+                ctx.rt
+                    .slots
+                    .get(slot)
+                    .cloned()
+                    .unwrap_or(Value::Uninit)
+            };
+            let t = builtins::awk_typeof_value(&v);
+            value_to_jit_f64(ctx, Value::Str(t.into()))
+        }
+        MIXED_TYPEOF_ARRAY_ELEM => {
+            let name = ctx.cp.strings.get(a1);
+            let key = jit_f64_to_value(ctx, a2).into_string();
+            let t = builtins::awk_typeof_array_elem(ctx.rt, name, &key);
+            value_to_jit_f64(ctx, Value::Str(t.into()))
+        }
+        MIXED_TYPEOF_FIELD => {
+            let i = a2 as i32;
+            let t = if ctx.rt.field_is_unassigned(i) {
+                "uninitialized"
+            } else {
+                "string"
+            };
+            value_to_jit_f64(ctx, Value::Str(t.into()))
+        }
+        MIXED_TYPEOF_VALUE => {
+            let v = jit_f64_to_value(ctx, a2);
+            let t = builtins::awk_typeof_value(&v);
+            value_to_jit_f64(ctx, Value::Str(t.into()))
         }
         _ => 0.0,
     }
