@@ -9,14 +9,27 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+# One Ubuntu job for fmt + clippy + doc keeps concurrent hosted runners low (avoids
+# long "queued" times when fmt/clippy/doc each waited behind the test matrix).
 jobs:
-  fmt:
-    name: Format
+  lint:
+    name: Lint (fmt, clippy, doc)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-lint-${{ hashFiles('**/Cargo.lock') }}
       - run: cargo fmt --all --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo doc --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
 
   test:
     name: Test (${{ matrix.os }})
@@ -37,28 +50,3 @@ jobs:
           key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
       - run: cargo build --verbose
       - run: cargo test --verbose
-
-  clippy:
-    name: Clippy
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-clippy-${{ hashFiles('**/Cargo.lock') }}
-      - run: cargo clippy --all-targets -- -D warnings
-
-  doc:
-    name: Documentation
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - run: cargo doc --no-deps
-        env:
-          RUSTDOCFLAGS: -D warnings
