@@ -3346,21 +3346,30 @@ pub fn try_jit_execute(
 
 /// True if `ops` is a straight-line numeric expression ending with exactly one value.
 /// (Legacy check — superseded by [`is_jit_eligible`] but kept for the public API.)
+///
+/// Supports the same straight-line stack discipline as [`is_jit_eligible`] for pure
+/// arithmetic: constants, `+ - * / %`, unary `+`/`-`, [`Op::Dup`], and [`Op::Pop`].
 pub fn is_numeric_stack_eligible(ops: &[Op]) -> bool {
     let mut depth: i32 = 0;
     for op in ops {
         match op {
             Op::PushNum(_) => depth += 1,
-            Op::Add | Op::Sub | Op::Mul | Op::Div => {
+            Op::Add | Op::Sub | Op::Mul | Op::Div | Op::Mod => {
                 if depth < 2 {
                     return false;
                 }
                 depth -= 1;
             }
-            Op::Neg => {
+            Op::Neg | Op::Pos => {
                 if depth < 1 {
                     return false;
                 }
+            }
+            Op::Dup => {
+                if depth < 1 {
+                    return false;
+                }
+                depth += 1;
             }
             Op::Pop => {
                 if depth < 1 {
@@ -3756,6 +3765,22 @@ mod tests {
         ];
         let j = try_compile_numeric_expr(&ops).expect("compile");
         assert!((j.call_f64() - 6.0).abs() < 1e-15);
+    }
+
+    #[test]
+    fn jit_numeric_expr_mod_dup_pos() {
+        let ops_mod = [Op::PushNum(10.0), Op::PushNum(3.0), Op::Mod];
+        let j = try_compile_numeric_expr(&ops_mod).expect("compile mod");
+        assert!((j.call_f64() - 1.0).abs() < 1e-15);
+
+        let ops_pos = [Op::PushNum(7.0), Op::Pos];
+        let j = try_compile_numeric_expr(&ops_pos).expect("compile pos");
+        assert!((j.call_f64() - 7.0).abs() < 1e-15);
+
+        // 5 * 5 = 25 via Dup
+        let ops_dup = [Op::PushNum(5.0), Op::Dup, Op::Mul];
+        let j = try_compile_numeric_expr(&ops_dup).expect("compile dup mul");
+        assert!((j.call_f64() - 25.0).abs() < 1e-15);
     }
 
     #[test]
