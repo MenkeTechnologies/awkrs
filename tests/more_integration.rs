@@ -1045,3 +1045,49 @@ fn dollar_field_dynamic_expression() {
     assert_eq!(c, 0);
     assert_eq!(o, "b\n");
 }
+
+// ── strftime(), typeof(array), match(var, re), $1=$1 rebuild ───────────────
+
+#[test]
+fn strftime_zero_args_produces_non_empty_timestamp() {
+    let (c, o, _) = run_awkrs_stdin(
+        "BEGIN { x = strftime(); print (length(x) > 0) }",
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o.trim(), "1");
+}
+
+#[test]
+fn typeof_array_variable_is_array() {
+    let (c, o, _) = run_awkrs_stdin(
+        "BEGIN { a[1] = 1; print typeof(a) }",
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "array\n");
+}
+
+#[test]
+fn match_second_argument_can_be_regex_string_variable() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { pat = "[0-9]+"; print match("ab12cd", pat) }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "3\n");
+}
+
+#[test]
+fn dollar_one_equals_dollar_one_rebuilds_record_from_fields() {
+    let (c, o, _) = run_awkrs_stdin("{$1 = $1; print}", "  a  b  \n");
+    assert_eq!(c, 0);
+    assert_eq!(o, "a b\n");
+}
+
+#[test]
+fn regexp_pattern_anchors_line_start_and_end() {
+    let (c, o, _) = run_awkrs_stdin(r#"/^only$/ { print "yes" }"#, "only\nno\nonly\n");
+    assert_eq!(c, 0);
+    assert_eq!(o, "yes\nyes\n");
+}
