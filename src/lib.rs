@@ -10,9 +10,10 @@ mod error;
 mod format;
 pub mod jit;
 pub use jit::{
-    is_jit_eligible, is_numeric_stack_eligible, jit_call_builtins_ok, numeric_stack_slot_words,
-    try_compile, try_compile_numeric_expr, try_jit_dispatch_numeric_chunk, try_jit_execute,
-    JitChunk, JitNumericChunk, JitRuntimeState,
+    is_jit_eligible, is_numeric_stack_eligible, jit_call_builtins_ok,
+    jit_min_invocations_before_compile, numeric_stack_slot_words, try_compile,
+    try_compile_numeric_expr, try_compile_with_options, try_jit_dispatch_numeric_chunk,
+    try_jit_execute, JitChunk, JitCompileOptions, JitNumericChunk, JitRuntimeState,
 };
 #[allow(dead_code)]
 mod interp;

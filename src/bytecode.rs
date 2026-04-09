@@ -9,6 +9,7 @@ use crate::ast::{BinOp, IncDecOp};
 use crate::runtime::{AwkMap, Value};
 use std::collections::HashMap;
 use std::fmt;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 // ── Instruction set ──────────────────────────────────────────────────────────
@@ -324,10 +325,15 @@ type JitChunkCache = Mutex<Option<Result<Arc<crate::jit::JitChunk>, ()>>>;
 ///
 /// [`Self::jit_lock`] caches the result of the first JIT attempt for this chunk:
 /// `None` = not yet tried, `Some(Err(()))` = use interpreter, `Some(Ok(arc))` = native code.
+///
+/// [`Self::jit_invocation_count`] supports tiered JIT: the VM runs the interpreter until this
+/// chunk has been entered enough times (see [`crate::jit::jit_min_invocations_before_compile`]),
+/// avoiding compile cost on cold paths (e.g. one-shot `BEGIN` blocks).
 #[derive(Clone)]
 pub struct Chunk {
     pub ops: Vec<Op>,
     pub(crate) jit_lock: Arc<JitChunkCache>,
+    pub(crate) jit_invocation_count: Arc<AtomicU32>,
 }
 
 impl Default for Chunk {
@@ -335,6 +341,7 @@ impl Default for Chunk {
         Self {
             ops: Vec::new(),
             jit_lock: Arc::new(Mutex::new(None)),
+            jit_invocation_count: Arc::new(AtomicU32::new(0)),
         }
     }
 }
@@ -344,6 +351,10 @@ impl fmt::Debug for Chunk {
         f.debug_struct("Chunk")
             .field("ops", &self.ops)
             .field("jit_lock", &"<cached JIT>")
+            .field(
+                "jit_invocation_count",
+                &self.jit_invocation_count.load(Ordering::Relaxed),
+            )
             .finish()
     }
 }
@@ -353,6 +364,7 @@ impl Chunk {
         Self {
             ops,
             jit_lock: Arc::new(Mutex::new(None)),
+            jit_invocation_count: Arc::new(AtomicU32::new(0)),
         }
     }
 }

@@ -52,6 +52,12 @@
 //!
 //! ## Performance (implemented vs future)
 //!
+//! - **Tiered compilation** — [`crate::bytecode::Chunk::jit_invocation_count`] increments on each
+//!   VM entry; compilation is skipped until [`jit_min_invocations_before_compile`] (env
+//!   **`AWKRS_JIT_MIN_INVOCATIONS`**, default **3**). The VM uses [`try_compile_with_options`] with
+//!   [`JitCompileOptions::vm_default`] so field reads compile to a direct **`call`** to
+//!   [`crate::vm::jit_field_callback`] (symbol **`awkrs_jit_field_load`**) instead of
+//!   **`call_indirect`** through the `field_fn` parameter.
 //! - **Chunk dispatch cache** — each [`crate::bytecode::Chunk`] holds a `jit_lock` with the first
 //!   eligibility/compile result so the VM does not re-run [`is_jit_eligible`] / [`try_compile`] every
 //!   record (VM `try_jit_dispatch`).
@@ -71,6 +77,7 @@
 
 use crate::ast::{BinOp, IncDecOp};
 use crate::bytecode::{CompiledProgram, GetlineSource, Op, SubTarget};
+use cranelift_codegen::ir::FuncRef;
 use cranelift_codegen::ir::{types, AbiParam, Block, InstBuilder, MemFlags, UserFuncName};
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
@@ -81,6 +88,38 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::mem;
 use std::sync::Arc;
+
+/// Options for [`try_compile_with_options`]. The VM uses [`JitCompileOptions::vm_default`]
+/// (colocated field loads); unit tests use the default (indirect `field_fn` only).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct JitCompileOptions {
+    /// When `true`, emit a direct `call` to the runtime `jit_field_callback` symbol instead of
+    /// `call_indirect` through the `field_fn` parameter (smaller dispatch overhead; tests keep
+    /// indirect so they can substitute stub field implementations).
+    pub direct_field_calls: bool,
+}
+
+impl JitCompileOptions {
+    /// Settings used when compiling from the VM (`jit_field_callback` is always the field impl).
+    #[inline]
+    pub fn vm_default() -> Self {
+        Self {
+            direct_field_calls: true,
+        }
+    }
+}
+
+/// Minimum number of times a bytecode [`crate::bytecode::Chunk`] must be entered before the VM
+/// attempts JIT compilation (tiered compilation). Read from **`AWKRS_JIT_MIN_INVOCATIONS`**
+/// (default **3**). Set to **1** to JIT on first entry; large values reduce compile overhead on
+/// cold chunks (e.g. one-shot `BEGIN` bodies).
+#[inline]
+pub fn jit_min_invocations_before_compile() -> u32 {
+    std::env::var("AWKRS_JIT_MIN_INVOCATIONS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(3)
+}
 
 // ── `jit_var_dispatch` opcodes (must match `jit_var_dispatch` in vm.rs) ─────
 
@@ -1180,7 +1219,7 @@ pub fn is_jit_eligible(ops: &[Op]) -> bool {
 
 // ── Cranelift codegen ──────────────────────────────────────────────────────
 
-fn new_jit_module() -> Option<JITModule> {
+fn new_jit_module(opts: &JitCompileOptions) -> Option<JITModule> {
     let mut flag_builder = settings::builder();
     flag_builder.set("use_colocated_libcalls", "false").ok()?;
     flag_builder.set("is_pic", "false").ok()?;
@@ -1189,8 +1228,33 @@ fn new_jit_module() -> Option<JITModule> {
     let isa = isa_builder
         .finish(settings::Flags::new(flag_builder))
         .ok()?;
-    let builder = JITBuilder::with_isa(isa, default_libcall_names());
+    let mut builder = JITBuilder::with_isa(isa, default_libcall_names());
+    if opts.direct_field_calls {
+        builder.symbol(
+            "awkrs_jit_field_load",
+            crate::vm::jit_field_callback as *const u8,
+        );
+    }
     Some(JITModule::new(builder))
+}
+
+#[inline]
+fn emit_field_call(
+    builder: &mut FunctionBuilder,
+    field_sig_ir: cranelift_codegen::ir::SigRef,
+    field_fn_ptr: cranelift_codegen::ir::Value,
+    vmctx: cranelift_codegen::ir::Value,
+    arg: cranelift_codegen::ir::Value,
+    field_direct: Option<FuncRef>,
+) -> cranelift_codegen::ir::Value {
+    let call = if let Some(fr) = field_direct {
+        builder.ins().call(fr, &[vmctx, arg])
+    } else {
+        builder
+            .ins()
+            .call_indirect(field_sig_ir, field_fn_ptr, &[vmctx, arg])
+    };
+    builder.inst_results(call)[0]
 }
 
 /// Collect all bytecode positions that are jump targets so we can create Cranelift blocks.
@@ -1283,8 +1347,18 @@ fn max_slot(ops: &[Op]) -> u16 {
     m
 }
 
-/// Compile a JIT-eligible chunk to native code.
+/// Compile a JIT-eligible chunk to native code (indirect `field_fn`; use [`try_compile_with_options`]
+/// with [`JitCompileOptions::vm_default`] from the VM for colocated field calls).
 pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
+    try_compile_with_options(ops, cp, JitCompileOptions::default())
+}
+
+/// Like [`try_compile`], with [`JitCompileOptions`] for colocated runtime symbols.
+pub fn try_compile_with_options(
+    ops: &[Op],
+    cp: &CompiledProgram,
+    opts: JitCompileOptions,
+) -> Option<JitChunk> {
     if !is_jit_eligible(ops) || !jit_call_builtins_ok(ops, cp) {
         return None;
     }
@@ -1313,7 +1387,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
         MIXED_TYPEOF_SLOT, MIXED_TYPEOF_VALUE, MIXED_TYPEOF_VAR,
     };
 
-    let mut module = new_jit_module()?;
+    let mut module = new_jit_module(&opts)?;
     let mut ctx = module.make_context();
     let mut func_ctx = FunctionBuilderContext::new();
 
@@ -1337,6 +1411,16 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
     field_sig.params.push(AbiParam::new(types::I32));
     field_sig.returns.push(AbiParam::new(types::F64));
     let _field_sig_ref = module.declare_anonymous_function(&field_sig).ok()?;
+
+    let field_import_id = if opts.direct_field_calls {
+        Some(
+            module
+                .declare_function("awkrs_jit_field_load", Linkage::Import, &field_sig)
+                .ok()?,
+        )
+    } else {
+        None
+    };
 
     // `array_field_add(arr_pool_idx, field, delta)` — void
     let mut array_sig = module.make_signature();
@@ -1389,6 +1473,12 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
     ctx.func.signature = sig;
     ctx.func.name = UserFuncName::user(0, func_id.as_u32());
 
+    let field_direct_ref = if let Some(fid) = field_import_id {
+        Some(module.declare_func_in_func(fid, &mut ctx.func))
+    } else {
+        None
+    };
+
     let slot_count: usize = if ops.iter().any(|op| {
         matches!(
             op,
@@ -1418,6 +1508,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
 
         // Import callback signatures
         let field_sig_ir = builder.import_signature(field_sig);
+        let field_direct = field_direct_ref;
         let array_sig_ir = builder.import_signature(array_sig);
         let var_sig_ir = builder.import_signature(var_sig);
         let field_mut_sig_ir = builder.import_signature(field_mut_sig);
@@ -2765,26 +2856,18 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
 
                 // ── Field access via callback ──────────────────────────
                 Op::PushFieldNum(field) => {
-                    if mixed {
-                        let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_GET_FIELD));
-                        let z = builder.ins().iconst(types::I32, 0);
-                        let fv = builder.ins().f64const(field as f64);
-                        let zf = builder.ins().f64const(0.0);
-                        let call = builder.ins().call_indirect(
-                            val_sig_ir,
-                            val_fn_ptr,
-                            &[vmctx, op_c, z, fv, zf],
-                        );
-                        stack.push(builder.inst_results(call)[0]);
-                    } else {
-                        let arg = builder.ins().iconst(types::I32, field as i64);
-                        let call =
-                            builder
-                                .ins()
-                                .call_indirect(field_sig_ir, field_fn_ptr, &[vmctx, arg]);
-                        let result = builder.inst_results(call)[0];
-                        stack.push(result);
-                    }
+                    // Match VM `field_as_number` for constant `$n` — not mixed `val_dispatch` (same as
+                    // non-mixed: direct field callback only).
+                    let arg = builder.ins().iconst(types::I32, field as i64);
+                    let result = emit_field_call(
+                        &mut builder,
+                        field_sig_ir,
+                        field_fn_ptr,
+                        vmctx,
+                        arg,
+                        field_direct,
+                    );
+                    stack.push(result);
                 }
                 Op::GetField => {
                     let fv = stack.pop().expect("GetField");
@@ -2802,37 +2885,52 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         // Match VM: `ctx.pop().as_number() as i32` — use saturating float→int
                         // (same family of semantics as Rust’s `f64 as i32` on recent editions).
                         let idx_i32 = builder.ins().fcvt_to_sint_sat(types::I32, fv);
-                        let call = builder.ins().call_indirect(
+                        let result = emit_field_call(
+                            &mut builder,
                             field_sig_ir,
                             field_fn_ptr,
-                            &[vmctx, idx_i32],
+                            vmctx,
+                            idx_i32,
+                            field_direct,
                         );
-                        stack.push(builder.inst_results(call)[0]);
+                        stack.push(result);
                     }
                 }
                 Op::GetNR => {
                     let arg = builder.ins().iconst(types::I32, -1i64);
-                    let call =
-                        builder
-                            .ins()
-                            .call_indirect(field_sig_ir, field_fn_ptr, &[vmctx, arg]);
-                    stack.push(builder.inst_results(call)[0]);
+                    let result = emit_field_call(
+                        &mut builder,
+                        field_sig_ir,
+                        field_fn_ptr,
+                        vmctx,
+                        arg,
+                        field_direct,
+                    );
+                    stack.push(result);
                 }
                 Op::GetFNR => {
                     let arg = builder.ins().iconst(types::I32, -2i64);
-                    let call =
-                        builder
-                            .ins()
-                            .call_indirect(field_sig_ir, field_fn_ptr, &[vmctx, arg]);
-                    stack.push(builder.inst_results(call)[0]);
+                    let result = emit_field_call(
+                        &mut builder,
+                        field_sig_ir,
+                        field_fn_ptr,
+                        vmctx,
+                        arg,
+                        field_direct,
+                    );
+                    stack.push(result);
                 }
                 Op::GetNF => {
                     let arg = builder.ins().iconst(types::I32, -3i64);
-                    let call =
-                        builder
-                            .ins()
-                            .call_indirect(field_sig_ir, field_fn_ptr, &[vmctx, arg]);
-                    stack.push(builder.inst_results(call)[0]);
+                    let result = emit_field_call(
+                        &mut builder,
+                        field_sig_ir,
+                        field_fn_ptr,
+                        vmctx,
+                        arg,
+                        field_direct,
+                    );
+                    stack.push(result);
                 }
 
                 // ── Fused field+slot ops ───────────────────────────────
@@ -2851,21 +2949,27 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         );
                     } else if use_slot_ssa {
                         let arg = builder.ins().iconst(types::I32, field as i64);
-                        let call =
-                            builder
-                                .ins()
-                                .call_indirect(field_sig_ir, field_fn_ptr, &[vmctx, arg]);
-                        let fv = builder.inst_results(call)[0];
+                        let fv = emit_field_call(
+                            &mut builder,
+                            field_sig_ir,
+                            field_fn_ptr,
+                            vmctx,
+                            arg,
+                            field_direct,
+                        );
                         let old = builder.use_var(slot_vars[slot as usize]);
                         let sum = builder.ins().fadd(old, fv);
                         builder.def_var(slot_vars[slot as usize], sum);
                     } else {
                         let arg = builder.ins().iconst(types::I32, field as i64);
-                        let call =
-                            builder
-                                .ins()
-                                .call_indirect(field_sig_ir, field_fn_ptr, &[vmctx, arg]);
-                        let fv = builder.inst_results(call)[0];
+                        let fv = emit_field_call(
+                            &mut builder,
+                            field_sig_ir,
+                            field_fn_ptr,
+                            vmctx,
+                            arg,
+                            field_direct,
+                        );
                         let offset = (slot as i32) * 8;
                         let old =
                             builder
@@ -2893,34 +2997,46 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         );
                     } else if use_slot_ssa {
                         let a1 = builder.ins().iconst(types::I32, f1 as i64);
-                        let c1 =
-                            builder
-                                .ins()
-                                .call_indirect(field_sig_ir, field_fn_ptr, &[vmctx, a1]);
-                        let v1 = builder.inst_results(c1)[0];
+                        let v1 = emit_field_call(
+                            &mut builder,
+                            field_sig_ir,
+                            field_fn_ptr,
+                            vmctx,
+                            a1,
+                            field_direct,
+                        );
                         let a2 = builder.ins().iconst(types::I32, f2 as i64);
-                        let c2 =
-                            builder
-                                .ins()
-                                .call_indirect(field_sig_ir, field_fn_ptr, &[vmctx, a2]);
-                        let v2 = builder.inst_results(c2)[0];
+                        let v2 = emit_field_call(
+                            &mut builder,
+                            field_sig_ir,
+                            field_fn_ptr,
+                            vmctx,
+                            a2,
+                            field_direct,
+                        );
                         let prod = builder.ins().fmul(v1, v2);
                         let old = builder.use_var(slot_vars[slot as usize]);
                         let sum = builder.ins().fadd(old, prod);
                         builder.def_var(slot_vars[slot as usize], sum);
                     } else {
                         let a1 = builder.ins().iconst(types::I32, f1 as i64);
-                        let c1 =
-                            builder
-                                .ins()
-                                .call_indirect(field_sig_ir, field_fn_ptr, &[vmctx, a1]);
-                        let v1 = builder.inst_results(c1)[0];
+                        let v1 = emit_field_call(
+                            &mut builder,
+                            field_sig_ir,
+                            field_fn_ptr,
+                            vmctx,
+                            a1,
+                            field_direct,
+                        );
                         let a2 = builder.ins().iconst(types::I32, f2 as i64);
-                        let c2 =
-                            builder
-                                .ins()
-                                .call_indirect(field_sig_ir, field_fn_ptr, &[vmctx, a2]);
-                        let v2 = builder.inst_results(c2)[0];
+                        let v2 = emit_field_call(
+                            &mut builder,
+                            field_sig_ir,
+                            field_fn_ptr,
+                            vmctx,
+                            a2,
+                            field_direct,
+                        );
                         let prod = builder.ins().fmul(v1, v2);
                         let offset = (slot as i32) * 8;
                         let old =

@@ -12,6 +12,7 @@ use std::cmp::Ordering;
 use std::ffi::c_void;
 use std::io::{self, Write};
 use std::mem;
+use std::sync::atomic::Ordering as AtomicOrdering;
 use std::sync::Arc;
 
 /// Max interned identifier length resolved via stack buffer (`with_short_pool_name_mut`).
@@ -1407,7 +1408,8 @@ fn sync_jit_slot_for_scalar_name(ctx: &mut VmCtx<'_>, name: &str) {
 /// Field callback passed to JIT-compiled code.
 /// Positive i → field $i as f64.
 /// Negative i → special: -1=NR, -2=FNR, -3=NF.
-extern "C" fn jit_field_callback(vmctx: *mut c_void, i: i32) -> f64 {
+/// Field reads for JIT (`PushFieldNum`, `GetField`, NR/FNR/NF). Exposed for colocated calls.
+pub(crate) extern "C" fn jit_field_callback(vmctx: *mut c_void, i: i32) -> f64 {
     if vmctx.is_null() {
         return 0.0;
     }
@@ -1851,6 +1853,14 @@ fn try_jit_dispatch(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<Option<VmSigna
         return Ok(None);
     }
 
+    let inv = chunk
+        .jit_invocation_count
+        .fetch_add(1, AtomicOrdering::Relaxed)
+        + 1;
+    if inv < crate::jit::jit_min_invocations_before_compile() {
+        return Ok(None);
+    }
+
     let arc = {
         let mut guard = chunk
             .jit_lock
@@ -1866,7 +1876,11 @@ fn try_jit_dispatch(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<Option<VmSigna
                     *guard = Some(Err(()));
                     return Ok(None);
                 }
-                let Some(jc) = crate::jit::try_compile(ops, ctx.cp) else {
+                let Some(jc) = crate::jit::try_compile_with_options(
+                    ops,
+                    ctx.cp,
+                    crate::jit::JitCompileOptions::vm_default(),
+                ) else {
                     *guard = Some(Err(()));
                     return Ok(None);
                 };
