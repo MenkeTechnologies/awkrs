@@ -29,6 +29,8 @@
 //! calls, getline, or other unsupported opcodes still use the bytecode loop.
 //! Whitelisted [`Op::CallBuiltin`] (see [`jit_call_builtins_ok`]) uses `MIXED_BUILTIN_*`
 //! including `sprintf`/`printf` and I/O helpers when arity and [`jit_call_builtins_ok`] allow.
+//! The **`printf`** *statement* opcode ([`Op::Printf`] to stdout) uses `MIXED_PRINT_ARG` +
+//! [`MIXED_PRINTF_FLUSH`] (same buffer as `print`, then `sprintf_simple` to the output buffer).
 //! `typeof` (`TypeofVar` / `TypeofSlot` / `TypeofArrayElem` / `TypeofField` / `TypeofValue`)
 //! compiles to `MIXED_TYPEOF_*` and returns NaN-boxed pool/dynamic strings like other mixed ops.
 
@@ -292,6 +294,9 @@ pub const MIXED_TYPEOF_VALUE: u32 = 173;
 pub const MIXED_BUILTIN_ARG: u32 = 174;
 /// Whitelisted `CallBuiltin` — `a1` = function name pool index, `a2` = argc as `f64`.
 pub const MIXED_BUILTIN_CALL: u32 = 175;
+/// After [`MIXED_PRINT_ARG`] × argc: format with `sprintf_simple` and write like `printf` (stdout).
+/// `a1` = argc (format + arguments).
+pub const MIXED_PRINTF_FLUSH: u32 = 176;
 
 #[inline]
 fn mixed_encode_field_compound_binop(bop: BinOp) -> u32 {
@@ -548,6 +553,12 @@ pub fn needs_mixed_mode(ops: &[Op]) -> bool {
         ) || matches!(
             op,
             Op::Print {
+                argc,
+                redir: crate::bytecode::RedirKind::Stdout,
+            } if *argc > 0
+        ) || matches!(
+            op,
+            Op::Printf {
                 argc,
                 redir: crate::bytecode::RedirKind::Stdout,
             } if *argc > 0
@@ -868,6 +879,16 @@ pub fn is_jit_eligible(ops: &[Op]) -> bool {
                 }
                 depth -= n;
             }
+            Op::Printf {
+                argc,
+                redir: crate::bytecode::RedirKind::Stdout,
+            } if *argc > 0 => {
+                let n = *argc as i32;
+                if depth < n {
+                    return false;
+                }
+                depth -= n;
+            }
 
             // ── Return signals ─────────────────────────────────────────
             Op::ReturnVal => {
@@ -994,7 +1015,8 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
         MIXED_JOIN_ARRAY_KEY, MIXED_JOIN_KEY_ARG, MIXED_PUSH_STR, MIXED_REGEX_MATCH,
         MIXED_REGEX_NOT_MATCH, MIXED_SET_FIELD, MIXED_SET_VAR, MIXED_SLOT_AS_NUMBER, MIXED_SUB,
         MIXED_TO_BOOL, MIXED_TRUTHINESS, MIXED_TYPEOF_ARRAY_ELEM, MIXED_TYPEOF_FIELD,
-        MIXED_TYPEOF_SLOT, MIXED_TYPEOF_VALUE, MIXED_TYPEOF_VAR, mixed_encode_array_compound,
+        MIXED_TYPEOF_SLOT, MIXED_TYPEOF_VALUE, MIXED_TYPEOF_VAR, MIXED_PRINTF_FLUSH,
+        mixed_encode_array_compound,
         mixed_encode_array_incdec,
         mixed_encode_field_slot, mixed_encode_slot_incdec, mixed_encode_slot_pair,
     };
@@ -2136,6 +2158,33 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                     builder
                         .ins()
                         .call_indirect(val_sig_ir, val_fn_ptr, &[op_f, a1, z, z]);
+                }
+                Op::Printf {
+                    argc,
+                    redir: crate::bytecode::RedirKind::Stdout,
+                } if argc > 0 => {
+                    let n = argc as usize;
+                    let mut vals: Vec<cranelift_codegen::ir::Value> =
+                        Vec::with_capacity(n);
+                    for _ in 0..n {
+                        vals.push(stack.pop().expect("Printf argc"));
+                    }
+                    vals.reverse();
+                    for (i, v) in vals.iter().enumerate() {
+                        let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_PRINT_ARG));
+                        let a1 = builder.ins().iconst(types::I32, i64::try_from(i).unwrap());
+                        let z = builder.ins().f64const(0.0);
+                        builder
+                            .ins()
+                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, *v, z]);
+                    }
+                    let op_pf =
+                        builder.ins().iconst(types::I32, i64::from(MIXED_PRINTF_FLUSH));
+                    let a1 = builder.ins().iconst(types::I32, i64::from(argc));
+                    let z = builder.ins().f64const(0.0);
+                    builder
+                        .ins()
+                        .call_indirect(val_sig_ir, val_fn_ptr, &[op_pf, a1, z, z]);
                 }
 
                 // ── MatchRegexp (push 0/1) ────────────────────────────────
@@ -3345,6 +3394,21 @@ mod tests {
             Op::PushNum(1.0),
             Op::Print {
                 argc: 1,
+                redir: crate::bytecode::RedirKind::Stdout,
+            },
+            Op::PushNum(0.0),
+        ];
+        assert!(is_jit_eligible(&ops));
+        assert!(needs_mixed_mode(&ops));
+    }
+
+    #[test]
+    fn jit_eligible_printf_stdout() {
+        let ops = [
+            Op::PushStr(0),
+            Op::PushNum(42.0),
+            Op::Printf {
+                argc: 2,
                 redir: crate::bytecode::RedirKind::Stdout,
             },
             Op::PushNum(0.0),
