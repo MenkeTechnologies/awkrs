@@ -353,6 +353,8 @@ thread_local! {
     static JIT_DYN_STRINGS: RefCell<Vec<String>> = RefCell::new(Vec::new());
     /// Buffered `print` arguments for mixed-mode JIT (`MIXED_PRINT_ARG` / `MIXED_PRINT_FLUSH`).
     static MIXED_PRINT_SLOTS: RefCell<Vec<Option<f64>>> = RefCell::new(Vec::new());
+    /// Components for multidimensional array keys (`MIXED_JOIN_KEY_ARG` / `MIXED_JOIN_ARRAY_KEY`).
+    static JIT_JOIN_KEY_PARTS: RefCell<Vec<f64>> = RefCell::new(Vec::new());
 }
 
 fn jit_f64_to_value(ctx: &VmCtx<'_>, x: f64) -> Value {
@@ -410,8 +412,9 @@ fn jit_mixed_op_dispatch(
         MIXED_MUL, MIXED_NEG, MIXED_NOT, MIXED_POS, MIXED_PRINT_ARG, MIXED_PRINT_FLUSH,
         MIXED_ADD_FIELD_TO_SLOT, MIXED_ADD_MUL_FIELDS_TO_SLOT, MIXED_ADD_SLOT_TO_SLOT,
         MIXED_COMPOUND_ASSIGN_FIELD, MIXED_DECR_SLOT, MIXED_INCDEC_SLOT, MIXED_INCR_SLOT,
-        MIXED_PUSH_STR, MIXED_REGEX_MATCH, MIXED_REGEX_NOT_MATCH, MIXED_SET_FIELD, MIXED_SET_VAR,
-        MIXED_SLOT_AS_NUMBER, MIXED_SUB, MIXED_TO_BOOL, MIXED_TRUTHINESS,
+        MIXED_JOIN_ARRAY_KEY, MIXED_JOIN_KEY_ARG, MIXED_PUSH_STR, MIXED_REGEX_MATCH,
+        MIXED_REGEX_NOT_MATCH, MIXED_SET_FIELD, MIXED_SET_VAR, MIXED_SLOT_AS_NUMBER, MIXED_SUB,
+        MIXED_TO_BOOL, MIXED_TRUTHINESS,
     };
 
     fn mixed_jit_slot_load_raw(slot: usize) -> f64 {
@@ -738,6 +741,34 @@ fn jit_mixed_op_dispatch(
             let s = new_val.as_str();
             ctx.rt.set_field(idx, &s);
             value_to_jit_f64(ctx, new_val)
+        }
+        MIXED_JOIN_KEY_ARG => {
+            JIT_JOIN_KEY_PARTS.with(|c| {
+                c.borrow_mut().push(a2);
+            });
+            0.0
+        }
+        MIXED_JOIN_ARRAY_KEY => {
+            let n = a1 as usize;
+            JIT_JOIN_KEY_PARTS.with(|c| {
+                let mut buf = c.borrow_mut();
+                if buf.len() != n {
+                    return 0.0;
+                }
+                let parts: Vec<String> = buf
+                    .iter()
+                    .map(|bits| jit_f64_to_value(ctx, *bits).as_str())
+                    .collect();
+                buf.clear();
+                let sep = ctx
+                    .rt
+                    .vars
+                    .get("SUBSEP")
+                    .map(|v| v.as_str())
+                    .unwrap_or_else(|| "\x1c".into());
+                let joined = parts.join(&sep);
+                value_to_jit_f64(ctx, Value::Str(joined))
+            })
         }
         _ => 0.0,
     }
@@ -1240,6 +1271,7 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Option<VmSignal> {
     let slot_count = ctx.rt.slots.len();
     JIT_DYN_STRINGS.with(|c| c.borrow_mut().clear());
     MIXED_PRINT_SLOTS.with(|c| c.borrow_mut().clear());
+    JIT_JOIN_KEY_PARTS.with(|c| c.borrow_mut().clear());
     let mut jit_slots: Vec<f64> = if mixed {
         ctx.rt
             .slots
@@ -1287,6 +1319,7 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Option<VmSignal> {
     let Some(result) = result else {
         JIT_DYN_STRINGS.with(|c| c.borrow_mut().clear());
         MIXED_PRINT_SLOTS.with(|c| c.borrow_mut().clear());
+        JIT_JOIN_KEY_PARTS.with(|c| c.borrow_mut().clear());
         return None;
     };
 
@@ -1314,11 +1347,13 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Option<VmSignal> {
         JIT_VAL_SIGNAL_NEXT => {
             JIT_DYN_STRINGS.with(|c| c.borrow_mut().clear());
             MIXED_PRINT_SLOTS.with(|c| c.borrow_mut().clear());
+            JIT_JOIN_KEY_PARTS.with(|c| c.borrow_mut().clear());
             return Some(VmSignal::Next);
         }
         JIT_VAL_SIGNAL_NEXT_FILE => {
             JIT_DYN_STRINGS.with(|c| c.borrow_mut().clear());
             MIXED_PRINT_SLOTS.with(|c| c.borrow_mut().clear());
+            JIT_JOIN_KEY_PARTS.with(|c| c.borrow_mut().clear());
             return Some(VmSignal::NextFile);
         }
         JIT_VAL_SIGNAL_EXIT_DEFAULT => {
@@ -1326,6 +1361,7 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Option<VmSignal> {
             ctx.rt.exit_pending = true;
             JIT_DYN_STRINGS.with(|c| c.borrow_mut().clear());
             MIXED_PRINT_SLOTS.with(|c| c.borrow_mut().clear());
+            JIT_JOIN_KEY_PARTS.with(|c| c.borrow_mut().clear());
             return Some(VmSignal::ExitPending);
         }
         JIT_VAL_SIGNAL_EXIT_CODE => {
@@ -1334,17 +1370,20 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Option<VmSignal> {
             ctx.rt.exit_pending = true;
             JIT_DYN_STRINGS.with(|c| c.borrow_mut().clear());
             MIXED_PRINT_SLOTS.with(|c| c.borrow_mut().clear());
+            JIT_JOIN_KEY_PARTS.with(|c| c.borrow_mut().clear());
             return Some(VmSignal::ExitPending);
         }
         crate::jit::JIT_VAL_SIGNAL_RETURN_VAL => {
             let val = JIT_SIGNAL_ARG.with(|c| c.get());
             JIT_DYN_STRINGS.with(|c| c.borrow_mut().clear());
             MIXED_PRINT_SLOTS.with(|c| c.borrow_mut().clear());
+            JIT_JOIN_KEY_PARTS.with(|c| c.borrow_mut().clear());
             return Some(VmSignal::Return(Value::Num(val)));
         }
         crate::jit::JIT_VAL_SIGNAL_RETURN_EMPTY => {
             JIT_DYN_STRINGS.with(|c| c.borrow_mut().clear());
             MIXED_PRINT_SLOTS.with(|c| c.borrow_mut().clear());
+            JIT_JOIN_KEY_PARTS.with(|c| c.borrow_mut().clear());
             return Some(VmSignal::Return(Value::Str(String::new())));
         }
         _ => {}
@@ -1358,6 +1397,7 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Option<VmSignal> {
     });
     JIT_DYN_STRINGS.with(|c| c.borrow_mut().clear());
     MIXED_PRINT_SLOTS.with(|c| c.borrow_mut().clear());
+    JIT_JOIN_KEY_PARTS.with(|c| c.borrow_mut().clear());
     Some(VmSignal::Normal)
 }
 

@@ -14,8 +14,9 @@
 //! chunk also use `MIXED_*` so slot values are read/written with `Value` coercion,
 //! not raw `fadd` on NaN-boxed bits. `SetField` / `CompoundAssignField` in mixed
 //! chunks use `MIXED_SET_FIELD` / `MIXED_COMPOUND_ASSIGN_FIELD` so RHS values are
-//! NaN-box aware. The fused `ArrayFieldAddConst` remains a separate fast path
-//! (field index is numeric).
+//! NaN-box aware. Multidimensional keys (`JoinArrayKey`) use `MIXED_JOIN_KEY_ARG`
+//! / `MIXED_JOIN_ARRAY_KEY` with `SUBSEP` like the VM. The fused `ArrayFieldAddConst`
+//! remains a separate fast path (field index is numeric).
 //!
 //! Execution takes a [`JitRuntimeState`]: mutable `f64` slot storage and seven
 //! `extern "C"` callbacks — `field_fn`, `array_field_add`, `var_dispatch`,
@@ -269,6 +270,10 @@ pub const MIXED_SLOT_AS_NUMBER: u32 = 163;
 pub const MIXED_SET_FIELD: u32 = 164;
 /// `$idx op= rhs` (mixed): a1 = binop 0–4 (`Add`…`Mod`), a2 = index f64, a3 = rhs (NaN-boxed).
 pub const MIXED_COMPOUND_ASSIGN_FIELD: u32 = 165;
+/// Append one key component for [`Op::JoinArrayKey`] (buffered, then [`MIXED_JOIN_ARRAY_KEY`]).
+pub const MIXED_JOIN_KEY_ARG: u32 = 167;
+/// Join `a1` buffered components with `SUBSEP`, return NaN-boxed composite key string.
+pub const MIXED_JOIN_ARRAY_KEY: u32 = 168;
 
 #[inline]
 fn mixed_encode_field_compound_binop(bop: BinOp) -> u32 {
@@ -515,6 +520,7 @@ pub fn needs_mixed_mode(ops: &[Op]) -> bool {
                 | Op::DeleteArray(_)
                 | Op::CompoundAssignIndex(_, _)
                 | Op::IncDecIndex(_, _)
+                | Op::JoinArrayKey(_)
         ) || matches!(
             op,
             Op::Print {
@@ -743,6 +749,15 @@ pub fn is_jit_eligible(ops: &[Op]) -> bool {
                 }
             }
 
+            // Multi-index key: pop `n`, push one composite string (NaN-boxed).
+            Op::JoinArrayKey(n) => {
+                let n = *n as i32;
+                if depth < n {
+                    return false;
+                }
+                depth -= n - 1;
+            }
+
             // ── Print with args (mixed mode — NaN-boxed values) ───────
             Op::Print {
                 argc,
@@ -867,10 +882,10 @@ pub fn try_compile(ops: &[Op]) -> Option<JitChunk> {
         MIXED_MUL, MIXED_NEG, MIXED_NOT, MIXED_POS, MIXED_PRINT_ARG, MIXED_PRINT_FLUSH,
         MIXED_ADD_FIELD_TO_SLOT, MIXED_ADD_MUL_FIELDS_TO_SLOT, MIXED_ADD_SLOT_TO_SLOT,
         MIXED_COMPOUND_ASSIGN_FIELD, MIXED_DECR_SLOT, MIXED_INCDEC_SLOT, MIXED_INCR_SLOT,
-        MIXED_PUSH_STR, MIXED_REGEX_MATCH, MIXED_REGEX_NOT_MATCH, MIXED_SET_FIELD, MIXED_SET_VAR,
-        MIXED_SLOT_AS_NUMBER, MIXED_SUB, MIXED_TO_BOOL, MIXED_TRUTHINESS, mixed_encode_array_compound,
-        mixed_encode_array_incdec, mixed_encode_field_slot, mixed_encode_slot_incdec,
-        mixed_encode_slot_pair,
+        MIXED_JOIN_ARRAY_KEY, MIXED_JOIN_KEY_ARG, MIXED_PUSH_STR, MIXED_REGEX_MATCH,
+        MIXED_REGEX_NOT_MATCH, MIXED_SET_FIELD, MIXED_SET_VAR, MIXED_SLOT_AS_NUMBER, MIXED_SUB,
+        MIXED_TO_BOOL, MIXED_TRUTHINESS, mixed_encode_array_compound, mixed_encode_array_incdec,
+        mixed_encode_field_slot, mixed_encode_slot_incdec, mixed_encode_slot_pair,
     };
 
     let mut module = new_jit_module()?;
@@ -2130,6 +2145,26 @@ pub fn try_compile(ops: &[Op]) -> Option<JitChunk> {
                         stack.push(builder.inst_results(call)[0]);
                     }
                 }
+                Op::JoinArrayKey(n) => {
+                    let n = n as usize;
+                    let mut vals: Vec<cranelift_codegen::ir::Value> = Vec::with_capacity(n);
+                    for _ in 0..n {
+                        vals.push(stack.pop().expect("JoinArrayKey"));
+                    }
+                    vals.reverse();
+                    let z0 = builder.ins().iconst(types::I32, 0);
+                    let zf = builder.ins().f64const(0.0);
+                    let op_arg = builder.ins().iconst(types::I32, i64::from(MIXED_JOIN_KEY_ARG));
+                    for v in vals {
+                        builder.ins().call_indirect(val_sig_ir, val_fn_ptr, &[op_arg, z0, v, zf]);
+                    }
+                    let op_join = builder.ins().iconst(types::I32, i64::from(MIXED_JOIN_ARRAY_KEY));
+                    let a1n = builder.ins().iconst(types::I32, i64::try_from(n).unwrap());
+                    let call = builder
+                        .ins()
+                        .call_indirect(val_sig_ir, val_fn_ptr, &[op_join, a1n, zf, zf]);
+                    stack.push(builder.inst_results(call)[0]);
+                }
 
                 // ── Return signals ────────────────────────────────────────
                 Op::ReturnVal => {
@@ -3080,6 +3115,18 @@ mod tests {
             Op::GetSlot(0),
         ];
         assert!(is_jit_eligible(&ops));
+    }
+
+    #[test]
+    fn jit_eligible_join_array_key() {
+        let ops = [
+            Op::PushNum(1.0),
+            Op::PushNum(2.0),
+            Op::JoinArrayKey(2),
+            Op::PushNum(0.0),
+        ];
+        assert!(is_jit_eligible(&ops));
+        assert!(needs_mixed_mode(&ops));
     }
 
     #[test]

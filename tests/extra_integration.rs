@@ -778,6 +778,18 @@ fn jit_mixed_field_assign_concat() {
 }
 
 #[test]
+fn jit_multidim_array_subscript() {
+    let (c, o, e) = run_awkrs_stdin_args_env(
+        std::iter::empty::<&str>(),
+        "BEGIN { a[1,2]=42; print a[1,2] }",
+        "",
+        jit_env(),
+    );
+    assert_eq!(c, 0, "stderr: {e}");
+    assert_eq!(o.trim(), "42");
+}
+
+#[test]
 fn jit_return_from_function() {
     let (c, o, e) = run_awkrs_stdin_args_env(
         std::iter::empty::<&str>(),
