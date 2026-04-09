@@ -963,3 +963,48 @@ fn jit_asort_returns_count() {
     assert_eq!(c, 0, "stderr: {e}");
     assert_eq!(o, "3\n");
 }
+
+#[test]
+fn jit_getline_primary_reads_next_line() {
+    let (c, o, e) = run_awkrs_stdin_args_env(
+        std::iter::empty::<&str>(),
+        "NR==1 { getline; print $0 }",
+        "a\nb\n",
+        jit_env(),
+    );
+    assert_eq!(c, 0, "stderr: {e}");
+    assert_eq!(o, "b\n");
+}
+
+#[test]
+fn jit_getline_into_var() {
+    let (c, o, e) = run_awkrs_stdin_args_env(
+        std::iter::empty::<&str>(),
+        "NR==1 { getline x; print x }",
+        "a\nb\n",
+        jit_env(),
+    );
+    assert_eq!(c, 0, "stderr: {e}");
+    assert_eq!(o, "b\n");
+}
+
+#[test]
+fn jit_getline_from_file() {
+    let dir = std::env::temp_dir();
+    let path = dir.join(format!("awkrs_jit_getline_{}.txt", std::process::id()));
+    std::fs::write(&path, "fromfile\n").unwrap();
+    let path_str = path.to_string_lossy();
+    let prog = format!(
+        "BEGIN {{ getline x < \"{}\"; print x }}",
+        path_str.replace('\\', "\\\\")
+    );
+    let (c, o, e) = run_awkrs_stdin_args_env(
+        std::iter::empty::<&str>(),
+        &prog,
+        "",
+        jit_env(),
+    );
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(c, 0, "stderr: {e}");
+    assert_eq!(o, "fromfile\n");
+}

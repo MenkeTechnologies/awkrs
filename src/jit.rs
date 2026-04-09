@@ -26,13 +26,15 @@
 //! back to the interpreter for eligible chunks. Mixed-mode chunks (strings,
 //! regex `~`, general array ops, `print` with arguments, etc.) compile those
 //! ops through `val_dispatch` (`MIXED_*`). Chunks with `printf`, user/builtin
-//! calls, getline, or other unsupported opcodes still use the bytecode loop.
+//! calls, or other unsupported opcodes still use the bytecode loop.
 //! [`Op::Split`] compiles to [`MIXED_SPLIT`] / [`MIXED_SPLIT_WITH_FS`] (same split rules as the VM).
 //! [`Op::Patsplit`] and [`Op::MatchBuiltin`] use additional [`MIXED_*`] opcodes; `patsplit` with both a
 //! custom field pattern and a `seps` array packs `arr` and `seps` pool indices in `a1` (16-bit each)
 //! when both are `< 65536`, otherwise the chunk is not JIT-eligible.
 //! Non-stdout `print` / `printf` use [`MIXED_PRINT_FLUSH_REDIR`] / [`MIXED_PRINTF_FLUSH_REDIR`] with
 //! [`pack_print_redir`] (same stack order as the VM: redirect path is TOS).
+//! [`Op::GetLine`] uses [`MIXED_GETLINE_PRIMARY`] / [`MIXED_GETLINE_FILE`] / [`MIXED_GETLINE_COPROC`];
+//! [`MIXED_GETLINE_INTO_RECORD`] in `a1` means read into `$0` / fields (no named variable).
 //! Whitelisted [`Op::CallBuiltin`] (see [`jit_call_builtins_ok`]) uses `MIXED_BUILTIN_*`
 //! including `sprintf`/`printf` and I/O helpers when arity and [`jit_call_builtins_ok`] allow.
 //! The **`printf`** *statement* opcode ([`Op::Printf`] to stdout) uses `MIXED_PRINT_ARG` +
@@ -41,7 +43,7 @@
 //! compiles to `MIXED_TYPEOF_*` and returns NaN-boxed pool/dynamic strings like other mixed ops.
 
 use crate::ast::{BinOp, IncDecOp};
-use crate::bytecode::{CompiledProgram, Op};
+use crate::bytecode::{CompiledProgram, GetlineSource, Op};
 use cranelift_codegen::ir::{types, AbiParam, Block, InstBuilder, MemFlags, UserFuncName};
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
@@ -323,6 +325,14 @@ pub const MIXED_MATCH_BUILTIN_ARR: u32 = 184;
 pub const MIXED_PRINT_FLUSH_REDIR: u32 = 185;
 /// `printf` with redirect — same packing as [`MIXED_PRINT_FLUSH_REDIR`].
 pub const MIXED_PRINTF_FLUSH_REDIR: u32 = 186;
+/// `getline` from primary input — `a1` = var pool index or [`MIXED_GETLINE_INTO_RECORD`].
+pub const MIXED_GETLINE_PRIMARY: u32 = 187;
+/// `getline` from a file — `a1` as above, `a2` = path (NaN-boxed string).
+pub const MIXED_GETLINE_FILE: u32 = 188;
+/// `getline` from coproc — same as [`MIXED_GETLINE_FILE`].
+pub const MIXED_GETLINE_COPROC: u32 = 189;
+/// Sentinel for `a1`: `getline` with no variable (updates `$0` / `NF`).
+pub const MIXED_GETLINE_INTO_RECORD: u32 = u32::MAX;
 
 /// Pack `argc` (low 16 bits) and redirect kind (high 16 bits: 1=overwrite, 2=append, 3=pipe, 4=coproc).
 #[inline]
@@ -611,6 +621,7 @@ pub fn needs_mixed_mode(ops: &[Op]) -> bool {
             op,
             Op::Printf { redir, .. } if *redir != crate::bytecode::RedirKind::Stdout
         )
+            || matches!(op, Op::GetLine { .. })
     })
 }
 
@@ -1035,6 +1046,16 @@ pub fn is_jit_eligible(ops: &[Op]) -> bool {
                 depth -= 1;
             }
 
+            Op::GetLine { source, .. } => match source {
+                GetlineSource::Primary => {}
+                GetlineSource::File | GetlineSource::Coproc => {
+                    if depth < 1 {
+                        return false;
+                    }
+                    depth -= 1;
+                }
+            },
+
             _ => return false,
         }
     }
@@ -1137,7 +1158,9 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
         MIXED_TYPEOF_SLOT, MIXED_TYPEOF_VALUE, MIXED_TYPEOF_VAR, MIXED_PRINTF_FLUSH,
         MIXED_SPLIT, MIXED_SPLIT_WITH_FS, MIXED_PATSPLIT, MIXED_PATSPLIT_SEP, MIXED_PATSPLIT_FP,
         MIXED_PATSPLIT_FP_SEP, MIXED_MATCH_BUILTIN, MIXED_MATCH_BUILTIN_ARR,
-        MIXED_PRINT_FLUSH_REDIR, MIXED_PRINTF_FLUSH_REDIR, pack_print_redir,
+        MIXED_PRINT_FLUSH_REDIR, MIXED_PRINTF_FLUSH_REDIR,
+        MIXED_GETLINE_PRIMARY, MIXED_GETLINE_FILE, MIXED_GETLINE_COPROC, MIXED_GETLINE_INTO_RECORD,
+        pack_print_redir,
         mixed_encode_array_compound,
         mixed_encode_array_incdec,
         mixed_encode_field_slot, mixed_encode_slot_incdec, mixed_encode_slot_pair,
@@ -1449,6 +1472,50 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                             .ins()
                             .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, s, zf]);
                         stack.push(builder.inst_results(call)[0]);
+                    }
+                }
+                Op::GetLine { var, source } => {
+                    let a1_enc = if let Some(v) = var {
+                        builder.ins().iconst(types::I32, i64::from(v))
+                    } else {
+                        builder
+                            .ins()
+                            .iconst(types::I32, i64::from(MIXED_GETLINE_INTO_RECORD))
+                    };
+                    let zf = builder.ins().f64const(0.0);
+                    match source {
+                        GetlineSource::Primary => {
+                            let op_c = builder
+                                .ins()
+                                .iconst(types::I32, i64::from(MIXED_GETLINE_PRIMARY));
+                            builder.ins().call_indirect(
+                                val_sig_ir,
+                                val_fn_ptr,
+                                &[op_c, a1_enc, zf, zf],
+                            );
+                        }
+                        GetlineSource::File => {
+                            let path = stack.pop().expect("GetLine file path");
+                            let op_c = builder
+                                .ins()
+                                .iconst(types::I32, i64::from(MIXED_GETLINE_FILE));
+                            builder.ins().call_indirect(
+                                val_sig_ir,
+                                val_fn_ptr,
+                                &[op_c, a1_enc, path, zf],
+                            );
+                        }
+                        GetlineSource::Coproc => {
+                            let path = stack.pop().expect("GetLine coproc");
+                            let op_c = builder
+                                .ins()
+                                .iconst(types::I32, i64::from(MIXED_GETLINE_COPROC));
+                            builder.ins().call_indirect(
+                                val_sig_ir,
+                                val_fn_ptr,
+                                &[op_c, a1_enc, path, zf],
+                            );
+                        }
                     }
                 }
                 Op::Patsplit {
@@ -2934,6 +3001,7 @@ pub fn try_jit_dispatch_numeric_chunk(ops: &[Op]) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bytecode::GetlineSource;
     use std::cell::RefCell;
 
     thread_local! {
@@ -4122,6 +4190,30 @@ mod tests {
         ];
         assert!(is_jit_eligible(&ops));
         assert!(needs_mixed_mode(&ops));
+    }
+
+    #[test]
+    fn jit_mixed_getline_eligible() {
+        let ops_primary = [
+            Op::GetLine {
+                var: None,
+                source: GetlineSource::Primary,
+            },
+            Op::ReturnEmpty,
+        ];
+        assert!(is_jit_eligible(&ops_primary));
+        assert!(needs_mixed_mode(&ops_primary));
+
+        let ops_file = [
+            Op::PushStr(0),
+            Op::GetLine {
+                var: Some(0),
+                source: GetlineSource::File,
+            },
+            Op::ReturnEmpty,
+        ];
+        assert!(is_jit_eligible(&ops_file));
+        assert!(needs_mixed_mode(&ops_file));
     }
 
     // ── Conditional Next ──────────────────────────────────────────────────

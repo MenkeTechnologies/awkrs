@@ -357,6 +357,8 @@ thread_local! {
     static JIT_JOIN_KEY_PARTS: RefCell<Vec<f64>> = RefCell::new(Vec::new());
     /// Buffered arguments for JIT `CallBuiltin` (`MIXED_BUILTIN_ARG` / `MIXED_BUILTIN_CALL`).
     static JIT_BUILTIN_ARGS: RefCell<Vec<Option<f64>>> = RefCell::new(Vec::new());
+    /// Propagate `Error` from mixed JIT callbacks that cannot return `Result` (e.g. `getline` I/O).
+    static JIT_CHUNK_ERR: RefCell<Option<Error>> = RefCell::new(None);
 }
 
 fn jit_f64_to_value(ctx: &VmCtx<'_>, x: f64) -> Value {
@@ -455,8 +457,9 @@ fn jit_mixed_op_dispatch(
         MIXED_TYPEOF_SLOT, MIXED_TYPEOF_VALUE, MIXED_TYPEOF_VAR, MIXED_BUILTIN_ARG,
         MIXED_BUILTIN_CALL, MIXED_PRINTF_FLUSH, MIXED_SPLIT, MIXED_SPLIT_WITH_FS,
         MIXED_PATSPLIT, MIXED_PATSPLIT_SEP, MIXED_PATSPLIT_FP, MIXED_PATSPLIT_FP_SEP,
-        MIXED_MATCH_BUILTIN, MIXED_MATCH_BUILTIN_ARR, MIXED_PRINT_FLUSH_REDIR,
-        MIXED_PRINTF_FLUSH_REDIR,
+        MIXED_GETLINE_COPROC, MIXED_GETLINE_FILE, MIXED_GETLINE_INTO_RECORD,
+        MIXED_GETLINE_PRIMARY, MIXED_MATCH_BUILTIN, MIXED_MATCH_BUILTIN_ARR,
+        MIXED_PRINT_FLUSH_REDIR, MIXED_PRINTF_FLUSH_REDIR,
     };
 
     fn mixed_jit_slot_load_raw(slot: usize) -> f64 {
@@ -1050,6 +1053,50 @@ fn jit_mixed_op_dispatch(
             let re_pat = jit_f64_to_value(ctx, a3).as_str();
             builtins::match_fn(ctx.rt, &s, &re_pat, Some(arr_name.as_str())).unwrap_or(0.0)
         }
+        MIXED_GETLINE_PRIMARY => {
+            let var = if a1 == MIXED_GETLINE_INTO_RECORD {
+                None
+            } else {
+                Some(a1)
+            };
+            match ctx.rt.read_line_primary() {
+                Ok(line) => apply_getline_line(ctx, var, GetlineSource::Primary, line),
+                Err(e) => {
+                    JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+                }
+            }
+            0.0
+        }
+        MIXED_GETLINE_FILE => {
+            let var = if a1 == MIXED_GETLINE_INTO_RECORD {
+                None
+            } else {
+                Some(a1)
+            };
+            let path = jit_f64_to_value(ctx, a2).into_string();
+            match ctx.rt.read_line_file(path.as_str()) {
+                Ok(line) => apply_getline_line(ctx, var, GetlineSource::File, line),
+                Err(e) => {
+                    JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+                }
+            }
+            0.0
+        }
+        MIXED_GETLINE_COPROC => {
+            let var = if a1 == MIXED_GETLINE_INTO_RECORD {
+                None
+            } else {
+                Some(a1)
+            };
+            let path = jit_f64_to_value(ctx, a2).into_string();
+            match ctx.rt.read_line_coproc(path.as_str()) {
+                Ok(line) => apply_getline_line(ctx, var, GetlineSource::Coproc, line),
+                Err(e) => {
+                    JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+                }
+            }
+            0.0
+        }
         _ => 0.0,
     }
 }
@@ -1540,18 +1587,19 @@ extern "C" fn jit_val_dispatch(op: u32, a1: u32, a2: f64, a3: f64) -> f64 {
 
 /// Try JIT dispatch for the full instruction set. Converts slots to/from f64[],
 /// sets up the field callback via thread-local, and executes.
-fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Option<VmSignal> {
+fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Result<Option<VmSignal>> {
     if !crate::jit::jit_enabled()
         || !crate::jit::is_jit_eligible(ops)
         || !crate::jit::jit_call_builtins_ok(ops, ctx.cp)
     {
-        return None;
+        return Ok(None);
     }
 
     let mixed = crate::jit::needs_mixed_mode(ops);
 
     // Build f64 slot array from runtime slots
     let slot_count = ctx.rt.slots.len();
+    JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = None);
     JIT_DYN_STRINGS.with(|c| c.borrow_mut().clear());
     MIXED_PRINT_SLOTS.with(|c| c.borrow_mut().clear());
     JIT_JOIN_KEY_PARTS.with(|c| c.borrow_mut().clear());
@@ -1599,13 +1647,21 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Option<VmSignal> {
     JIT_SLOTS_LEN.with(|cell| cell.set(0));
     JIT_FORIN_ITERS.with(|c| c.borrow_mut().clear());
 
+    if let Some(e) = JIT_CHUNK_ERR.with(|c| c.borrow_mut().take()) {
+        JIT_DYN_STRINGS.with(|c| c.borrow_mut().clear());
+        MIXED_PRINT_SLOTS.with(|c| c.borrow_mut().clear());
+        JIT_JOIN_KEY_PARTS.with(|c| c.borrow_mut().clear());
+        JIT_BUILTIN_ARGS.with(|c| c.borrow_mut().clear());
+        return Err(e);
+    }
+
     // JIT compilation failed — fall back to interpreter.
     let Some(result) = result else {
         JIT_DYN_STRINGS.with(|c| c.borrow_mut().clear());
         MIXED_PRINT_SLOTS.with(|c| c.borrow_mut().clear());
         JIT_JOIN_KEY_PARTS.with(|c| c.borrow_mut().clear());
         JIT_BUILTIN_ARGS.with(|c| c.borrow_mut().clear());
-        return None;
+        return Ok(None);
     };
 
     // Write back modified slots
@@ -1634,14 +1690,14 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Option<VmSignal> {
             MIXED_PRINT_SLOTS.with(|c| c.borrow_mut().clear());
             JIT_JOIN_KEY_PARTS.with(|c| c.borrow_mut().clear());
             JIT_BUILTIN_ARGS.with(|c| c.borrow_mut().clear());
-            return Some(VmSignal::Next);
+            return Ok(Some(VmSignal::Next));
         }
         JIT_VAL_SIGNAL_NEXT_FILE => {
             JIT_DYN_STRINGS.with(|c| c.borrow_mut().clear());
             MIXED_PRINT_SLOTS.with(|c| c.borrow_mut().clear());
             JIT_JOIN_KEY_PARTS.with(|c| c.borrow_mut().clear());
             JIT_BUILTIN_ARGS.with(|c| c.borrow_mut().clear());
-            return Some(VmSignal::NextFile);
+            return Ok(Some(VmSignal::NextFile));
         }
         JIT_VAL_SIGNAL_EXIT_DEFAULT => {
             ctx.rt.exit_code = 0;
@@ -1650,7 +1706,7 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Option<VmSignal> {
             MIXED_PRINT_SLOTS.with(|c| c.borrow_mut().clear());
             JIT_JOIN_KEY_PARTS.with(|c| c.borrow_mut().clear());
             JIT_BUILTIN_ARGS.with(|c| c.borrow_mut().clear());
-            return Some(VmSignal::ExitPending);
+            return Ok(Some(VmSignal::ExitPending));
         }
         JIT_VAL_SIGNAL_EXIT_CODE => {
             let code = JIT_SIGNAL_ARG.with(|c| c.get()) as i32;
@@ -1660,7 +1716,7 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Option<VmSignal> {
             MIXED_PRINT_SLOTS.with(|c| c.borrow_mut().clear());
             JIT_JOIN_KEY_PARTS.with(|c| c.borrow_mut().clear());
             JIT_BUILTIN_ARGS.with(|c| c.borrow_mut().clear());
-            return Some(VmSignal::ExitPending);
+            return Ok(Some(VmSignal::ExitPending));
         }
         crate::jit::JIT_VAL_SIGNAL_RETURN_VAL => {
             let val = JIT_SIGNAL_ARG.with(|c| c.get());
@@ -1668,14 +1724,14 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Option<VmSignal> {
             MIXED_PRINT_SLOTS.with(|c| c.borrow_mut().clear());
             JIT_JOIN_KEY_PARTS.with(|c| c.borrow_mut().clear());
             JIT_BUILTIN_ARGS.with(|c| c.borrow_mut().clear());
-            return Some(VmSignal::Return(Value::Num(val)));
+            return Ok(Some(VmSignal::Return(Value::Num(val))));
         }
         crate::jit::JIT_VAL_SIGNAL_RETURN_EMPTY => {
             JIT_DYN_STRINGS.with(|c| c.borrow_mut().clear());
             MIXED_PRINT_SLOTS.with(|c| c.borrow_mut().clear());
             JIT_JOIN_KEY_PARTS.with(|c| c.borrow_mut().clear());
             JIT_BUILTIN_ARGS.with(|c| c.borrow_mut().clear());
-            return Some(VmSignal::Return(Value::Str(String::new())));
+            return Ok(Some(VmSignal::Return(Value::Str(String::new()))));
         }
         _ => {}
     }
@@ -1690,15 +1746,17 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Option<VmSignal> {
     MIXED_PRINT_SLOTS.with(|c| c.borrow_mut().clear());
     JIT_JOIN_KEY_PARTS.with(|c| c.borrow_mut().clear());
     JIT_BUILTIN_ARGS.with(|c| c.borrow_mut().clear());
-    Some(VmSignal::Normal)
+    Ok(Some(VmSignal::Normal))
 }
 
 // ── Core VM loop ────────────────────────────────────────────────────────────
 
 fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
     let ops = &chunk.ops;
-    if let Some(signal) = try_jit_dispatch(ops, ctx) {
-        return Ok(signal);
+    match try_jit_dispatch(ops, ctx) {
+        Ok(Some(signal)) => return Ok(signal),
+        Ok(None) => {}
+        Err(e) => return Err(e),
     }
     let len = ops.len();
     let mut pc: usize = 0;
@@ -2514,25 +2572,23 @@ fn sprintf_simple(fmt: &str, vals: &[Value], dec: char) -> Result<Value> {
 
 // ── Getline ─────────────────────────────────────────────────────────────────
 
-fn exec_getline(ctx: &mut VmCtx<'_>, var: Option<u32>, source: GetlineSource) -> Result<()> {
-    let file_path = match source {
-        GetlineSource::File => Some(ctx.pop().as_str()),
-        GetlineSource::Coproc => Some(ctx.pop().as_str()),
-        GetlineSource::Primary => None,
-    };
-
-    let line = match source {
-        GetlineSource::Primary => ctx.rt.read_line_primary()?,
-        GetlineSource::File => ctx.rt.read_line_file(file_path.as_ref().unwrap())?,
-        GetlineSource::Coproc => ctx.rt.read_line_coproc(file_path.as_ref().unwrap())?,
-    };
-
+fn apply_getline_line(
+    ctx: &mut VmCtx<'_>,
+    var: Option<u32>,
+    source: GetlineSource,
+    line: Option<String>,
+) {
     if let Some(l) = line {
         let trimmed = l.trim_end_matches(['\n', '\r']).to_string();
         if let Some(var_idx) = var {
             // getline var — read into variable only, do NOT touch $0/fields/NF.
             let name = ctx.str_ref(var_idx).to_string();
             ctx.set_var(&name, Value::Str(trimmed));
+            // Mixed-mode JIT writeback copies `jit_slots` → `rt.slots`; mirror slot updates into
+            // the scratch buffer so string slot assignments survive the writeback.
+            if let Some(&slot) = ctx.cp.slot_map.get(name.as_str()) {
+                sync_jit_slot_value(ctx, slot);
+            }
         } else {
             // getline (no var) — update $0 and re-split fields, then update NF.
             let fs = ctx
@@ -2551,6 +2607,22 @@ fn exec_getline(ctx: &mut VmCtx<'_>, var: Option<u32>, source: GetlineSource) ->
             ctx.rt.fnr += 1.0;
         }
     }
+}
+
+fn exec_getline(ctx: &mut VmCtx<'_>, var: Option<u32>, source: GetlineSource) -> Result<()> {
+    let file_path = match source {
+        GetlineSource::File => Some(ctx.pop().as_str()),
+        GetlineSource::Coproc => Some(ctx.pop().as_str()),
+        GetlineSource::Primary => None,
+    };
+
+    let line = match source {
+        GetlineSource::Primary => ctx.rt.read_line_primary()?,
+        GetlineSource::File => ctx.rt.read_line_file(file_path.as_ref().unwrap())?,
+        GetlineSource::Coproc => ctx.rt.read_line_coproc(file_path.as_ref().unwrap())?,
+    };
+
+    apply_getline_line(ctx, var, source, line);
     Ok(())
 }
 
