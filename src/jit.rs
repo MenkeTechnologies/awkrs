@@ -7,7 +7,10 @@
 //! conditionals, `for`-`in` iteration), field access, fused peephole opcodes,
 //! print side-effects, `MatchRegexp` pattern tests, flow signals
 //! (`Next`/`NextFile`/`Exit`/`Return`), fused `ArrayFieldAddConst`, and
-//! `asort`/`asorti`.
+//! `asort`/`asorti`. User-defined functions ([`Op::CallUser`]) and `sub`/`gsub`
+//! ([`Op::SubFn`]/[`Op::GsubFn`]) lower to mixed `MIXED_CALL_USER_*` and
+//! `MIXED_SUB_*` / `MIXED_GSUB_*` when [`is_jit_eligible`] accepts the stack shape;
+//! [`jit_call_builtins_ok`] applies to [`Op::CallBuiltin`] and [`Op::CallUser`] names.
 //!
 //! General array subscripts and string-producing ops compile in **mixed mode**:
 //! stack values may be NaN-boxed string handles, and `val_dispatch` opcodes ≥ 100
@@ -4530,6 +4533,23 @@ mod tests {
         ];
         assert!(is_jit_eligible(&ops_explicit_fs));
         assert!(needs_mixed_mode(&ops_explicit_fs));
+    }
+
+    #[test]
+    fn jit_eligible_call_user_and_gsub() {
+        use crate::bytecode::SubTarget;
+        let ops_user = [Op::PushNum(1.0), Op::CallUser(0, 1), Op::PushNum(0.0)];
+        assert!(is_jit_eligible(&ops_user));
+        assert!(needs_mixed_mode(&ops_user));
+
+        let ops_gsub = [
+            Op::PushStr(0),
+            Op::PushStr(1),
+            Op::GsubFn(SubTarget::Record),
+            Op::PushNum(0.0),
+        ];
+        assert!(is_jit_eligible(&ops_gsub));
+        assert!(needs_mixed_mode(&ops_gsub));
     }
 
     #[test]
