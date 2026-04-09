@@ -187,9 +187,7 @@ fn parse_ascii_integer(s: &str) -> Option<i64> {
         if !d.is_ascii_digit() {
             return None;
         }
-        acc = acc
-            .checked_mul(10)?
-            .checked_add((d - b'0') as i64)?;
+        acc = acc.checked_mul(10)?.checked_add((d - b'0') as i64)?;
         i += 1;
     }
     Some(if neg { -acc } else { acc })

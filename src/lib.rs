@@ -26,12 +26,12 @@ use crate::compiler::Compiler;
 use crate::interp::{range_step, Flow};
 use crate::parser::parse_program;
 use crate::runtime::{Runtime, Value};
-use memchr::memchr;
 use crate::vm::{
     flush_print_buf, vm_pattern_matches, vm_run_begin, vm_run_beginfile, vm_run_end,
     vm_run_endfile, vm_run_rule,
 };
 use clap::Parser;
+use memchr::memchr;
 use rayon::prelude::*;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Write};
