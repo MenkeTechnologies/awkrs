@@ -329,9 +329,30 @@ thread_local! {
     /// Raw pointer to the current Runtime, set before JIT execution so the
     /// field callback can access `field_as_number`, `nr`, `fnr`, `nf`.
     static JIT_RT_PTR: Cell<*mut Runtime> = const { Cell::new(std::ptr::null_mut()) };
-    /// Raw pointer to the current [`CompiledProgram`], set before JIT execution
+    /// Raw pointer to the current compiled program (string pool), set before JIT
     /// so fused `ArrayFieldAddConst` can resolve interned array names.
     static JIT_CP_PTR: Cell<*const CompiledProgram> = const { Cell::new(std::ptr::null()) };
+    /// Current VM context — used by `jit_var_dispatch` for `GetVar` / `SetVar` /
+    /// `IncrVar` / `CompoundAssignVar` (full `get_var` / `set_var` semantics).
+    static JIT_VMCTX_PTR: Cell<*mut VmCtx<'static>> = const { Cell::new(std::ptr::null_mut()) };
+    /// Pointer to the `jit_slots` buffer — updated when a slotted name is written via `var_dispatch`.
+    static JIT_SLOTS_PTR: Cell<*mut f64> = const { Cell::new(std::ptr::null_mut()) };
+    static JIT_SLOTS_LEN: Cell<usize> = const { Cell::new(0) };
+}
+
+fn sync_jit_slot_if_scalar(ctx: &VmCtx<'_>, name: &str) {
+    let Some(&slot) = ctx.cp.slot_map.get(name) else {
+        return;
+    };
+    let ptr = JIT_SLOTS_PTR.get();
+    let len = JIT_SLOTS_LEN.get();
+    if ptr.is_null() || (slot as usize) >= len {
+        return;
+    }
+    let v = ctx.rt.slots[slot as usize].as_number();
+    unsafe {
+        ptr.add(slot as usize).write(v);
+    }
 }
 
 /// Field callback passed to JIT-compiled code.
@@ -372,6 +393,72 @@ extern "C" fn jit_array_field_add_const(arr_idx: u32, field: i32, delta: f64) {
     })
 }
 
+/// Multiplexed HashMap-path variable ops — must match `JIT_VAR_OP_*` in `jit.rs`.
+extern "C" fn jit_var_dispatch(op: u32, name_idx: u32, arg: f64) -> f64 {
+    JIT_VMCTX_PTR.with(|cell| {
+        let p = cell.get();
+        if p.is_null() {
+            return 0.0;
+        }
+        let ctx = unsafe { &mut *p };
+        let name_owned = ctx.str_ref(name_idx).to_string();
+        use crate::jit::{
+            JIT_VAR_OP_COMPOUND_ADD, JIT_VAR_OP_COMPOUND_DIV, JIT_VAR_OP_COMPOUND_MOD,
+            JIT_VAR_OP_COMPOUND_MUL, JIT_VAR_OP_COMPOUND_SUB, JIT_VAR_OP_DECR, JIT_VAR_OP_GET,
+            JIT_VAR_OP_INCR, JIT_VAR_OP_SET,
+        };
+        match op {
+            JIT_VAR_OP_GET => ctx.get_var(name_owned.as_str()).as_number(),
+            JIT_VAR_OP_SET => {
+                ctx.set_var(name_owned.as_str(), Value::Num(arg));
+                sync_jit_slot_if_scalar(ctx, name_owned.as_str());
+                arg
+            }
+            JIT_VAR_OP_INCR => {
+                let n = ctx.get_var(name_owned.as_str()).as_number();
+                ctx.set_var(name_owned.as_str(), Value::Num(n + 1.0));
+                sync_jit_slot_if_scalar(ctx, name_owned.as_str());
+                0.0
+            }
+            JIT_VAR_OP_DECR => {
+                let n = ctx.get_var(name_owned.as_str()).as_number();
+                ctx.set_var(name_owned.as_str(), Value::Num(n - 1.0));
+                sync_jit_slot_if_scalar(ctx, name_owned.as_str());
+                0.0
+            }
+            JIT_VAR_OP_COMPOUND_ADD
+            | JIT_VAR_OP_COMPOUND_SUB
+            | JIT_VAR_OP_COMPOUND_MUL
+            | JIT_VAR_OP_COMPOUND_DIV
+            | JIT_VAR_OP_COMPOUND_MOD => {
+                let bop = match op {
+                    JIT_VAR_OP_COMPOUND_ADD => BinOp::Add,
+                    JIT_VAR_OP_COMPOUND_SUB => BinOp::Sub,
+                    JIT_VAR_OP_COMPOUND_MUL => BinOp::Mul,
+                    JIT_VAR_OP_COMPOUND_DIV => BinOp::Div,
+                    JIT_VAR_OP_COMPOUND_MOD => BinOp::Mod,
+                    _ => unreachable!(),
+                };
+                let old = ctx.get_var(name_owned.as_str());
+                let a = old.as_number();
+                let b = arg;
+                let n = match bop {
+                    BinOp::Add => a + b,
+                    BinOp::Sub => a - b,
+                    BinOp::Mul => a * b,
+                    BinOp::Div => a / b,
+                    BinOp::Mod => a % b,
+                    _ => 0.0,
+                };
+                ctx.set_var(name_owned.as_str(), Value::Num(n));
+                sync_jit_slot_if_scalar(ctx, name_owned.as_str());
+                n
+            }
+            _ => 0.0,
+        }
+    })
+}
+
 /// Try JIT dispatch for the full instruction set. Converts slots to/from f64[],
 /// sets up the field callback via thread-local, and executes.
 fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Option<f64> {
@@ -388,17 +475,26 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Option<f64> {
     let cp_ptr: *const CompiledProgram = ctx.cp;
     JIT_RT_PTR.with(|cell| cell.set(rt_ptr));
     JIT_CP_PTR.with(|cell| cell.set(cp_ptr));
+    JIT_VMCTX_PTR.with(|cell| {
+        cell.set(std::ptr::from_mut(ctx).cast::<VmCtx<'static>>());
+    });
+    JIT_SLOTS_PTR.with(|cell| cell.set(jit_slots.as_mut_ptr()));
+    JIT_SLOTS_LEN.with(|cell| cell.set(jit_slots.len()));
 
     let mut jit_state = crate::jit::JitRuntimeState::new(
         &mut jit_slots,
         jit_field_callback,
         jit_array_field_add_const,
+        jit_var_dispatch,
     );
     let result = crate::jit::try_jit_execute(ops, &mut jit_state);
 
     // Clear pointers
     JIT_RT_PTR.with(|cell| cell.set(std::ptr::null_mut()));
     JIT_CP_PTR.with(|cell| cell.set(std::ptr::null()));
+    JIT_VMCTX_PTR.with(|cell| cell.set(std::ptr::null_mut()));
+    JIT_SLOTS_PTR.with(|cell| cell.set(std::ptr::null_mut()));
+    JIT_SLOTS_LEN.with(|cell| cell.set(0));
 
     // Write back modified slots
     if result.is_some() {
