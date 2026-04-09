@@ -1,6 +1,6 @@
 [package]
 name = "awkrs"
-version = "0.1.10"
+version = "0.1.11"
 edition = "2021"
 description = "Awk implementation in Rust with broad CLI compatibility and parallel record processing when safe"
 license = "MIT"
@@ -26,6 +26,7 @@ chrono = "0.4"
 clap = { version = "4.5", features = ["derive", "cargo", "env"] }
 libc = "0.2"
 memchr = "2.7"
+memmap2 = "0.9"
 rayon = "1.10"
 regex = "1.10"
 rustc-hash = "2.1"

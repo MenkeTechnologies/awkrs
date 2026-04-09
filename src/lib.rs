@@ -33,6 +33,7 @@ use crate::vm::{
 use clap::Parser;
 use memchr::memchr;
 use memchr::memmem;
+use memmap2::Mmap;
 use rayon::prelude::*;
 use rayon::ThreadPool;
 use std::fs::File;
@@ -368,6 +369,36 @@ fn process_stdin_parallel(
     Ok(())
 }
 
+fn mmap_file_readonly(path: &Path) -> Result<Mmap> {
+    let file = File::open(path).map_err(|e| Error::ProgramFile(path.to_path_buf(), e))?;
+    // SAFETY: read-only map of a file we opened; no concurrent writes assumed (same as `fs::read`).
+    unsafe {
+        memmap2::MmapOptions::new()
+            .map(&file)
+            .map_err(|e| Error::ProgramFile(path.to_path_buf(), e))
+    }
+}
+
+/// Newline-split `data` into owned lines (same boundaries as the slurp loop; `\r` before `\n` trimmed).
+fn split_bytes_into_owned_lines(data: &[u8]) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut pos = 0usize;
+    let len = data.len();
+    while pos < len {
+        let eol = memchr(b'\n', &data[pos..len])
+            .map(|i| pos + i)
+            .unwrap_or(len);
+        let end = if eol > pos && data[eol - 1] == b'\r' {
+            eol - 1
+        } else {
+            eol
+        };
+        lines.push(String::from_utf8_lossy(&data[pos..end]).into_owned());
+        pos = eol + 1;
+    }
+    lines
+}
+
 fn read_all_lines<R: Read>(mut r: R) -> Result<Vec<String>> {
     let mut buf = BufReader::new(&mut r);
     let mut lines = Vec::new();
@@ -393,12 +424,12 @@ fn process_file_parallel(
     threads: usize,
     nr_offset: f64,
 ) -> Result<usize> {
-    let reader: Box<dyn Read + Send> = if let Some(p) = path {
-        Box::new(File::open(p).map_err(|e| Error::ProgramFile(p.to_path_buf(), e))?)
+    let lines = if let Some(p) = path {
+        let mmap = mmap_file_readonly(p)?;
+        split_bytes_into_owned_lines(mmap.as_ref())
     } else {
-        Box::new(std::io::stdin())
+        read_all_lines(std::io::stdin())?
     };
-    let lines = read_all_lines(reader)?;
     let nlines = lines.len();
     if nlines == 0 {
         return Ok(0);
@@ -695,7 +726,8 @@ fn process_file_slurp(
     range_state: &mut [bool],
     rt: &mut Runtime,
 ) -> Result<usize> {
-    let data = std::fs::read(path).map_err(|e| Error::ProgramFile(path.to_path_buf(), e))?;
+    let mmap = mmap_file_readonly(path)?;
+    let data = mmap.as_ref();
     // Cache FS once (only changes if program assigns FS mid-execution, rare).
     let fs = rt
         .vars
@@ -747,7 +779,7 @@ fn process_file_slurp(
 /// Ultra-fast inlined record loop for single-rule programs with one fused opcode.
 /// Bypasses VmCtx creation, dispatch_rules, pattern matching, and the execute loop entirely.
 fn process_file_slurp_inline(
-    data: Vec<u8>,
+    data: &[u8],
     fs: &str,
     pattern: InlinePattern,
     action: InlineAction,
@@ -759,11 +791,11 @@ fn process_file_slurp_inline(
     // Only when the pattern matches every record (`Always`); `LiteralContains` must filter per line.
     if matches!(pattern, InlinePattern::Always) {
         if let InlineAction::GsubLiteralPrint { pat, repl } = action {
-            return process_file_gsub_literal_print(&data, fs, pat, repl, cp, rt);
+            return process_file_gsub_literal_print(data, fs, pat, repl, cp, rt);
         }
         if let InlineAction::PrintFieldStdout(field) = action {
             if field > 0 && fs == " " {
-                return process_file_print_field_raw(&data, field as usize, rt);
+                return process_file_print_field_raw(data, field as usize, rt);
             }
         }
     }
@@ -1111,6 +1143,15 @@ mod lib_internal_tests {
     fn read_all_lines_empty_input() {
         let lines = read_all_lines(Cursor::new(b"")).unwrap();
         assert!(lines.is_empty());
+    }
+
+    #[test]
+    fn split_bytes_into_owned_lines_matches_slurp_boundaries() {
+        assert_eq!(
+            split_bytes_into_owned_lines(b"a\nb\r\nc"),
+            vec!["a".to_string(), "b".to_string(), "c".to_string()]
+        );
+        assert!(split_bytes_into_owned_lines(b"").is_empty());
     }
 
     #[test]
