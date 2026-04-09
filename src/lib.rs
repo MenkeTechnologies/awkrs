@@ -954,3 +954,95 @@ fn apply_assigns(args: &Args, rt: &mut Runtime) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod lib_internal_tests {
+    use super::*;
+    use crate::bytecode::{GetlineSource, Op};
+    use crate::compiler::Compiler;
+    use crate::parser::parse_program;
+    use std::io::Cursor;
+
+    #[test]
+    fn read_all_lines_splits_on_newline() {
+        let lines = read_all_lines(Cursor::new(b"a\nb\n")).unwrap();
+        assert_eq!(lines, vec!["a\n".to_string(), "b\n".to_string()]);
+    }
+
+    #[test]
+    fn read_all_lines_empty_input() {
+        let lines = read_all_lines(Cursor::new(b"")).unwrap();
+        assert!(lines.is_empty());
+    }
+
+    #[test]
+    fn awk_float_eq_close_values() {
+        assert!(awk_float_eq(1.0, 1.0));
+        assert!(awk_float_eq(1e-20, 1e-20));
+        assert!(!awk_float_eq(1.0, 2.0));
+    }
+
+    #[test]
+    fn match_nr_mod_eq_pattern_matches_five_op_form() {
+        let ops = vec![
+            Op::GetNR,
+            Op::PushNum(3.0),
+            Op::Mod,
+            Op::PushNum(1.0),
+            Op::CmpEq,
+        ];
+        assert_eq!(match_nr_mod_eq_pattern(&ops), Some((3.0, 1.0)));
+    }
+
+    #[test]
+    fn match_nr_mod_eq_pattern_wrong_len() {
+        let ops = vec![Op::GetNR, Op::PushNum(2.0), Op::Mod];
+        assert!(match_nr_mod_eq_pattern(&ops).is_none());
+    }
+
+    #[test]
+    fn uses_primary_getline_detects_bare_getline() {
+        let prog = parse_program("{ getline }").unwrap();
+        let cp = Compiler::compile_program(&prog);
+        assert!(uses_primary_getline(&cp));
+    }
+
+    #[test]
+    fn uses_primary_getline_false_without_primary_getline() {
+        let prog = parse_program("BEGIN { x = 1 }").unwrap();
+        let cp = Compiler::compile_program(&prog);
+        assert!(!uses_primary_getline(&cp));
+    }
+
+    #[test]
+    fn uses_primary_getline_file_redirect_not_primary() {
+        let prog = parse_program("{ getline < \"/dev/null\" }").unwrap();
+        let cp = Compiler::compile_program(&prog);
+        assert!(!uses_primary_getline(&cp));
+    }
+
+    #[test]
+    fn uses_primary_getline_scans_functions() {
+        let prog = parse_program("function f(){ getline } BEGIN { f() }").unwrap();
+        let cp = Compiler::compile_program(&prog);
+        assert!(uses_primary_getline(&cp));
+    }
+
+    #[test]
+    fn getline_source_tagged_in_bytecode() {
+        let prog = parse_program("{ getline }").unwrap();
+        let cp = Compiler::compile_program(&prog);
+        let has_primary = cp.record_rules.iter().any(|r| {
+            r.body.ops.iter().any(|op| {
+                matches!(
+                    op,
+                    Op::GetLine {
+                        source: GetlineSource::Primary,
+                        ..
+                    }
+                )
+            })
+        });
+        assert!(has_primary);
+    }
+}

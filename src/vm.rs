@@ -1214,3 +1214,179 @@ fn exec_call_user(ctx: &mut VmCtx<'_>, name: &str, argc: u16) -> Result<()> {
     ctx.push(result);
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::compiler::Compiler;
+    use crate::interp::Flow;
+    use crate::parser::parse_program;
+    use crate::runtime::Runtime;
+
+    fn compile(prog_text: &str) -> CompiledProgram {
+        let prog = parse_program(prog_text).expect("parse");
+        Compiler::compile_program(&prog)
+    }
+
+    /// Match `lib::run`: slotted scalars from the compiler need `init_slots` before VM runs.
+    fn runtime_with_slots(cp: &CompiledProgram) -> Runtime {
+        let mut rt = Runtime::new();
+        rt.slots = cp.init_slots(&rt.vars);
+        rt
+    }
+
+    #[test]
+    fn vm_begin_prints_numeric_expression() {
+        let cp = compile("BEGIN { print 2 + 3 * 4 }");
+        let mut rt = runtime_with_slots(&cp);
+        vm_run_begin(&cp, &mut rt).unwrap();
+        assert_eq!(String::from_utf8_lossy(&rt.print_buf), "14\n");
+    }
+
+    #[test]
+    fn vm_begin_assigns_global_and_prints() {
+        let cp = compile("BEGIN { answer = 42; print answer }");
+        let mut rt = runtime_with_slots(&cp);
+        vm_run_begin(&cp, &mut rt).unwrap();
+        assert_eq!(String::from_utf8_lossy(&rt.print_buf), "42\n");
+        let slot = *cp.slot_map.get("answer").expect("answer slotted");
+        assert_eq!(rt.slots[slot as usize].as_number(), 42.0);
+    }
+
+    #[test]
+    fn vm_begin_next_is_invalid() {
+        let cp = compile("BEGIN { next }");
+        let mut rt = runtime_with_slots(&cp);
+        let e = vm_run_begin(&cp, &mut rt).unwrap_err();
+        match e {
+            Error::Runtime(s) => assert!(s.contains("next"), "{s}"),
+            _ => panic!("unexpected err: {e:?}"),
+        }
+    }
+
+    #[test]
+    fn vm_end_runs_and_prints() {
+        let cp = compile("END { print \"bye\" }");
+        let mut rt = runtime_with_slots(&cp);
+        vm_run_begin(&cp, &mut rt).unwrap();
+        rt.print_buf.clear();
+        vm_run_end(&cp, &mut rt).unwrap();
+        assert_eq!(String::from_utf8_lossy(&rt.print_buf), "bye\n");
+    }
+
+    #[test]
+    fn vm_pattern_always_matches() {
+        let cp = compile("{ print $1 }");
+        let rule = &cp.record_rules[0];
+        let mut rt = runtime_with_slots(&cp);
+        rt.set_record_from_line("x y");
+        assert!(vm_pattern_matches(rule, &cp, &mut rt).unwrap());
+    }
+
+    #[test]
+    fn vm_pattern_literal_substring() {
+        let cp = compile("/ell/ { print }");
+        let rule = &cp.record_rules[0];
+        let mut rt = runtime_with_slots(&cp);
+        rt.set_record_from_line("hello");
+        assert!(vm_pattern_matches(rule, &cp, &mut rt).unwrap());
+        rt.set_record_from_line("zzz");
+        assert!(!vm_pattern_matches(rule, &cp, &mut rt).unwrap());
+    }
+
+    #[test]
+    fn vm_pattern_expr_numeric() {
+        let cp = compile("$1 > 10 { print \"big\" }");
+        let rule = &cp.record_rules[0];
+        let mut rt = runtime_with_slots(&cp);
+        rt.set_record_from_line("20");
+        assert!(vm_pattern_matches(rule, &cp, &mut rt).unwrap());
+        rt.set_record_from_line("5");
+        assert!(!vm_pattern_matches(rule, &cp, &mut rt).unwrap());
+    }
+
+    #[test]
+    fn vm_run_rule_capture_print() {
+        let cp = compile("{ print $1, $2 }");
+        let rule = &cp.record_rules[0];
+        let mut rt = runtime_with_slots(&cp);
+        rt.set_record_from_line("a b");
+        let mut cap = Vec::new();
+        let flow = vm_run_rule(rule, &cp, &mut rt, Some(&mut cap)).unwrap();
+        assert!(matches!(flow, Flow::Normal));
+        assert_eq!(cap.len(), 1);
+        assert!(cap[0].starts_with("a"));
+        assert!(cap[0].contains("b"));
+    }
+
+    #[test]
+    fn vm_run_rule_next_signal() {
+        let cp = compile("{ next }");
+        let rule = &cp.record_rules[0];
+        let mut rt = runtime_with_slots(&cp);
+        rt.set_record_from_line("z");
+        let flow = vm_run_rule(rule, &cp, &mut rt, None).unwrap();
+        assert!(matches!(flow, Flow::Next));
+    }
+
+    #[test]
+    fn vm_run_rule_exit_sets_pending() {
+        let cp = compile("{ exit 3 }");
+        let rule = &cp.record_rules[0];
+        let mut rt = runtime_with_slots(&cp);
+        rt.set_record_from_line("z");
+        let flow = vm_run_rule(rule, &cp, &mut rt, None).unwrap();
+        assert!(matches!(flow, Flow::ExitPending));
+        assert!(rt.exit_pending);
+        assert_eq!(rt.exit_code, 3);
+    }
+
+    #[test]
+    fn vm_beginfile_empty_ok() {
+        let cp = compile("{ }");
+        let mut rt = runtime_with_slots(&cp);
+        vm_run_beginfile(&cp, &mut rt).unwrap();
+    }
+
+    #[test]
+    fn vm_endfile_empty_ok() {
+        let cp = compile("{ }");
+        let mut rt = runtime_with_slots(&cp);
+        vm_run_endfile(&cp, &mut rt).unwrap();
+    }
+
+    #[test]
+    fn flush_print_buf_empty_ok() {
+        let mut buf = Vec::new();
+        flush_print_buf(&mut buf).unwrap();
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn vm_user_function_call_in_record_rule() {
+        let cp = compile("function dbl(x){ return x*2 } { print dbl($1) }");
+        let rule = &cp.record_rules[0];
+        let mut rt = runtime_with_slots(&cp);
+        rt.set_record_from_line("21");
+        let mut cap = Vec::new();
+        vm_run_rule(rule, &cp, &mut rt, Some(&mut cap)).unwrap();
+        assert_eq!(cap.len(), 1);
+        assert!(cap[0].starts_with("42"));
+    }
+
+    #[test]
+    fn vm_concat_and_comparison_in_begin() {
+        let cp = compile("BEGIN { print (\"a\" < \"b\") }");
+        let mut rt = runtime_with_slots(&cp);
+        vm_run_begin(&cp, &mut rt).unwrap();
+        assert_eq!(String::from_utf8_lossy(&rt.print_buf), "1\n");
+    }
+
+    #[test]
+    fn vm_array_set_read_in_begin() {
+        let cp = compile("BEGIN { a[\"k\"] = 7; print a[\"k\"] }");
+        let mut rt = runtime_with_slots(&cp);
+        vm_run_begin(&cp, &mut rt).unwrap();
+        assert_eq!(String::from_utf8_lossy(&rt.print_buf), "7\n");
+    }
+}

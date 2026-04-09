@@ -40,3 +40,12 @@ pub fn set_locale_numeric_from_env() {}
 pub fn decimal_point_from_locale() -> char {
     '.'
 }
+
+#[cfg(test)]
+mod tests {
+    #[cfg(not(unix))]
+    #[test]
+    fn decimal_point_is_ascii_dot_on_non_unix() {
+        assert_eq!(super::decimal_point_from_locale(), '.');
+    }
+}

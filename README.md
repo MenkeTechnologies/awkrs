@@ -150,10 +150,10 @@ Measured with [hyperfine](https://github.com/sharkdp/hyperfine) (`--shell none` 
 
 | Command | Mean | Min | Max | Relative |
 |:---|---:|---:|---:|---:|
-| BSD awk | 42.8 ms | 36.9 ms | 56.0 ms | 11.96× |
-| gawk | 25.9 ms | 23.9 ms | 30.0 ms | 7.24× |
-| mawk | 15.3 ms | 12.9 ms | 21.7 ms | 4.29× |
-| awkrs | 3.6 ms | 2.7 ms | 5.4 ms | **1.00×** |
+| BSD awk | 40.6 ms | 35.9 ms | 51.8 ms | 10.41× |
+| gawk | 27.9 ms | 23.4 ms | 43.4 ms | 7.15× |
+| mawk | 15.2 ms | 13.1 ms | 26.4 ms | 3.90× |
+| awkrs | 3.9 ms | 3.1 ms | 9.8 ms | **1.00×** |
 
 ### 2. CPU-bound BEGIN (no input)
 
@@ -161,10 +161,10 @@ Measured with [hyperfine](https://github.com/sharkdp/hyperfine) (`--shell none` 
 
 | Command | Mean | Min | Max | Relative |
 |:---|---:|---:|---:|---:|
-| BSD awk | 15.5 ms | 12.7 ms | 19.3 ms | 2.63× |
-| gawk | 21.4 ms | 17.9 ms | 35.7 ms | 3.65× |
-| mawk | 10.1 ms | 8.2 ms | 12.6 ms | 1.72× |
-| awkrs | 5.9 ms | 4.7 ms | 9.1 ms | **1.00×** |
+| gawk | 18.6 ms | 16.8 ms | 20.9 ms | 4.04× |
+| BSD awk | 14.2 ms | 12.3 ms | 16.4 ms | 3.09× |
+| mawk | 8.5 ms | 7.4 ms | 9.7 ms | 1.85× |
+| awkrs | 4.6 ms | 4.2 ms | 5.5 ms | **1.00×** |
 
 ### 3. Sum first column (`{ s += $1 } END { print s }`, 200 K lines)
 
@@ -172,10 +172,10 @@ Cross-record state is not parallel-safe, so awkrs stays **single-threaded** (def
 
 | Command | Mean | Min | Max | Relative |
 |:---|---:|---:|---:|---:|
-| BSD awk | 31.3 ms | 28.2 ms | 44.1 ms | 4.84× |
-| gawk | 16.3 ms | 14.4 ms | 21.9 ms | 2.53× |
-| mawk | 9.3 ms | 7.4 ms | 20.0 ms | 1.43× |
-| awkrs | 6.5 ms | 5.0 ms | 11.3 ms | **1.00×** |
+| BSD awk | 31.2 ms | 28.2 ms | 43.4 ms | 5.29× |
+| gawk | 16.1 ms | 14.8 ms | 18.8 ms | 2.73× |
+| mawk | 8.6 ms | 7.8 ms | 10.3 ms | 1.46× |
+| awkrs | 5.9 ms | 5.1 ms | 9.7 ms | **1.00×** |
 
 ### 4. Multi-field print (`{ print $1, $3, $5 }`, 200 K lines, 5 fields/line)
 
@@ -269,7 +269,7 @@ cargo test
 
 On pushes and pull requests to `main`, [GitHub Actions](.github/workflows/ci.yml) runs `cargo fmt --check`, `cargo clippy` (deny warnings), `cargo test` on Ubuntu and macOS, and `cargo doc` with `RUSTDOCFLAGS=-D warnings`.
 
-Library unit tests cover `format` (including locale decimal radix for float conversions), the lexer, the parser (including error paths), **`Error` diagnostics**, **`cli::Args`** (including **`-W`** / **`mawk` compatibility**), **`builtins`** (`gsub`, `sub`, `match`, `patsplit`), **`interp`** (pattern matching, range steps, `BEGIN` execution), parallel-record static safety in `ast::parallel`, bytecode (`StringPool`, slot init), compiler smoke checks, and `runtime::Value` helpers. Integration tests live in `tests/integration.rs` and `tests/more_integration.rs` with shared helpers in `tests/common.rs` (including **file-argument** runs that exercise the slurped-input path). End-to-end coverage includes the **`in`** operator, **`-F` / `--field-separator`**, **`-f` program files**, **`-N` / `--use-lc-numeric`** with `LC_NUMERIC`, **`-v` / `--assign`**, **`--version`** / **`-V`**, **`-C`**, coprocess and pipe I/O, and **stdin vs. file** parallel record behavior.
+Library unit tests cover `format` (including locale decimal radix for float conversions), the lexer, the parser (including error paths), **`Error` diagnostics**, **`cli::Args`** (including **`-W`** / **`mawk` compatibility**), **`builtins`** (`gsub`, `sub`, `match`, `patsplit`), **`interp`** (pattern matching, range steps, `BEGIN` execution), **`vm`** (BEGIN/END, pattern evaluation, rule actions with print capture, user calls), **`lib`** helpers used by the file reader and fast paths (`read_all_lines`, `uses_primary_getline`, NR-mod pattern detection, float compare), `locale_numeric` on non-Unix targets, parallel-record static safety in `ast::parallel`, bytecode (`StringPool`, slot init), compiler smoke checks, and `runtime::Value` helpers. Integration tests live in `tests/integration.rs`, `tests/more_integration.rs`, and `tests/extra_integration.rs`, with shared helpers in `tests/common.rs` (including **file-argument** runs that exercise the slurped-input path). End-to-end coverage includes the **`in`** operator, **`-F` / `--field-separator`**, **`-f` / `-i` program sources**, **`-N` / `--use-lc-numeric`** with `LC_NUMERIC`, **`-v` / `--assign`**, **`--version`** / **`-V`**, **`-C`**, coprocess and pipe I/O, and **stdin vs. file** parallel record behavior.
 
 ---
 
