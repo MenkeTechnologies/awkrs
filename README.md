@@ -1,22 +1,95 @@
-# awkrs
+```
+  █████╗ ██╗    ██╗██╗  ██╗██████╗ ███████╗
+ ██╔══██╗██║    ██║██║ ██╔╝██╔══██╗██╔════╝
+ ███████║██║ █╗ ██║█████╔╝ ██████╔╝███████╗
+ ██╔══██║██║███╗██║██╔═██╗ ██╔══██╗╚════██║
+ ██║  ██║╚███╔███╔╝██║  ██╗██║  ██║███████║
+ ╚═╝  ╚═╝ ╚══╝╚══╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝
+```
 
-Awk-style record processor in Rust (union CLI, parallel record engine when safe), created by MenkeTechnologies.
+[![CI](https://github.com/MenkeTechnologies/awkrs/actions/workflows/ci.yml/badge.svg)](https://github.com/MenkeTechnologies/awkrs/actions/workflows/ci.yml)
+[![Crates.io](https://img.shields.io/crates/v/awkrs.svg)](https://crates.io/crates/awkrs)
+[![Downloads](https://img.shields.io/crates/d/awkrs.svg)](https://crates.io/crates/awkrs)
+[![Docs.rs](https://docs.rs/awkrs/badge.svg)](https://docs.rs/awkrs)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-## What it does
+### `[AWK BYTECODE ENGINE // PARALLEL RECORD PROCESSOR // RUST CORE]`
+
+ ┌──────────────────────────────────────────────────────────────┐
+ │ STATUS: ONLINE &nbsp;&nbsp; THREAT LEVEL: NEON &nbsp;&nbsp; SIGNAL: ████████░░ │
+ └──────────────────────────────────────────────────────────────┘
+
+> *"Pattern. Action. Domination."*
+
+---
+
+## [0x00] SYSTEM SCAN
 
 `awkrs` runs **pattern → action** programs over input records (lines by default), similar to POSIX `awk`, GNU `gawk`, and `mawk`. The CLI accepts a **union** of common options from those implementations so scripts can pass flags through; not every extension flag changes behavior yet—see `--help`.
 
-## Language coverage
+#### HELP // SYSTEM INTERFACE
+![`awkrs -h` cyberpunk help (termshot)](assets/awkrs-help.png)
+
+---
+
+## [0x01] SYSTEM REQUIREMENTS
+
+- Rust toolchain // `rustc` + `cargo`
+
+## [0x02] INSTALLATION
+
+#### DOWNLOADING PAYLOAD FROM CRATES.IO
+
+```sh
+cargo install awkrs
+```
+
+#### COMPILING FROM SOURCE
+
+```sh
+git clone https://github.com/MenkeTechnologies/awkrs
+cd awkrs
+cargo build --release
+```
+
+[awkrs on Crates.io](https://crates.io/crates/awkrs)
+
+#### ZSH COMPLETION // TAB-COMPLETE ALL THE THINGS
+
+```sh
+# add the completions directory to fpath in your .zshrc
+fpath=(/path/to/awkrs/completions $fpath)
+autoload -Uz compinit && compinit
+```
+
+---
+
+## [0x03] LANGUAGE COVERAGE
+
+ ┌──────────────────────────────────────────────────────────────┐
+ │ SUBSYSTEM: LEXER ████ PARSER ████ COMPILER ████ VM ████     │
+ └──────────────────────────────────────────────────────────────┘
 
 Implemented end-to-end:
 
 - **Rules:** `BEGIN`, `END`, **`BEGINFILE`** / **`ENDFILE`** (gawk-style, per input file), empty pattern, `/regex/`, expression patterns, **range patterns** (`/a/,/b/` or `NR==1,NR==5`).
-- **Statements:** `if` / `while` / `for` (C-style and `for (i in arr)`), blocks, **`print`** (with no expressions, prints **`$0`**; **`print … >`** / **`>>`** / **`|`** / **`|&`** redirection), **`printf fmt, expr…`** (statement form, same redirections as **`print`**; no automatic newline—add **`\\n`** in the format), `break`, `continue`, **`next`**, **`exit`**, **`delete`**, **`return`** (inside functions), **`getline`** (primary input, **`getline < file`**, and **`getline <& cmd`** for two-way / coprocess reads).
+- **Statements:** `if` / `while` / `for` (C-style and `for (i in arr)`), blocks, **`print`** (with no expressions, prints **`$0`**; **`print … >`** / **`>>`** / **`|`** / **`|&`** redirection), **`printf fmt, expr…`** (statement form, same redirections as **`print`**; no automatic newline—add **`\n`** in the format), `break`, `continue`, **`next`**, **`exit`**, **`delete`**, **`return`** (inside functions), **`getline`** (primary input, **`getline < file`**, and **`getline <& cmd`** for two-way / coprocess reads).
 - **Data:** fields (`$n`, `$NF`), scalars, **associative arrays** (`a[k]`, **`a[i,j]`** with **`SUBSEP`**), **`expr in array`** (membership: right-hand side is the array name), `split`, **`patsplit`** (2–4 args; optional fourth array **`seps`** holds text between successive fields), string/number values.
 - **Functions:** builtins (`length`, `index`, `substr`, **`split`**, **`sprintf`** / **`printf`** (flags; **`*`** and **`%n$`** for width/precision/value, including forms like **`%*2$d`**; common conversions `%s` `%d` `%i` `%u` `%o` `%x` `%X` `%f` `%e` `%E` `%g` `%G` `%c` `%%`), **`gsub`** / **`sub`** / **`match`**, `tolower` / `toupper`, `int`, `sqrt`, `rand` / `srand`, `system`, `close`, **`fflush`** (stdout, empty string, open **`>`/`>>`** files, open **`|`** pipes, or open **`|&`** coprocesses)), and **user-defined `function`** with parameters and locals (parameters are local; other names assign to globals, matching classic awk).
 - **I/O model:** The main record loop and **`getline` with no redirection** share one **`BufReader`** on stdin or the current input file so line order matches POSIX expectations. **`exit`** sets the process status; **`END` rules still run** after `exit` from `BEGIN` or a pattern action (POSIX-style), then the process exits with the requested code.
 
-## Multithreading
+---
+
+## [0x04] MULTITHREADING // PARALLEL EXECUTION GRID
+
+```
+ ┌─────────────────────────────────────────────┐
+ │  WORKER 0  ▓▓  CHUNK 0   ██ REORDER QUEUE  │
+ │  WORKER 1  ▓▓  CHUNK 1   ██ ──────────────>│
+ │  WORKER 2  ▓▓  CHUNK 2   ██  DETERMINISTIC │
+ │  WORKER N  ▓▓  CHUNK N   ██  OUTPUT STREAM  │
+ └─────────────────────────────────────────────┘
+```
 
 By default **`-j`** / **`--threads`** is **1**. Pass a higher value when the program is **parallel-safe** (static check: no range patterns, no `exit`, no primary `getline`, no **`getline <&`** coprocess, no `delete`, no **`print`/`printf` redirection** to files, pipes, or coprocesses, no cross-record assignments or other mutating expressions in record rules or user functions) **and** input comes from **files** (not stdin-only); then **records are processed in parallel** with **rayon** and `print` / `printf` output is **reordered to input order** so pipelines stay deterministic. **Stdin** is always read **line-by-line** (streaming); parallel record mode does not buffer all of stdin.
 
@@ -24,40 +97,45 @@ If the program is not parallel-safe, the engine **falls back to sequential** pro
 
 **Tradeoff:** Parallel mode loads each **input file** fully into memory before executing rules (not stdin).
 
-## Zsh Completion
+---
 
-Add the completions directory to your `fpath` before `compinit`:
+## [0x05] BYTECODE VM // EXECUTION CORE
 
-```zsh
-fpath=(/path/to/awkrs/completions $fpath)
-autoload -Uz compinit && compinit
-```
+ ┌──────────────────────────────────────────────────────────────┐
+ │ ARCHITECTURE: STACK VM &nbsp;&nbsp; OPTIMIZATION: PEEPHOLE FUSED     │
+ └──────────────────────────────────────────────────────────────┘
 
-## Build
+The engine compiles AWK programs into a flat bytecode instruction stream, then runs them on a stack-based virtual machine. This eliminates the recursive AST-walking overhead of a tree interpreter — no per-node pattern matching, no heap pointer chasing through `Box<Expr>`, and better CPU cache locality from contiguous instruction arrays. Short-circuit `&&`/`||` and all control flow (loops, break/continue, if/else) are resolved to jump-patched offsets at compile time. The string pool interns all variable names and string constants so the VM refers to them by cheap `u32` index.
 
-```bash
-cargo build --release
-```
+**Peephole optimizer:** a post-compilation pass fuses common multi-op sequences into single opcodes — `print $N` becomes `PrintFieldStdout` (writes field bytes directly to the output buffer, zero allocations), `s += $N` becomes `AddFieldToSlot` (parses the field as a number in-place without creating an intermediate `String`), `i = i + 1` becomes `IncrSlot` (one f64 add instead of 5 opcodes with multiple `Value::clone()`), and `s += i` between slot variables becomes `AddSlotToSlot` (two f64 reads + one write, no stack traffic). Jump targets are adjusted automatically after fusion.
 
-`awkrs --help` / `-h` prints a **cyberpunk HUD** (ASCII banner, status box, taglines, footer) in the style of MenkeTechnologies `tp -h`. ANSI colors apply when stdout is a TTY; set `NO_COLOR` to force plain text.
+**Inline fast path:** single-rule programs with one fused opcode (e.g. `{ print $1 }`, `{ s += $1 }`) bypass VmCtx creation, pattern dispatch, and the bytecode execute loop entirely — the operation runs as a direct function call in the record loop.
 
-![`awkrs -h` cyberpunk help (termshot)](assets/awkrs-help.png)
+**Raw byte field extraction:** for `print $N` with default FS, the throughput path skips record copy, field splitting, and UTF-8 validation entirely — it scans raw bytes in the slurped file buffer to find the Nth whitespace-delimited field and writes it directly to the output buffer.
 
-Regenerate the screenshot after UI changes: `./scripts/gen-help-screenshot.sh` (needs [termshot](https://github.com/homeport/termshot) on `PATH` and a prior `cargo build`).
+**Indexed variable slots:** scalar variables are assigned `u16` slot indices at compile time and stored in a flat `Vec<Value>` — variable reads and writes are direct array indexing instead of `HashMap` lookups. Special awk variables (`NR`, `FS`, `OFS`, …) and array names remain on the HashMap path.
 
-## Test
+**Zero-copy field splitting:** fields are stored as `(u32, u32)` byte-range pairs into the record string instead of per-field `String` allocations. Owned `String`s are only materialized when a field is modified via `set_field`.
 
-```bash
-cargo test
-```
+**Direct-to-buffer print:** the stdout print path writes `Value::write_to()` directly into a persistent 64 KB `Vec<u8>` buffer (flushed at file boundaries), eliminating per-record `String` allocations, `format!()` calls, and stdout locking.
 
-On pushes and pull requests to `main`, [GitHub Actions](.github/workflows/ci.yml) runs `cargo fmt --check`, `cargo clippy` (deny warnings), `cargo test` on Ubuntu and macOS, and `cargo doc` with `RUSTDOCFLAGS=-D warnings`.
+**Cached separators:** OFS/ORS bytes are cached on the runtime and updated only when assigned, eliminating per-`print` HashMap lookups.
 
-Library unit tests cover `format` (including locale decimal radix for float conversions), lexer, and parser; integration tests live in `tests/integration.rs` and `tests/more_integration.rs` with shared helpers in `tests/common.rs`. End-to-end coverage includes the **`in`** operator, **`-N` / `--use-lc-numeric`** with `LC_NUMERIC`, and **stdin vs. file** parallel record behavior.
+**Byte-level input:** records are read with `read_until(b'\n')` into a reusable `Vec<u8>` buffer, skipping per-line UTF-8 validation and `String` allocation.
 
-## Benchmarks (vs awk / gawk / mawk)
+**Regex cache:** compiled `Regex` objects are cached in a `HashMap<String, Regex>` so patterns are compiled once, not per-record.
 
-Measured with [hyperfine](https://github.com/sharkdp/hyperfine) on **Apple M5 Max** (macOS, `arm64`). BSD awk (`/usr/bin/awk`), GNU awk 5.4.0, mawk 1.3.4, awkrs 0.1.1. Full raw output in [`benchmarks/benchmark-results.md`](benchmarks/benchmark-results.md).
+**Parallel** mode shares the compiled program via **`Arc`** across rayon workers (zero-copy); each worker gets its own stack, slots, and runtime overlay.
+
+---
+
+## [0x06] BENCHMARKS // COMBAT METRICS (vs awk / gawk / mawk)
+
+ ┌──────────────────────────────────────────────────────────────┐
+ │ HARDWARE: APPLE M5 MAX &nbsp;&nbsp; OS: macOS &nbsp;&nbsp; ARCH: arm64         │
+ └──────────────────────────────────────────────────────────────┘
+
+Measured with [hyperfine](https://github.com/sharkdp/hyperfine). BSD awk (`/usr/bin/awk`), GNU awk 5.4.0, mawk 1.3.4, awkrs 0.1.1. Full raw output in [`benchmarks/benchmark-results.md`](benchmarks/benchmark-results.md).
 
 ### 1. Throughput: `{ print $1 }` over 200 K lines
 
@@ -158,12 +236,51 @@ Cross-record state is not parallel-safe, so awkrs stays **single-threaded** (def
 > ./scripts/benchmark-vs-awk.sh
 > ```
 
-**Bytecode VM:** the engine compiles AWK programs into a flat bytecode instruction stream, then runs them on a stack-based virtual machine. This eliminates the recursive AST-walking overhead of a tree interpreter — no per-node pattern matching, no heap pointer chasing through `Box<Expr>`, and better CPU cache locality from contiguous instruction arrays. Short-circuit `&&`/`||` and all control flow (loops, break/continue, if/else) are resolved to jump-patched offsets at compile time. The string pool interns all variable names and string constants so the VM refers to them by cheap `u32` index. **Peephole optimizer:** a post-compilation pass fuses common multi-op sequences into single opcodes — `print $N` becomes `PrintFieldStdout` (writes field bytes directly to the output buffer, zero allocations), `s += $N` becomes `AddFieldToSlot` (parses the field as a number in-place without creating an intermediate `String`), `i = i + 1` becomes `IncrSlot` (one f64 add instead of 5 opcodes with multiple `Value::clone()`), and `s += i` between slot variables becomes `AddSlotToSlot` (two f64 reads + one write, no stack traffic). Jump targets are adjusted automatically after fusion. **Inline fast path:** single-rule programs with one fused opcode (e.g. `{ print $1 }`, `{ s += $1 }`) bypass VmCtx creation, pattern dispatch, and the bytecode execute loop entirely — the operation runs as a direct function call in the record loop. **Raw byte field extraction:** for `print $N` with default FS, the throughput path skips record copy, field splitting, and UTF-8 validation entirely — it scans raw bytes in the slurped file buffer to find the Nth whitespace-delimited field and writes it directly to the output buffer. **Indexed variable slots:** scalar variables are assigned `u16` slot indices at compile time and stored in a flat `Vec<Value>` — variable reads and writes are direct array indexing instead of `HashMap` lookups. Special awk variables (`NR`, `FS`, `OFS`, …) and array names remain on the HashMap path. **Zero-copy field splitting:** fields are stored as `(u32, u32)` byte-range pairs into the record string instead of per-field `String` allocations. Owned `String`s are only materialized when a field is modified via `set_field`. **Direct-to-buffer print:** the stdout print path writes `Value::write_to()` directly into a persistent 64 KB `Vec<u8>` buffer (flushed at file boundaries), eliminating per-record `String` allocations, `format!()` calls, and stdout locking. **Cached separators:** OFS/ORS bytes are cached on the runtime and updated only when assigned, eliminating per-`print` HashMap lookups. **Byte-level input:** records are read with `read_until(b'\n')` into a reusable `Vec<u8>` buffer, skipping per-line UTF-8 validation and `String` allocation. **Regex cache:** compiled `Regex` objects are cached in a `HashMap<String, Regex>` so patterns are compiled once, not per-record. **Parallel** mode shares the compiled program via **`Arc`** across rayon workers (zero-copy); each worker gets its own stack, slots, and runtime overlay.
+---
 
-## Still missing or partial
+## [0x07] BUILD // COMPILE THE PAYLOAD
+
+```bash
+cargo build --release
+```
+
+`awkrs --help` / `-h` prints a **cyberpunk HUD** (ASCII banner, status box, taglines, footer) in the style of MenkeTechnologies `tp -h`. ANSI colors apply when stdout is a TTY; set `NO_COLOR` to force plain text.
+
+Regenerate the screenshot after UI changes: `./scripts/gen-help-screenshot.sh` (needs [termshot](https://github.com/homeport/termshot) on `PATH` and a prior `cargo build`).
+
+---
+
+## [0x08] TEST // INTEGRITY VERIFICATION
+
+```bash
+cargo test
+```
+
+On pushes and pull requests to `main`, [GitHub Actions](.github/workflows/ci.yml) runs `cargo fmt --check`, `cargo clippy` (deny warnings), `cargo test` on Ubuntu and macOS, and `cargo doc` with `RUSTDOCFLAGS=-D warnings`.
+
+Library unit tests cover `format` (including locale decimal radix for float conversions), lexer, and parser; integration tests live in `tests/integration.rs` and `tests/more_integration.rs` with shared helpers in `tests/common.rs`. End-to-end coverage includes the **`in`** operator, **`-N` / `--use-lc-numeric`** with `LC_NUMERIC`, and **stdin vs. file** parallel record behavior.
+
+---
+
+## [0x09] STILL MISSING OR PARTIAL
 
 **Two-way pipe** (**`|&`** / **`getline … <&`**): **`sh -c`** with stdin and stdout connected (same command string for both directions). Mixing **`|`** and **`|&`** on the same command string is an error. On **Unix**, string **`==`**, **`!=`**, and relational ordering use **`strcoll`** (honors **`LC_COLLATE`** / **`LC_ALL`** from the environment). With **`-N`** / **`--use-lc-numeric`**, **`LC_NUMERIC`** is applied (`setlocale(LC_NUMERIC, "")`) and **`sprintf`** / **`printf`** (statement and function) use the locale **decimal radix** for **`%f`** / **`%e`** / **`%g`** / **`%E`** / **`%F`** / **`%G`** output; **`print`** still uses the existing numeric-to-string rules (not full POSIX **`OFMT`** on every `print` yet). Without **`-N`**, numeric formatting in **`sprintf`** uses **`.`**. Exotic **`printf`** combinations not covered above may differ from **gawk**. Many gawk-only extensions are absent. `system()` runs commands via `sh -c` (same caveat as other awks). Prefer validating critical scripts against reference `awk`/`gawk`.
 
-## License
+---
 
-MIT — see `Cargo.toml`.
+## [0xFF] LICENSE
+
+ ┌──────────────────────────────────────────────────────────────┐
+ │ MIT LICENSE // UNAUTHORIZED REPRODUCTION WILL BE MET         │
+ │ WITH FULL ICE                                                │
+ └──────────────────────────────────────────────────────────────┘
+
+---
+
+```
+░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+░░ >>> JACK IN. MATCH THE PATTERN. EXECUTE THE ACTION. <<< ░░
+░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+```
+
+##### created by [MenkeTechnologies](https://github.com/MenkeTechnologies)
