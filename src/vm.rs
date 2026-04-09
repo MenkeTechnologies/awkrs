@@ -1865,10 +1865,7 @@ extern "C" fn jit_val_dispatch(op: u32, a1: u32, a2: f64, a3: f64) -> f64 {
 /// Try JIT dispatch for the full instruction set. Converts slots to/from f64[],
 /// sets up the field callback via thread-local, and executes.
 fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Result<Option<VmSignal>> {
-    if !crate::jit::jit_enabled()
-        || !crate::jit::is_jit_eligible(ops)
-        || !crate::jit::jit_call_builtins_ok(ops, ctx.cp)
-    {
+    if !crate::jit::is_jit_eligible(ops) || !crate::jit::jit_call_builtins_ok(ops, ctx.cp) {
         return Ok(None);
     }
 

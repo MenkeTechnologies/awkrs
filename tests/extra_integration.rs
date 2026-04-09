@@ -151,7 +151,7 @@ fn jit_array_field_add_const_fused_opcode() {
         std::iter::empty::<&str>(),
         "{ a[$1] += 1 } END { print a[\"x\"] + 0 }",
         "x\nx\nx\n",
-        [(OsString::from("AWKRS_JIT"), OsString::from("1"))],
+        std::iter::empty::<(OsString, OsString)>(),
     );
     assert_eq!(c, 0, "stderr: {e}");
     assert_eq!(o, "3\n");
@@ -627,11 +627,7 @@ fn sqrt_negative_one_is_nan() {
     assert!(t.eq_ignore_ascii_case("nan"), "expected NaN, got {o:?}");
 }
 
-// ── JIT integration tests (AWKRS_JIT=1) ──────────────────────────────────
-
-fn jit_env() -> [(OsString, OsString); 1] {
-    [(OsString::from("AWKRS_JIT"), OsString::from("1"))]
-}
+// ── JIT integration tests ───────────────────────────────────────────────
 
 #[test]
 fn jit_print_field_stdout() {
@@ -639,7 +635,7 @@ fn jit_print_field_stdout() {
         std::iter::empty::<&str>(),
         "{ print $1 }",
         "hello\nworld\n",
-        jit_env(),
+        std::iter::empty::<(OsString, OsString)>(),
     );
     assert_eq!(c, 0, "stderr: {e}");
     assert_eq!(o, "hello\nworld\n");
@@ -651,7 +647,7 @@ fn jit_print_two_fields() {
         std::iter::empty::<&str>(),
         "{ print $1, $2 }",
         "a b\nc d\n",
-        jit_env(),
+        std::iter::empty::<(OsString, OsString)>(),
     );
     assert_eq!(c, 0, "stderr: {e}");
     assert_eq!(o, "a b\nc d\n");
@@ -663,7 +659,7 @@ fn jit_bare_print() {
         std::iter::empty::<&str>(),
         "{ print }",
         "line1\nline2\n",
-        jit_env(),
+        std::iter::empty::<(OsString, OsString)>(),
     );
     assert_eq!(c, 0, "stderr: {e}");
     assert_eq!(o, "line1\nline2\n");
@@ -675,7 +671,7 @@ fn jit_match_regexp_pattern() {
         std::iter::empty::<&str>(),
         "/yes/ { print $0 }",
         "no\nyes\nmaybe\nyes please\n",
-        jit_env(),
+        std::iter::empty::<(OsString, OsString)>(),
     );
     assert_eq!(c, 0, "stderr: {e}");
     assert_eq!(o, "yes\nyes please\n");
@@ -687,7 +683,7 @@ fn jit_next_skips_rule() {
         std::iter::empty::<&str>(),
         "$1 == \"skip\" { next } { print $0 }",
         "keep\nskip\nalso keep\n",
-        jit_env(),
+        std::iter::empty::<(OsString, OsString)>(),
     );
     assert_eq!(c, 0, "stderr: {e}");
     assert_eq!(o, "keep\nalso keep\n");
@@ -699,7 +695,7 @@ fn jit_exit_default() {
         std::iter::empty::<&str>(),
         "{ print; exit }",
         "first\nsecond\n",
-        jit_env(),
+        std::iter::empty::<(OsString, OsString)>(),
     );
     assert_eq!(c, 0, "stderr: {e}");
     assert_eq!(o, "first\n");
@@ -711,7 +707,7 @@ fn jit_exit_with_code() {
         std::iter::empty::<&str>(),
         "BEGIN { exit 42 }",
         "",
-        jit_env(),
+        std::iter::empty::<(OsString, OsString)>(),
     );
     assert_eq!(c, 42, "stderr: {e}");
 }
@@ -723,7 +719,7 @@ fn jit_array_count_pattern() {
         std::iter::empty::<&str>(),
         "{ a[$1] += 1 } END { print a[\"x\"] + 0, a[\"y\"] + 0 }",
         "x\ny\nx\nx\ny\n",
-        jit_env(),
+        std::iter::empty::<(OsString, OsString)>(),
     );
     assert_eq!(c, 0, "stderr: {e}");
     assert_eq!(o, "3 2\n");
@@ -735,7 +731,7 @@ fn jit_split_explicit_fs() {
         std::iter::empty::<&str>(),
         "BEGIN { n = split(\"a,b\", arr, \",\"); print n, arr[1], arr[2] }",
         "",
-        jit_env(),
+        std::iter::empty::<(OsString, OsString)>(),
     );
     assert_eq!(c, 0, "stderr: {e}");
     assert_eq!(o, "2 a b\n");
@@ -747,7 +743,7 @@ fn jit_split_uses_fs_variable() {
         std::iter::empty::<&str>(),
         "BEGIN { FS = \",\"; n = split(\"a,b\", arr); print n, arr[1], arr[2] }",
         "",
-        jit_env(),
+        std::iter::empty::<(OsString, OsString)>(),
     );
     assert_eq!(c, 0, "stderr: {e}");
     assert_eq!(o, "2 a b\n");
@@ -759,7 +755,7 @@ fn jit_patsplit_fpat() {
         std::iter::empty::<&str>(),
         "BEGIN { FPAT=\"[^,]+\"; n = patsplit(\"a,b\", arr); print n, arr[1], arr[2] }",
         "",
-        jit_env(),
+        std::iter::empty::<(OsString, OsString)>(),
     );
     assert_eq!(c, 0, "stderr: {e}");
     assert_eq!(o, "2 a b\n");
@@ -771,7 +767,7 @@ fn jit_match_builtin_rstart() {
         std::iter::empty::<&str>(),
         r#"BEGIN { print match("foo123bar", "[0-9]+"), RSTART, RLENGTH }"#,
         "",
-        jit_env(),
+        std::iter::empty::<(OsString, OsString)>(),
     );
     assert_eq!(c, 0, "stderr: {e}");
     assert_eq!(o.trim(), "4 4 3");
@@ -784,7 +780,12 @@ fn jit_print_redirect_overwrite() {
     let _ = std::fs::remove_file(&path);
     let p = path.to_string_lossy().replace('\\', "/");
     let prog = format!(r#"BEGIN {{ print "hello" > "{p}" }}"#);
-    let (c, o, e) = run_awkrs_stdin_args_env(std::iter::empty::<&str>(), &prog, "", jit_env());
+    let (c, o, e) = run_awkrs_stdin_args_env(
+        std::iter::empty::<&str>(),
+        &prog,
+        "",
+        std::iter::empty::<(OsString, OsString)>(),
+    );
     assert_eq!(c, 0, "stderr: {e}");
     assert!(o.is_empty());
     let contents = std::fs::read_to_string(&path).expect("read redirected output");
@@ -799,7 +800,7 @@ fn jit_sum_fields_loop() {
         std::iter::empty::<&str>(),
         "{ s=0; for(i=1;i<=NF;i++) s+=$i; print s }",
         "1 2 3\n10 20\n",
-        jit_env(),
+        std::iter::empty::<(OsString, OsString)>(),
     );
     assert_eq!(c, 0, "stderr: {e}");
     assert_eq!(o, "6\n30\n");
@@ -812,7 +813,7 @@ fn jit_mixed_string_slot_preinc() {
         std::iter::empty::<&str>(),
         "BEGIN { s=\"5\"; s++; print s }",
         "",
-        jit_env(),
+        std::iter::empty::<(OsString, OsString)>(),
     );
     assert_eq!(c, 0, "stderr: {e}");
     assert_eq!(o.trim(), "6");
@@ -825,7 +826,7 @@ fn jit_mixed_field_assign_concat() {
         std::iter::empty::<&str>(),
         "{ $2 = $1 \"x\"; print $2 }",
         "a\n",
-        jit_env(),
+        std::iter::empty::<(OsString, OsString)>(),
     );
     assert_eq!(c, 0, "stderr: {e}");
     assert_eq!(o.trim(), "ax");
@@ -837,7 +838,7 @@ fn jit_multidim_array_subscript() {
         std::iter::empty::<&str>(),
         "BEGIN { a[1,2]=42; print a[1,2] }",
         "",
-        jit_env(),
+        std::iter::empty::<(OsString, OsString)>(),
     );
     assert_eq!(c, 0, "stderr: {e}");
     assert_eq!(o.trim(), "42");
@@ -849,7 +850,7 @@ fn jit_typeof_expressions_and_slot() {
         std::iter::empty::<&str>(),
         r#"BEGIN { x=1; print typeof(3), typeof("x"), typeof(x) }"#,
         "",
-        jit_env(),
+        std::iter::empty::<(OsString, OsString)>(),
     );
     assert_eq!(c, 0, "stderr: {e}");
     assert_eq!(o.trim(), "number string number");
@@ -861,7 +862,7 @@ fn jit_typeof_field_unassigned() {
         std::iter::empty::<&str>(),
         r#"{ print typeof($2) }"#,
         "a\n",
-        jit_env(),
+        std::iter::empty::<(OsString, OsString)>(),
     );
     assert_eq!(c, 0, "stderr: {e}");
     assert_eq!(o.trim(), "uninitialized");
@@ -873,7 +874,7 @@ fn jit_whitelisted_builtin_sqrt() {
         std::iter::empty::<&str>(),
         r#"BEGIN { print sqrt(9) }"#,
         "",
-        jit_env(),
+        std::iter::empty::<(OsString, OsString)>(),
     );
     assert_eq!(c, 0, "stderr: {e}");
     assert_eq!(o.trim(), "3");
@@ -885,7 +886,7 @@ fn jit_sprintf_builtin() {
         std::iter::empty::<&str>(),
         r#"BEGIN { print sprintf("%d", 42) }"#,
         "",
-        jit_env(),
+        std::iter::empty::<(OsString, OsString)>(),
     );
     assert_eq!(c, 0, "stderr: {e}");
     assert_eq!(o.trim(), "42");
@@ -897,7 +898,7 @@ fn jit_printf_statement_stdout() {
         std::iter::empty::<&str>(),
         r#"BEGIN { printf "%d\n", 42 }"#,
         "",
-        jit_env(),
+        std::iter::empty::<(OsString, OsString)>(),
     );
     assert_eq!(c, 0, "stderr: {e}");
     assert_eq!(o.trim(), "42");
@@ -909,7 +910,7 @@ fn jit_return_from_function() {
         std::iter::empty::<&str>(),
         "function double(x) { return x * 2 } BEGIN { print double(21) }",
         "",
-        jit_env(),
+        std::iter::empty::<(OsString, OsString)>(),
     );
     assert_eq!(c, 0, "stderr: {e}");
     assert_eq!(o, "42\n");
@@ -921,7 +922,7 @@ fn jit_gsub_on_record() {
         std::iter::empty::<&str>(),
         r#"{ print gsub("o", "x") }"#,
         "foo\n",
-        jit_env(),
+        std::iter::empty::<(OsString, OsString)>(),
     );
     assert_eq!(c, 0, "stderr: {e}");
     assert_eq!(o, "2\n");
@@ -933,7 +934,7 @@ fn jit_sub_on_record() {
         std::iter::empty::<&str>(),
         r#"{ print sub("o", "x") }"#,
         "foo\n",
-        jit_env(),
+        std::iter::empty::<(OsString, OsString)>(),
     );
     assert_eq!(c, 0, "stderr: {e}");
     assert_eq!(o, "1\n");
@@ -945,7 +946,7 @@ fn jit_nested_user_function_calls() {
         std::iter::empty::<&str>(),
         "function g() { return 1 } function f() { return g() + 1 } BEGIN { print f() }",
         "",
-        jit_env(),
+        std::iter::empty::<(OsString, OsString)>(),
     );
     assert_eq!(c, 0, "stderr: {e}");
     assert_eq!(o, "2\n");
@@ -957,7 +958,7 @@ fn jit_gsub_third_arg_scalar() {
         std::iter::empty::<&str>(),
         r#"BEGIN { s = "foo"; print gsub("o", "x", s), s }"#,
         "",
-        jit_env(),
+        std::iter::empty::<(OsString, OsString)>(),
     );
     assert_eq!(c, 0, "stderr: {e}");
     assert_eq!(o, "2 fxx\n");
@@ -971,7 +972,7 @@ fn jit_for_in_count_keys() {
         std::iter::empty::<&str>(),
         "{ a[$1] += 1 } END { n=0; for (k in a) n++; print n }",
         "x\ny\nz\nx\n",
-        jit_env(),
+        std::iter::empty::<(OsString, OsString)>(),
     );
     assert_eq!(c, 0, "stderr: {e}");
     assert_eq!(o, "3\n");
@@ -985,7 +986,7 @@ fn jit_for_in_sum_values() {
         std::iter::empty::<&str>(),
         "{ a[$1] += $2 } END { s=0; for (k in a) s += a[k]; print s }",
         "x 10\ny 20\nz 30\n",
-        jit_env(),
+        std::iter::empty::<(OsString, OsString)>(),
     );
     assert_eq!(c, 0, "stderr: {e}");
     assert_eq!(o, "60\n");
@@ -997,7 +998,7 @@ fn jit_asort_returns_count() {
         std::iter::empty::<&str>(),
         "END { a[1]=30; a[2]=10; a[3]=20; print asort(a) }",
         "",
-        jit_env(),
+        std::iter::empty::<(OsString, OsString)>(),
     );
     assert_eq!(c, 0, "stderr: {e}");
     assert_eq!(o, "3\n");
@@ -1009,7 +1010,7 @@ fn jit_getline_primary_reads_next_line() {
         std::iter::empty::<&str>(),
         "NR==1 { getline; print $0 }",
         "a\nb\n",
-        jit_env(),
+        std::iter::empty::<(OsString, OsString)>(),
     );
     assert_eq!(c, 0, "stderr: {e}");
     assert_eq!(o, "b\n");
@@ -1021,7 +1022,7 @@ fn jit_getline_into_var() {
         std::iter::empty::<&str>(),
         "NR==1 { getline x; print x }",
         "a\nb\n",
-        jit_env(),
+        std::iter::empty::<(OsString, OsString)>(),
     );
     assert_eq!(c, 0, "stderr: {e}");
     assert_eq!(o, "b\n");
@@ -1037,7 +1038,12 @@ fn jit_getline_from_file() {
         "BEGIN {{ getline x < \"{}\"; print x }}",
         path_str.replace('\\', "\\\\")
     );
-    let (c, o, e) = run_awkrs_stdin_args_env(std::iter::empty::<&str>(), &prog, "", jit_env());
+    let (c, o, e) = run_awkrs_stdin_args_env(
+        std::iter::empty::<&str>(),
+        &prog,
+        "",
+        std::iter::empty::<(OsString, OsString)>(),
+    );
     let _ = std::fs::remove_file(&path);
     assert_eq!(c, 0, "stderr: {e}");
     assert_eq!(o, "fromfile\n");

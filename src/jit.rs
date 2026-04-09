@@ -27,8 +27,8 @@
 //! `extern "C"` callbacks — `field_fn`, `array_field_add`, `var_dispatch`,
 //! `field_dispatch`, `io_dispatch`, and `val_dispatch`.
 //!
-//! Enable with `AWKRS_JIT=1`. The VM tries [`try_jit_execute`] before falling
-//! back to the interpreter for eligible chunks. Mixed-mode chunks (strings,
+//! The VM tries [`try_jit_execute`] before falling back to the interpreter for
+//! eligible chunks. Mixed-mode chunks (strings,
 //! regex `~`, general array ops, `print`/`printf` with arguments, whitelisted
 //! [`Op::CallBuiltin`], [`Op::CallUser`], [`Op::SubFn`]/[`Op::GsubFn`], etc.)
 //! compile through `val_dispatch` (`MIXED_*`). Chunks that fail [`is_jit_eligible`]
@@ -3296,13 +3296,11 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
 
 // ── Public dispatch API ────────────────────────────────────────────────────
 
-/// Check if JIT is enabled (AWKRS_JIT=1 env var).
+/// Always `true`: eligible bytecode chunks are JIT-compiled when compilation succeeds.
+/// There is no environment-variable gate.
 #[inline]
 pub fn jit_enabled() -> bool {
-    // Cache the env check in a static to avoid repeated lookups.
-    use std::sync::OnceLock;
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var_os("AWKRS_JIT").as_deref() == Some("1".as_ref()))
+    true
 }
 
 /// Try to JIT-compile and execute a chunk. Returns `Some(f64)` on success.
@@ -3313,10 +3311,6 @@ pub fn try_jit_execute(
     state: &mut JitRuntimeState<'_>,
     cp: &CompiledProgram,
 ) -> Option<f64> {
-    if !jit_enabled() {
-        return None;
-    }
-
     let hash = ops_hash(ops);
 
     // Check cache first
@@ -3350,9 +3344,14 @@ pub fn try_jit_execute(
 /// Supports the same straight-line stack discipline as [`is_jit_eligible`] for pure
 /// numeric stack ops: constants, `+ - * / %`, comparisons, unary `+`/`-`, logical
 /// [`Op::Not`] / [`Op::ToBool`], [`Op::Dup`], [`Op::Pop`], slot read/write ([`Op::GetSlot`],
-/// [`Op::SetSlot`]), constant field reads ([`Op::PushFieldNum`]), and [`Op::GetNR`] /
-/// [`Op::GetFNR`] / [`Op::GetNF`] (via the field callback — [`JitNumericChunk::call_f64`]
+/// [`Op::SetSlot`]), [`Op::CompoundAssignSlot`], [`Op::IncDecSlot`], fused slot/field
+/// peepholes ([`Op::IncrSlot`], [`Op::DecrSlot`], [`Op::AddSlotToSlot`], [`Op::AddFieldToSlot`],
+/// [`Op::AddMulFieldsToSlot`]), [`Op::GetField`], constant field reads ([`Op::PushFieldNum`]), and
+/// [`Op::GetNR`] / [`Op::GetFNR`] / [`Op::GetNF`] (via the field callback — [`JitNumericChunk::call_f64`]
 /// passes a stub that returns `0.0`; use the VM path for real field/NR semantics).
+///
+/// Control-flow opcodes ([`Op::Jump`], [`Op::JumpIfSlotGeNum`], …) stay excluded so the legacy
+/// API remains a single straight-line sequence ending with one stack value.
 pub fn is_numeric_stack_eligible(ops: &[Op]) -> bool {
     let mut depth: i32 = 0;
     for op in ops {
@@ -3389,6 +3388,24 @@ pub fn is_numeric_stack_eligible(ops: &[Op]) -> bool {
             }
             Op::GetSlot(_) => depth += 1,
             Op::SetSlot(_) => {}
+            Op::CompoundAssignSlot(_, bop) => {
+                if depth < 1 {
+                    return false;
+                }
+                match bop {
+                    BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {}
+                    _ => return false,
+                }
+            }
+            Op::IncDecSlot(_, _) => depth += 1,
+            Op::IncrSlot(_) | Op::DecrSlot(_) => {}
+            Op::AddSlotToSlot { .. } => {}
+            Op::AddFieldToSlot { .. } | Op::AddMulFieldsToSlot { .. } => {}
+            Op::GetField => {
+                if depth < 1 {
+                    return false;
+                }
+            }
             Op::PushFieldNum(_) | Op::GetNR | Op::GetFNR | Op::GetNF => depth += 1,
             _ => return false,
         }
@@ -3403,6 +3420,18 @@ pub fn numeric_stack_slot_words(ops: &[Op]) -> usize {
     for op in ops {
         match op {
             Op::GetSlot(s) | Op::SetSlot(s) => m = m.max(*s as usize + 1),
+            Op::CompoundAssignSlot(s, _)
+            | Op::IncDecSlot(s, _)
+            | Op::IncrSlot(s)
+            | Op::DecrSlot(s) => {
+                m = m.max(*s as usize + 1);
+            }
+            Op::AddSlotToSlot { src, dst, .. } => {
+                m = m.max(*src as usize + 1).max(*dst as usize + 1);
+            }
+            Op::AddFieldToSlot { slot, .. } | Op::AddMulFieldsToSlot { slot, .. } => {
+                m = m.max(*slot as usize + 1);
+            }
             _ => {}
         }
     }
@@ -3463,11 +3492,8 @@ impl JitNumericChunk {
     }
 }
 
-/// Legacy dispatch — if `AWKRS_JIT=1` and the chunk is pure-numeric, run via JIT.
+/// Legacy dispatch — if the chunk is pure-numeric, run via JIT.
 pub fn try_jit_dispatch_numeric_chunk(ops: &[Op]) -> Option<f64> {
-    if !jit_enabled() {
-        return None;
-    }
     let jit = try_compile_numeric_expr(ops)?;
     Some(jit.call_f64())
 }
@@ -3477,6 +3503,7 @@ pub fn try_jit_dispatch_numeric_chunk(ops: &[Op]) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::BinOp;
     use crate::bytecode::GetlineSource;
     use std::cell::RefCell;
 
@@ -3854,6 +3881,52 @@ mod tests {
         assert_eq!(numeric_stack_slot_words(&ops), 1);
         let j = try_compile_numeric_expr(&ops).expect("compile");
         assert!(j.call_f64().abs() < 1e-15);
+    }
+
+    #[test]
+    fn jit_numeric_expr_get_field() {
+        let ops = [Op::PushNum(2.0), Op::GetField];
+        let j = try_compile_numeric_expr(&ops).expect("compile");
+        assert!(j.call_f64().abs() < 1e-15);
+    }
+
+    #[test]
+    fn jit_numeric_expr_compound_assign_slot() {
+        let ops = [Op::PushNum(5.0), Op::CompoundAssignSlot(0, BinOp::Add)];
+        assert_eq!(numeric_stack_slot_words(&ops), 1);
+        let j = try_compile_numeric_expr(&ops).expect("compile");
+        assert!((j.call_f64() - 5.0).abs() < 1e-15);
+    }
+
+    #[test]
+    fn jit_numeric_expr_add_slot_to_slot() {
+        let ops = [
+            Op::PushNum(7.0),
+            Op::SetSlot(0),
+            Op::Pop,
+            Op::PushNum(0.0),
+            Op::SetSlot(1),
+            Op::Pop,
+            Op::AddSlotToSlot { src: 0, dst: 1 },
+            Op::GetSlot(1),
+        ];
+        assert_eq!(numeric_stack_slot_words(&ops), 2);
+        let j = try_compile_numeric_expr(&ops).expect("compile");
+        assert!((j.call_f64() - 7.0).abs() < 1e-15);
+    }
+
+    #[test]
+    fn jit_numeric_expr_incr_slot_then_get() {
+        let ops = [
+            Op::PushNum(0.0),
+            Op::SetSlot(0),
+            Op::Pop,
+            Op::IncrSlot(0),
+            Op::GetSlot(0),
+        ];
+        assert_eq!(numeric_stack_slot_words(&ops), 1);
+        let j = try_compile_numeric_expr(&ops).expect("compile");
+        assert!((j.call_f64() - 1.0).abs() < 1e-15);
     }
 
     #[test]
