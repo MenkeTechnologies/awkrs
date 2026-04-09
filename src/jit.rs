@@ -1,3 +1,5 @@
+#![allow(rustdoc::private_intra_doc_links)] // `Op` / `BinOp` live in non-`pub` modules; links are for maintainers.
+
 //! Cranelift JIT compiler for AWK bytecode chunks.
 //!
 //! Compiles eligible bytecode `Op` sequences into native machine code.
@@ -30,7 +32,7 @@
 //! or [`jit_call_builtins_ok`] (unsupported builtin, shadowed name, bad arity) use
 //! the bytecode loop.
 //! [`Op::Split`] compiles to [`MIXED_SPLIT`] / [`MIXED_SPLIT_WITH_FS`] (same split rules as the VM).
-//! [`Op::Patsplit`] and [`Op::MatchBuiltin`] use additional [`MIXED_*`] opcodes; `patsplit` with both a
+//! [`Op::Patsplit`] and [`Op::MatchBuiltin`] use additional `MIXED_*` opcodes; `patsplit` with both a
 //! custom field pattern and a `seps` array packs `arr` and `seps` pool indices in `a1` (16-bit each)
 //! when both are `< 65536`, otherwise the chunk is not JIT-eligible.
 //! Non-stdout `print` / `printf` use [`MIXED_PRINT_FLUSH_REDIR`] / [`MIXED_PRINTF_FLUSH_REDIR`] with
@@ -640,8 +642,7 @@ pub fn needs_mixed_mode(ops: &[Op]) -> bool {
         ) || matches!(
             op,
             Op::Printf { redir, .. } if *redir != crate::bytecode::RedirKind::Stdout
-        )
-            || matches!(op, Op::GetLine { .. })
+        ) || matches!(op, Op::GetLine { .. })
             || matches!(op, Op::CallUser(_, _))
             || matches!(op, Op::SubFn(_) | Op::GsubFn(_))
     })
@@ -983,10 +984,7 @@ pub fn is_jit_eligible(ops: &[Op]) -> bool {
                 }
                 depth -= n;
             }
-            Op::Print {
-                argc,
-                redir,
-            } if *redir != crate::bytecode::RedirKind::Stdout => {
+            Op::Print { argc, redir } if *redir != crate::bytecode::RedirKind::Stdout => {
                 let n = *argc as i32;
                 if *argc == 0 {
                     if depth < 1 {
@@ -1000,10 +998,7 @@ pub fn is_jit_eligible(ops: &[Op]) -> bool {
                     depth -= n + 1;
                 }
             }
-            Op::Printf {
-                argc,
-                redir,
-            } if *redir != crate::bytecode::RedirKind::Stdout => {
+            Op::Printf { argc, redir } if *redir != crate::bytecode::RedirKind::Stdout => {
                 if *argc == 0 {
                     return false;
                 }
@@ -1053,11 +1048,7 @@ pub fn is_jit_eligible(ops: &[Op]) -> bool {
             }
 
             // `patsplit(s, a [, fp [, seps]])` — pop fp then s if has_fp; push count
-            Op::Patsplit {
-                arr,
-                has_fp,
-                seps,
-            } => {
+            Op::Patsplit { arr, has_fp, seps } => {
                 if *has_fp {
                     if let Some(si) = seps {
                         if *arr >= 65536 || *si >= 65536 {
@@ -1199,28 +1190,25 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
 
     let mixed = needs_mixed_mode(ops);
     use crate::jit::{
-        MIXED_ADD, MIXED_ARRAY_COMPOUND, MIXED_ARRAY_DELETE_ALL, MIXED_ARRAY_DELETE_ELEM,
-        MIXED_ARRAY_GET, MIXED_ARRAY_IN, MIXED_ARRAY_INCDEC, MIXED_ARRAY_SET, MIXED_BUILTIN_ARG,
-        MIXED_BUILTIN_CALL, MIXED_CONCAT,
-        MIXED_CONCAT_POOL, MIXED_DIV, MIXED_GET_FIELD, MIXED_GET_SLOT, MIXED_GET_VAR, MIXED_MOD,
-        MIXED_MUL, MIXED_NEG, MIXED_NOT, MIXED_POS, MIXED_PRINT_ARG, MIXED_PRINT_FLUSH,
+        mixed_encode_array_compound, mixed_encode_array_incdec, mixed_encode_field_slot,
+        mixed_encode_slot_incdec, mixed_encode_slot_pair, pack_print_redir, MIXED_ADD,
         MIXED_ADD_FIELD_TO_SLOT, MIXED_ADD_MUL_FIELDS_TO_SLOT, MIXED_ADD_SLOT_TO_SLOT,
-        MIXED_COMPOUND_ASSIGN_FIELD, MIXED_DECR_SLOT, MIXED_INCDEC_SLOT, MIXED_INCR_SLOT,
-        MIXED_JOIN_ARRAY_KEY, MIXED_JOIN_KEY_ARG, MIXED_PUSH_STR, MIXED_REGEX_MATCH,
-        MIXED_REGEX_NOT_MATCH, MIXED_SET_FIELD, MIXED_SET_VAR, MIXED_SLOT_AS_NUMBER, MIXED_SUB,
+        MIXED_ARRAY_COMPOUND, MIXED_ARRAY_DELETE_ALL, MIXED_ARRAY_DELETE_ELEM, MIXED_ARRAY_GET,
+        MIXED_ARRAY_IN, MIXED_ARRAY_INCDEC, MIXED_ARRAY_SET, MIXED_BUILTIN_ARG, MIXED_BUILTIN_CALL,
+        MIXED_CALL_USER_ARG, MIXED_CALL_USER_CALL, MIXED_COMPOUND_ASSIGN_FIELD, MIXED_CONCAT,
+        MIXED_CONCAT_POOL, MIXED_DECR_SLOT, MIXED_DIV, MIXED_GETLINE_COPROC, MIXED_GETLINE_FILE,
+        MIXED_GETLINE_INTO_RECORD, MIXED_GETLINE_PRIMARY, MIXED_GET_FIELD, MIXED_GET_SLOT,
+        MIXED_GET_VAR, MIXED_GSUB_FIELD, MIXED_GSUB_INDEX, MIXED_GSUB_INDEX_STASH,
+        MIXED_GSUB_RECORD, MIXED_GSUB_SLOT, MIXED_GSUB_VAR, MIXED_INCDEC_SLOT, MIXED_INCR_SLOT,
+        MIXED_JOIN_ARRAY_KEY, MIXED_JOIN_KEY_ARG, MIXED_MATCH_BUILTIN, MIXED_MATCH_BUILTIN_ARR,
+        MIXED_MOD, MIXED_MUL, MIXED_NEG, MIXED_NOT, MIXED_PATSPLIT, MIXED_PATSPLIT_FP,
+        MIXED_PATSPLIT_FP_SEP, MIXED_PATSPLIT_SEP, MIXED_POS, MIXED_PRINTF_FLUSH,
+        MIXED_PRINTF_FLUSH_REDIR, MIXED_PRINT_ARG, MIXED_PRINT_FLUSH, MIXED_PRINT_FLUSH_REDIR,
+        MIXED_PUSH_STR, MIXED_REGEX_MATCH, MIXED_REGEX_NOT_MATCH, MIXED_SET_FIELD, MIXED_SET_VAR,
+        MIXED_SLOT_AS_NUMBER, MIXED_SPLIT, MIXED_SPLIT_WITH_FS, MIXED_SUB, MIXED_SUB_FIELD,
+        MIXED_SUB_INDEX, MIXED_SUB_INDEX_STASH, MIXED_SUB_RECORD, MIXED_SUB_SLOT, MIXED_SUB_VAR,
         MIXED_TO_BOOL, MIXED_TRUTHINESS, MIXED_TYPEOF_ARRAY_ELEM, MIXED_TYPEOF_FIELD,
-        MIXED_TYPEOF_SLOT, MIXED_TYPEOF_VALUE, MIXED_TYPEOF_VAR, MIXED_PRINTF_FLUSH,
-        MIXED_SPLIT, MIXED_SPLIT_WITH_FS, MIXED_PATSPLIT, MIXED_PATSPLIT_SEP, MIXED_PATSPLIT_FP,
-        MIXED_PATSPLIT_FP_SEP, MIXED_MATCH_BUILTIN, MIXED_MATCH_BUILTIN_ARR,
-        MIXED_PRINT_FLUSH_REDIR, MIXED_PRINTF_FLUSH_REDIR,
-        MIXED_GETLINE_PRIMARY, MIXED_GETLINE_FILE, MIXED_GETLINE_COPROC, MIXED_GETLINE_INTO_RECORD,
-        MIXED_CALL_USER_ARG, MIXED_CALL_USER_CALL, MIXED_SUB_RECORD, MIXED_GSUB_RECORD, MIXED_SUB_VAR,
-        MIXED_GSUB_VAR, MIXED_SUB_SLOT, MIXED_GSUB_SLOT, MIXED_SUB_FIELD, MIXED_GSUB_FIELD,
-        MIXED_SUB_INDEX_STASH, MIXED_SUB_INDEX, MIXED_GSUB_INDEX_STASH, MIXED_GSUB_INDEX,
-        pack_print_redir,
-        mixed_encode_array_compound,
-        mixed_encode_array_incdec,
-        mixed_encode_field_slot, mixed_encode_slot_incdec, mixed_encode_slot_pair,
+        MIXED_TYPEOF_SLOT, MIXED_TYPEOF_VALUE, MIXED_TYPEOF_VAR,
     };
 
     let mut module = new_jit_module()?;
@@ -1421,7 +1409,10 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                     let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_PUSH_STR));
                     let a1 = builder.ins().iconst(types::I32, i64::from(idx));
                     let z = builder.ins().f64const(0.0);
-                    let call = builder.ins().call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
+                    let call =
+                        builder
+                            .ins()
+                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
                     stack.push(builder.inst_results(call)[0]);
                 }
                 Op::Concat => {
@@ -1429,85 +1420,114 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                     let a = stack.pop().expect("Concat");
                     let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_CONCAT));
                     let z = builder.ins().iconst(types::I32, 0);
-                    let call = builder
-                        .ins()
-                        .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, a, b]);
+                    let call =
+                        builder
+                            .ins()
+                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, a, b]);
                     stack.push(builder.inst_results(call)[0]);
                 }
                 Op::ConcatPoolStr(idx) => {
                     let a = stack.pop().expect("ConcatPoolStr");
-                    let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_CONCAT_POOL));
+                    let op_c = builder
+                        .ins()
+                        .iconst(types::I32, i64::from(MIXED_CONCAT_POOL));
                     let a1 = builder.ins().iconst(types::I32, i64::from(idx));
                     let z = builder.ins().f64const(0.0);
-                    let call = builder
-                        .ins()
-                        .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, a, z]);
+                    let call =
+                        builder
+                            .ins()
+                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, a, z]);
                     stack.push(builder.inst_results(call)[0]);
                 }
                 Op::RegexMatch => {
                     let pat = stack.pop().expect("RegexMatch pat");
                     let s = stack.pop().expect("RegexMatch s");
-                    let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_REGEX_MATCH));
-                    let z = builder.ins().iconst(types::I32, 0);
-                    let call = builder
+                    let op_c = builder
                         .ins()
-                        .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, s, pat]);
+                        .iconst(types::I32, i64::from(MIXED_REGEX_MATCH));
+                    let z = builder.ins().iconst(types::I32, 0);
+                    let call =
+                        builder
+                            .ins()
+                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, s, pat]);
                     stack.push(builder.inst_results(call)[0]);
                 }
                 Op::RegexNotMatch => {
                     let pat = stack.pop().expect("RegexNotMatch pat");
                     let s = stack.pop().expect("RegexNotMatch s");
-                    let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_REGEX_NOT_MATCH));
-                    let z = builder.ins().iconst(types::I32, 0);
-                    let call = builder
+                    let op_c = builder
                         .ins()
-                        .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, s, pat]);
+                        .iconst(types::I32, i64::from(MIXED_REGEX_NOT_MATCH));
+                    let z = builder.ins().iconst(types::I32, 0);
+                    let call =
+                        builder
+                            .ins()
+                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, s, pat]);
                     stack.push(builder.inst_results(call)[0]);
                 }
 
                 // ── typeof (push string — mixed `val_dispatch`) ───────
                 Op::TypeofVar(idx) => {
-                    let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_TYPEOF_VAR));
+                    let op_c = builder
+                        .ins()
+                        .iconst(types::I32, i64::from(MIXED_TYPEOF_VAR));
                     let a1 = builder.ins().iconst(types::I32, i64::from(idx));
                     let z = builder.ins().f64const(0.0);
-                    let call = builder.ins().call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
+                    let call =
+                        builder
+                            .ins()
+                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
                     stack.push(builder.inst_results(call)[0]);
                 }
                 Op::TypeofSlot(slot) => {
-                    let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_TYPEOF_SLOT));
+                    let op_c = builder
+                        .ins()
+                        .iconst(types::I32, i64::from(MIXED_TYPEOF_SLOT));
                     let a1 = builder.ins().iconst(types::I32, i64::from(slot));
                     let z = builder.ins().f64const(0.0);
-                    let call = builder.ins().call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
+                    let call =
+                        builder
+                            .ins()
+                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
                     stack.push(builder.inst_results(call)[0]);
                 }
                 Op::TypeofArrayElem(arr) => {
                     let key = stack.pop().expect("TypeofArrayElem");
-                    let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_TYPEOF_ARRAY_ELEM));
+                    let op_c = builder
+                        .ins()
+                        .iconst(types::I32, i64::from(MIXED_TYPEOF_ARRAY_ELEM));
                     let a1 = builder.ins().iconst(types::I32, i64::from(arr));
                     let z = builder.ins().f64const(0.0);
-                    let call = builder
-                        .ins()
-                        .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, key, z]);
+                    let call =
+                        builder
+                            .ins()
+                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, key, z]);
                     stack.push(builder.inst_results(call)[0]);
                 }
                 Op::TypeofField => {
                     let idx = stack.pop().expect("TypeofField");
-                    let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_TYPEOF_FIELD));
+                    let op_c = builder
+                        .ins()
+                        .iconst(types::I32, i64::from(MIXED_TYPEOF_FIELD));
                     let z32 = builder.ins().iconst(types::I32, 0);
                     let z = builder.ins().f64const(0.0);
-                    let call = builder
-                        .ins()
-                        .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z32, idx, z]);
+                    let call =
+                        builder
+                            .ins()
+                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z32, idx, z]);
                     stack.push(builder.inst_results(call)[0]);
                 }
                 Op::TypeofValue => {
                     let v = stack.pop().expect("TypeofValue");
-                    let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_TYPEOF_VALUE));
+                    let op_c = builder
+                        .ins()
+                        .iconst(types::I32, i64::from(MIXED_TYPEOF_VALUE));
                     let z32 = builder.ins().iconst(types::I32, 0);
                     let z = builder.ins().f64const(0.0);
-                    let call = builder
-                        .ins()
-                        .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z32, v, z]);
+                    let call =
+                        builder
+                            .ins()
+                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z32, v, z]);
                     stack.push(builder.inst_results(call)[0]);
                 }
                 Op::Split { arr, has_fs } => {
@@ -1516,18 +1536,21 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                     if has_fs {
                         let fs = stack.pop().expect("Split fs");
                         let s = stack.pop().expect("Split s");
-                        let op_c =
-                            builder.ins().iconst(types::I32, i64::from(MIXED_SPLIT_WITH_FS));
-                        let call = builder
+                        let op_c = builder
                             .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, s, fs]);
+                            .iconst(types::I32, i64::from(MIXED_SPLIT_WITH_FS));
+                        let call =
+                            builder
+                                .ins()
+                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, s, fs]);
                         stack.push(builder.inst_results(call)[0]);
                     } else {
                         let s = stack.pop().expect("Split s");
                         let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_SPLIT));
-                        let call = builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, s, zf]);
+                        let call =
+                            builder
+                                .ins()
+                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, s, zf]);
                         stack.push(builder.inst_results(call)[0]);
                     }
                 }
@@ -1575,26 +1598,23 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         }
                     }
                 }
-                Op::Patsplit {
-                    arr,
-                    has_fp,
-                    seps,
-                } => {
+                Op::Patsplit { arr, has_fp, seps } => {
                     let zf = builder.ins().f64const(0.0);
                     match (has_fp, seps) {
                         (false, None) => {
                             let s = stack.pop().expect("Patsplit s");
                             let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_PATSPLIT));
                             let a1 = builder.ins().iconst(types::I32, i64::from(arr));
-                            let call = builder
-                                .ins()
-                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, s, zf]);
+                            let call = builder.ins().call_indirect(
+                                val_sig_ir,
+                                val_fn_ptr,
+                                &[op_c, a1, s, zf],
+                            );
                             stack.push(builder.inst_results(call)[0]);
                         }
                         (false, Some(sepi)) => {
                             let s = stack.pop().expect("Patsplit s");
-                            let op_ps =
-                                builder.ins().iconst(types::I32, i64::from(MIXED_PUSH_STR));
+                            let op_ps = builder.ins().iconst(types::I32, i64::from(MIXED_PUSH_STR));
                             let a1s = builder.ins().iconst(types::I32, i64::from(sepi));
                             let seps_box = builder.ins().call_indirect(
                                 val_sig_ir,
@@ -1602,8 +1622,9 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                                 &[op_ps, a1s, zf, zf],
                             );
                             let seps_val = builder.inst_results(seps_box)[0];
-                            let op_c =
-                                builder.ins().iconst(types::I32, i64::from(MIXED_PATSPLIT_SEP));
+                            let op_c = builder
+                                .ins()
+                                .iconst(types::I32, i64::from(MIXED_PATSPLIT_SEP));
                             let a1 = builder.ins().iconst(types::I32, i64::from(arr));
                             let call = builder.ins().call_indirect(
                                 val_sig_ir,
@@ -1615,23 +1636,30 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         (true, None) => {
                             let fp = stack.pop().expect("Patsplit fp");
                             let s = stack.pop().expect("Patsplit s");
-                            let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_PATSPLIT_FP));
-                            let a1 = builder.ins().iconst(types::I32, i64::from(arr));
-                            let call = builder
+                            let op_c = builder
                                 .ins()
-                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, s, fp]);
+                                .iconst(types::I32, i64::from(MIXED_PATSPLIT_FP));
+                            let a1 = builder.ins().iconst(types::I32, i64::from(arr));
+                            let call = builder.ins().call_indirect(
+                                val_sig_ir,
+                                val_fn_ptr,
+                                &[op_c, a1, s, fp],
+                            );
                             stack.push(builder.inst_results(call)[0]);
                         }
                         (true, Some(sepi)) => {
                             let fp = stack.pop().expect("Patsplit fp");
                             let s = stack.pop().expect("Patsplit s");
                             let packed = arr | (sepi << 16);
-                            let op_c =
-                                builder.ins().iconst(types::I32, i64::from(MIXED_PATSPLIT_FP_SEP));
-                            let a1 = builder.ins().iconst(types::I32, i64::from(packed));
-                            let call = builder
+                            let op_c = builder
                                 .ins()
-                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, s, fp]);
+                                .iconst(types::I32, i64::from(MIXED_PATSPLIT_FP_SEP));
+                            let a1 = builder.ins().iconst(types::I32, i64::from(packed));
+                            let call = builder.ins().call_indirect(
+                                val_sig_ir,
+                                val_fn_ptr,
+                                &[op_c, a1, s, fp],
+                            );
                             stack.push(builder.inst_results(call)[0]);
                         }
                     }
@@ -1649,13 +1677,16 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         )
                     } else {
                         (
-                            builder.ins().iconst(types::I32, i64::from(MIXED_MATCH_BUILTIN)),
+                            builder
+                                .ins()
+                                .iconst(types::I32, i64::from(MIXED_MATCH_BUILTIN)),
                             z,
                         )
                     };
-                    let call = builder
-                        .ins()
-                        .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, s, re]);
+                    let call =
+                        builder
+                            .ins()
+                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, s, re]);
                     stack.push(builder.inst_results(call)[0]);
                 }
                 Op::CallBuiltin(name_idx, argc_u) => {
@@ -1666,40 +1697,49 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                     arg_vals.reverse();
                     let zf = builder.ins().f64const(0.0);
                     for (i, v) in arg_vals.iter().enumerate() {
-                        let op_arg =
-                            builder.ins().iconst(types::I32, i64::from(MIXED_BUILTIN_ARG));
+                        let op_arg = builder
+                            .ins()
+                            .iconst(types::I32, i64::from(MIXED_BUILTIN_ARG));
                         let a1 = builder.ins().iconst(types::I32, i64::from(i as u32));
-                        builder.ins().call_indirect(val_sig_ir, val_fn_ptr, &[op_arg, a1, *v, zf]);
+                        builder
+                            .ins()
+                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_arg, a1, *v, zf]);
                     }
-                    let op_c =
-                        builder.ins().iconst(types::I32, i64::from(MIXED_BUILTIN_CALL));
+                    let op_c = builder
+                        .ins()
+                        .iconst(types::I32, i64::from(MIXED_BUILTIN_CALL));
                     let a1 = builder.ins().iconst(types::I32, i64::from(name_idx));
                     let a2 = builder.ins().f64const(argc as f64);
-                    let call = builder
-                        .ins()
-                        .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, a2, zf]);
+                    let call =
+                        builder
+                            .ins()
+                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, a2, zf]);
                     stack.push(builder.inst_results(call)[0]);
                 }
                 Op::CallUser(name_idx, argc_u) => {
                     let argc = argc_u as usize;
-                    let mut arg_vals: Vec<_> = (0..argc)
-                        .map(|_| stack.pop().expect("CallUser"))
-                        .collect();
+                    let mut arg_vals: Vec<_> =
+                        (0..argc).map(|_| stack.pop().expect("CallUser")).collect();
                     arg_vals.reverse();
                     let zf = builder.ins().f64const(0.0);
                     for (i, v) in arg_vals.iter().enumerate() {
-                        let op_arg =
-                            builder.ins().iconst(types::I32, i64::from(MIXED_CALL_USER_ARG));
+                        let op_arg = builder
+                            .ins()
+                            .iconst(types::I32, i64::from(MIXED_CALL_USER_ARG));
                         let a1 = builder.ins().iconst(types::I32, i64::from(i as u32));
-                        builder.ins().call_indirect(val_sig_ir, val_fn_ptr, &[op_arg, a1, *v, zf]);
+                        builder
+                            .ins()
+                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_arg, a1, *v, zf]);
                     }
-                    let op_c =
-                        builder.ins().iconst(types::I32, i64::from(MIXED_CALL_USER_CALL));
+                    let op_c = builder
+                        .ins()
+                        .iconst(types::I32, i64::from(MIXED_CALL_USER_CALL));
                     let a1 = builder.ins().iconst(types::I32, i64::from(name_idx));
                     let a2 = builder.ins().f64const(argc as f64);
-                    let call = builder
-                        .ins()
-                        .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, a2, zf]);
+                    let call =
+                        builder
+                            .ins()
+                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, a2, zf]);
                     stack.push(builder.inst_results(call)[0]);
                 }
                 Op::SubFn(target) => {
@@ -1709,10 +1749,14 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         SubTarget::Record => {
                             let repl = stack.pop().expect("SubFn repl");
                             let re = stack.pop().expect("SubFn re");
-                            let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_SUB_RECORD));
-                            let call = builder
+                            let op_c = builder
                                 .ins()
-                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, re, repl]);
+                                .iconst(types::I32, i64::from(MIXED_SUB_RECORD));
+                            let call = builder.ins().call_indirect(
+                                val_sig_ir,
+                                val_fn_ptr,
+                                &[op_c, z, re, repl],
+                            );
                             stack.push(builder.inst_results(call)[0]);
                         }
                         SubTarget::Var(name_idx) => {
@@ -1720,9 +1764,11 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                             let re = stack.pop().expect("SubFn re");
                             let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_SUB_VAR));
                             let a1 = builder.ins().iconst(types::I32, i64::from(name_idx));
-                            let call = builder
-                                .ins()
-                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, re, repl]);
+                            let call = builder.ins().call_indirect(
+                                val_sig_ir,
+                                val_fn_ptr,
+                                &[op_c, a1, re, repl],
+                            );
                             stack.push(builder.inst_results(call)[0]);
                         }
                         SubTarget::SlotVar(slot) => {
@@ -1730,9 +1776,11 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                             let re = stack.pop().expect("SubFn re");
                             let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_SUB_SLOT));
                             let a1 = builder.ins().iconst(types::I32, i64::from(slot));
-                            let call = builder
-                                .ins()
-                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, re, repl]);
+                            let call = builder.ins().call_indirect(
+                                val_sig_ir,
+                                val_fn_ptr,
+                                &[op_c, a1, re, repl],
+                            );
                             stack.push(builder.inst_results(call)[0]);
                         }
                         SubTarget::Field => {
@@ -1741,23 +1789,32 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                             let re = stack.pop().expect("SubFn re");
                             let fi_i = builder.ins().fcvt_to_sint(types::I32, fi);
                             let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_SUB_FIELD));
-                            let call = builder
-                                .ins()
-                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, fi_i, re, repl]);
+                            let call = builder.ins().call_indirect(
+                                val_sig_ir,
+                                val_fn_ptr,
+                                &[op_c, fi_i, re, repl],
+                            );
                             stack.push(builder.inst_results(call)[0]);
                         }
                         SubTarget::Index(arr_idx) => {
                             let key = stack.pop().expect("SubFn key");
                             let repl = stack.pop().expect("SubFn repl");
                             let re = stack.pop().expect("SubFn re");
-                            let st_op =
-                                builder.ins().iconst(types::I32, i64::from(MIXED_SUB_INDEX_STASH));
-                            builder.ins().call_indirect(val_sig_ir, val_fn_ptr, &[st_op, z, key, zf]);
+                            let st_op = builder
+                                .ins()
+                                .iconst(types::I32, i64::from(MIXED_SUB_INDEX_STASH));
+                            builder.ins().call_indirect(
+                                val_sig_ir,
+                                val_fn_ptr,
+                                &[st_op, z, key, zf],
+                            );
                             let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_SUB_INDEX));
                             let a1 = builder.ins().iconst(types::I32, i64::from(arr_idx));
-                            let call = builder
-                                .ins()
-                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, re, repl]);
+                            let call = builder.ins().call_indirect(
+                                val_sig_ir,
+                                val_fn_ptr,
+                                &[op_c, a1, re, repl],
+                            );
                             stack.push(builder.inst_results(call)[0]);
                         }
                     }
@@ -1769,10 +1826,14 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         SubTarget::Record => {
                             let repl = stack.pop().expect("GsubFn repl");
                             let re = stack.pop().expect("GsubFn re");
-                            let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_GSUB_RECORD));
-                            let call = builder
+                            let op_c = builder
                                 .ins()
-                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, re, repl]);
+                                .iconst(types::I32, i64::from(MIXED_GSUB_RECORD));
+                            let call = builder.ins().call_indirect(
+                                val_sig_ir,
+                                val_fn_ptr,
+                                &[op_c, z, re, repl],
+                            );
                             stack.push(builder.inst_results(call)[0]);
                         }
                         SubTarget::Var(name_idx) => {
@@ -1780,9 +1841,11 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                             let re = stack.pop().expect("GsubFn re");
                             let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_GSUB_VAR));
                             let a1 = builder.ins().iconst(types::I32, i64::from(name_idx));
-                            let call = builder
-                                .ins()
-                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, re, repl]);
+                            let call = builder.ins().call_indirect(
+                                val_sig_ir,
+                                val_fn_ptr,
+                                &[op_c, a1, re, repl],
+                            );
                             stack.push(builder.inst_results(call)[0]);
                         }
                         SubTarget::SlotVar(slot) => {
@@ -1790,9 +1853,11 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                             let re = stack.pop().expect("GsubFn re");
                             let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_GSUB_SLOT));
                             let a1 = builder.ins().iconst(types::I32, i64::from(slot));
-                            let call = builder
-                                .ins()
-                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, re, repl]);
+                            let call = builder.ins().call_indirect(
+                                val_sig_ir,
+                                val_fn_ptr,
+                                &[op_c, a1, re, repl],
+                            );
                             stack.push(builder.inst_results(call)[0]);
                         }
                         SubTarget::Field => {
@@ -1800,10 +1865,14 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                             let repl = stack.pop().expect("GsubFn repl");
                             let re = stack.pop().expect("GsubFn re");
                             let fi_i = builder.ins().fcvt_to_sint(types::I32, fi);
-                            let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_GSUB_FIELD));
-                            let call = builder
+                            let op_c = builder
                                 .ins()
-                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, fi_i, re, repl]);
+                                .iconst(types::I32, i64::from(MIXED_GSUB_FIELD));
+                            let call = builder.ins().call_indirect(
+                                val_sig_ir,
+                                val_fn_ptr,
+                                &[op_c, fi_i, re, repl],
+                            );
                             stack.push(builder.inst_results(call)[0]);
                         }
                         SubTarget::Index(arr_idx) => {
@@ -1813,12 +1882,20 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                             let st_op = builder
                                 .ins()
                                 .iconst(types::I32, i64::from(MIXED_GSUB_INDEX_STASH));
-                            builder.ins().call_indirect(val_sig_ir, val_fn_ptr, &[st_op, z, key, zf]);
-                            let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_GSUB_INDEX));
-                            let a1 = builder.ins().iconst(types::I32, i64::from(arr_idx));
-                            let call = builder
+                            builder.ins().call_indirect(
+                                val_sig_ir,
+                                val_fn_ptr,
+                                &[st_op, z, key, zf],
+                            );
+                            let op_c = builder
                                 .ins()
-                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, re, repl]);
+                                .iconst(types::I32, i64::from(MIXED_GSUB_INDEX));
+                            let a1 = builder.ins().iconst(types::I32, i64::from(arr_idx));
+                            let call = builder.ins().call_indirect(
+                                val_sig_ir,
+                                val_fn_ptr,
+                                &[op_c, a1, re, repl],
+                            );
                             stack.push(builder.inst_results(call)[0]);
                         }
                     }
@@ -1830,15 +1907,17 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_GET_SLOT));
                         let a1 = builder.ins().iconst(types::I32, i64::from(slot));
                         let z = builder.ins().f64const(0.0);
-                        let call = builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
+                        let call =
+                            builder
+                                .ins()
+                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
                         stack.push(builder.inst_results(call)[0]);
                     } else {
                         let offset = (slot as i32) * 8;
-                        let v = builder
-                            .ins()
-                            .load(types::F64, MemFlags::trusted(), slots_ptr, offset);
+                        let v =
+                            builder
+                                .ins()
+                                .load(types::F64, MemFlags::trusted(), slots_ptr, offset);
                         stack.push(v);
                     }
                 }
@@ -1855,17 +1934,19 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_GET_VAR));
                         let a1 = builder.ins().iconst(types::I32, i64::from(idx));
                         let z = builder.ins().f64const(0.0);
-                        let call = builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
+                        let call =
+                            builder
+                                .ins()
+                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
                         stack.push(builder.inst_results(call)[0]);
                     } else {
                         let opv = builder.ins().iconst(types::I32, i64::from(JIT_VAR_OP_GET));
                         let ni = builder.ins().iconst(types::I32, idx as i64);
                         let z = builder.ins().f64const(0.0);
-                        let call = builder
-                            .ins()
-                            .call_indirect(var_sig_ir, var_fn_ptr, &[opv, ni, z]);
+                        let call =
+                            builder
+                                .ins()
+                                .call_indirect(var_sig_ir, var_fn_ptr, &[opv, ni, z]);
                         stack.push(builder.inst_results(call)[0]);
                     }
                 }
@@ -1924,16 +2005,19 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         );
                         let computed = builder.inst_results(call_op)[0];
                         let op_set = builder.ins().iconst(types::I32, i64::from(MIXED_SET_VAR));
-                        builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_set, ni, computed, z]);
+                        builder.ins().call_indirect(
+                            val_sig_ir,
+                            val_fn_ptr,
+                            &[op_set, ni, computed, z],
+                        );
                         computed
                     } else {
                         let cop = jit_var_op_for_compound(bop);
                         let opv = builder.ins().iconst(types::I32, i64::from(cop));
-                        let call = builder
-                            .ins()
-                            .call_indirect(var_sig_ir, var_fn_ptr, &[opv, ni, rhs]);
+                        let call =
+                            builder
+                                .ins()
+                                .call_indirect(var_sig_ir, var_fn_ptr, &[opv, ni, rhs]);
                         builder.inst_results(call)[0]
                     };
                     stack.push(new_val);
@@ -2022,9 +2106,10 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                     if mixed {
                         let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_ADD));
                         let z = builder.ins().iconst(types::I32, 0);
-                        let call = builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, a, b]);
+                        let call =
+                            builder
+                                .ins()
+                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, a, b]);
                         stack.push(builder.inst_results(call)[0]);
                     } else {
                         stack.push(builder.ins().fadd(a, b));
@@ -2036,9 +2121,10 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                     if mixed {
                         let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_SUB));
                         let z = builder.ins().iconst(types::I32, 0);
-                        let call = builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, a, b]);
+                        let call =
+                            builder
+                                .ins()
+                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, a, b]);
                         stack.push(builder.inst_results(call)[0]);
                     } else {
                         stack.push(builder.ins().fsub(a, b));
@@ -2050,9 +2136,10 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                     if mixed {
                         let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_MUL));
                         let z = builder.ins().iconst(types::I32, 0);
-                        let call = builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, a, b]);
+                        let call =
+                            builder
+                                .ins()
+                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, a, b]);
                         stack.push(builder.inst_results(call)[0]);
                     } else {
                         stack.push(builder.ins().fmul(a, b));
@@ -2064,9 +2151,10 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                     if mixed {
                         let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_DIV));
                         let z = builder.ins().iconst(types::I32, 0);
-                        let call = builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, a, b]);
+                        let call =
+                            builder
+                                .ins()
+                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, a, b]);
                         stack.push(builder.inst_results(call)[0]);
                     } else {
                         stack.push(builder.ins().fdiv(a, b));
@@ -2078,9 +2166,10 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                     if mixed {
                         let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_MOD));
                         let z = builder.ins().iconst(types::I32, 0);
-                        let call = builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, a, b]);
+                        let call =
+                            builder
+                                .ins()
+                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, a, b]);
                         stack.push(builder.inst_results(call)[0]);
                     } else {
                         let div = builder.ins().fdiv(a, b);
@@ -2095,14 +2184,14 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                     let b = stack.pop().expect("cmp");
                     let a = stack.pop().expect("cmp");
                     if mixed {
-                        let op_c = builder.ins().iconst(
-                            types::I32,
-                            i64::from(mixed_op_for_cmp(&ops[pc])),
-                        );
-                        let z = builder.ins().iconst(types::I32, 0);
-                        let call = builder
+                        let op_c = builder
                             .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, a, b]);
+                            .iconst(types::I32, i64::from(mixed_op_for_cmp(&ops[pc])));
+                        let z = builder.ins().iconst(types::I32, 0);
+                        let call =
+                            builder
+                                .ins()
+                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, a, b]);
                         stack.push(builder.inst_results(call)[0]);
                     } else {
                         use cranelift_codegen::ir::condcodes::FloatCC;
@@ -2128,9 +2217,10 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_NEG));
                         let z = builder.ins().iconst(types::I32, 0);
                         let zf = builder.ins().f64const(0.0);
-                        let call = builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, a, zf]);
+                        let call =
+                            builder
+                                .ins()
+                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, a, zf]);
                         stack.push(builder.inst_results(call)[0]);
                     } else {
                         stack.push(builder.ins().fneg(a));
@@ -2142,9 +2232,10 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_POS));
                         let z = builder.ins().iconst(types::I32, 0);
                         let zf = builder.ins().f64const(0.0);
-                        let call = builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, a, zf]);
+                        let call =
+                            builder
+                                .ins()
+                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, a, zf]);
                         stack.push(builder.inst_results(call)[0]);
                     }
                     // Non-mixed: identity, no stack effect (matches VM numeric fast path).
@@ -2155,9 +2246,10 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_NOT));
                         let z = builder.ins().iconst(types::I32, 0);
                         let zf = builder.ins().f64const(0.0);
-                        let call = builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, a, zf]);
+                        let call =
+                            builder
+                                .ins()
+                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, a, zf]);
                         stack.push(builder.inst_results(call)[0]);
                     } else {
                         let zero = builder.ins().f64const(0.0);
@@ -2176,9 +2268,10 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_TO_BOOL));
                         let z = builder.ins().iconst(types::I32, 0);
                         let zf = builder.ins().f64const(0.0);
-                        let call = builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, a, zf]);
+                        let call =
+                            builder
+                                .ins()
+                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, a, zf]);
                         stack.push(builder.inst_results(call)[0]);
                     } else {
                         let zero = builder.ins().f64const(0.0);
@@ -2201,12 +2294,15 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                 Op::JumpIfFalsePop(target) => {
                     let v = stack.pop().expect("JumpIfFalsePop");
                     let cond = if mixed {
-                        let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_TRUTHINESS));
+                        let op_c = builder
+                            .ins()
+                            .iconst(types::I32, i64::from(MIXED_TRUTHINESS));
                         let z = builder.ins().iconst(types::I32, 0);
                         let zf = builder.ins().f64const(0.0);
-                        let call = builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, v, zf]);
+                        let call =
+                            builder
+                                .ins()
+                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, v, zf]);
                         let truth = builder.inst_results(call)[0];
                         let zero = builder.ins().f64const(0.0);
                         builder.ins().fcmp(
@@ -2233,12 +2329,15 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                 Op::JumpIfTruePop(target) => {
                     let v = stack.pop().expect("JumpIfTruePop");
                     let cond = if mixed {
-                        let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_TRUTHINESS));
+                        let op_c = builder
+                            .ins()
+                            .iconst(types::I32, i64::from(MIXED_TRUTHINESS));
                         let z = builder.ins().iconst(types::I32, 0);
                         let zf = builder.ins().f64const(0.0);
-                        let call = builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, v, zf]);
+                        let call =
+                            builder
+                                .ins()
+                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, v, zf]);
                         let truth = builder.inst_results(call)[0];
                         let zero = builder.ins().f64const(0.0);
                         builder.ins().fcmp(
@@ -2284,9 +2383,11 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         let mop = mixed_op_for_binop(bop);
                         let op_c = builder.ins().iconst(types::I32, i64::from(mop));
                         let z = builder.ins().iconst(types::I32, 0);
-                        let call = builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, old, rhs]);
+                        let call = builder.ins().call_indirect(
+                            val_sig_ir,
+                            val_fn_ptr,
+                            &[op_c, z, old, rhs],
+                        );
                         builder.inst_results(call)[0]
                     } else {
                         match bop {
@@ -2313,21 +2414,22 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                 Op::IncDecSlot(slot, kind) => {
                     if mixed {
                         let enc = mixed_encode_slot_incdec(slot, kind);
-                        let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_INCDEC_SLOT));
+                        let op_c = builder
+                            .ins()
+                            .iconst(types::I32, i64::from(MIXED_INCDEC_SLOT));
                         let a1 = builder.ins().iconst(types::I32, i64::from(enc));
                         let z = builder.ins().f64const(0.0);
-                        let call = builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
+                        let call =
+                            builder
+                                .ins()
+                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
                         stack.push(builder.inst_results(call)[0]);
                     } else {
                         let offset = (slot as i32) * 8;
-                        let old = builder.ins().load(
-                            types::F64,
-                            MemFlags::trusted(),
-                            slots_ptr,
-                            offset,
-                        );
+                        let old =
+                            builder
+                                .ins()
+                                .load(types::F64, MemFlags::trusted(), slots_ptr, offset);
                         let delta = match kind {
                             IncDecOp::PreInc | IncDecOp::PostInc => builder.ins().f64const(1.0),
                             IncDecOp::PreDec | IncDecOp::PostDec => builder.ins().f64const(-1.0),
@@ -2355,12 +2457,10 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                             .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
                     } else {
                         let offset = (slot as i32) * 8;
-                        let old = builder.ins().load(
-                            types::F64,
-                            MemFlags::trusted(),
-                            slots_ptr,
-                            offset,
-                        );
+                        let old =
+                            builder
+                                .ins()
+                                .load(types::F64, MemFlags::trusted(), slots_ptr, offset);
                         let one = builder.ins().f64const(1.0);
                         let new_val = builder.ins().fadd(old, one);
                         builder
@@ -2378,12 +2478,10 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                             .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
                     } else {
                         let offset = (slot as i32) * 8;
-                        let old = builder.ins().load(
-                            types::F64,
-                            MemFlags::trusted(),
-                            slots_ptr,
-                            offset,
-                        );
+                        let old =
+                            builder
+                                .ins()
+                                .load(types::F64, MemFlags::trusted(), slots_ptr, offset);
                         let one = builder.ins().f64const(1.0);
                         let new_val = builder.ins().fsub(old, one);
                         builder
@@ -2394,8 +2492,9 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                 Op::AddSlotToSlot { src, dst } => {
                     if mixed {
                         let enc = mixed_encode_slot_pair(src, dst);
-                        let op_c =
-                            builder.ins().iconst(types::I32, i64::from(MIXED_ADD_SLOT_TO_SLOT));
+                        let op_c = builder
+                            .ins()
+                            .iconst(types::I32, i64::from(MIXED_ADD_SLOT_TO_SLOT));
                         let a1 = builder.ins().iconst(types::I32, i64::from(enc));
                         let z = builder.ins().f64const(0.0);
                         builder
@@ -2428,9 +2527,10 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         let z = builder.ins().iconst(types::I32, 0);
                         let fv = builder.ins().f64const(field as f64);
                         let zf = builder.ins().f64const(0.0);
-                        let call = builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, fv, zf]);
+                        let call =
+                            builder
+                                .ins()
+                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, fv, zf]);
                         stack.push(builder.inst_results(call)[0]);
                     } else {
                         let arg = builder.ins().iconst(types::I32, field as i64);
@@ -2447,17 +2547,19 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_GET_FIELD));
                         let z = builder.ins().iconst(types::I32, 0);
                         let zf = builder.ins().f64const(0.0);
-                        let call = builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, fv, zf]);
+                        let call =
+                            builder
+                                .ins()
+                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, fv, zf]);
                         stack.push(builder.inst_results(call)[0]);
                     } else {
                         // Match VM: `ctx.pop().as_number() as i32` — use saturating float→int
                         // (same family of semantics as Rust’s `f64 as i32` on recent editions).
                         let idx_i32 = builder.ins().fcvt_to_sint_sat(types::I32, fv);
-                        let call = builder
-                            .ins()
-                            .call_indirect(field_sig_ir, field_fn_ptr, &[idx_i32]);
+                        let call =
+                            builder
+                                .ins()
+                                .call_indirect(field_sig_ir, field_fn_ptr, &[idx_i32]);
                         stack.push(builder.inst_results(call)[0]);
                     }
                 }
@@ -2502,12 +2604,10 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                             .call_indirect(field_sig_ir, field_fn_ptr, &[arg]);
                         let fv = builder.inst_results(call)[0];
                         let offset = (slot as i32) * 8;
-                        let old = builder.ins().load(
-                            types::F64,
-                            MemFlags::trusted(),
-                            slots_ptr,
-                            offset,
-                        );
+                        let old =
+                            builder
+                                .ins()
+                                .load(types::F64, MemFlags::trusted(), slots_ptr, offset);
                         let sum = builder.ins().fadd(old, fv);
                         builder
                             .ins()
@@ -2539,12 +2639,10 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         let v2 = builder.inst_results(c2)[0];
                         let prod = builder.ins().fmul(v1, v2);
                         let offset = (slot as i32) * 8;
-                        let old = builder.ins().load(
-                            types::F64,
-                            MemFlags::trusted(),
-                            slots_ptr,
-                            offset,
-                        );
+                        let old =
+                            builder
+                                .ins()
+                                .load(types::F64, MemFlags::trusted(), slots_ptr, offset);
                         let sum = builder.ins().fadd(old, prod);
                         builder
                             .ins()
@@ -2570,22 +2668,21 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                     target,
                 } => {
                     let v = if mixed {
-                        let op_c =
-                            builder.ins().iconst(types::I32, i64::from(MIXED_SLOT_AS_NUMBER));
+                        let op_c = builder
+                            .ins()
+                            .iconst(types::I32, i64::from(MIXED_SLOT_AS_NUMBER));
                         let a1 = builder.ins().iconst(types::I32, i64::from(slot));
                         let z = builder.ins().f64const(0.0);
-                        let call = builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
+                        let call =
+                            builder
+                                .ins()
+                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
                         builder.inst_results(call)[0]
                     } else {
                         let offset = (slot as i32) * 8;
-                        builder.ins().load(
-                            types::F64,
-                            MemFlags::trusted(),
-                            slots_ptr,
-                            offset,
-                        )
+                        builder
+                            .ins()
+                            .load(types::F64, MemFlags::trusted(), slots_ptr, offset)
                     };
                     let lim = builder.ins().f64const(limit);
                     let ge = builder.ins().fcmp(
@@ -2602,37 +2699,55 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
 
                 // ── Fused print ops (side-effect only) ─────────────────
                 Op::PrintFieldStdout(field) => {
-                    let op_c = builder.ins().iconst(types::I32, i64::from(JIT_IO_PRINT_FIELD));
+                    let op_c = builder
+                        .ins()
+                        .iconst(types::I32, i64::from(JIT_IO_PRINT_FIELD));
                     let a1 = builder.ins().iconst(types::I32, field as i64);
                     let z = builder.ins().iconst(types::I32, 0);
-                    builder.ins().call_indirect(io_sig_ir, io_fn_ptr, &[op_c, a1, z, z]);
+                    builder
+                        .ins()
+                        .call_indirect(io_sig_ir, io_fn_ptr, &[op_c, a1, z, z]);
                 }
                 Op::PrintFieldSepField { f1, sep, f2 } => {
-                    let op_c = builder.ins().iconst(types::I32, i64::from(JIT_IO_PRINT_FIELD_SEP_FIELD));
+                    let op_c = builder
+                        .ins()
+                        .iconst(types::I32, i64::from(JIT_IO_PRINT_FIELD_SEP_FIELD));
                     let a1 = builder.ins().iconst(types::I32, f1 as i64);
                     let a2 = builder.ins().iconst(types::I32, sep as i64);
                     let a3 = builder.ins().iconst(types::I32, f2 as i64);
-                    builder.ins().call_indirect(io_sig_ir, io_fn_ptr, &[op_c, a1, a2, a3]);
+                    builder
+                        .ins()
+                        .call_indirect(io_sig_ir, io_fn_ptr, &[op_c, a1, a2, a3]);
                 }
                 Op::PrintThreeFieldsStdout { f1, f2, f3 } => {
-                    let op_c = builder.ins().iconst(types::I32, i64::from(JIT_IO_PRINT_THREE_FIELDS));
+                    let op_c = builder
+                        .ins()
+                        .iconst(types::I32, i64::from(JIT_IO_PRINT_THREE_FIELDS));
                     let a1 = builder.ins().iconst(types::I32, f1 as i64);
                     let a2 = builder.ins().iconst(types::I32, f2 as i64);
                     let a3 = builder.ins().iconst(types::I32, f3 as i64);
-                    builder.ins().call_indirect(io_sig_ir, io_fn_ptr, &[op_c, a1, a2, a3]);
+                    builder
+                        .ins()
+                        .call_indirect(io_sig_ir, io_fn_ptr, &[op_c, a1, a2, a3]);
                 }
-                Op::Print { argc: 0, redir: crate::bytecode::RedirKind::Stdout } => {
-                    let op_c = builder.ins().iconst(types::I32, i64::from(JIT_IO_PRINT_RECORD));
+                Op::Print {
+                    argc: 0,
+                    redir: crate::bytecode::RedirKind::Stdout,
+                } => {
+                    let op_c = builder
+                        .ins()
+                        .iconst(types::I32, i64::from(JIT_IO_PRINT_RECORD));
                     let z = builder.ins().iconst(types::I32, 0);
-                    builder.ins().call_indirect(io_sig_ir, io_fn_ptr, &[op_c, z, z, z]);
+                    builder
+                        .ins()
+                        .call_indirect(io_sig_ir, io_fn_ptr, &[op_c, z, z, z]);
                 }
                 Op::Print {
                     argc,
                     redir: crate::bytecode::RedirKind::Stdout,
                 } if argc > 0 => {
                     let n = argc as usize;
-                    let mut vals: Vec<cranelift_codegen::ir::Value> =
-                        Vec::with_capacity(n);
+                    let mut vals: Vec<cranelift_codegen::ir::Value> = Vec::with_capacity(n);
                     for _ in 0..n {
                         vals.push(stack.pop().expect("Print argc"));
                     }
@@ -2645,7 +2760,9 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                             .ins()
                             .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, *v, z]);
                     }
-                    let op_f = builder.ins().iconst(types::I32, i64::from(MIXED_PRINT_FLUSH));
+                    let op_f = builder
+                        .ins()
+                        .iconst(types::I32, i64::from(MIXED_PRINT_FLUSH));
                     let a1 = builder.ins().iconst(types::I32, i64::from(argc));
                     let z = builder.ins().f64const(0.0);
                     builder
@@ -2657,8 +2774,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                     redir: crate::bytecode::RedirKind::Stdout,
                 } if argc > 0 => {
                     let n = argc as usize;
-                    let mut vals: Vec<cranelift_codegen::ir::Value> =
-                        Vec::with_capacity(n);
+                    let mut vals: Vec<cranelift_codegen::ir::Value> = Vec::with_capacity(n);
                     for _ in 0..n {
                         vals.push(stack.pop().expect("Printf argc"));
                     }
@@ -2671,18 +2787,18 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                             .ins()
                             .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, *v, z]);
                     }
-                    let op_pf =
-                        builder.ins().iconst(types::I32, i64::from(MIXED_PRINTF_FLUSH));
+                    let op_pf = builder
+                        .ins()
+                        .iconst(types::I32, i64::from(MIXED_PRINTF_FLUSH));
                     let a1 = builder.ins().iconst(types::I32, i64::from(argc));
                     let z = builder.ins().f64const(0.0);
                     builder
                         .ins()
                         .call_indirect(val_sig_ir, val_fn_ptr, &[op_pf, a1, z, z]);
                 }
-                Op::Printf {
-                    argc,
-                    redir,
-                } if argc > 0 && redir != crate::bytecode::RedirKind::Stdout => {
+                Op::Printf { argc, redir }
+                    if argc > 0 && redir != crate::bytecode::RedirKind::Stdout =>
+                {
                     let n = argc as usize;
                     let path = stack.pop().expect("Printf redir path");
                     let mut vals: Vec<_> =
@@ -2706,10 +2822,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         .ins()
                         .call_indirect(val_sig_ir, val_fn_ptr, &[op_pf, a1, path, zf]);
                 }
-                Op::Print {
-                    argc,
-                    redir,
-                } if redir != crate::bytecode::RedirKind::Stdout => {
+                Op::Print { argc, redir } if redir != crate::bytecode::RedirKind::Stdout => {
                     let n = argc as usize;
                     let path = stack.pop().expect("Print redir path");
                     let zf = builder.ins().f64const(0.0);
@@ -2718,16 +2831,18 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                             (0..n).map(|_| stack.pop().expect("Print arg")).collect();
                         vals.reverse();
                         for (i, v) in vals.iter().enumerate() {
-                            let op_c =
-                                builder.ins().iconst(types::I32, i64::from(MIXED_PRINT_ARG));
+                            let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_PRINT_ARG));
                             let a1 = builder.ins().iconst(types::I32, i64::try_from(i).unwrap());
-                            builder
-                                .ins()
-                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, *v, zf]);
+                            builder.ins().call_indirect(
+                                val_sig_ir,
+                                val_fn_ptr,
+                                &[op_c, a1, *v, zf],
+                            );
                         }
                     }
-                    let op_fr =
-                        builder.ins().iconst(types::I32, i64::from(MIXED_PRINT_FLUSH_REDIR));
+                    let op_fr = builder
+                        .ins()
+                        .iconst(types::I32, i64::from(MIXED_PRINT_FLUSH_REDIR));
                     let a1 = builder
                         .ins()
                         .iconst(types::I32, i64::from(pack_print_redir(argc, redir)));
@@ -2738,44 +2853,65 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
 
                 // ── MatchRegexp (push 0/1) ────────────────────────────────
                 Op::MatchRegexp(idx) => {
-                    let op_c = builder.ins().iconst(types::I32, i64::from(JIT_VAL_MATCH_REGEXP));
+                    let op_c = builder
+                        .ins()
+                        .iconst(types::I32, i64::from(JIT_VAL_MATCH_REGEXP));
                     let a1 = builder.ins().iconst(types::I32, idx as i64);
                     let z = builder.ins().f64const(0.0);
-                    let call = builder.ins().call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
+                    let call =
+                        builder
+                            .ins()
+                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
                     stack.push(builder.inst_results(call)[0]);
                 }
 
                 // ── Flow signals ──────────────────────────────────────────
                 Op::Next => {
-                    let op_c = builder.ins().iconst(types::I32, i64::from(JIT_VAL_SIGNAL_NEXT));
+                    let op_c = builder
+                        .ins()
+                        .iconst(types::I32, i64::from(JIT_VAL_SIGNAL_NEXT));
                     let z32 = builder.ins().iconst(types::I32, 0);
                     let z = builder.ins().f64const(0.0);
-                    builder.ins().call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z32, z, z]);
+                    builder
+                        .ins()
+                        .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z32, z, z]);
                     builder.ins().return_(&[z]);
                     block_terminated = true;
                 }
                 Op::NextFile => {
-                    let op_c = builder.ins().iconst(types::I32, i64::from(JIT_VAL_SIGNAL_NEXT_FILE));
+                    let op_c = builder
+                        .ins()
+                        .iconst(types::I32, i64::from(JIT_VAL_SIGNAL_NEXT_FILE));
                     let z32 = builder.ins().iconst(types::I32, 0);
                     let z = builder.ins().f64const(0.0);
-                    builder.ins().call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z32, z, z]);
+                    builder
+                        .ins()
+                        .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z32, z, z]);
                     builder.ins().return_(&[z]);
                     block_terminated = true;
                 }
                 Op::ExitDefault => {
-                    let op_c = builder.ins().iconst(types::I32, i64::from(JIT_VAL_SIGNAL_EXIT_DEFAULT));
+                    let op_c = builder
+                        .ins()
+                        .iconst(types::I32, i64::from(JIT_VAL_SIGNAL_EXIT_DEFAULT));
                     let z32 = builder.ins().iconst(types::I32, 0);
                     let z = builder.ins().f64const(0.0);
-                    builder.ins().call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z32, z, z]);
+                    builder
+                        .ins()
+                        .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z32, z, z]);
                     builder.ins().return_(&[z]);
                     block_terminated = true;
                 }
                 Op::ExitWithCode => {
                     let code = stack.pop().expect("ExitWithCode");
-                    let op_c = builder.ins().iconst(types::I32, i64::from(JIT_VAL_SIGNAL_EXIT_CODE));
+                    let op_c = builder
+                        .ins()
+                        .iconst(types::I32, i64::from(JIT_VAL_SIGNAL_EXIT_CODE));
                     let z32 = builder.ins().iconst(types::I32, 0);
                     let z = builder.ins().f64const(0.0);
-                    builder.ins().call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z32, code, z]);
+                    builder
+                        .ins()
+                        .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z32, code, z]);
                     builder.ins().return_(&[z]);
                     block_terminated = true;
                 }
@@ -2787,17 +2923,23 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_ARRAY_GET));
                         let a1 = builder.ins().iconst(types::I32, i64::from(arr));
                         let z = builder.ins().f64const(0.0);
-                        let call = builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, key, z]);
+                        let call = builder.ins().call_indirect(
+                            val_sig_ir,
+                            val_fn_ptr,
+                            &[op_c, a1, key, z],
+                        );
                         stack.push(builder.inst_results(call)[0]);
                     } else {
-                        let op_c = builder.ins().iconst(types::I32, i64::from(JIT_VAL_ARRAY_GET));
+                        let op_c = builder
+                            .ins()
+                            .iconst(types::I32, i64::from(JIT_VAL_ARRAY_GET));
                         let a1 = builder.ins().iconst(types::I32, arr as i64);
                         let z = builder.ins().f64const(0.0);
-                        let call = builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, key, z]);
+                        let call = builder.ins().call_indirect(
+                            val_sig_ir,
+                            val_fn_ptr,
+                            &[op_c, a1, key, z],
+                        );
                         stack.push(builder.inst_results(call)[0]);
                     }
                 }
@@ -2807,16 +2949,22 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                     if mixed {
                         let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_ARRAY_SET));
                         let a1 = builder.ins().iconst(types::I32, i64::from(arr));
-                        let call = builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, key, val]);
+                        let call = builder.ins().call_indirect(
+                            val_sig_ir,
+                            val_fn_ptr,
+                            &[op_c, a1, key, val],
+                        );
                         stack.push(builder.inst_results(call)[0]);
                     } else {
-                        let op_c = builder.ins().iconst(types::I32, i64::from(JIT_VAL_ARRAY_SET));
-                        let a1 = builder.ins().iconst(types::I32, arr as i64);
-                        let call = builder
+                        let op_c = builder
                             .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, key, val]);
+                            .iconst(types::I32, i64::from(JIT_VAL_ARRAY_SET));
+                        let a1 = builder.ins().iconst(types::I32, arr as i64);
+                        let call = builder.ins().call_indirect(
+                            val_sig_ir,
+                            val_fn_ptr,
+                            &[op_c, a1, key, val],
+                        );
                         stack.push(builder.inst_results(call)[0]);
                     }
                 }
@@ -2826,33 +2974,41 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_ARRAY_IN));
                         let a1 = builder.ins().iconst(types::I32, i64::from(arr));
                         let z = builder.ins().f64const(0.0);
-                        let call = builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, key, z]);
+                        let call = builder.ins().call_indirect(
+                            val_sig_ir,
+                            val_fn_ptr,
+                            &[op_c, a1, key, z],
+                        );
                         stack.push(builder.inst_results(call)[0]);
                     } else {
-                        let op_c = builder.ins().iconst(types::I32, i64::from(JIT_VAL_ARRAY_IN));
+                        let op_c = builder
+                            .ins()
+                            .iconst(types::I32, i64::from(JIT_VAL_ARRAY_IN));
                         let a1 = builder.ins().iconst(types::I32, arr as i64);
                         let z = builder.ins().f64const(0.0);
-                        let call = builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, key, z]);
+                        let call = builder.ins().call_indirect(
+                            val_sig_ir,
+                            val_fn_ptr,
+                            &[op_c, a1, key, z],
+                        );
                         stack.push(builder.inst_results(call)[0]);
                     }
                 }
                 Op::DeleteElem(arr) => {
                     let key = stack.pop().expect("DeleteElem key");
                     if mixed {
-                        let op_c =
-                            builder.ins().iconst(types::I32, i64::from(MIXED_ARRAY_DELETE_ELEM));
+                        let op_c = builder
+                            .ins()
+                            .iconst(types::I32, i64::from(MIXED_ARRAY_DELETE_ELEM));
                         let a1 = builder.ins().iconst(types::I32, i64::from(arr));
                         let z = builder.ins().f64const(0.0);
                         builder
                             .ins()
                             .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, key, z]);
                     } else {
-                        let op_c =
-                            builder.ins().iconst(types::I32, i64::from(JIT_VAL_ARRAY_DELETE_ELEM));
+                        let op_c = builder
+                            .ins()
+                            .iconst(types::I32, i64::from(JIT_VAL_ARRAY_DELETE_ELEM));
                         let a1 = builder.ins().iconst(types::I32, arr as i64);
                         let z = builder.ins().f64const(0.0);
                         builder
@@ -2862,16 +3018,18 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                 }
                 Op::DeleteArray(arr) => {
                     if mixed {
-                        let op_c =
-                            builder.ins().iconst(types::I32, i64::from(MIXED_ARRAY_DELETE_ALL));
+                        let op_c = builder
+                            .ins()
+                            .iconst(types::I32, i64::from(MIXED_ARRAY_DELETE_ALL));
                         let a1 = builder.ins().iconst(types::I32, i64::from(arr));
                         let z = builder.ins().f64const(0.0);
                         builder
                             .ins()
                             .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
                     } else {
-                        let op_c =
-                            builder.ins().iconst(types::I32, i64::from(JIT_VAL_ARRAY_DELETE_ALL));
+                        let op_c = builder
+                            .ins()
+                            .iconst(types::I32, i64::from(JIT_VAL_ARRAY_DELETE_ALL));
                         let a1 = builder.ins().iconst(types::I32, arr as i64);
                         let z = builder.ins().f64const(0.0);
                         builder
@@ -2884,19 +3042,25 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                     let key = stack.pop().expect("CompoundAssignIndex key");
                     if mixed {
                         let enc = mixed_encode_array_compound(arr, bop);
-                        let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_ARRAY_COMPOUND));
-                        let a1 = builder.ins().iconst(types::I32, i64::from(enc));
-                        let call = builder
+                        let op_c = builder
                             .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, key, rhs]);
+                            .iconst(types::I32, i64::from(MIXED_ARRAY_COMPOUND));
+                        let a1 = builder.ins().iconst(types::I32, i64::from(enc));
+                        let call = builder.ins().call_indirect(
+                            val_sig_ir,
+                            val_fn_ptr,
+                            &[op_c, a1, key, rhs],
+                        );
                         stack.push(builder.inst_results(call)[0]);
                     } else {
                         let cop = jit_val_op_for_array_compound(bop);
                         let op_c = builder.ins().iconst(types::I32, i64::from(cop));
                         let a1 = builder.ins().iconst(types::I32, arr as i64);
-                        let call = builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, key, rhs]);
+                        let call = builder.ins().call_indirect(
+                            val_sig_ir,
+                            val_fn_ptr,
+                            &[op_c, a1, key, rhs],
+                        );
                         stack.push(builder.inst_results(call)[0]);
                     }
                 }
@@ -2904,21 +3068,27 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                     let key = stack.pop().expect("IncDecIndex key");
                     if mixed {
                         let enc = mixed_encode_array_incdec(arr, kind);
-                        let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_ARRAY_INCDEC));
+                        let op_c = builder
+                            .ins()
+                            .iconst(types::I32, i64::from(MIXED_ARRAY_INCDEC));
                         let a1 = builder.ins().iconst(types::I32, i64::from(enc));
                         let z = builder.ins().f64const(0.0);
-                        let call = builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, key, z]);
+                        let call = builder.ins().call_indirect(
+                            val_sig_ir,
+                            val_fn_ptr,
+                            &[op_c, a1, key, z],
+                        );
                         stack.push(builder.inst_results(call)[0]);
                     } else {
                         let cop = jit_val_op_for_array_incdec(kind);
                         let op_c = builder.ins().iconst(types::I32, i64::from(cop));
                         let a1 = builder.ins().iconst(types::I32, arr as i64);
                         let z = builder.ins().f64const(0.0);
-                        let call = builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, key, z]);
+                        let call = builder.ins().call_indirect(
+                            val_sig_ir,
+                            val_fn_ptr,
+                            &[op_c, a1, key, z],
+                        );
                         stack.push(builder.inst_results(call)[0]);
                     }
                 }
@@ -2931,49 +3101,74 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                     vals.reverse();
                     let z0 = builder.ins().iconst(types::I32, 0);
                     let zf = builder.ins().f64const(0.0);
-                    let op_arg = builder.ins().iconst(types::I32, i64::from(MIXED_JOIN_KEY_ARG));
-                    for v in vals {
-                        builder.ins().call_indirect(val_sig_ir, val_fn_ptr, &[op_arg, z0, v, zf]);
-                    }
-                    let op_join = builder.ins().iconst(types::I32, i64::from(MIXED_JOIN_ARRAY_KEY));
-                    let a1n = builder.ins().iconst(types::I32, i64::try_from(n).unwrap());
-                    let call = builder
+                    let op_arg = builder
                         .ins()
-                        .call_indirect(val_sig_ir, val_fn_ptr, &[op_join, a1n, zf, zf]);
+                        .iconst(types::I32, i64::from(MIXED_JOIN_KEY_ARG));
+                    for v in vals {
+                        builder
+                            .ins()
+                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_arg, z0, v, zf]);
+                    }
+                    let op_join = builder
+                        .ins()
+                        .iconst(types::I32, i64::from(MIXED_JOIN_ARRAY_KEY));
+                    let a1n = builder.ins().iconst(types::I32, i64::try_from(n).unwrap());
+                    let call = builder.ins().call_indirect(
+                        val_sig_ir,
+                        val_fn_ptr,
+                        &[op_join, a1n, zf, zf],
+                    );
                     stack.push(builder.inst_results(call)[0]);
                 }
 
                 // ── Return signals ────────────────────────────────────────
                 Op::ReturnVal => {
                     let val = stack.pop().expect("ReturnVal");
-                    let op_c = builder.ins().iconst(types::I32, i64::from(JIT_VAL_SIGNAL_RETURN_VAL));
+                    let op_c = builder
+                        .ins()
+                        .iconst(types::I32, i64::from(JIT_VAL_SIGNAL_RETURN_VAL));
                     let z32 = builder.ins().iconst(types::I32, 0);
                     let z = builder.ins().f64const(0.0);
-                    builder.ins().call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z32, val, z]);
+                    builder
+                        .ins()
+                        .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z32, val, z]);
                     builder.ins().return_(&[z]);
                     block_terminated = true;
                 }
                 Op::ReturnEmpty => {
-                    let op_c = builder.ins().iconst(types::I32, i64::from(JIT_VAL_SIGNAL_RETURN_EMPTY));
+                    let op_c = builder
+                        .ins()
+                        .iconst(types::I32, i64::from(JIT_VAL_SIGNAL_RETURN_EMPTY));
                     let z32 = builder.ins().iconst(types::I32, 0);
                     let z = builder.ins().f64const(0.0);
-                    builder.ins().call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z32, z, z]);
+                    builder
+                        .ins()
+                        .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z32, z, z]);
                     builder.ins().return_(&[z]);
                     block_terminated = true;
                 }
 
                 // ── ForIn iteration ───────────────────────────────────────
                 Op::ForInStart(arr) => {
-                    let op_c = builder.ins().iconst(types::I32, i64::from(JIT_VAL_FORIN_START));
+                    let op_c = builder
+                        .ins()
+                        .iconst(types::I32, i64::from(JIT_VAL_FORIN_START));
                     let a1 = builder.ins().iconst(types::I32, arr as i64);
                     let z = builder.ins().f64const(0.0);
-                    builder.ins().call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
+                    builder
+                        .ins()
+                        .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
                 }
                 Op::ForInNext { var, end_jump } => {
-                    let op_c = builder.ins().iconst(types::I32, i64::from(JIT_VAL_FORIN_NEXT));
+                    let op_c = builder
+                        .ins()
+                        .iconst(types::I32, i64::from(JIT_VAL_FORIN_NEXT));
                     let a1 = builder.ins().iconst(types::I32, var as i64);
                     let z = builder.ins().f64const(0.0);
-                    let call = builder.ins().call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
+                    let call =
+                        builder
+                            .ins()
+                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
                     let result = builder.inst_results(call)[0];
                     // 0.0 = exhausted → jump to end_jump; 1.0 = has next → continue
                     let zero = builder.ins().f64const(0.0);
@@ -2984,15 +3179,21 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                     );
                     let end_block = block_map[&end_jump];
                     let fall_through = builder.create_block();
-                    builder.ins().brif(exhausted, end_block, &[], fall_through, &[]);
+                    builder
+                        .ins()
+                        .brif(exhausted, end_block, &[], fall_through, &[]);
                     builder.switch_to_block(fall_through);
                     stack.clear();
                 }
                 Op::ForInEnd => {
-                    let op_c = builder.ins().iconst(types::I32, i64::from(JIT_VAL_FORIN_END));
+                    let op_c = builder
+                        .ins()
+                        .iconst(types::I32, i64::from(JIT_VAL_FORIN_END));
                     let z32 = builder.ins().iconst(types::I32, 0);
                     let z = builder.ins().f64const(0.0);
-                    builder.ins().call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z32, z, z]);
+                    builder
+                        .ins()
+                        .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z32, z, z]);
                 }
 
                 // ── Array sorting ─────────────────────────────────────────
@@ -3005,7 +3206,10 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         None => builder.ins().f64const(-1.0),
                     };
                     let z = builder.ins().f64const(0.0);
-                    let call = builder.ins().call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, d, z]);
+                    let call =
+                        builder
+                            .ins()
+                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, d, z]);
                     stack.push(builder.inst_results(call)[0]);
                 }
                 Op::Asorti { src, dest } => {
@@ -3016,7 +3220,10 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         None => builder.ins().f64const(-1.0),
                     };
                     let z = builder.ins().f64const(0.0);
-                    let call = builder.ins().call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, d, z]);
+                    let call =
+                        builder
+                            .ins()
+                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, d, z]);
                     stack.push(builder.inst_results(call)[0]);
                 }
 
@@ -3913,11 +4120,7 @@ mod tests {
 
     #[test]
     fn jit_eligible_typeof() {
-        let t = [
-            Op::PushNum(1.0),
-            Op::TypeofValue,
-            Op::ReturnVal,
-        ];
+        let t = [Op::PushNum(1.0), Op::TypeofValue, Op::ReturnVal];
         assert!(is_jit_eligible(&t));
         assert!(needs_mixed_mode(&t));
         assert!(is_jit_eligible(&[Op::TypeofVar(0), Op::ReturnVal]));
@@ -4073,11 +4276,7 @@ mod tests {
     #[test]
     fn jit_set_field_numeric() {
         setup_test_fields(&[(1, 0.0)]);
-        let r = exec_with_test_field(&[
-            Op::PushNum(1.0),
-            Op::PushNum(42.0),
-            Op::SetField,
-        ]);
+        let r = exec_with_test_field(&[Op::PushNum(1.0), Op::PushNum(42.0), Op::SetField]);
         assert!((r - 42.0).abs() < 1e-15);
         assert!((field_at(1) - 42.0).abs() < 1e-15);
     }
@@ -4148,7 +4347,11 @@ mod tests {
     #[test]
     fn jit_eligible_print_field_sep_field() {
         assert!(is_jit_eligible(&[
-            Op::PrintFieldSepField { f1: 1, sep: 0, f2: 2 },
+            Op::PrintFieldSepField {
+                f1: 1,
+                sep: 0,
+                f2: 2
+            },
             Op::PushNum(0.0),
         ]));
     }
@@ -4156,7 +4359,11 @@ mod tests {
     #[test]
     fn jit_eligible_print_three_fields() {
         assert!(is_jit_eligible(&[
-            Op::PrintThreeFieldsStdout { f1: 1, f2: 2, f3: 3 },
+            Op::PrintThreeFieldsStdout {
+                f1: 1,
+                f2: 2,
+                f3: 3
+            },
             Op::PushNum(0.0),
         ]));
     }
@@ -4164,7 +4371,10 @@ mod tests {
     #[test]
     fn jit_eligible_print_record() {
         assert!(is_jit_eligible(&[
-            Op::Print { argc: 0, redir: crate::bytecode::RedirKind::Stdout },
+            Op::Print {
+                argc: 0,
+                redir: crate::bytecode::RedirKind::Stdout
+            },
             Op::PushNum(0.0),
         ]));
     }
@@ -4195,7 +4405,14 @@ mod tests {
 
     #[test]
     fn jit_print_three_fields_compiles() {
-        let ops = [Op::PrintThreeFieldsStdout { f1: 1, f2: 2, f3: 3 }, Op::PushNum(0.0)];
+        let ops = [
+            Op::PrintThreeFieldsStdout {
+                f1: 1,
+                f2: 2,
+                f3: 3,
+            },
+            Op::PushNum(0.0),
+        ];
         let r = exec(&ops);
         assert!(r.abs() < 1e-15);
     }
@@ -4424,8 +4641,8 @@ mod tests {
         let ops = [
             Op::PushNum(1.0),
             Op::JumpIfFalsePop(3),
-            Op::Next,           // signal raised — JIT returns immediately
-            Op::PushNum(99.0),  // not reached
+            Op::Next,          // signal raised — JIT returns immediately
+            Op::PushNum(99.0), // not reached
         ];
         // Compiles and runs without crash.
         let r = exec(&ops);
@@ -4438,12 +4655,16 @@ mod tests {
     fn jit_print_then_arithmetic() {
         // `{ print $1; sum += $2 }` — fused print followed by slot math.
         extern "C" fn fields(i: i32) -> f64 {
-            match i { 1 => 10.0, 2 => 20.0, _ => 0.0 }
+            match i {
+                1 => 10.0,
+                2 => 20.0,
+                _ => 0.0,
+            }
         }
         let ops = [
-            Op::PrintFieldStdout(1),              // side-effect (dummy)
+            Op::PrintFieldStdout(1),                  // side-effect (dummy)
             Op::AddFieldToSlot { field: 2, slot: 0 }, // sum += $2
-            Op::GetSlot(0),                        // return sum
+            Op::GetSlot(0),                           // return sum
         ];
         let mut slots = [5.0];
         let chunk = try_compile(&ops, &super::empty_compiled_program()).expect("compile");
@@ -4490,7 +4711,10 @@ mod tests {
     fn jit_eligible_forin() {
         assert!(is_jit_eligible(&[
             Op::ForInStart(0),
-            Op::ForInNext { var: 1, end_jump: 4 },
+            Op::ForInNext {
+                var: 1,
+                end_jump: 4
+            },
             Op::IncrSlot(0),
             Op::Jump(1),
             Op::ForInEnd,
@@ -4503,7 +4727,10 @@ mod tests {
         // ForIn with empty array (dummy val_dispatch returns 0 for FORIN_NEXT)
         let ops = [
             Op::ForInStart(0),
-            Op::ForInNext { var: 1, end_jump: 4 },
+            Op::ForInNext {
+                var: 1,
+                end_jump: 4,
+            },
             Op::IncrSlot(0),
             Op::Jump(1),
             Op::ForInEnd,

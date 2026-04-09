@@ -350,19 +350,19 @@ thread_local! {
     /// ForIn iterator stack for JIT-compiled for-in loops.
     static JIT_FORIN_ITERS: RefCell<Vec<ForInState>> = const { RefCell::new(Vec::new()) };
     /// Dynamic string storage for NaN-boxed JIT stack values (indices via [`crate::jit::nan_str_dyn`]).
-    static JIT_DYN_STRINGS: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    static JIT_DYN_STRINGS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     /// Buffered `print` arguments for mixed-mode JIT (`MIXED_PRINT_ARG` / `MIXED_PRINT_FLUSH`).
-    static MIXED_PRINT_SLOTS: RefCell<Vec<Option<f64>>> = RefCell::new(Vec::new());
+    static MIXED_PRINT_SLOTS: RefCell<Vec<Option<f64>>> = const { RefCell::new(Vec::new()) };
     /// Components for multidimensional array keys (`MIXED_JOIN_KEY_ARG` / `MIXED_JOIN_ARRAY_KEY`).
-    static JIT_JOIN_KEY_PARTS: RefCell<Vec<f64>> = RefCell::new(Vec::new());
+    static JIT_JOIN_KEY_PARTS: RefCell<Vec<f64>> = const { RefCell::new(Vec::new()) };
     /// Buffered arguments for JIT `CallBuiltin` (`MIXED_BUILTIN_ARG` / `MIXED_BUILTIN_CALL`).
-    static JIT_BUILTIN_ARGS: RefCell<Vec<Option<f64>>> = RefCell::new(Vec::new());
+    static JIT_BUILTIN_ARGS: RefCell<Vec<Option<f64>>> = const { RefCell::new(Vec::new()) };
     /// Propagate `Error` from mixed JIT callbacks that cannot return `Result` (e.g. `getline` I/O).
-    static JIT_CHUNK_ERR: RefCell<Option<Error>> = RefCell::new(None);
+    static JIT_CHUNK_ERR: RefCell<Option<Error>> = const { RefCell::new(None) };
     /// Buffered args for JIT [`Op::CallUser`] (`MIXED_CALL_USER_ARG` / `MIXED_CALL_USER_CALL`).
-    static JIT_CALL_USER_ARGS: RefCell<Vec<Option<f64>>> = RefCell::new(Vec::new());
+    static JIT_CALL_USER_ARGS: RefCell<Vec<Option<f64>>> = const { RefCell::new(Vec::new()) };
     /// Stashed array key for JIT `sub`/`gsub` on `arr[k]` (`MIXED_*_INDEX_STASH` before `MIXED_*_INDEX`).
-    static SUB_FN_STASH_KEY: RefCell<Option<String>> = RefCell::new(None);
+    static SUB_FN_STASH_KEY: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
 /// Save JIT thread-locals so nested `try_jit_dispatch` / `execute` from a JIT callback
@@ -403,12 +403,8 @@ fn jit_f64_to_value(ctx: &VmCtx<'_>, x: f64) -> Value {
     if is_nan_str(bits) {
         let (is_dyn, idx) = decode_nan_str_bits(bits).unwrap_or((true, 0));
         if is_dyn {
-            let s = JIT_DYN_STRINGS.with(|c| {
-                c.borrow()
-                    .get(idx as usize)
-                    .cloned()
-                    .unwrap_or_default()
-            });
+            let s =
+                JIT_DYN_STRINGS.with(|c| c.borrow().get(idx as usize).cloned().unwrap_or_default());
             Value::Str(s)
         } else {
             Value::Str(ctx.str_ref(idx).to_string())
@@ -439,11 +435,7 @@ fn typeof_scalar_name_for_jit(ctx: &mut VmCtx<'_>, name: &str) -> Value {
             let raw = unsafe { *ptr.add(slot) };
             jit_f64_to_value(ctx, raw)
         } else {
-            ctx.rt
-                .slots
-                .get(slot)
-                .cloned()
-                .unwrap_or(Value::Uninit)
+            ctx.rt.slots.get(slot).cloned().unwrap_or(Value::Uninit)
         };
         return Value::Str(builtins::awk_typeof_value(&v).into());
     }
@@ -471,34 +463,27 @@ fn value_to_jit_f64(_ctx: &mut VmCtx<'_>, v: Value) -> f64 {
     }
 }
 
-fn jit_mixed_op_dispatch(
-    ctx: &mut VmCtx<'_>,
-    op: u32,
-    a1: u32,
-    a2: f64,
-    a3: f64,
-) -> f64 {
+fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64) -> f64 {
     use crate::ast::BinOp;
     use crate::jit::{
-        MIXED_ADD, MIXED_ARRAY_COMPOUND, MIXED_ARRAY_DELETE_ALL, MIXED_ARRAY_DELETE_ELEM,
-        MIXED_ARRAY_GET, MIXED_ARRAY_IN, MIXED_ARRAY_INCDEC, MIXED_ARRAY_SET, MIXED_CMP_EQ,
-        MIXED_CMP_GE, MIXED_CMP_GT, MIXED_CMP_LE, MIXED_CMP_LT, MIXED_CMP_NE, MIXED_CONCAT,
-        MIXED_CONCAT_POOL, MIXED_DIV, MIXED_GET_FIELD, MIXED_GET_SLOT, MIXED_GET_VAR, MIXED_MOD,
-        MIXED_MUL, MIXED_NEG, MIXED_NOT, MIXED_POS, MIXED_PRINT_ARG, MIXED_PRINT_FLUSH,
-        MIXED_ADD_FIELD_TO_SLOT, MIXED_ADD_MUL_FIELDS_TO_SLOT, MIXED_ADD_SLOT_TO_SLOT,
-        MIXED_COMPOUND_ASSIGN_FIELD, MIXED_DECR_SLOT, MIXED_INCDEC_SLOT, MIXED_INCR_SLOT,
-        MIXED_JOIN_ARRAY_KEY, MIXED_JOIN_KEY_ARG, MIXED_PUSH_STR, MIXED_REGEX_MATCH,
-        MIXED_REGEX_NOT_MATCH, MIXED_SET_FIELD, MIXED_SET_VAR, MIXED_SLOT_AS_NUMBER, MIXED_SUB,
-        MIXED_TO_BOOL, MIXED_TRUTHINESS,         MIXED_TYPEOF_ARRAY_ELEM, MIXED_TYPEOF_FIELD,
-        MIXED_TYPEOF_SLOT, MIXED_TYPEOF_VALUE, MIXED_TYPEOF_VAR, MIXED_BUILTIN_ARG,
-        MIXED_BUILTIN_CALL, MIXED_PRINTF_FLUSH, MIXED_SPLIT, MIXED_SPLIT_WITH_FS,
-        MIXED_PATSPLIT, MIXED_PATSPLIT_SEP, MIXED_PATSPLIT_FP, MIXED_PATSPLIT_FP_SEP,
-        MIXED_CALL_USER_ARG, MIXED_CALL_USER_CALL, MIXED_GSUB_FIELD, MIXED_GSUB_INDEX,
-        MIXED_GSUB_INDEX_STASH, MIXED_GSUB_RECORD, MIXED_GSUB_SLOT, MIXED_GSUB_VAR,
-        MIXED_GETLINE_COPROC, MIXED_GETLINE_FILE, MIXED_GETLINE_INTO_RECORD,
-        MIXED_GETLINE_PRIMARY, MIXED_MATCH_BUILTIN, MIXED_MATCH_BUILTIN_ARR,
-        MIXED_PRINT_FLUSH_REDIR, MIXED_PRINTF_FLUSH_REDIR, MIXED_SUB_FIELD, MIXED_SUB_INDEX,
-        MIXED_SUB_INDEX_STASH, MIXED_SUB_RECORD, MIXED_SUB_SLOT, MIXED_SUB_VAR,
+        MIXED_ADD, MIXED_ADD_FIELD_TO_SLOT, MIXED_ADD_MUL_FIELDS_TO_SLOT, MIXED_ADD_SLOT_TO_SLOT,
+        MIXED_ARRAY_COMPOUND, MIXED_ARRAY_DELETE_ALL, MIXED_ARRAY_DELETE_ELEM, MIXED_ARRAY_GET,
+        MIXED_ARRAY_IN, MIXED_ARRAY_INCDEC, MIXED_ARRAY_SET, MIXED_BUILTIN_ARG, MIXED_BUILTIN_CALL,
+        MIXED_CALL_USER_ARG, MIXED_CALL_USER_CALL, MIXED_CMP_EQ, MIXED_CMP_GE, MIXED_CMP_GT,
+        MIXED_CMP_LE, MIXED_CMP_LT, MIXED_CMP_NE, MIXED_COMPOUND_ASSIGN_FIELD, MIXED_CONCAT,
+        MIXED_CONCAT_POOL, MIXED_DECR_SLOT, MIXED_DIV, MIXED_GETLINE_COPROC, MIXED_GETLINE_FILE,
+        MIXED_GETLINE_INTO_RECORD, MIXED_GETLINE_PRIMARY, MIXED_GET_FIELD, MIXED_GET_SLOT,
+        MIXED_GET_VAR, MIXED_GSUB_FIELD, MIXED_GSUB_INDEX, MIXED_GSUB_INDEX_STASH,
+        MIXED_GSUB_RECORD, MIXED_GSUB_SLOT, MIXED_GSUB_VAR, MIXED_INCDEC_SLOT, MIXED_INCR_SLOT,
+        MIXED_JOIN_ARRAY_KEY, MIXED_JOIN_KEY_ARG, MIXED_MATCH_BUILTIN, MIXED_MATCH_BUILTIN_ARR,
+        MIXED_MOD, MIXED_MUL, MIXED_NEG, MIXED_NOT, MIXED_PATSPLIT, MIXED_PATSPLIT_FP,
+        MIXED_PATSPLIT_FP_SEP, MIXED_PATSPLIT_SEP, MIXED_POS, MIXED_PRINTF_FLUSH,
+        MIXED_PRINTF_FLUSH_REDIR, MIXED_PRINT_ARG, MIXED_PRINT_FLUSH, MIXED_PRINT_FLUSH_REDIR,
+        MIXED_PUSH_STR, MIXED_REGEX_MATCH, MIXED_REGEX_NOT_MATCH, MIXED_SET_FIELD, MIXED_SET_VAR,
+        MIXED_SLOT_AS_NUMBER, MIXED_SPLIT, MIXED_SPLIT_WITH_FS, MIXED_SUB, MIXED_SUB_FIELD,
+        MIXED_SUB_INDEX, MIXED_SUB_INDEX_STASH, MIXED_SUB_RECORD, MIXED_SUB_SLOT, MIXED_SUB_VAR,
+        MIXED_TO_BOOL, MIXED_TRUTHINESS, MIXED_TYPEOF_ARRAY_ELEM, MIXED_TYPEOF_FIELD,
+        MIXED_TYPEOF_SLOT, MIXED_TYPEOF_VALUE, MIXED_TYPEOF_VAR,
     };
 
     fn mixed_jit_slot_load_raw(slot: usize) -> f64 {
@@ -540,15 +525,14 @@ fn jit_mixed_op_dispatch(
         MIXED_ADD | MIXED_SUB | MIXED_MUL | MIXED_DIV | MIXED_MOD => {
             let a = jit_f64_to_value(ctx, a2);
             let b = jit_f64_to_value(ctx, a3);
-            let n = match op {
+            match op {
                 MIXED_ADD => a.as_number() + b.as_number(),
                 MIXED_SUB => a.as_number() - b.as_number(),
                 MIXED_MUL => a.as_number() * b.as_number(),
                 MIXED_DIV => a.as_number() / b.as_number(),
                 MIXED_MOD => a.as_number() % b.as_number(),
                 _ => unreachable!(),
-            };
-            n
+            }
         }
         MIXED_CMP_EQ => {
             let r = awk_cmp_eq(&jit_f64_to_value(ctx, a2), &jit_f64_to_value(ctx, a3));
@@ -618,7 +602,11 @@ fn jit_mixed_op_dispatch(
             }
             let m = ctx.rt.regex_ref(&pat).is_match(&s);
             let hit = if op == MIXED_REGEX_MATCH { m } else { !m };
-            if hit { 1.0 } else { 0.0 }
+            if hit {
+                1.0
+            } else {
+                0.0
+            }
         }
         MIXED_PRINT_ARG => {
             let pos = a1 as usize;
@@ -641,7 +629,7 @@ fn jit_mixed_op_dispatch(
                 let mut ors_local = [0u8; 64];
                 let ors_len = ctx.rt.ors_bytes.len().min(64);
                 ors_local[..ors_len].copy_from_slice(&ctx.rt.ors_bytes[..ors_len]);
-                if ctx.print_out.is_some() {
+                if let Some(out) = ctx.print_out.take() {
                     let mut line = String::new();
                     for i in 0..argc {
                         let f = slots.get(i).and_then(|x| *x).unwrap_or(0.0);
@@ -651,7 +639,8 @@ fn jit_mixed_op_dispatch(
                         line.push_str(&jit_f64_to_value(ctx, f).as_str());
                     }
                     line.push_str(std::str::from_utf8(&ors_local[..ors_len]).unwrap_or(""));
-                    ctx.print_out.as_mut().unwrap().push(line);
+                    out.push(line);
+                    ctx.print_out = Some(out);
                 } else {
                     for i in 0..argc {
                         let f = slots.get(i).and_then(|x| *x).unwrap_or(0.0);
@@ -968,11 +957,7 @@ fn jit_mixed_op_dispatch(
                 let raw = unsafe { *ptr.add(slot) };
                 jit_f64_to_value(ctx, raw)
             } else {
-                ctx.rt
-                    .slots
-                    .get(slot)
-                    .cloned()
-                    .unwrap_or(Value::Uninit)
+                ctx.rt.slots.get(slot).cloned().unwrap_or(Value::Uninit)
             };
             let t = builtins::awk_typeof_value(&v);
             value_to_jit_f64(ctx, Value::Str(t.into()))
@@ -1072,14 +1057,8 @@ fn jit_mixed_op_dispatch(
             let seps_name = ctx.str_ref(seps_idx).to_string();
             let s = jit_f64_to_value(ctx, a2).as_str();
             let fp = jit_f64_to_value(ctx, a3).as_str();
-            builtins::patsplit(
-                ctx.rt,
-                &s,
-                &arr_name,
-                Some(&fp),
-                Some(seps_name.as_str()),
-            )
-            .unwrap_or(0.0)
+            builtins::patsplit(ctx.rt, &s, &arr_name, Some(&fp), Some(seps_name.as_str()))
+                .unwrap_or(0.0)
         }
         MIXED_MATCH_BUILTIN => {
             let s = jit_f64_to_value(ctx, a2).as_str();
@@ -1173,15 +1152,7 @@ fn jit_mixed_op_dispatch(
         MIXED_SUB_RECORD => {
             let re_v = jit_f64_to_value(ctx, a2);
             let repl_v = jit_f64_to_value(ctx, a3);
-            match exec_sub_from_values(
-                ctx,
-                SubTarget::Record,
-                false,
-                re_v,
-                repl_v,
-                None,
-                None,
-            ) {
+            match exec_sub_from_values(ctx, SubTarget::Record, false, re_v, repl_v, None, None) {
                 Ok(n) => n,
                 Err(e) => {
                     JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
@@ -1192,15 +1163,7 @@ fn jit_mixed_op_dispatch(
         MIXED_GSUB_RECORD => {
             let re_v = jit_f64_to_value(ctx, a2);
             let repl_v = jit_f64_to_value(ctx, a3);
-            match exec_sub_from_values(
-                ctx,
-                SubTarget::Record,
-                true,
-                re_v,
-                repl_v,
-                None,
-                None,
-            ) {
+            match exec_sub_from_values(ctx, SubTarget::Record, true, re_v, repl_v, None, None) {
                 Ok(n) => n,
                 Err(e) => {
                     JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
@@ -1211,15 +1174,7 @@ fn jit_mixed_op_dispatch(
         MIXED_SUB_VAR => {
             let re_v = jit_f64_to_value(ctx, a2);
             let repl_v = jit_f64_to_value(ctx, a3);
-            match exec_sub_from_values(
-                ctx,
-                SubTarget::Var(a1),
-                false,
-                re_v,
-                repl_v,
-                None,
-                None,
-            ) {
+            match exec_sub_from_values(ctx, SubTarget::Var(a1), false, re_v, repl_v, None, None) {
                 Ok(n) => n,
                 Err(e) => {
                     JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
@@ -1230,15 +1185,7 @@ fn jit_mixed_op_dispatch(
         MIXED_GSUB_VAR => {
             let re_v = jit_f64_to_value(ctx, a2);
             let repl_v = jit_f64_to_value(ctx, a3);
-            match exec_sub_from_values(
-                ctx,
-                SubTarget::Var(a1),
-                true,
-                re_v,
-                repl_v,
-                None,
-                None,
-            ) {
+            match exec_sub_from_values(ctx, SubTarget::Var(a1), true, re_v, repl_v, None, None) {
                 Ok(n) => n,
                 Err(e) => {
                     JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
@@ -1335,7 +1282,9 @@ fn jit_mixed_op_dispatch(
             0.0
         }
         MIXED_SUB_INDEX => {
-            let key = SUB_FN_STASH_KEY.with(|c| c.borrow_mut().take()).unwrap_or_default();
+            let key = SUB_FN_STASH_KEY
+                .with(|c| c.borrow_mut().take())
+                .unwrap_or_default();
             let re_v = jit_f64_to_value(ctx, a2);
             let repl_v = jit_f64_to_value(ctx, a3);
             match exec_sub_from_values(
@@ -1355,7 +1304,9 @@ fn jit_mixed_op_dispatch(
             }
         }
         MIXED_GSUB_INDEX => {
-            let key = SUB_FN_STASH_KEY.with(|c| c.borrow_mut().take()).unwrap_or_default();
+            let key = SUB_FN_STASH_KEY
+                .with(|c| c.borrow_mut().take())
+                .unwrap_or_default();
             let re_v = jit_f64_to_value(ctx, a2);
             let repl_v = jit_f64_to_value(ctx, a3);
             match exec_sub_from_values(
@@ -1706,17 +1657,18 @@ extern "C" fn jit_val_dispatch(op: u32, a1: u32, a2: f64, a3: f64) -> f64 {
         JIT_VAL_ARRAY_COMPOUND_ADD, JIT_VAL_ARRAY_COMPOUND_DIV, JIT_VAL_ARRAY_COMPOUND_MOD,
         JIT_VAL_ARRAY_COMPOUND_MUL, JIT_VAL_ARRAY_COMPOUND_SUB, JIT_VAL_ARRAY_DELETE_ALL,
         JIT_VAL_ARRAY_DELETE_ELEM, JIT_VAL_ARRAY_GET, JIT_VAL_ARRAY_IN,
-        JIT_VAL_ARRAY_INCDEC_POST_DEC, JIT_VAL_ARRAY_INCDEC_POST_INC,
-        JIT_VAL_ARRAY_INCDEC_PRE_DEC, JIT_VAL_ARRAY_INCDEC_PRE_INC, JIT_VAL_ARRAY_SET,
-        JIT_VAL_ASORT, JIT_VAL_ASORTI, JIT_VAL_FORIN_END, JIT_VAL_FORIN_NEXT,
-        JIT_VAL_FORIN_START, JIT_VAL_MATCH_REGEXP, JIT_VAL_SIGNAL_EXIT_CODE,
-        JIT_VAL_SIGNAL_EXIT_DEFAULT, JIT_VAL_SIGNAL_NEXT, JIT_VAL_SIGNAL_NEXT_FILE,
-        JIT_VAL_SIGNAL_RETURN_EMPTY, JIT_VAL_SIGNAL_RETURN_VAL,
+        JIT_VAL_ARRAY_INCDEC_POST_DEC, JIT_VAL_ARRAY_INCDEC_POST_INC, JIT_VAL_ARRAY_INCDEC_PRE_DEC,
+        JIT_VAL_ARRAY_INCDEC_PRE_INC, JIT_VAL_ARRAY_SET, JIT_VAL_ASORT, JIT_VAL_ASORTI,
+        JIT_VAL_FORIN_END, JIT_VAL_FORIN_NEXT, JIT_VAL_FORIN_START, JIT_VAL_MATCH_REGEXP,
+        JIT_VAL_SIGNAL_EXIT_CODE, JIT_VAL_SIGNAL_EXIT_DEFAULT, JIT_VAL_SIGNAL_NEXT,
+        JIT_VAL_SIGNAL_NEXT_FILE, JIT_VAL_SIGNAL_RETURN_EMPTY, JIT_VAL_SIGNAL_RETURN_VAL,
     };
 
     // Signals — set thread-local flag and return immediately.
     match op {
-        JIT_VAL_SIGNAL_NEXT | JIT_VAL_SIGNAL_NEXT_FILE | JIT_VAL_SIGNAL_EXIT_DEFAULT
+        JIT_VAL_SIGNAL_NEXT
+        | JIT_VAL_SIGNAL_NEXT_FILE
+        | JIT_VAL_SIGNAL_EXIT_DEFAULT
         | JIT_VAL_SIGNAL_RETURN_EMPTY => {
             JIT_SIGNAL.with(|c| c.set(op));
             return 0.0;
@@ -1791,8 +1743,10 @@ extern "C" fn jit_val_dispatch(op: u32, a1: u32, a2: f64, a3: f64) -> f64 {
                 ctx.rt.array_delete(&name, None);
                 0.0
             }
-            JIT_VAL_ARRAY_COMPOUND_ADD | JIT_VAL_ARRAY_COMPOUND_SUB
-            | JIT_VAL_ARRAY_COMPOUND_MUL | JIT_VAL_ARRAY_COMPOUND_DIV
+            JIT_VAL_ARRAY_COMPOUND_ADD
+            | JIT_VAL_ARRAY_COMPOUND_SUB
+            | JIT_VAL_ARRAY_COMPOUND_MUL
+            | JIT_VAL_ARRAY_COMPOUND_DIV
             | JIT_VAL_ARRAY_COMPOUND_MOD => {
                 let name = ctx.cp.strings.get(a1);
                 let key = Value::Num(a2).as_str();
@@ -1809,8 +1763,10 @@ extern "C" fn jit_val_dispatch(op: u32, a1: u32, a2: f64, a3: f64) -> f64 {
                 ctx.rt.array_set(name, key, Value::Num(n));
                 n
             }
-            JIT_VAL_ARRAY_INCDEC_PRE_INC | JIT_VAL_ARRAY_INCDEC_POST_INC
-            | JIT_VAL_ARRAY_INCDEC_PRE_DEC | JIT_VAL_ARRAY_INCDEC_POST_DEC => {
+            JIT_VAL_ARRAY_INCDEC_PRE_INC
+            | JIT_VAL_ARRAY_INCDEC_POST_INC
+            | JIT_VAL_ARRAY_INCDEC_PRE_DEC
+            | JIT_VAL_ARRAY_INCDEC_POST_DEC => {
                 let name = ctx.cp.strings.get(a1);
                 let key = Value::Num(a2).as_str();
                 let old_n = ctx.rt.array_get(name, &key).as_number();
@@ -3253,7 +3209,11 @@ pub(crate) fn exec_builtin_dispatch(
 }
 
 /// Run a user function with explicit arguments (VM stack path and JIT `MIXED_CALL_USER_*`).
-pub(crate) fn exec_call_user_inner(ctx: &mut VmCtx<'_>, name: &str, mut vals: Vec<Value>) -> Result<Value> {
+pub(crate) fn exec_call_user_inner(
+    ctx: &mut VmCtx<'_>,
+    name: &str,
+    mut vals: Vec<Value>,
+) -> Result<Value> {
     let func = ctx
         .cp
         .functions
