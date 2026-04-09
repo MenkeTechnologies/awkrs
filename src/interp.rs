@@ -1096,3 +1096,59 @@ fn call_user(fd: &FunctionDef, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<V
     ctx.in_function = was_fn;
     Ok(result)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{match_pattern, pattern_matches, range_step, run_begin};
+    use crate::ast::Pattern;
+    use crate::parser::parse_program;
+    use crate::runtime::Runtime;
+
+    #[test]
+    fn pattern_empty_matches() {
+        let prog = parse_program("").unwrap();
+        let mut rt = Runtime::new();
+        rt.set_record_from_line("anything");
+        assert!(pattern_matches(&Pattern::Empty, &mut rt, &prog).unwrap());
+    }
+
+    #[test]
+    fn pattern_regexp_respects_record() {
+        let prog = parse_program("").unwrap();
+        let mut rt = Runtime::new();
+        rt.set_record_from_line("hello");
+        assert!(pattern_matches(&Pattern::Regexp("ell".into()), &mut rt, &prog).unwrap());
+        assert!(!pattern_matches(&Pattern::Regexp("^z".into()), &mut rt, &prog).unwrap());
+    }
+
+    #[test]
+    fn match_pattern_rejects_nested_range() {
+        let prog = parse_program("").unwrap();
+        let mut rt = Runtime::new();
+        let p = Pattern::Range(
+            Box::new(Pattern::Regexp("a".into())),
+            Box::new(Pattern::Regexp("b".into())),
+        );
+        assert!(match_pattern(&p, &mut rt, &prog).is_err());
+    }
+
+    #[test]
+    fn range_step_enters_after_start_pattern() {
+        let prog = parse_program("").unwrap();
+        let mut rt = Runtime::new();
+        rt.set_record_from_line("start");
+        let p1 = Pattern::Regexp("start".into());
+        let p2 = Pattern::Regexp("end".into());
+        let mut state = false;
+        assert!(range_step(&mut state, &p1, &p2, &mut rt, &prog).unwrap());
+        assert!(state);
+    }
+
+    #[test]
+    fn run_begin_executes_assignments() {
+        let prog = parse_program("BEGIN { answer = 42 }").unwrap();
+        let mut rt = Runtime::new();
+        run_begin(&prog, &mut rt).unwrap();
+        assert_eq!(rt.vars.get("answer").unwrap().as_number(), 42.0);
+    }
+}

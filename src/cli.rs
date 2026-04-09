@@ -155,3 +155,52 @@ pub enum MawkWAction {
     Help,
     Version,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{Args, MawkWAction};
+    use clap::Parser;
+
+    #[test]
+    fn mawk_w_help_returns_action() {
+        let mut a = Args::try_parse_from(["awkrs", "-W", "help"]).unwrap();
+        assert!(matches!(a.apply_mawk_w(), Err(MawkWAction::Help)));
+    }
+
+    #[test]
+    fn mawk_w_version_alias_v() {
+        let mut a = Args::try_parse_from(["awkrs", "-W", "version"]).unwrap();
+        assert!(matches!(a.apply_mawk_w(), Err(MawkWAction::Version)));
+        let mut b = Args::try_parse_from(["awkrs", "-W", "v"]).unwrap();
+        assert!(matches!(b.apply_mawk_w(), Err(MawkWAction::Version)));
+    }
+
+    #[test]
+    fn mawk_w_comma_separated_merged() {
+        let mut a = Args::try_parse_from(["awkrs", "-W", "help,version"]).unwrap();
+        assert!(matches!(a.apply_mawk_w(), Err(MawkWAction::Help)));
+    }
+
+    #[test]
+    fn mawk_w_exec_sets_exec_file() {
+        let mut a = Args::try_parse_from(["awkrs", "-W", "exec=/tmp/x.awk"]).unwrap();
+        assert!(a.apply_mawk_w().is_ok());
+        assert_eq!(
+            a.exec_file.as_deref(),
+            Some(std::path::Path::new("/tmp/x.awk"))
+        );
+    }
+
+    #[test]
+    fn threads_and_field_sep_parse() {
+        let a = Args::try_parse_from(["awkrs", "-j", "4", "-F", ",", "{print $1}"]).unwrap();
+        assert_eq!(a.threads, Some(4));
+        assert_eq!(a.field_sep.as_deref(), Some(","));
+    }
+
+    #[test]
+    fn assign_flag_collects() {
+        let a = Args::try_parse_from(["awkrs", "-v", "a=1", "-v", "b=two", "{print a,b}"]).unwrap();
+        assert_eq!(a.assigns, vec!["a=1".to_string(), "b=two".to_string()]);
+    }
+}

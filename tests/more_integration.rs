@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::run_awkrs_stdin;
+use common::{run_awkrs_file, run_awkrs_stdin};
 use std::process::{Command, Stdio};
 
 #[test]
@@ -601,4 +601,146 @@ fn rand_bounded_after_srand() {
     let (c, o, _) = run_awkrs_stdin("BEGIN { srand(1); print (rand() < 1 && rand() >= 0) }", "");
     assert_eq!(c, 0);
     assert_eq!(o, "1\n");
+}
+
+#[test]
+fn match_with_array_captures() {
+    let (c, o, _) = run_awkrs_stdin(
+        "BEGIN { n = match(\"foo123bar\", \"([0-9]+)\", a); print n, a[1] }",
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "4 123\n");
+}
+
+#[test]
+fn sub_amp_backreference_style() {
+    let (c, o, _) = run_awkrs_stdin("{ sub(\"a\", \"[&]\"); print }", "abc\n");
+    assert_eq!(c, 0);
+    assert_eq!(o, "[a]bc\n");
+}
+
+#[test]
+fn gsub_ampersand_replacement() {
+    let (c, o, _) = run_awkrs_stdin("{ gsub(\"o\", \"(&)\"); print }", "foo\n");
+    assert_eq!(c, 0);
+    assert_eq!(o, "f(o)(o)\n");
+}
+
+#[test]
+fn begin_end_nr_fnr() {
+    let (c, o, _) = run_awkrs_stdin(
+        "BEGIN { print NR, FNR } { print NR, FNR } END { print NR, FNR }",
+        "a\n",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "0 0\n1 1\n1 1\n");
+}
+
+#[test]
+fn empty_field_between_commas() {
+    let (c, o, _) = run_awkrs_stdin("BEGIN { FS = \",\" } { print NF, $2 }", "a,,c\n");
+    assert_eq!(c, 0);
+    assert_eq!(o, "3 \n");
+}
+
+#[test]
+fn default_ofmt_prints_number() {
+    let (c, o, _) = run_awkrs_stdin("BEGIN { print 1.5 }", "");
+    assert_eq!(c, 0);
+    assert!(o.contains('1') && o.contains('5'), "got {o:?}");
+}
+
+#[test]
+fn relop_string_vs_number_mixed() {
+    let (c, o, _) = run_awkrs_stdin("BEGIN { print (\"10\" < 9), (\"10\" < \"9\") }", "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "0 0\n");
+}
+
+#[test]
+fn print_multiple_args_ofs() {
+    let (c, o, _) = run_awkrs_stdin("BEGIN { OFS=\":\"; print 1,2,3 }", "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "1:2:3\n");
+}
+
+#[test]
+fn record_ors_concat_print() {
+    let (c, o, _) = run_awkrs_stdin("BEGIN { ORS=\"|\"; print \"a\"; print \"b\" }", "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "a|b|");
+}
+
+#[test]
+fn nested_arrays_subscript_expr() {
+    let (c, o, _) = run_awkrs_stdin("BEGIN { i=1; a[i]=10; print a[1] }", "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "10\n");
+}
+
+#[test]
+fn comparison_chain() {
+    let (c, o, _) = run_awkrs_stdin("BEGIN { print (1 < 2 && 2 < 3) }", "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "1\n");
+}
+
+#[test]
+fn exit_in_action_end_still_runs() {
+    let (c, o, _) = run_awkrs_stdin("{ exit 0 } END { print \"e\" }", "x\n");
+    assert_eq!(c, 0);
+    assert_eq!(o, "e\n");
+}
+
+#[test]
+fn getline_into_var_from_string_file() {
+    let dir = std::env::temp_dir();
+    let path = dir.join(format!("awkrs_gl2_{}.txt", std::process::id()));
+    std::fs::write(&path, "onlyline\n").unwrap();
+    let p = path.to_string_lossy().replace('\\', "/");
+    let prog = format!("BEGIN {{ getline x < \"{p}\"; print x }}");
+    let (c, o, _) = run_awkrs_stdin(&prog, "");
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(c, 0);
+    assert_eq!(o, "onlyline\n");
+}
+
+#[test]
+fn split_returns_zero_on_empty_string() {
+    let (c, o, _) = run_awkrs_stdin("BEGIN { n = split(\"\", a); print n }", "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "0\n");
+}
+
+#[test]
+fn match_returns_zero_for_no_match_end_to_end() {
+    let (c, o, _) = run_awkrs_stdin("BEGIN { print match(\"abc\", \"z\") }", "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "0\n");
+}
+
+#[test]
+fn sprintf_escaped_percent() {
+    let (c, o, _) = run_awkrs_stdin("BEGIN { print sprintf(\"100%%\") }", "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "100%\n");
+}
+
+#[test]
+fn delete_scalar_then_use() {
+    let (c, o, _) = run_awkrs_stdin("BEGIN { x=1; delete x; print x+0 }", "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "0\n");
+}
+
+#[test]
+fn file_input_slurped_fast_path_two_lines() {
+    let dir = std::env::temp_dir();
+    let path = dir.join(format!("awkrs_slurp_{}.txt", std::process::id()));
+    std::fs::write(&path, "aa bb\ncc dd\n").expect("temp data");
+    let (c, o, e) = run_awkrs_file("{ print $1 }", &path);
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(c, 0, "stderr={e:?}");
+    assert_eq!(o, "aa\ncc\n");
 }

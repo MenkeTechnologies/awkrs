@@ -529,4 +529,29 @@ mod tests {
         let s = awk_sprintf_with_decimal("%.4g", &[Value::Num(PI)], ',').unwrap();
         assert!(s.contains(','), "got {s:?}");
     }
+
+    #[test]
+    fn negative_integer_percent_d() {
+        let s = awk_sprintf("%d", &[Value::Num(-42.0)]).unwrap();
+        assert_eq!(s, "-42");
+    }
+
+    #[test]
+    fn percent_i_same_as_d_for_integers() {
+        let a = awk_sprintf("%i", &[Value::Num(5.0)]).unwrap();
+        let b = awk_sprintf("%d", &[Value::Num(5.0)]).unwrap();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn string_s_width_pad() {
+        let s = awk_sprintf("%5s", &[Value::Str("hi".into())]).unwrap();
+        assert_eq!(s, "   hi");
+    }
+
+    #[test]
+    fn float_negative_precision_two() {
+        let s = awk_sprintf("%.2f", &[Value::Num(-1.234)]).unwrap();
+        assert_eq!(s, "-1.23");
+    }
 }

@@ -135,4 +135,10 @@ mod tests {
         let p = parse_program("function f() { exit 1 } BEGIN { }").unwrap();
         assert!(!record_rules_parallel_safe(&p));
     }
+
+    #[test]
+    fn parallel_unsafe_print_redirect() {
+        let p = parse_program(r#"{ print $1 > "out.txt" }"#).unwrap();
+        assert!(!record_rules_parallel_safe(&p));
+    }
 }
