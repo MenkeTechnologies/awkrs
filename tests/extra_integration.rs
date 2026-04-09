@@ -722,3 +722,55 @@ fn jit_sum_fields_loop() {
     assert_eq!(c, 0, "stderr: {e}");
     assert_eq!(o, "6\n30\n");
 }
+
+#[test]
+fn jit_return_from_function() {
+    let (c, o, e) = run_awkrs_stdin_args_env(
+        std::iter::empty::<&str>(),
+        "function double(x) { return x * 2 } BEGIN { print double(21) }",
+        "",
+        jit_env(),
+    );
+    assert_eq!(c, 0, "stderr: {e}");
+    assert_eq!(o, "42\n");
+}
+
+#[test]
+fn jit_for_in_count_keys() {
+    // Uses fused ArrayFieldAddConst for `a[$1] += 1` (correct string-key path),
+    // then ForIn to count keys.
+    let (c, o, e) = run_awkrs_stdin_args_env(
+        std::iter::empty::<&str>(),
+        "{ a[$1] += 1 } END { n=0; for (k in a) n++; print n }",
+        "x\ny\nz\nx\n",
+        jit_env(),
+    );
+    assert_eq!(c, 0, "stderr: {e}");
+    assert_eq!(o, "3\n");
+}
+
+#[test]
+fn jit_for_in_sum_values() {
+    // Uses fused ArrayFieldAddConst for array population,
+    // then ForIn + fused ArrayFieldAddConst to sum values.
+    let (c, o, e) = run_awkrs_stdin_args_env(
+        std::iter::empty::<&str>(),
+        "{ a[$1] += $2 } END { s=0; for (k in a) s += a[k]; print s }",
+        "x 10\ny 20\nz 30\n",
+        jit_env(),
+    );
+    assert_eq!(c, 0, "stderr: {e}");
+    assert_eq!(o, "60\n");
+}
+
+#[test]
+fn jit_asort_returns_count() {
+    let (c, o, e) = run_awkrs_stdin_args_env(
+        std::iter::empty::<&str>(),
+        "END { a[1]=30; a[2]=10; a[3]=20; print asort(a) }",
+        "",
+        jit_env(),
+    );
+    assert_eq!(c, 0, "stderr: {e}");
+    assert_eq!(o, "3\n");
+}

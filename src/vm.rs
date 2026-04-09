@@ -340,8 +340,15 @@ thread_local! {
     static JIT_SLOTS_LEN: Cell<usize> = const { Cell::new(0) };
     /// Signal raised by JIT (0 = none, >0 = signal type from `JIT_VAL_SIGNAL_*`).
     static JIT_SIGNAL: Cell<u32> = const { Cell::new(0) };
-    /// Argument for signal (e.g. exit code for `ExitWithCode`).
+    /// Argument for signal (e.g. exit code for `ExitWithCode`, return value for `ReturnVal`).
     static JIT_SIGNAL_ARG: Cell<f64> = const { Cell::new(0.0) };
+}
+
+use std::cell::RefCell;
+
+thread_local! {
+    /// ForIn iterator stack for JIT-compiled for-in loops.
+    static JIT_FORIN_ITERS: RefCell<Vec<ForInState>> = const { RefCell::new(Vec::new()) };
 }
 
 fn sync_jit_slot_if_scalar(ctx: &VmCtx<'_>, name: &str) {
@@ -638,17 +645,20 @@ extern "C" fn jit_val_dispatch(op: u32, a1: u32, a2: f64, a3: f64) -> f64 {
         JIT_VAL_ARRAY_DELETE_ELEM, JIT_VAL_ARRAY_GET, JIT_VAL_ARRAY_IN,
         JIT_VAL_ARRAY_INCDEC_POST_DEC, JIT_VAL_ARRAY_INCDEC_POST_INC,
         JIT_VAL_ARRAY_INCDEC_PRE_DEC, JIT_VAL_ARRAY_INCDEC_PRE_INC, JIT_VAL_ARRAY_SET,
-        JIT_VAL_MATCH_REGEXP, JIT_VAL_SIGNAL_EXIT_CODE, JIT_VAL_SIGNAL_EXIT_DEFAULT,
-        JIT_VAL_SIGNAL_NEXT, JIT_VAL_SIGNAL_NEXT_FILE,
+        JIT_VAL_ASORT, JIT_VAL_ASORTI, JIT_VAL_FORIN_END, JIT_VAL_FORIN_NEXT,
+        JIT_VAL_FORIN_START, JIT_VAL_MATCH_REGEXP, JIT_VAL_SIGNAL_EXIT_CODE,
+        JIT_VAL_SIGNAL_EXIT_DEFAULT, JIT_VAL_SIGNAL_NEXT, JIT_VAL_SIGNAL_NEXT_FILE,
+        JIT_VAL_SIGNAL_RETURN_EMPTY, JIT_VAL_SIGNAL_RETURN_VAL,
     };
 
     // Signals — set thread-local flag and return immediately.
     match op {
-        JIT_VAL_SIGNAL_NEXT | JIT_VAL_SIGNAL_NEXT_FILE | JIT_VAL_SIGNAL_EXIT_DEFAULT => {
+        JIT_VAL_SIGNAL_NEXT | JIT_VAL_SIGNAL_NEXT_FILE | JIT_VAL_SIGNAL_EXIT_DEFAULT
+        | JIT_VAL_SIGNAL_RETURN_EMPTY => {
             JIT_SIGNAL.with(|c| c.set(op));
             return 0.0;
         }
-        JIT_VAL_SIGNAL_EXIT_CODE => {
+        JIT_VAL_SIGNAL_EXIT_CODE | JIT_VAL_SIGNAL_RETURN_VAL => {
             JIT_SIGNAL.with(|c| c.set(op));
             JIT_SIGNAL_ARG.with(|c| c.set(a2));
             return 0.0;
@@ -741,6 +751,56 @@ extern "C" fn jit_val_dispatch(op: u32, a1: u32, a2: f64, a3: f64) -> f64 {
                     _ => old_n,
                 }
             }
+            // ── ForIn iteration ────────────────────────────────────────
+            JIT_VAL_FORIN_START => {
+                let name = ctx.cp.strings.get(a1);
+                let keys = ctx.rt.array_keys(name);
+                JIT_FORIN_ITERS.with(|c| {
+                    c.borrow_mut().push(ForInState { keys, index: 0 });
+                });
+                0.0
+            }
+            JIT_VAL_FORIN_NEXT => {
+                let var_idx = a1;
+                JIT_FORIN_ITERS.with(|c| {
+                    let mut iters = c.borrow_mut();
+                    let state = iters.last_mut().expect("ForInNext without ForInStart");
+                    if state.index >= state.keys.len() {
+                        0.0 // exhausted
+                    } else {
+                        let key = state.keys[state.index].clone();
+                        state.index += 1;
+                        let name = ctx.str_ref(var_idx).to_string();
+                        ctx.set_var(&name, Value::Str(key));
+                        1.0 // has next
+                    }
+                })
+            }
+            JIT_VAL_FORIN_END => {
+                JIT_FORIN_ITERS.with(|c| {
+                    c.borrow_mut().pop();
+                });
+                0.0
+            }
+            // ── Array sorting ──────────────────────────────────────────
+            JIT_VAL_ASORT => {
+                let s = ctx.cp.strings.get(a1);
+                let d = if a2 < 0.0 {
+                    None
+                } else {
+                    Some(ctx.cp.strings.get(a2 as u32))
+                };
+                builtins::asort(ctx.rt, s, d).unwrap_or(0.0)
+            }
+            JIT_VAL_ASORTI => {
+                let s = ctx.cp.strings.get(a1);
+                let d = if a2 < 0.0 {
+                    None
+                } else {
+                    Some(ctx.cp.strings.get(a2 as u32))
+                };
+                builtins::asorti(ctx.rt, s, d).unwrap_or(0.0)
+            }
             _ => 0.0,
         }
     })
@@ -787,6 +847,7 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Option<VmSignal> {
     JIT_VMCTX_PTR.with(|cell| cell.set(std::ptr::null_mut()));
     JIT_SLOTS_PTR.with(|cell| cell.set(std::ptr::null_mut()));
     JIT_SLOTS_LEN.with(|cell| cell.set(0));
+    JIT_FORIN_ITERS.with(|c| c.borrow_mut().clear());
 
     // JIT compilation failed — fall back to interpreter.
     result.as_ref()?;
@@ -818,6 +879,13 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Option<VmSignal> {
             ctx.rt.exit_code = code;
             ctx.rt.exit_pending = true;
             return Some(VmSignal::ExitPending);
+        }
+        crate::jit::JIT_VAL_SIGNAL_RETURN_VAL => {
+            let val = JIT_SIGNAL_ARG.with(|c| c.get());
+            return Some(VmSignal::Return(Value::Num(val)));
+        }
+        crate::jit::JIT_VAL_SIGNAL_RETURN_EMPTY => {
+            return Some(VmSignal::Return(Value::Str(String::new())));
         }
         _ => {}
     }
