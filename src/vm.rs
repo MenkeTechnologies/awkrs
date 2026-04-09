@@ -359,6 +359,42 @@ thread_local! {
     static JIT_BUILTIN_ARGS: RefCell<Vec<Option<f64>>> = RefCell::new(Vec::new());
     /// Propagate `Error` from mixed JIT callbacks that cannot return `Result` (e.g. `getline` I/O).
     static JIT_CHUNK_ERR: RefCell<Option<Error>> = RefCell::new(None);
+    /// Buffered args for JIT [`Op::CallUser`] (`MIXED_CALL_USER_ARG` / `MIXED_CALL_USER_CALL`).
+    static JIT_CALL_USER_ARGS: RefCell<Vec<Option<f64>>> = RefCell::new(Vec::new());
+    /// Stashed array key for JIT `sub`/`gsub` on `arr[k]` (`MIXED_*_INDEX_STASH` before `MIXED_*_INDEX`).
+    static SUB_FN_STASH_KEY: RefCell<Option<String>> = RefCell::new(None);
+}
+
+/// Save JIT thread-locals so nested `try_jit_dispatch` / `execute` from a JIT callback
+/// restores the outer native code's pointers (otherwise the outer chunk reads null `JIT_SLOTS_PTR`).
+struct NestedJitTlsGuard {
+    rt: *mut Runtime,
+    cp: *const CompiledProgram,
+    vmctx: *mut VmCtx<'static>,
+    slots: *mut f64,
+    len: usize,
+}
+
+impl NestedJitTlsGuard {
+    fn new() -> Self {
+        Self {
+            rt: JIT_RT_PTR.with(|c| c.get()),
+            cp: JIT_CP_PTR.with(|c| c.get()),
+            vmctx: JIT_VMCTX_PTR.with(|c| c.get()),
+            slots: JIT_SLOTS_PTR.with(|c| c.get()),
+            len: JIT_SLOTS_LEN.with(|c| c.get()),
+        }
+    }
+}
+
+impl Drop for NestedJitTlsGuard {
+    fn drop(&mut self) {
+        JIT_RT_PTR.with(|c| c.set(self.rt));
+        JIT_CP_PTR.with(|c| c.set(self.cp));
+        JIT_VMCTX_PTR.with(|c| c.set(self.vmctx));
+        JIT_SLOTS_PTR.with(|c| c.set(self.slots));
+        JIT_SLOTS_LEN.with(|c| c.set(self.len));
+    }
 }
 
 fn jit_f64_to_value(ctx: &VmCtx<'_>, x: f64) -> Value {
@@ -457,9 +493,12 @@ fn jit_mixed_op_dispatch(
         MIXED_TYPEOF_SLOT, MIXED_TYPEOF_VALUE, MIXED_TYPEOF_VAR, MIXED_BUILTIN_ARG,
         MIXED_BUILTIN_CALL, MIXED_PRINTF_FLUSH, MIXED_SPLIT, MIXED_SPLIT_WITH_FS,
         MIXED_PATSPLIT, MIXED_PATSPLIT_SEP, MIXED_PATSPLIT_FP, MIXED_PATSPLIT_FP_SEP,
+        MIXED_CALL_USER_ARG, MIXED_CALL_USER_CALL, MIXED_GSUB_FIELD, MIXED_GSUB_INDEX,
+        MIXED_GSUB_INDEX_STASH, MIXED_GSUB_RECORD, MIXED_GSUB_SLOT, MIXED_GSUB_VAR,
         MIXED_GETLINE_COPROC, MIXED_GETLINE_FILE, MIXED_GETLINE_INTO_RECORD,
         MIXED_GETLINE_PRIMARY, MIXED_MATCH_BUILTIN, MIXED_MATCH_BUILTIN_ARR,
-        MIXED_PRINT_FLUSH_REDIR, MIXED_PRINTF_FLUSH_REDIR,
+        MIXED_PRINT_FLUSH_REDIR, MIXED_PRINTF_FLUSH_REDIR, MIXED_SUB_FIELD, MIXED_SUB_INDEX,
+        MIXED_SUB_INDEX_STASH, MIXED_SUB_RECORD, MIXED_SUB_SLOT, MIXED_SUB_VAR,
     };
 
     fn mixed_jit_slot_load_raw(slot: usize) -> f64 {
@@ -1097,6 +1136,244 @@ fn jit_mixed_op_dispatch(
             }
             0.0
         }
+        MIXED_CALL_USER_ARG => {
+            let pos = a1 as usize;
+            JIT_CALL_USER_ARGS.with(|c| {
+                let mut v = c.borrow_mut();
+                if v.len() <= pos {
+                    v.resize(pos + 1, None);
+                }
+                v[pos] = Some(a2);
+            });
+            0.0
+        }
+        MIXED_CALL_USER_CALL => {
+            let name = ctx.str_ref(a1).to_string();
+            let argc = a2 as usize;
+            let args: Vec<Value> = JIT_CALL_USER_ARGS.with(|c| {
+                let b = c.borrow();
+                (0..argc)
+                    .map(|i| {
+                        b.get(i)
+                            .and_then(|x| *x)
+                            .map(|f| jit_f64_to_value(ctx, f))
+                            .unwrap_or(Value::Uninit)
+                    })
+                    .collect()
+            });
+            JIT_CALL_USER_ARGS.with(|c| c.borrow_mut().clear());
+            match exec_call_user_inner(ctx, name.as_str(), args) {
+                Ok(v) => value_to_jit_f64(ctx, v),
+                Err(e) => {
+                    JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+                    0.0
+                }
+            }
+        }
+        MIXED_SUB_RECORD => {
+            let re_v = jit_f64_to_value(ctx, a2);
+            let repl_v = jit_f64_to_value(ctx, a3);
+            match exec_sub_from_values(
+                ctx,
+                SubTarget::Record,
+                false,
+                re_v,
+                repl_v,
+                None,
+                None,
+            ) {
+                Ok(n) => n,
+                Err(e) => {
+                    JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+                    0.0
+                }
+            }
+        }
+        MIXED_GSUB_RECORD => {
+            let re_v = jit_f64_to_value(ctx, a2);
+            let repl_v = jit_f64_to_value(ctx, a3);
+            match exec_sub_from_values(
+                ctx,
+                SubTarget::Record,
+                true,
+                re_v,
+                repl_v,
+                None,
+                None,
+            ) {
+                Ok(n) => n,
+                Err(e) => {
+                    JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+                    0.0
+                }
+            }
+        }
+        MIXED_SUB_VAR => {
+            let re_v = jit_f64_to_value(ctx, a2);
+            let repl_v = jit_f64_to_value(ctx, a3);
+            match exec_sub_from_values(
+                ctx,
+                SubTarget::Var(a1),
+                false,
+                re_v,
+                repl_v,
+                None,
+                None,
+            ) {
+                Ok(n) => n,
+                Err(e) => {
+                    JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+                    0.0
+                }
+            }
+        }
+        MIXED_GSUB_VAR => {
+            let re_v = jit_f64_to_value(ctx, a2);
+            let repl_v = jit_f64_to_value(ctx, a3);
+            match exec_sub_from_values(
+                ctx,
+                SubTarget::Var(a1),
+                true,
+                re_v,
+                repl_v,
+                None,
+                None,
+            ) {
+                Ok(n) => n,
+                Err(e) => {
+                    JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+                    0.0
+                }
+            }
+        }
+        MIXED_SUB_SLOT => {
+            let re_v = jit_f64_to_value(ctx, a2);
+            let repl_v = jit_f64_to_value(ctx, a3);
+            match exec_sub_from_values(
+                ctx,
+                SubTarget::SlotVar(a1 as u16),
+                false,
+                re_v,
+                repl_v,
+                None,
+                None,
+            ) {
+                Ok(n) => n,
+                Err(e) => {
+                    JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+                    0.0
+                }
+            }
+        }
+        MIXED_GSUB_SLOT => {
+            let re_v = jit_f64_to_value(ctx, a2);
+            let repl_v = jit_f64_to_value(ctx, a3);
+            match exec_sub_from_values(
+                ctx,
+                SubTarget::SlotVar(a1 as u16),
+                true,
+                re_v,
+                repl_v,
+                None,
+                None,
+            ) {
+                Ok(n) => n,
+                Err(e) => {
+                    JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+                    0.0
+                }
+            }
+        }
+        MIXED_SUB_FIELD => {
+            let field_i = a1 as i32;
+            let re_v = jit_f64_to_value(ctx, a2);
+            let repl_v = jit_f64_to_value(ctx, a3);
+            match exec_sub_from_values(
+                ctx,
+                SubTarget::Field,
+                false,
+                re_v,
+                repl_v,
+                None,
+                Some(field_i),
+            ) {
+                Ok(n) => n,
+                Err(e) => {
+                    JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+                    0.0
+                }
+            }
+        }
+        MIXED_GSUB_FIELD => {
+            let field_i = a1 as i32;
+            let re_v = jit_f64_to_value(ctx, a2);
+            let repl_v = jit_f64_to_value(ctx, a3);
+            match exec_sub_from_values(
+                ctx,
+                SubTarget::Field,
+                true,
+                re_v,
+                repl_v,
+                None,
+                Some(field_i),
+            ) {
+                Ok(n) => n,
+                Err(e) => {
+                    JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+                    0.0
+                }
+            }
+        }
+        MIXED_SUB_INDEX_STASH => {
+            let k = jit_f64_to_value(ctx, a2).into_string();
+            SUB_FN_STASH_KEY.with(|c| *c.borrow_mut() = Some(k));
+            0.0
+        }
+        MIXED_GSUB_INDEX_STASH => {
+            let k = jit_f64_to_value(ctx, a2).into_string();
+            SUB_FN_STASH_KEY.with(|c| *c.borrow_mut() = Some(k));
+            0.0
+        }
+        MIXED_SUB_INDEX => {
+            let key = SUB_FN_STASH_KEY.with(|c| c.borrow_mut().take()).unwrap_or_default();
+            let re_v = jit_f64_to_value(ctx, a2);
+            let repl_v = jit_f64_to_value(ctx, a3);
+            match exec_sub_from_values(
+                ctx,
+                SubTarget::Index(a1),
+                false,
+                re_v,
+                repl_v,
+                Some(key),
+                None,
+            ) {
+                Ok(n) => n,
+                Err(e) => {
+                    JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+                    0.0
+                }
+            }
+        }
+        MIXED_GSUB_INDEX => {
+            let key = SUB_FN_STASH_KEY.with(|c| c.borrow_mut().take()).unwrap_or_default();
+            let re_v = jit_f64_to_value(ctx, a2);
+            let repl_v = jit_f64_to_value(ctx, a3);
+            match exec_sub_from_values(
+                ctx,
+                SubTarget::Index(a1),
+                true,
+                re_v,
+                repl_v,
+                Some(key),
+                None,
+            ) {
+                Ok(n) => n,
+                Err(e) => {
+                    JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+                    0.0
+                }
+            }
+        }
         _ => 0.0,
     }
 }
@@ -1116,6 +1393,20 @@ fn sync_jit_slot_if_scalar(ctx: &VmCtx<'_>, name: &str) {
     }
 }
 
+/// During mixed JIT, `SetSlot` writes only the scratch buffer; `rt.slots` is refreshed at chunk end.
+/// Callbacks that read a slotted scalar before mutating must use this instead of `rt.slots` alone.
+fn slot_value_live_for_jit(ctx: &VmCtx<'_>, slot: u16) -> Value {
+    let ptr = JIT_SLOTS_PTR.get();
+    let len = JIT_SLOTS_LEN.get();
+    let us = slot as usize;
+    if !ptr.is_null() && us < len {
+        let raw = unsafe { *ptr.add(us) };
+        jit_f64_to_value(ctx, raw)
+    } else {
+        ctx.rt.slots[us].clone()
+    }
+}
+
 /// After interpreter/callback code mutates `rt.slots[slot]` (e.g. string loop vars),
 /// mirror `Value` into the JIT scratch buffer so `GetSlot` / `MIXED_GET_SLOT` see it.
 fn sync_jit_slot_value(ctx: &mut VmCtx<'_>, slot: u16) {
@@ -1128,6 +1419,13 @@ fn sync_jit_slot_value(ctx: &mut VmCtx<'_>, slot: u16) {
     let f = value_to_jit_f64(ctx, v);
     unsafe {
         ptr.add(slot as usize).write(f);
+    }
+}
+
+#[inline]
+fn sync_jit_slot_for_scalar_name(ctx: &mut VmCtx<'_>, name: &str) {
+    if let Some(&slot) = ctx.cp.slot_map.get(name) {
+        sync_jit_slot_value(ctx, slot);
     }
 }
 
@@ -1604,6 +1902,8 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Result<Option<VmSignal>>
     MIXED_PRINT_SLOTS.with(|c| c.borrow_mut().clear());
     JIT_JOIN_KEY_PARTS.with(|c| c.borrow_mut().clear());
     JIT_BUILTIN_ARGS.with(|c| c.borrow_mut().clear());
+    JIT_CALL_USER_ARGS.with(|c| c.borrow_mut().clear());
+    SUB_FN_STASH_KEY.with(|c| *c.borrow_mut() = None);
     let mut jit_slots: Vec<f64> = if mixed {
         ctx.rt
             .slots
@@ -1614,6 +1914,8 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Result<Option<VmSignal>>
     } else {
         ctx.rt.slots.iter().map(|v| v.as_number()).collect()
     };
+
+    let _nested_jit_tls = NestedJitTlsGuard::new();
 
     // Set thread-local Runtime + program pointers for JIT callbacks
     let rt_ptr: *mut Runtime = ctx.rt;
@@ -1639,12 +1941,6 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Result<Option<VmSignal>>
     );
     let result = crate::jit::try_jit_execute(ops, &mut jit_state, ctx.cp);
 
-    // Clear pointers
-    JIT_RT_PTR.with(|cell| cell.set(std::ptr::null_mut()));
-    JIT_CP_PTR.with(|cell| cell.set(std::ptr::null()));
-    JIT_VMCTX_PTR.with(|cell| cell.set(std::ptr::null_mut()));
-    JIT_SLOTS_PTR.with(|cell| cell.set(std::ptr::null_mut()));
-    JIT_SLOTS_LEN.with(|cell| cell.set(0));
     JIT_FORIN_ITERS.with(|c| c.borrow_mut().clear());
 
     if let Some(e) = JIT_CHUNK_ERR.with(|c| c.borrow_mut().take()) {
@@ -1652,6 +1948,8 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Result<Option<VmSignal>>
         MIXED_PRINT_SLOTS.with(|c| c.borrow_mut().clear());
         JIT_JOIN_KEY_PARTS.with(|c| c.borrow_mut().clear());
         JIT_BUILTIN_ARGS.with(|c| c.borrow_mut().clear());
+        JIT_CALL_USER_ARGS.with(|c| c.borrow_mut().clear());
+        SUB_FN_STASH_KEY.with(|c| *c.borrow_mut() = None);
         return Err(e);
     }
 
@@ -1661,6 +1959,8 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Result<Option<VmSignal>>
         MIXED_PRINT_SLOTS.with(|c| c.borrow_mut().clear());
         JIT_JOIN_KEY_PARTS.with(|c| c.borrow_mut().clear());
         JIT_BUILTIN_ARGS.with(|c| c.borrow_mut().clear());
+        JIT_CALL_USER_ARGS.with(|c| c.borrow_mut().clear());
+        SUB_FN_STASH_KEY.with(|c| *c.borrow_mut() = None);
         return Ok(None);
     };
 
@@ -1690,6 +1990,8 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Result<Option<VmSignal>>
             MIXED_PRINT_SLOTS.with(|c| c.borrow_mut().clear());
             JIT_JOIN_KEY_PARTS.with(|c| c.borrow_mut().clear());
             JIT_BUILTIN_ARGS.with(|c| c.borrow_mut().clear());
+            JIT_CALL_USER_ARGS.with(|c| c.borrow_mut().clear());
+            SUB_FN_STASH_KEY.with(|c| *c.borrow_mut() = None);
             return Ok(Some(VmSignal::Next));
         }
         JIT_VAL_SIGNAL_NEXT_FILE => {
@@ -1697,6 +1999,8 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Result<Option<VmSignal>>
             MIXED_PRINT_SLOTS.with(|c| c.borrow_mut().clear());
             JIT_JOIN_KEY_PARTS.with(|c| c.borrow_mut().clear());
             JIT_BUILTIN_ARGS.with(|c| c.borrow_mut().clear());
+            JIT_CALL_USER_ARGS.with(|c| c.borrow_mut().clear());
+            SUB_FN_STASH_KEY.with(|c| *c.borrow_mut() = None);
             return Ok(Some(VmSignal::NextFile));
         }
         JIT_VAL_SIGNAL_EXIT_DEFAULT => {
@@ -1706,6 +2010,8 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Result<Option<VmSignal>>
             MIXED_PRINT_SLOTS.with(|c| c.borrow_mut().clear());
             JIT_JOIN_KEY_PARTS.with(|c| c.borrow_mut().clear());
             JIT_BUILTIN_ARGS.with(|c| c.borrow_mut().clear());
+            JIT_CALL_USER_ARGS.with(|c| c.borrow_mut().clear());
+            SUB_FN_STASH_KEY.with(|c| *c.borrow_mut() = None);
             return Ok(Some(VmSignal::ExitPending));
         }
         JIT_VAL_SIGNAL_EXIT_CODE => {
@@ -1716,6 +2022,8 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Result<Option<VmSignal>>
             MIXED_PRINT_SLOTS.with(|c| c.borrow_mut().clear());
             JIT_JOIN_KEY_PARTS.with(|c| c.borrow_mut().clear());
             JIT_BUILTIN_ARGS.with(|c| c.borrow_mut().clear());
+            JIT_CALL_USER_ARGS.with(|c| c.borrow_mut().clear());
+            SUB_FN_STASH_KEY.with(|c| *c.borrow_mut() = None);
             return Ok(Some(VmSignal::ExitPending));
         }
         crate::jit::JIT_VAL_SIGNAL_RETURN_VAL => {
@@ -1724,6 +2032,8 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Result<Option<VmSignal>>
             MIXED_PRINT_SLOTS.with(|c| c.borrow_mut().clear());
             JIT_JOIN_KEY_PARTS.with(|c| c.borrow_mut().clear());
             JIT_BUILTIN_ARGS.with(|c| c.borrow_mut().clear());
+            JIT_CALL_USER_ARGS.with(|c| c.borrow_mut().clear());
+            SUB_FN_STASH_KEY.with(|c| *c.borrow_mut() = None);
             return Ok(Some(VmSignal::Return(Value::Num(val))));
         }
         crate::jit::JIT_VAL_SIGNAL_RETURN_EMPTY => {
@@ -1731,6 +2041,8 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Result<Option<VmSignal>>
             MIXED_PRINT_SLOTS.with(|c| c.borrow_mut().clear());
             JIT_JOIN_KEY_PARTS.with(|c| c.borrow_mut().clear());
             JIT_BUILTIN_ARGS.with(|c| c.borrow_mut().clear());
+            JIT_CALL_USER_ARGS.with(|c| c.borrow_mut().clear());
+            SUB_FN_STASH_KEY.with(|c| *c.borrow_mut() = None);
             return Ok(Some(VmSignal::Return(Value::Str(String::new()))));
         }
         _ => {}
@@ -1746,6 +2058,8 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Result<Option<VmSignal>>
     MIXED_PRINT_SLOTS.with(|c| c.borrow_mut().clear());
     JIT_JOIN_KEY_PARTS.with(|c| c.borrow_mut().clear());
     JIT_BUILTIN_ARGS.with(|c| c.borrow_mut().clear());
+    JIT_CALL_USER_ARGS.with(|c| c.borrow_mut().clear());
+    SUB_FN_STASH_KEY.with(|c| *c.borrow_mut() = None);
     Ok(Some(VmSignal::Normal))
 }
 
@@ -2628,19 +2942,16 @@ fn exec_getline(ctx: &mut VmCtx<'_>, var: Option<u32>, source: GetlineSource) ->
 
 // ── Sub / Gsub ──────────────────────────────────────────────────────────────
 
-fn exec_sub(ctx: &mut VmCtx<'_>, target: SubTarget, is_global: bool) -> Result<()> {
-    // Stack state depends on target:
-    // Record:    [re, repl]
-    // Var:       [re, repl]
-    // Field:     [re, repl, field_idx]
-    // Index:     [re, repl, key]
-    let (extra_key, extra_field_idx) = match target {
-        SubTarget::Index(_) => (Some(ctx.pop().as_str()), None),
-        SubTarget::Field => (None, Some(ctx.pop().as_number() as i32)),
-        _ => (None, None),
-    };
-    let repl_v = ctx.pop();
-    let re_v = ctx.pop();
+/// Shared by the interpreter and JIT (`MIXED_SUB_*` / `MIXED_GSUB_*`).
+pub(crate) fn exec_sub_from_values(
+    ctx: &mut VmCtx<'_>,
+    target: SubTarget,
+    is_global: bool,
+    re_v: Value,
+    repl_v: Value,
+    extra_key: Option<String>,
+    extra_field_idx: Option<i32>,
+) -> Result<f64> {
     let repl = repl_v.as_str_cow();
     let re = re_v.as_str_cow();
 
@@ -2661,20 +2972,22 @@ fn exec_sub(ctx: &mut VmCtx<'_>, target: SubTarget, is_global: bool) -> Result<(
                 builtins::sub_fn(ctx.rt, re.as_ref(), repl.as_ref(), Some(&mut s))?
             };
             ctx.set_var(&name, Value::Str(s));
+            sync_jit_slot_for_scalar_name(ctx, name.as_str());
             n
         }
         SubTarget::SlotVar(slot) => {
-            let mut s = ctx.rt.slots[slot as usize].as_str();
+            let mut s = slot_value_live_for_jit(ctx, slot).as_str();
             let n = if is_global {
                 builtins::gsub(ctx.rt, re.as_ref(), repl.as_ref(), Some(&mut s))?
             } else {
                 builtins::sub_fn(ctx.rt, re.as_ref(), repl.as_ref(), Some(&mut s))?
             };
             ctx.rt.slots[slot as usize] = Value::Str(s);
+            sync_jit_slot_value(ctx, slot);
             n
         }
         SubTarget::Field => {
-            let i = extra_field_idx.unwrap();
+            let i = extra_field_idx.expect("field index for SubTarget::Field");
             let mut s = ctx.rt.field(i).as_str();
             let n = if is_global {
                 builtins::gsub(ctx.rt, re.as_ref(), repl.as_ref(), Some(&mut s))?
@@ -2685,7 +2998,7 @@ fn exec_sub(ctx: &mut VmCtx<'_>, target: SubTarget, is_global: bool) -> Result<(
             n
         }
         SubTarget::Index(arr_idx) => {
-            let key = extra_key.unwrap();
+            let key = extra_key.expect("key for SubTarget::Index");
             let arr_name = ctx.str_ref(arr_idx).to_string();
             let mut s = ctx.rt.array_get(&arr_name, &key).as_str();
             let n = if is_global {
@@ -2697,6 +3010,31 @@ fn exec_sub(ctx: &mut VmCtx<'_>, target: SubTarget, is_global: bool) -> Result<(
             n
         }
     };
+    Ok(count)
+}
+
+fn exec_sub(ctx: &mut VmCtx<'_>, target: SubTarget, is_global: bool) -> Result<()> {
+    // Stack state depends on target:
+    // Record:    [re, repl]
+    // Var:       [re, repl]
+    // Field:     [re, repl, field_idx]
+    // Index:     [re, repl, key]
+    let (extra_key, extra_field_idx) = match target {
+        SubTarget::Index(_) => (Some(ctx.pop().as_str()), None),
+        SubTarget::Field => (None, Some(ctx.pop().as_number() as i32)),
+        _ => (None, None),
+    };
+    let repl_v = ctx.pop();
+    let re_v = ctx.pop();
+    let count = exec_sub_from_values(
+        ctx,
+        target,
+        is_global,
+        re_v,
+        repl_v,
+        extra_key,
+        extra_field_idx,
+    )?;
     ctx.push(Value::Num(count));
     Ok(())
 }
@@ -2914,17 +3252,14 @@ pub(crate) fn exec_builtin_dispatch(
     Ok(result)
 }
 
-fn exec_call_user(ctx: &mut VmCtx<'_>, name: &str, argc: u16) -> Result<()> {
-    let argc = argc as usize;
+/// Run a user function with explicit arguments (VM stack path and JIT `MIXED_CALL_USER_*`).
+pub(crate) fn exec_call_user_inner(ctx: &mut VmCtx<'_>, name: &str, mut vals: Vec<Value>) -> Result<Value> {
     let func = ctx
         .cp
         .functions
         .get(name)
         .ok_or_else(|| Error::Runtime(format!("unknown function `{name}`")))?
         .clone();
-
-    let start = ctx.stack.len() - argc;
-    let mut vals: Vec<Value> = ctx.stack.drain(start..).collect();
 
     while vals.len() < func.params.len() {
         vals.push(Value::Uninit);
@@ -2968,6 +3303,14 @@ fn exec_call_user(ctx: &mut VmCtx<'_>, name: &str, argc: u16) -> Result<()> {
 
     ctx.locals.pop();
     ctx.in_function = was_fn;
+    Ok(result)
+}
+
+fn exec_call_user(ctx: &mut VmCtx<'_>, name: &str, argc: u16) -> Result<()> {
+    let argc = argc as usize;
+    let start = ctx.stack.len() - argc;
+    let vals: Vec<Value> = ctx.stack.drain(start..).collect();
+    let result = exec_call_user_inner(ctx, name, vals)?;
     ctx.push(result);
     Ok(())
 }

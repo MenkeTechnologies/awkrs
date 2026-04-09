@@ -925,6 +925,54 @@ fn jit_return_from_function() {
 }
 
 #[test]
+fn jit_gsub_on_record() {
+    let (c, o, e) = run_awkrs_stdin_args_env(
+        std::iter::empty::<&str>(),
+        r#"{ print gsub("o", "x") }"#,
+        "foo\n",
+        jit_env(),
+    );
+    assert_eq!(c, 0, "stderr: {e}");
+    assert_eq!(o, "2\n");
+}
+
+#[test]
+fn jit_sub_on_record() {
+    let (c, o, e) = run_awkrs_stdin_args_env(
+        std::iter::empty::<&str>(),
+        r#"{ print sub("o", "x") }"#,
+        "foo\n",
+        jit_env(),
+    );
+    assert_eq!(c, 0, "stderr: {e}");
+    assert_eq!(o, "1\n");
+}
+
+#[test]
+fn jit_nested_user_function_calls() {
+    let (c, o, e) = run_awkrs_stdin_args_env(
+        std::iter::empty::<&str>(),
+        "function g() { return 1 } function f() { return g() + 1 } BEGIN { print f() }",
+        "",
+        jit_env(),
+    );
+    assert_eq!(c, 0, "stderr: {e}");
+    assert_eq!(o, "2\n");
+}
+
+#[test]
+fn jit_gsub_third_arg_scalar() {
+    let (c, o, e) = run_awkrs_stdin_args_env(
+        std::iter::empty::<&str>(),
+        r#"BEGIN { s = "foo"; print gsub("o", "x", s), s }"#,
+        "",
+        jit_env(),
+    );
+    assert_eq!(c, 0, "stderr: {e}");
+    assert_eq!(o, "2 fxx\n");
+}
+
+#[test]
 fn jit_for_in_count_keys() {
     // Uses fused ArrayFieldAddConst for `a[$1] += 1` (correct string-key path),
     // then ForIn to count keys.

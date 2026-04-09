@@ -43,7 +43,7 @@
 //! compiles to `MIXED_TYPEOF_*` and returns NaN-boxed pool/dynamic strings like other mixed ops.
 
 use crate::ast::{BinOp, IncDecOp};
-use crate::bytecode::{CompiledProgram, GetlineSource, Op};
+use crate::bytecode::{CompiledProgram, GetlineSource, Op, SubTarget};
 use cranelift_codegen::ir::{types, AbiParam, Block, InstBuilder, MemFlags, UserFuncName};
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
@@ -334,6 +334,24 @@ pub const MIXED_GETLINE_COPROC: u32 = 189;
 /// Sentinel for `a1`: `getline` with no variable (updates `$0` / `NF`).
 pub const MIXED_GETLINE_INTO_RECORD: u32 = u32::MAX;
 
+/// Buffered arg for [`Op::CallUser`] (then [`MIXED_CALL_USER_CALL`]).
+pub const MIXED_CALL_USER_ARG: u32 = 190;
+/// `a1` = function name pool index, `a2` = argc as `f64`.
+pub const MIXED_CALL_USER_CALL: u32 = 191;
+pub const MIXED_SUB_RECORD: u32 = 192;
+pub const MIXED_GSUB_RECORD: u32 = 193;
+pub const MIXED_SUB_VAR: u32 = 194;
+pub const MIXED_GSUB_VAR: u32 = 195;
+pub const MIXED_SUB_SLOT: u32 = 196;
+pub const MIXED_GSUB_SLOT: u32 = 197;
+pub const MIXED_SUB_FIELD: u32 = 198;
+pub const MIXED_GSUB_FIELD: u32 = 199;
+/// Stash array key (NaN-boxed) before [`MIXED_SUB_INDEX`] / [`MIXED_GSUB_INDEX`].
+pub const MIXED_SUB_INDEX_STASH: u32 = 200;
+pub const MIXED_SUB_INDEX: u32 = 201;
+pub const MIXED_GSUB_INDEX_STASH: u32 = 202;
+pub const MIXED_GSUB_INDEX: u32 = 203;
+
 /// Pack `argc` (low 16 bits) and redirect kind (high 16 bits: 1=overwrite, 2=append, 3=pipe, 4=coproc).
 #[inline]
 pub fn pack_print_redir(argc: u16, redir: crate::bytecode::RedirKind) -> u32 {
@@ -622,21 +640,36 @@ pub fn needs_mixed_mode(ops: &[Op]) -> bool {
             Op::Printf { redir, .. } if *redir != crate::bytecode::RedirKind::Stdout
         )
             || matches!(op, Op::GetLine { .. })
+            || matches!(op, Op::CallUser(_, _))
+            || matches!(op, Op::SubFn(_) | Op::GsubFn(_))
     })
 }
 
-/// Returns `true` when every [`Op::CallBuiltin`] is JIT-supported and not a user-defined function.
+/// Returns `true` when every [`Op::CallBuiltin`] is JIT-supported (not shadowed by a user function)
+/// and every [`Op::CallUser`] names a defined user function with a supported arity.
 pub fn jit_call_builtins_ok(ops: &[Op], cp: &CompiledProgram) -> bool {
+    const MAX_CALL_ARGS: u16 = 64;
     for op in ops {
-        let Op::CallBuiltin(name_idx, argc) = op else {
-            continue;
-        };
-        let name = cp.strings.get(*name_idx);
-        if cp.functions.contains_key(name) {
-            return false;
-        }
-        if !builtin_supported_for_jit(name, *argc) {
-            return false;
+        match op {
+            Op::CallBuiltin(name_idx, argc) => {
+                let name = cp.strings.get(*name_idx);
+                if cp.functions.contains_key(name) {
+                    return false;
+                }
+                if !builtin_supported_for_jit(name, *argc) {
+                    return false;
+                }
+            }
+            Op::CallUser(name_idx, argc) => {
+                if *argc > MAX_CALL_ARGS {
+                    return false;
+                }
+                let name = cp.strings.get(*name_idx);
+                if !cp.functions.contains_key(name) {
+                    return false;
+                }
+            }
+            _ => {}
         }
     }
     true
@@ -1056,6 +1089,25 @@ pub fn is_jit_eligible(ops: &[Op]) -> bool {
                 }
             },
 
+            Op::CallUser(_, argc) => {
+                let n = *argc as i32;
+                if depth < n {
+                    return false;
+                }
+                depth -= n - 1;
+            }
+
+            Op::SubFn(t) | Op::GsubFn(t) => {
+                let need = match t {
+                    SubTarget::Record | SubTarget::Var(_) | SubTarget::SlotVar(_) => 2,
+                    SubTarget::Field | SubTarget::Index(_) => 3,
+                };
+                if depth < need {
+                    return false;
+                }
+                depth -= need - 1;
+            }
+
             _ => return false,
         }
     }
@@ -1160,6 +1212,9 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
         MIXED_PATSPLIT_FP_SEP, MIXED_MATCH_BUILTIN, MIXED_MATCH_BUILTIN_ARR,
         MIXED_PRINT_FLUSH_REDIR, MIXED_PRINTF_FLUSH_REDIR,
         MIXED_GETLINE_PRIMARY, MIXED_GETLINE_FILE, MIXED_GETLINE_COPROC, MIXED_GETLINE_INTO_RECORD,
+        MIXED_CALL_USER_ARG, MIXED_CALL_USER_CALL, MIXED_SUB_RECORD, MIXED_GSUB_RECORD, MIXED_SUB_VAR,
+        MIXED_GSUB_VAR, MIXED_SUB_SLOT, MIXED_GSUB_SLOT, MIXED_SUB_FIELD, MIXED_GSUB_FIELD,
+        MIXED_SUB_INDEX_STASH, MIXED_SUB_INDEX, MIXED_GSUB_INDEX_STASH, MIXED_GSUB_INDEX,
         pack_print_redir,
         mixed_encode_array_compound,
         mixed_encode_array_incdec,
@@ -1622,6 +1677,149 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         .ins()
                         .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, a2, zf]);
                     stack.push(builder.inst_results(call)[0]);
+                }
+                Op::CallUser(name_idx, argc_u) => {
+                    let argc = argc_u as usize;
+                    let mut arg_vals: Vec<_> = (0..argc)
+                        .map(|_| stack.pop().expect("CallUser"))
+                        .collect();
+                    arg_vals.reverse();
+                    let zf = builder.ins().f64const(0.0);
+                    for (i, v) in arg_vals.iter().enumerate() {
+                        let op_arg =
+                            builder.ins().iconst(types::I32, i64::from(MIXED_CALL_USER_ARG));
+                        let a1 = builder.ins().iconst(types::I32, i64::from(i as u32));
+                        builder.ins().call_indirect(val_sig_ir, val_fn_ptr, &[op_arg, a1, *v, zf]);
+                    }
+                    let op_c =
+                        builder.ins().iconst(types::I32, i64::from(MIXED_CALL_USER_CALL));
+                    let a1 = builder.ins().iconst(types::I32, i64::from(name_idx));
+                    let a2 = builder.ins().f64const(argc as f64);
+                    let call = builder
+                        .ins()
+                        .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, a2, zf]);
+                    stack.push(builder.inst_results(call)[0]);
+                }
+                Op::SubFn(target) => {
+                    let z = builder.ins().iconst(types::I32, 0);
+                    let zf = builder.ins().f64const(0.0);
+                    match target {
+                        SubTarget::Record => {
+                            let repl = stack.pop().expect("SubFn repl");
+                            let re = stack.pop().expect("SubFn re");
+                            let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_SUB_RECORD));
+                            let call = builder
+                                .ins()
+                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, re, repl]);
+                            stack.push(builder.inst_results(call)[0]);
+                        }
+                        SubTarget::Var(name_idx) => {
+                            let repl = stack.pop().expect("SubFn repl");
+                            let re = stack.pop().expect("SubFn re");
+                            let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_SUB_VAR));
+                            let a1 = builder.ins().iconst(types::I32, i64::from(name_idx));
+                            let call = builder
+                                .ins()
+                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, re, repl]);
+                            stack.push(builder.inst_results(call)[0]);
+                        }
+                        SubTarget::SlotVar(slot) => {
+                            let repl = stack.pop().expect("SubFn repl");
+                            let re = stack.pop().expect("SubFn re");
+                            let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_SUB_SLOT));
+                            let a1 = builder.ins().iconst(types::I32, i64::from(slot));
+                            let call = builder
+                                .ins()
+                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, re, repl]);
+                            stack.push(builder.inst_results(call)[0]);
+                        }
+                        SubTarget::Field => {
+                            let fi = stack.pop().expect("SubFn field");
+                            let repl = stack.pop().expect("SubFn repl");
+                            let re = stack.pop().expect("SubFn re");
+                            let fi_i = builder.ins().fcvt_to_sint(types::I32, fi);
+                            let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_SUB_FIELD));
+                            let call = builder
+                                .ins()
+                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, fi_i, re, repl]);
+                            stack.push(builder.inst_results(call)[0]);
+                        }
+                        SubTarget::Index(arr_idx) => {
+                            let key = stack.pop().expect("SubFn key");
+                            let repl = stack.pop().expect("SubFn repl");
+                            let re = stack.pop().expect("SubFn re");
+                            let st_op =
+                                builder.ins().iconst(types::I32, i64::from(MIXED_SUB_INDEX_STASH));
+                            builder.ins().call_indirect(val_sig_ir, val_fn_ptr, &[st_op, z, key, zf]);
+                            let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_SUB_INDEX));
+                            let a1 = builder.ins().iconst(types::I32, i64::from(arr_idx));
+                            let call = builder
+                                .ins()
+                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, re, repl]);
+                            stack.push(builder.inst_results(call)[0]);
+                        }
+                    }
+                }
+                Op::GsubFn(target) => {
+                    let z = builder.ins().iconst(types::I32, 0);
+                    let zf = builder.ins().f64const(0.0);
+                    match target {
+                        SubTarget::Record => {
+                            let repl = stack.pop().expect("GsubFn repl");
+                            let re = stack.pop().expect("GsubFn re");
+                            let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_GSUB_RECORD));
+                            let call = builder
+                                .ins()
+                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, re, repl]);
+                            stack.push(builder.inst_results(call)[0]);
+                        }
+                        SubTarget::Var(name_idx) => {
+                            let repl = stack.pop().expect("GsubFn repl");
+                            let re = stack.pop().expect("GsubFn re");
+                            let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_GSUB_VAR));
+                            let a1 = builder.ins().iconst(types::I32, i64::from(name_idx));
+                            let call = builder
+                                .ins()
+                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, re, repl]);
+                            stack.push(builder.inst_results(call)[0]);
+                        }
+                        SubTarget::SlotVar(slot) => {
+                            let repl = stack.pop().expect("GsubFn repl");
+                            let re = stack.pop().expect("GsubFn re");
+                            let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_GSUB_SLOT));
+                            let a1 = builder.ins().iconst(types::I32, i64::from(slot));
+                            let call = builder
+                                .ins()
+                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, re, repl]);
+                            stack.push(builder.inst_results(call)[0]);
+                        }
+                        SubTarget::Field => {
+                            let fi = stack.pop().expect("GsubFn field");
+                            let repl = stack.pop().expect("GsubFn repl");
+                            let re = stack.pop().expect("GsubFn re");
+                            let fi_i = builder.ins().fcvt_to_sint(types::I32, fi);
+                            let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_GSUB_FIELD));
+                            let call = builder
+                                .ins()
+                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, fi_i, re, repl]);
+                            stack.push(builder.inst_results(call)[0]);
+                        }
+                        SubTarget::Index(arr_idx) => {
+                            let key = stack.pop().expect("GsubFn key");
+                            let repl = stack.pop().expect("GsubFn repl");
+                            let re = stack.pop().expect("GsubFn re");
+                            let st_op = builder
+                                .ins()
+                                .iconst(types::I32, i64::from(MIXED_GSUB_INDEX_STASH));
+                            builder.ins().call_indirect(val_sig_ir, val_fn_ptr, &[st_op, z, key, zf]);
+                            let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_GSUB_INDEX));
+                            let a1 = builder.ins().iconst(types::I32, i64::from(arr_idx));
+                            let call = builder
+                                .ins()
+                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, re, repl]);
+                            stack.push(builder.inst_results(call)[0]);
+                        }
+                    }
                 }
 
                 // ── Slot access ────────────────────────────────────────
