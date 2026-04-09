@@ -1956,6 +1956,7 @@ fn try_jit_dispatch(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<Option<VmSigna
     };
 
     let mixed = crate::jit::needs_mixed_mode(ops);
+    let needs_vm_tls = crate::jit::jit_chunk_needs_vm_tls(ops);
 
     let slot_count = ctx.rt.slots.len();
 
@@ -1987,17 +1988,19 @@ fn try_jit_dispatch(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<Option<VmSigna
         ctx.rt.jit_slot_buf[..slot_count].copy_from_slice(&nums);
     }
 
-    let _nested_jit_tls = NestedJitTlsGuard::new();
+    let _nested_jit_tls = needs_vm_tls.then(NestedJitTlsGuard::new);
 
-    let rt_ptr: *mut Runtime = ctx.rt;
-    let cp_ptr: *const CompiledProgram = ctx.cp;
-    JIT_RT_PTR.with(|cell| cell.set(rt_ptr));
-    JIT_CP_PTR.with(|cell| cell.set(cp_ptr));
-    JIT_VMCTX_PTR.with(|cell| {
-        cell.set(std::ptr::from_mut(ctx).cast::<VmCtx<'static>>());
-    });
-    JIT_SLOTS_PTR.with(|cell| cell.set(ctx.rt.jit_slot_buf.as_mut_ptr()));
-    JIT_SLOTS_LEN.with(|cell| cell.set(slot_count));
+    if needs_vm_tls {
+        let rt_ptr: *mut Runtime = ctx.rt;
+        let cp_ptr: *const CompiledProgram = ctx.cp;
+        JIT_RT_PTR.with(|cell| cell.set(rt_ptr));
+        JIT_CP_PTR.with(|cell| cell.set(cp_ptr));
+        JIT_VMCTX_PTR.with(|cell| {
+            cell.set(std::ptr::from_mut(ctx).cast::<VmCtx<'static>>());
+        });
+        JIT_SLOTS_PTR.with(|cell| cell.set(ctx.rt.jit_slot_buf.as_mut_ptr()));
+        JIT_SLOTS_LEN.with(|cell| cell.set(slot_count));
+    }
     JIT_SIGNAL.with(|c| c.set(0));
 
     let mut jit_state = crate::jit::JitRuntimeState::new(

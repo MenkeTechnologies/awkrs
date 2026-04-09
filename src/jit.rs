@@ -61,15 +61,18 @@
 //!   for marshaling instead of allocating a fresh `Vec<f64>` per JIT invocation. The VM clears
 //!   `JIT_DYN_STRINGS` *before* filling that buffer in mixed mode so NaN-boxed string slots (e.g.
 //!   `-v` values stored as strings) still match the dynamic-string pool during execution.
-//! - **Future** — keep interpreter [`crate::runtime::Value`] slots and the JIT `f64` buffer unified
-//!   where semantics allow; Cranelift SSA/register promotion for hot loops; optional TLS elision for
-//!   chunks that never call into Rust callbacks.
+//! - **Single-block slot SSA** — for non-mixed chunks with no jumps and no early `return`/flow
+//!   signals, scalar slots are held in Cranelift [`Variable`]s and flushed to `slots_ptr` once before
+//!   the function return (phi-free; no backedges).
+//! - **Future** — full Cranelift SSA across loop headers (phis for slot vars); keep interpreter
+//!   [`crate::runtime::Value`] slots and the JIT `f64` buffer unified where semantics allow.
+//!   TLS for `BEGIN`/chunks is already skipped when [`jit_chunk_needs_vm_tls`] is `false`.
 
 use crate::ast::{BinOp, IncDecOp};
 use crate::bytecode::{CompiledProgram, GetlineSource, Op, SubTarget};
 use cranelift_codegen::ir::{types, AbiParam, Block, InstBuilder, MemFlags, UserFuncName};
 use cranelift_codegen::settings::{self, Configurable};
-use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
+use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{default_libcall_names, Linkage, Module};
 use std::cell::RefCell;
@@ -1196,6 +1199,61 @@ fn collect_jump_targets(ops: &[Op]) -> HashSet<usize> {
     targets
 }
 
+/// True when bytecode may emit a `return` before the implicit function return (slot SSA must flush first).
+fn ops_have_early_return_or_signal(ops: &[Op]) -> bool {
+    ops.iter().any(|op| {
+        matches!(
+            op,
+            Op::ReturnVal
+                | Op::ReturnEmpty
+                | Op::ExitWithCode
+                | Op::ExitDefault
+                | Op::Next
+                | Op::NextFile
+        )
+    })
+}
+
+/// When `false`, the JIT never calls Rust callbacks that read thread-local `VmCtx` / `Runtime`
+/// pointers (`jit_io_dispatch`, `jit_var_dispatch`, mixed `val_dispatch`, etc.) — [`try_jit_dispatch`]
+/// may skip installing those TLS slots.
+pub(crate) fn jit_chunk_needs_vm_tls(ops: &[Op]) -> bool {
+    if needs_mixed_mode(ops) {
+        return true;
+    }
+    for op in ops {
+        match op {
+            Op::PushNum(_) => {}
+            Op::GetSlot(_) | Op::SetSlot(_) => {}
+            Op::CompoundAssignSlot(_, _) | Op::IncDecSlot(_, _) => {}
+            Op::IncrSlot(_) | Op::DecrSlot(_) | Op::AddSlotToSlot { .. } => {}
+            Op::Add | Op::Sub | Op::Mul | Op::Div | Op::Mod => {}
+            Op::CmpEq | Op::CmpNe | Op::CmpLt | Op::CmpLe | Op::CmpGt | Op::CmpGe => {}
+            Op::Neg | Op::Pos | Op::Not | Op::ToBool => {}
+            Op::Dup | Op::Pop => {}
+            _ => return true,
+        }
+    }
+    false
+}
+
+fn emit_slot_ssa_flush_to_mem(
+    builder: &mut FunctionBuilder,
+    use_slot_ssa: bool,
+    slot_vars: &[Variable],
+    slots_ptr: cranelift_codegen::ir::Value,
+) {
+    if !use_slot_ssa {
+        return;
+    }
+    for (i, &slot_var) in slot_vars.iter().enumerate() {
+        let v = builder.use_var(slot_var);
+        builder
+            .ins()
+            .store(MemFlags::trusted(), v, slots_ptr, (i as i32) * 8);
+    }
+}
+
 /// Check if the ops need the field callback.
 fn needs_field_callback(ops: &[Op]) -> bool {
     ops.iter().any(|op| {
@@ -1333,7 +1391,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
     ctx.func.signature = sig;
     ctx.func.name = UserFuncName::user(0, func_id.as_u32());
 
-    let slot_count = if ops.iter().any(|op| {
+    let slot_count: usize = if ops.iter().any(|op| {
         matches!(
             op,
             Op::GetSlot(_)
@@ -1348,12 +1406,17 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                 | Op::JumpIfSlotGeNum { .. }
         )
     }) {
-        max_slot(ops) + 1
+        (max_slot(ops) + 1) as usize
     } else {
         0
     };
 
     let has_fields = needs_field_callback(ops);
+    let jump_targets = collect_jump_targets(ops);
+    let use_slot_ssa = !mixed
+        && slot_count > 0
+        && jump_targets.is_empty()
+        && !ops_have_early_return_or_signal(ops);
 
     {
         let mut builder = FunctionBuilder::new(&mut ctx.func, &mut func_ctx);
@@ -1379,9 +1442,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
         let entry_block = builder.create_block();
         builder.append_block_params_for_function_params(entry_block);
 
-        // Collect jump targets and create blocks for each.
-        // Also create blocks for fall-through after unconditional jumps.
-        let jump_targets = collect_jump_targets(ops);
+        // Jump targets computed before this block (also used for slot SSA eligibility).
         let mut block_map: HashMap<usize, Block> = HashMap::new();
         for &target in &jump_targets {
             block_map.insert(target, builder.create_block());
@@ -1414,6 +1475,28 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
 
         // Seal entry block — its only predecessor is the function entry
         builder.seal_block(entry_block);
+
+        // Single-block non-mixed chunks: keep each scalar slot in Cranelift `Variable` SSA form
+        // and flush to `slots_ptr` once before return (no control-flow merges — phi-free).
+        let slot_vars: Vec<Variable> = if use_slot_ssa {
+            (0..slot_count)
+                .map(|_| builder.declare_var(types::F64))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        if use_slot_ssa {
+            let slots_ptr_init = builder.use_var(var_slots_ptr);
+            for (i, &slot_var) in slot_vars.iter().enumerate() {
+                let v = builder.ins().load(
+                    types::F64,
+                    MemFlags::trusted(),
+                    slots_ptr_init,
+                    (i as i32) * 8,
+                );
+                builder.def_var(slot_var, v);
+            }
+        }
 
         // Cranelift value stack (mirrors the VM's operand stack).
         // At block boundaries (jump targets), the stack must be empty — all
@@ -1987,6 +2070,8 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                                 .ins()
                                 .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
                         stack.push(builder.inst_results(call)[0]);
+                    } else if use_slot_ssa {
+                        stack.push(builder.use_var(slot_vars[slot as usize]));
                     } else {
                         let offset = (slot as i32) * 8;
                         let v =
@@ -1998,10 +2083,14 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                 }
                 Op::SetSlot(slot) => {
                     let v = *stack.last().expect("SetSlot: empty stack");
-                    let offset = (slot as i32) * 8;
-                    builder
-                        .ins()
-                        .store(MemFlags::trusted(), v, slots_ptr, offset);
+                    if use_slot_ssa {
+                        builder.def_var(slot_vars[slot as usize], v);
+                    } else {
+                        let offset = (slot as i32) * 8;
+                        builder
+                            .ins()
+                            .store(MemFlags::trusted(), v, slots_ptr, offset);
+                    }
                 }
 
                 Op::GetVar(idx) => {
@@ -2450,10 +2539,13 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                 Op::CompoundAssignSlot(slot, bop) => {
                     let rhs = stack.pop().expect("CompoundAssignSlot");
                     let offset = (slot as i32) * 8;
-                    let old =
+                    let old = if use_slot_ssa {
+                        builder.use_var(slot_vars[slot as usize])
+                    } else {
                         builder
                             .ins()
-                            .load(types::F64, MemFlags::trusted(), slots_ptr, offset);
+                            .load(types::F64, MemFlags::trusted(), slots_ptr, offset)
+                    };
                     let new_val = if mixed {
                         let mop = mixed_op_for_binop(bop);
                         let op_c = builder.ins().iconst(types::I32, i64::from(mop));
@@ -2479,9 +2571,13 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                             _ => unreachable!("filtered by is_jit_eligible"),
                         }
                     };
-                    builder
-                        .ins()
-                        .store(MemFlags::trusted(), new_val, slots_ptr, offset);
+                    if use_slot_ssa {
+                        builder.def_var(slot_vars[slot as usize], new_val);
+                    } else {
+                        builder
+                            .ins()
+                            .store(MemFlags::trusted(), new_val, slots_ptr, offset);
+                    }
                     stack.push(new_val);
                 }
 
@@ -2499,6 +2595,19 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                                 .ins()
                                 .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
                         stack.push(builder.inst_results(call)[0]);
+                    } else if use_slot_ssa {
+                        let old = builder.use_var(slot_vars[slot as usize]);
+                        let delta = match kind {
+                            IncDecOp::PreInc | IncDecOp::PostInc => builder.ins().f64const(1.0),
+                            IncDecOp::PreDec | IncDecOp::PostDec => builder.ins().f64const(-1.0),
+                        };
+                        let new_val = builder.ins().fadd(old, delta);
+                        builder.def_var(slot_vars[slot as usize], new_val);
+                        let push_val = match kind {
+                            IncDecOp::PreInc | IncDecOp::PreDec => new_val,
+                            IncDecOp::PostInc | IncDecOp::PostDec => old,
+                        };
+                        stack.push(push_val);
                     } else {
                         let offset = (slot as i32) * 8;
                         let old =
@@ -2530,6 +2639,11 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         builder
                             .ins()
                             .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
+                    } else if use_slot_ssa {
+                        let old = builder.use_var(slot_vars[slot as usize]);
+                        let one = builder.ins().f64const(1.0);
+                        let new_val = builder.ins().fadd(old, one);
+                        builder.def_var(slot_vars[slot as usize], new_val);
                     } else {
                         let offset = (slot as i32) * 8;
                         let old =
@@ -2551,6 +2665,11 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         builder
                             .ins()
                             .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
+                    } else if use_slot_ssa {
+                        let old = builder.use_var(slot_vars[slot as usize]);
+                        let one = builder.ins().f64const(1.0);
+                        let new_val = builder.ins().fsub(old, one);
+                        builder.def_var(slot_vars[slot as usize], new_val);
                     } else {
                         let offset = (slot as i32) * 8;
                         let old =
@@ -2575,6 +2694,11 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         builder
                             .ins()
                             .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
+                    } else if use_slot_ssa {
+                        let sv = builder.use_var(slot_vars[src as usize]);
+                        let dv = builder.use_var(slot_vars[dst as usize]);
+                        let sum = builder.ins().fadd(dv, sv);
+                        builder.def_var(slot_vars[dst as usize], sum);
                     } else {
                         let sv = builder.ins().load(
                             types::F64,
@@ -2672,6 +2796,15 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         builder
                             .ins()
                             .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
+                    } else if use_slot_ssa {
+                        let arg = builder.ins().iconst(types::I32, field as i64);
+                        let call = builder
+                            .ins()
+                            .call_indirect(field_sig_ir, field_fn_ptr, &[arg]);
+                        let fv = builder.inst_results(call)[0];
+                        let old = builder.use_var(slot_vars[slot as usize]);
+                        let sum = builder.ins().fadd(old, fv);
+                        builder.def_var(slot_vars[slot as usize], sum);
                     } else {
                         let arg = builder.ins().iconst(types::I32, field as i64);
                         let call = builder
@@ -2701,6 +2834,21 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         builder
                             .ins()
                             .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, a2, z]);
+                    } else if use_slot_ssa {
+                        let a1 = builder.ins().iconst(types::I32, f1 as i64);
+                        let c1 = builder
+                            .ins()
+                            .call_indirect(field_sig_ir, field_fn_ptr, &[a1]);
+                        let v1 = builder.inst_results(c1)[0];
+                        let a2 = builder.ins().iconst(types::I32, f2 as i64);
+                        let c2 = builder
+                            .ins()
+                            .call_indirect(field_sig_ir, field_fn_ptr, &[a2]);
+                        let v2 = builder.inst_results(c2)[0];
+                        let prod = builder.ins().fmul(v1, v2);
+                        let old = builder.use_var(slot_vars[slot as usize]);
+                        let sum = builder.ins().fadd(old, prod);
+                        builder.def_var(slot_vars[slot as usize], sum);
                     } else {
                         let a1 = builder.ins().iconst(types::I32, f1 as i64);
                         let c1 = builder
@@ -3321,6 +3469,8 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
 
         // Return the top of stack, or 0.0 if empty.
         if !block_terminated {
+            let slots_ptr_ret = builder.use_var(var_slots_ptr);
+            emit_slot_ssa_flush_to_mem(&mut builder, use_slot_ssa, &slot_vars, slots_ptr_ret);
             let result = stack.pop().unwrap_or_else(|| builder.ins().f64const(0.0));
             builder.ins().return_(&[result]);
         }
@@ -3350,7 +3500,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
     Some(JitChunk {
         _module: module,
         fn_ptr,
-        slot_count,
+        slot_count: slot_count as u16,
         needs_fields: has_fields,
     })
 }
@@ -3358,16 +3508,14 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
 // ── Public dispatch API ────────────────────────────────────────────────────
 
 /// When `AWKRS_JIT` is exactly `0`, skip JIT and use the bytecode VM only.
+///
+/// Reads the environment each call so tests and embedders can toggle the flag without process restart.
 #[inline]
 pub(crate) fn jit_disabled_by_env() -> bool {
-    use std::sync::OnceLock;
-    static CACHE: OnceLock<bool> = OnceLock::new();
-    *CACHE.get_or_init(|| {
-        matches!(
-            std::env::var_os("AWKRS_JIT").as_deref(),
-            Some(s) if s == "0"
-        )
-    })
+    matches!(
+        std::env::var_os("AWKRS_JIT").as_deref(),
+        Some(s) if s == "0"
+    )
 }
 
 /// Run a previously compiled chunk (no opcode hash or compile-cache lookup).
