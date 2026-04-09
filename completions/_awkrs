@@ -1,4 +1,4 @@
-#compdef awkrs ars
+#compdef awkrs aw
 
 # Zsh completion for awkrs — awk-compatible pattern-directed scanning and processing
 
