@@ -54,8 +54,8 @@
 //!
 //! - **Chunk dispatch cache** — each [`crate::bytecode::Chunk`] holds a `jit_lock` with the first
 //!   eligibility/compile result so the VM does not re-run [`is_jit_eligible`] / [`try_compile`] every
-//!   record ([`crate::vm::try_jit_dispatch`]).
-//! - **Thread-local compile cache** — [`try_jit_execute`] (legacy callers without a [`Chunk`]) uses a
+//!   record (VM `try_jit_dispatch`).
+//! - **Thread-local compile cache** — [`try_jit_execute`] (legacy callers without a [`crate::bytecode::Chunk`]) uses a
 //!   thread-local map keyed by [`ops_hash`] instead of a global mutex.
 //! - **Slot buffer reuse** — [`crate::runtime::Runtime::jit_slot_buf`] is resized once and reused
 //!   for marshaling instead of allocating a fresh `Vec<f64>` per JIT invocation. The VM clears
@@ -3540,7 +3540,7 @@ pub(crate) fn try_jit_execute_cached(
 /// Try to JIT-compile and execute a chunk. Returns `Some(f64)` on success.
 ///
 /// The caller supplies [`JitRuntimeState`] (slots and the seven `extern "C"` callbacks).
-/// Uses a thread-local map keyed by [`ops_hash`] (legacy callers without a [`Chunk`] cache).
+/// Uses a thread-local map keyed by [`ops_hash`] (legacy callers without a [`crate::bytecode::Chunk`] cache).
 pub fn try_jit_execute(
     ops: &[Op],
     state: &mut JitRuntimeState<'_>,
