@@ -27,6 +27,7 @@
 //! regex `~`, general array ops, `print` with arguments, etc.) compile those
 //! ops through `val_dispatch` (`MIXED_*`). Chunks with `printf`, user/builtin
 //! calls, getline, or other unsupported opcodes still use the bytecode loop.
+//! [`Op::Split`] compiles to [`MIXED_SPLIT`] / [`MIXED_SPLIT_WITH_FS`] (same split rules as the VM).
 //! Whitelisted [`Op::CallBuiltin`] (see [`jit_call_builtins_ok`]) uses `MIXED_BUILTIN_*`
 //! including `sprintf`/`printf` and I/O helpers when arity and [`jit_call_builtins_ok`] allow.
 //! The **`printf`** *statement* opcode ([`Op::Printf`] to stdout) uses `MIXED_PRINT_ARG` +
@@ -297,6 +298,10 @@ pub const MIXED_BUILTIN_CALL: u32 = 175;
 /// After [`MIXED_PRINT_ARG`] × argc: format with `sprintf_simple` and write like `printf` (stdout).
 /// `a1` = argc (format + arguments).
 pub const MIXED_PRINTF_FLUSH: u32 = 176;
+/// [`Op::Split`] without third argument — `a1` = array name pool index, `a2` = string, `a3` unused (uses `FS`).
+pub const MIXED_SPLIT: u32 = 177;
+/// [`Op::Split`] with explicit FS — `a1` = array name pool index, `a2` = string, `a3` = FS.
+pub const MIXED_SPLIT_WITH_FS: u32 = 178;
 
 #[inline]
 fn mixed_encode_field_compound_binop(bop: BinOp) -> u32 {
@@ -550,6 +555,7 @@ pub fn needs_mixed_mode(ops: &[Op]) -> bool {
                 | Op::TypeofField
                 | Op::TypeofValue
                 | Op::CallBuiltin(_, _)
+                | Op::Split { .. }
         ) || matches!(
             op,
             Op::Print {
@@ -916,6 +922,18 @@ pub fn is_jit_eligible(ops: &[Op]) -> bool {
                 depth -= n - 1;
             }
 
+            // `split(s, a [, fs])` — pop string [, fs], push count
+            Op::Split { has_fs, .. } => {
+                if *has_fs {
+                    if depth < 2 {
+                        return false;
+                    }
+                    depth -= 1;
+                } else if depth < 1 {
+                    return false;
+                }
+            }
+
             _ => return false,
         }
     }
@@ -1016,6 +1034,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
         MIXED_REGEX_NOT_MATCH, MIXED_SET_FIELD, MIXED_SET_VAR, MIXED_SLOT_AS_NUMBER, MIXED_SUB,
         MIXED_TO_BOOL, MIXED_TRUTHINESS, MIXED_TYPEOF_ARRAY_ELEM, MIXED_TYPEOF_FIELD,
         MIXED_TYPEOF_SLOT, MIXED_TYPEOF_VALUE, MIXED_TYPEOF_VAR, MIXED_PRINTF_FLUSH,
+        MIXED_SPLIT, MIXED_SPLIT_WITH_FS,
         mixed_encode_array_compound,
         mixed_encode_array_incdec,
         mixed_encode_field_slot, mixed_encode_slot_incdec, mixed_encode_slot_pair,
@@ -1307,6 +1326,27 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         .ins()
                         .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z32, v, z]);
                     stack.push(builder.inst_results(call)[0]);
+                }
+                Op::Split { arr, has_fs } => {
+                    let a1 = builder.ins().iconst(types::I32, i64::from(arr));
+                    let zf = builder.ins().f64const(0.0);
+                    if has_fs {
+                        let fs = stack.pop().expect("Split fs");
+                        let s = stack.pop().expect("Split s");
+                        let op_c =
+                            builder.ins().iconst(types::I32, i64::from(MIXED_SPLIT_WITH_FS));
+                        let call = builder
+                            .ins()
+                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, s, fs]);
+                        stack.push(builder.inst_results(call)[0]);
+                    } else {
+                        let s = stack.pop().expect("Split s");
+                        let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_SPLIT));
+                        let call = builder
+                            .ins()
+                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, s, zf]);
+                        stack.push(builder.inst_results(call)[0]);
+                    }
                 }
                 Op::CallBuiltin(name_idx, argc_u) => {
                     let argc = argc_u as usize;
@@ -3737,6 +3777,32 @@ mod tests {
         ];
         assert!(is_jit_eligible(&ops));
         assert!(needs_mixed_mode(&ops));
+    }
+
+    #[test]
+    fn jit_mixed_split_eligible() {
+        let ops_default_fs = [
+            Op::PushStr(0),
+            Op::Split {
+                arr: 1,
+                has_fs: false,
+            },
+            Op::PushNum(0.0),
+        ];
+        assert!(is_jit_eligible(&ops_default_fs));
+        assert!(needs_mixed_mode(&ops_default_fs));
+
+        let ops_explicit_fs = [
+            Op::PushStr(0),
+            Op::PushStr(0),
+            Op::Split {
+                arr: 1,
+                has_fs: true,
+            },
+            Op::PushNum(0.0),
+        ];
+        assert!(is_jit_eligible(&ops_explicit_fs));
+        assert!(needs_mixed_mode(&ops_explicit_fs));
     }
 
     // ── Conditional Next ──────────────────────────────────────────────────

@@ -1074,6 +1074,22 @@ impl Runtime {
     }
 }
 
+/// Field-splitting for `split(s, a [, fs])` — same algorithm as [`crate::bytecode::Op::Split`].
+pub fn split_string_by_field_separator(s: &str, fs: &str) -> Vec<String> {
+    if fs.is_empty() {
+        s.chars().map(|c| c.to_string()).collect()
+    } else if fs == " " {
+        s.split_whitespace().map(String::from).collect()
+    } else if fs.len() == 1 {
+        s.split(fs).map(String::from).collect()
+    } else {
+        match Regex::new(fs) {
+            Ok(re) => re.split(s).map(String::from).collect(),
+            Err(_) => s.split(fs).map(String::from).collect(),
+        }
+    }
+}
+
 fn shutdown_coproc(mut h: CoprocHandle) -> Result<()> {
     h.stdin.flush().map_err(Error::Io)?;
     drop(h.stdin);

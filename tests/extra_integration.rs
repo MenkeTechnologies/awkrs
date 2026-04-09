@@ -739,6 +739,30 @@ fn jit_array_count_pattern() {
 }
 
 #[test]
+fn jit_split_explicit_fs() {
+    let (c, o, e) = run_awkrs_stdin_args_env(
+        std::iter::empty::<&str>(),
+        "BEGIN { n = split(\"a,b\", arr, \",\"); print n, arr[1], arr[2] }",
+        "",
+        jit_env(),
+    );
+    assert_eq!(c, 0, "stderr: {e}");
+    assert_eq!(o, "2 a b\n");
+}
+
+#[test]
+fn jit_split_uses_fs_variable() {
+    let (c, o, e) = run_awkrs_stdin_args_env(
+        std::iter::empty::<&str>(),
+        "BEGIN { FS = \",\"; n = split(\"a,b\", arr); print n, arr[1], arr[2] }",
+        "",
+        jit_env(),
+    );
+    assert_eq!(c, 0, "stderr: {e}");
+    assert_eq!(o, "2 a b\n");
+}
+
+#[test]
 fn jit_sum_fields_loop() {
     // for (i=1; i<=NF; i++) sum += $i
     let (c, o, e) = run_awkrs_stdin_args_env(

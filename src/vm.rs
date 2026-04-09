@@ -453,7 +453,7 @@ fn jit_mixed_op_dispatch(
         MIXED_REGEX_NOT_MATCH, MIXED_SET_FIELD, MIXED_SET_VAR, MIXED_SLOT_AS_NUMBER, MIXED_SUB,
         MIXED_TO_BOOL, MIXED_TRUTHINESS,         MIXED_TYPEOF_ARRAY_ELEM, MIXED_TYPEOF_FIELD,
         MIXED_TYPEOF_SLOT, MIXED_TYPEOF_VALUE, MIXED_TYPEOF_VAR, MIXED_BUILTIN_ARG,
-        MIXED_BUILTIN_CALL, MIXED_PRINTF_FLUSH,
+        MIXED_BUILTIN_CALL, MIXED_PRINTF_FLUSH, MIXED_SPLIT, MIXED_SPLIT_WITH_FS,
     };
 
     fn mixed_jit_slot_load_raw(slot: usize) -> f64 {
@@ -908,6 +908,29 @@ fn jit_mixed_op_dispatch(
             let v = exec_builtin_dispatch(ctx, name.as_str(), args)
                 .expect("JIT should only compile whitelisted builtins");
             value_to_jit_f64(ctx, v)
+        }
+        MIXED_SPLIT => {
+            let name = ctx.str_ref(a1).to_string();
+            let s = jit_f64_to_value(ctx, a2).as_str();
+            let fs = ctx
+                .rt
+                .vars
+                .get("FS")
+                .map(|v| v.as_str())
+                .unwrap_or_else(|| " ".into());
+            let parts = crate::runtime::split_string_by_field_separator(&s, &fs);
+            let n = parts.len();
+            ctx.rt.split_into_array(&name, &parts);
+            n as f64
+        }
+        MIXED_SPLIT_WITH_FS => {
+            let name = ctx.str_ref(a1).to_string();
+            let s = jit_f64_to_value(ctx, a2).as_str();
+            let fs = jit_f64_to_value(ctx, a3).as_str();
+            let parts = crate::runtime::split_string_by_field_separator(&s, &fs);
+            let n = parts.len();
+            ctx.rt.split_into_array(&name, &parts);
+            n as f64
         }
         _ => 0.0,
     }
@@ -1933,19 +1956,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 };
                 let s = ctx.pop().as_str();
                 let arr_name = ctx.str_ref(arr).to_string();
-                let parts: Vec<String> = if fs.is_empty() {
-                    s.chars().map(|c| c.to_string()).collect()
-                } else if fs == " " {
-                    s.split_whitespace().map(String::from).collect()
-                } else if fs.len() == 1 {
-                    s.split(&*fs).map(String::from).collect()
-                } else {
-                    // POSIX: multi-char FS is a regex.
-                    match regex::Regex::new(&fs) {
-                        Ok(re) => re.split(&s).map(String::from).collect(),
-                        Err(_) => s.split(&*fs).map(String::from).collect(),
-                    }
-                };
+                let parts = crate::runtime::split_string_by_field_separator(&s, &fs);
                 let n = parts.len();
                 ctx.rt.split_into_array(&arr_name, &parts);
                 ctx.push(Value::Num(n as f64));
