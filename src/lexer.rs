@@ -607,4 +607,41 @@ mod tests {
         assert_eq!(l.line(), 2);
         assert_eq!(l.next_token(false).unwrap(), Token::Ident("b".into()));
     }
+
+    #[test]
+    fn lex_break_continue_next_exit() {
+        assert_eq!(
+            tokens_no_regex("break continue next exit"),
+            vec![Token::Break, Token::Continue, Token::Next, Token::Exit]
+        );
+    }
+
+    #[test]
+    fn lex_while_for_if_else() {
+        assert_eq!(
+            tokens_no_regex("while for if else"),
+            vec![Token::While, Token::For, Token::If, Token::Else]
+        );
+    }
+
+    #[test]
+    fn lex_bang_and_comparisons() {
+        assert_eq!(
+            tokens_no_regex("! < >"),
+            vec![Token::Bang, Token::Lt, Token::Gt]
+        );
+    }
+
+    #[test]
+    fn lex_do_in() {
+        assert_eq!(tokens_no_regex("do in"), vec![Token::Do, Token::In]);
+    }
+
+    #[test]
+    fn lex_increment_decrement_not_supported_as_tokens() {
+        assert_eq!(
+            tokens_no_regex("++"),
+            vec![Token::Plus, Token::Plus]
+        );
+    }
 }

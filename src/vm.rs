@@ -1389,4 +1389,30 @@ mod tests {
         vm_run_begin(&cp, &mut rt).unwrap();
         assert_eq!(String::from_utf8_lossy(&rt.print_buf), "7\n");
     }
+
+    #[test]
+    fn vm_begin_printf_statement() {
+        let cp = compile("BEGIN { printf \"%s\", \"ok\" }");
+        let mut rt = runtime_with_slots(&cp);
+        vm_run_begin(&cp, &mut rt).unwrap();
+        assert_eq!(String::from_utf8_lossy(&rt.print_buf), "ok");
+    }
+
+    #[test]
+    fn vm_begin_if_branch() {
+        let cp = compile("BEGIN { if (1) print 7; }");
+        let mut rt = runtime_with_slots(&cp);
+        vm_run_begin(&cp, &mut rt).unwrap();
+        assert_eq!(String::from_utf8_lossy(&rt.print_buf), "7\n");
+    }
+
+    #[test]
+    fn vm_pattern_range_placeholder_returns_false_in_vm() {
+        let cp = compile("/a/,/b/ { print }");
+        let rule = &cp.record_rules[0];
+        assert!(matches!(rule.pattern, CompiledPattern::Range));
+        let mut rt = runtime_with_slots(&cp);
+        rt.set_record_from_line("x");
+        assert!(!vm_pattern_matches(rule, &cp, &mut rt).unwrap());
+    }
 }

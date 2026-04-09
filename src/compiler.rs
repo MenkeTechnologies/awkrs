@@ -1308,4 +1308,60 @@ mod tests {
         let cp = Compiler::compile_program(&prog);
         assert_eq!(cp.record_rules.len(), 1);
     }
+
+    #[test]
+    fn compile_end_block() {
+        let prog = parse_program("END { print \"x\" }").unwrap();
+        let cp = Compiler::compile_program(&prog);
+        assert!(!cp.end_chunks.is_empty());
+    }
+
+    #[test]
+    fn compile_beginfile_endfile() {
+        let prog = parse_program("BEGINFILE { print \"bf\" } ENDFILE { print \"ef\" }").unwrap();
+        let cp = Compiler::compile_program(&prog);
+        assert!(!cp.beginfile_chunks.is_empty());
+        assert!(!cp.endfile_chunks.is_empty());
+    }
+
+    #[test]
+    fn compile_begin_and_end_together() {
+        let prog = parse_program("BEGIN { a=1 } { print $0 } END { print a }").unwrap();
+        let cp = Compiler::compile_program(&prog);
+        assert!(!cp.begin_chunks.is_empty());
+        assert!(!cp.end_chunks.is_empty());
+        assert_eq!(cp.record_rules.len(), 1);
+    }
+
+    #[test]
+    fn compile_while_loop() {
+        let prog = parse_program("BEGIN { i=0; while (i<3) i=i+1 }").unwrap();
+        let cp = Compiler::compile_program(&prog);
+        assert!(!cp.begin_chunks[0].ops.is_empty());
+    }
+
+    #[test]
+    fn compile_if_else() {
+        let prog = parse_program("BEGIN { if (1) print 1; else print 0 }").unwrap();
+        let cp = Compiler::compile_program(&prog);
+        assert!(!cp.begin_chunks[0].ops.is_empty());
+    }
+
+    #[test]
+    fn compile_delete_array_elem() {
+        let prog = parse_program("BEGIN { delete a[\"k\"] }").unwrap();
+        let cp = Compiler::compile_program(&prog);
+        assert!(!cp.begin_chunks[0].ops.is_empty());
+    }
+
+    #[test]
+    fn compile_two_functions() {
+        let prog = parse_program(
+            "function a(){ return 1 } function b(){ return 2 } BEGIN { print a()+b() }",
+        )
+        .unwrap();
+        let cp = Compiler::compile_program(&prog);
+        assert!(cp.functions.contains_key("a"));
+        assert!(cp.functions.contains_key("b"));
+    }
 }

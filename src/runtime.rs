@@ -1017,4 +1017,31 @@ mod value_tests {
         Value::Num(5.0).write_to(&mut v);
         assert_eq!(v, b"ok5");
     }
+
+    #[test]
+    fn value_truthy_num_zero() {
+        assert!(!Value::Num(0.0).truthy());
+    }
+
+    #[test]
+    fn value_truthy_num_nonzero() {
+        assert!(Value::Num(-3.0).truthy());
+    }
+
+    #[test]
+    fn value_empty_array_not_truthy() {
+        let m = super::AwkMap::default();
+        assert!(!Value::Array(m).truthy());
+    }
+
+    #[test]
+    fn value_as_number_negative_float_string() {
+        assert_eq!(Value::Str("-2.5".into()).as_number(), -2.5);
+    }
+
+    #[test]
+    fn value_into_string_float_fraction() {
+        let s = Value::Num(0.25).into_string();
+        assert!(s.contains('2') && s.contains('5'), "{s}");
+    }
 }

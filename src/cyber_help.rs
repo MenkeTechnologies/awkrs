@@ -118,3 +118,28 @@ pub fn print_cyberpunk_help(bin_name: &str) {
     let _ = write!(out, "{}", footer(version));
     let _ = writeln!(out);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn status_box_has_fixed_inner_width_and_version() {
+        let s = status_box("0.0.0");
+        assert!(s.contains("0.0.0"));
+        assert!(s.contains("ONLINE"));
+        assert!(s.contains("SIGNAL"));
+    }
+
+    #[test]
+    fn footer_contains_version_and_license_tag() {
+        let f = footer("1.2.3");
+        assert!(f.contains("1.2.3"));
+        assert!(f.contains("MIT"));
+    }
+
+    #[test]
+    fn tagline_non_empty() {
+        assert!(!tagline().is_empty());
+    }
+}

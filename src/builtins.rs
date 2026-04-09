@@ -315,7 +315,7 @@ pub fn patsplit(
 
 #[cfg(test)]
 mod tests {
-    use super::{gsub, match_fn, patsplit, sub_fn};
+    use super::{gsub, gsub_literal_eligible, is_literal_pattern, match_fn, patsplit, sub_fn};
     use crate::runtime::{Runtime, Value};
 
     fn rt_with_fs() -> Runtime {
@@ -377,5 +377,25 @@ mod tests {
         assert_eq!(rt.array_get("parts", "1").as_str(), "x");
         assert_eq!(rt.array_get("parts", "2").as_str(), "y");
         assert_eq!(rt.array_get("parts", "3").as_str(), "z");
+    }
+
+    #[test]
+    fn is_literal_pattern_accepts_plain_text() {
+        assert!(is_literal_pattern("hello"));
+    }
+
+    #[test]
+    fn is_literal_pattern_rejects_regex_metachar() {
+        assert!(!is_literal_pattern("a.c"));
+    }
+
+    #[test]
+    fn gsub_literal_eligible_rejects_ampersand_in_replacement() {
+        assert!(!gsub_literal_eligible("x", "a&b"));
+    }
+
+    #[test]
+    fn gsub_literal_eligible_accepts_simple_pair() {
+        assert!(gsub_literal_eligible("needle", "repl"));
     }
 }

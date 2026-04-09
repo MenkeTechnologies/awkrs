@@ -1173,4 +1173,59 @@ mod tests {
         assert!(p.rules.is_empty());
         assert!(p.funcs.is_empty());
     }
+
+    #[test]
+    fn parse_error_unclosed_brace() {
+        let e = parse_program("BEGIN { print 1").unwrap_err();
+        assert!(matches!(e, crate::error::Error::Parse { .. }));
+    }
+
+    #[test]
+    fn parse_error_invalid_expression() {
+        let e = parse_program("BEGIN { + }").unwrap_err();
+        assert!(matches!(e, crate::error::Error::Parse { .. }));
+    }
+
+    #[test]
+    fn parses_break_continue_in_while() {
+        parse_program("BEGIN { while (1) { break } }").unwrap();
+        parse_program("BEGIN { while (1) { continue } }").unwrap();
+    }
+
+    #[test]
+    fn parses_exit_with_code() {
+        let p = parse_program("BEGIN { exit 5 }").unwrap();
+        let rule = p.rules.iter().find(|r| matches!(r.pattern, Pattern::Begin)).unwrap();
+        assert!(matches!(rule.stmts.first(), Some(Stmt::Exit(Some(_)))));
+    }
+
+    #[test]
+    fn parses_exit_default() {
+        let p = parse_program("BEGIN { exit }").unwrap();
+        let rule = p.rules.iter().find(|r| matches!(r.pattern, Pattern::Begin)).unwrap();
+        assert!(matches!(rule.stmts.first(), Some(Stmt::Exit(None))));
+    }
+
+    #[test]
+    fn parses_printf_redirect_append() {
+        let p = parse_program("BEGIN { printf \"%s\", \"a\" >> \"f\" }").unwrap();
+        match first_begin_stmt(&p) {
+            Stmt::Printf { redir, .. } => {
+                assert!(matches!(redir, Some(PrintRedir::Append(_))));
+            }
+            _ => panic!("expected Printf"),
+        }
+    }
+
+    #[test]
+    fn parses_delete_entire_array_stmt() {
+        let p = parse_program("BEGIN { delete a }").unwrap();
+        match first_begin_stmt(&p) {
+            Stmt::Delete { name, indices } => {
+                assert_eq!(name, "a");
+                assert!(indices.is_none());
+            }
+            s => panic!("expected delete array, got {s:?}"),
+        }
+    }
 }

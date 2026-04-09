@@ -398,4 +398,49 @@ mod tests {
         assert_eq!(slots.len(), 1);
         assert_eq!(slots[0].as_number(), 7.0);
     }
+
+    #[test]
+    fn string_pool_intern_preserves_order() {
+        let mut p = StringPool::default();
+        let i0 = p.intern("first");
+        let i1 = p.intern("second");
+        assert_eq!(i0, 0);
+        assert_eq!(i1, 1);
+        assert_eq!(p.get(i0), "first");
+        assert_eq!(p.get(i1), "second");
+    }
+
+    #[test]
+    fn string_pool_many_distinct_strings() {
+        let mut p = StringPool::default();
+        let mut idx = Vec::new();
+        for i in 0..32 {
+            let s = format!("k{i}");
+            idx.push(p.intern(&s));
+        }
+        for (i, id) in idx.iter().copied().enumerate() {
+            assert_eq!(p.get(id), format!("k{i}"));
+        }
+    }
+
+    #[test]
+    fn init_slots_missing_var_uses_empty_string() {
+        let cp = CompiledProgram {
+            begin_chunks: vec![],
+            end_chunks: vec![],
+            beginfile_chunks: vec![],
+            endfile_chunks: vec![],
+            record_rules: vec![],
+            functions: HashMap::new(),
+            strings: StringPool::default(),
+            slot_count: 2,
+            slot_names: vec!["x".into(), "y".into()],
+            slot_map: HashMap::from([("x".into(), 0u16), ("y".into(), 1u16)]),
+        };
+        let mut vars = AwkMap::default();
+        vars.insert("x".into(), Value::Num(1.0));
+        let slots = cp.init_slots(&vars);
+        assert_eq!(slots[0].as_number(), 1.0);
+        assert_eq!(slots[1].as_str(), "");
+    }
 }
