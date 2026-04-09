@@ -49,6 +49,21 @@
 //! [`MIXED_PRINTF_FLUSH`] (same buffer as `print`, then `sprintf_simple` to the output buffer).
 //! `typeof` (`TypeofVar` / `TypeofSlot` / `TypeofArrayElem` / `TypeofField` / `TypeofValue`)
 //! compiles to `MIXED_TYPEOF_*` and returns NaN-boxed pool/dynamic strings like other mixed ops.
+//!
+//! ## Performance roadmap (not implemented)
+//!
+//! To be competitive with hand-tuned loops on hot numeric rules, future work would need to:
+//! - **Cache dispatch** — avoid re-scanning and re-hashing the `ops` slice on every record; keep a
+//!   stable chunk id → [`JitChunk`] association after the first eligibility check.
+//! - **Slot representation** — stop copying between the interpreter [`crate::runtime::Value`] slots
+//!   and the JIT `f64` buffer every invocation where full [`crate::runtime::Value`] semantics allow
+//!   storing scalars as `f64` (or using the JIT buffer as the source of truth for eligible chunks).
+//! - **Compile cache** — replace the global [`JIT_CACHE`] [`std::sync::Mutex`] with a thread-local
+//!   or sharded map to remove lock contention (at the cost of possible duplicate compiles across threads).
+//! - **Register promotion** — hoist loop-carried scalars into machine registers via Cranelift SSA /
+//!   lowering changes; not automatic from the current one-op-at-a-time lowering.
+//! - **Thinner BEGIN** — skip TLS and field-callback setup when a rule cannot touch fields or
+//!   mixed/runtime bridges (e.g. pure `BEGIN` with no record I/O).
 
 use crate::ast::{BinOp, IncDecOp};
 use crate::bytecode::{CompiledProgram, GetlineSource, Op, SubTarget};
