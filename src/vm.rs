@@ -814,8 +814,9 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
         }
         MIXED_ARRAY_GET => {
             let name = ctx.cp.strings.get(a1);
-            let key = jit_f64_to_value(ctx, a2).into_string();
-            let v = ctx.rt.array_get(name, &key);
+            let key_val = jit_f64_to_value(ctx, a2);
+            let k = key_val.as_str_cow();
+            let v = ctx.rt.array_get(name, k.as_ref());
             value_to_jit_f64(ctx, v)
         }
         MIXED_ARRAY_SET => {
@@ -827,17 +828,19 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
         }
         MIXED_ARRAY_IN => {
             let name = ctx.cp.strings.get(a1);
-            let key = jit_f64_to_value(ctx, a2).into_string();
-            if ctx.rt.array_has(name, &key) {
+            let key_val = jit_f64_to_value(ctx, a2);
+            let k = key_val.as_str_cow();
+            if ctx.rt.array_has(name, k.as_ref()) {
                 1.0
             } else {
                 0.0
             }
         }
         MIXED_ARRAY_DELETE_ELEM => {
-            let name = ctx.cp.strings.get(a1).to_string();
-            let key = jit_f64_to_value(ctx, a2).into_string();
-            ctx.rt.array_delete(&name, Some(&key));
+            let name = ctx.cp.strings.get(a1);
+            let key_val = jit_f64_to_value(ctx, a2);
+            let k = key_val.as_str_cow();
+            ctx.rt.array_delete(name, Some(k.as_ref()));
             0.0
         }
         MIXED_ARRAY_DELETE_ALL => {
@@ -857,11 +860,15 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
                 _ => BinOp::Add,
             };
             let name = ctx.cp.strings.get(arr);
-            let key = jit_f64_to_value(ctx, a2).into_string();
-            let old = ctx.rt.array_get(name, &key);
+            let key_val = jit_f64_to_value(ctx, a2);
+            let old = {
+                let k = key_val.as_str_cow();
+                ctx.rt.array_get(name, k.as_ref())
+            };
             let rhs = jit_f64_to_value(ctx, a3);
             let newv = apply_binop(bop, &old, &rhs).unwrap_or(Value::Num(0.0));
             let n = newv.as_number();
+            let key = key_val.into_string();
             ctx.rt.array_set(name, key, Value::Num(n));
             n
         }
@@ -876,13 +883,18 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
                 _ => IncDecOp::PreInc,
             };
             let name = ctx.cp.strings.get(arr);
-            let key = jit_f64_to_value(ctx, a2).into_string();
-            let old_n = ctx.rt.array_get(name, &key).as_number();
+            let key_val = jit_f64_to_value(ctx, a2);
+            let old_n = {
+                let k = key_val.as_str_cow();
+                ctx.rt.array_get(name, k.as_ref())
+            }
+            .as_number();
             let delta = match kind {
                 IncDecOp::PreInc | IncDecOp::PostInc => 1.0,
                 IncDecOp::PreDec | IncDecOp::PostDec => -1.0,
             };
             let new_n = old_n + delta;
+            let key = key_val.into_string();
             ctx.rt.array_set(name, key, Value::Num(new_n));
             incdec_push(kind, old_n, new_n)
         }
@@ -2146,9 +2158,10 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 ctx.push(val);
             }
             Op::GetArrayElem(arr) => {
-                let key = ctx.pop().into_string();
+                let key_val = ctx.pop();
+                let k = key_val.as_str_cow();
                 let name = ctx.str_ref(arr);
-                let v = ctx.rt.array_get(name, &key);
+                let v = ctx.rt.array_get(name, k.as_ref());
                 ctx.push(v);
             }
             Op::TypeofVar(idx) => {
@@ -2161,9 +2174,10 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 ctx.push(Value::Str(t.into()));
             }
             Op::TypeofArrayElem(arr) => {
-                let key = ctx.pop().into_string();
+                let key_val = ctx.pop();
+                let k = key_val.as_str_cow();
                 let name = ctx.str_ref(arr);
-                let t = builtins::awk_typeof_array_elem(ctx.rt, name, &key);
+                let t = builtins::awk_typeof_array_elem(ctx.rt, name, k.as_ref());
                 ctx.push(Value::Str(t.into()));
             }
             Op::TypeofField => {
@@ -2214,10 +2228,14 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             }
             Op::CompoundAssignIndex(arr, bop) => {
                 let rhs = ctx.pop();
-                let key = ctx.pop().into_string();
+                let key_val = ctx.pop();
                 let name = ctx.cp.strings.get(arr);
-                let old = ctx.rt.array_get(name, &key);
+                let old = {
+                    let k = key_val.as_str_cow();
+                    ctx.rt.array_get(name, k.as_ref())
+                };
                 let new_val = apply_binop(bop, &old, &rhs)?;
+                let key = key_val.into_string();
                 ctx.rt.array_set(name, key, new_val.clone());
                 ctx.push(new_val);
             }
@@ -2428,9 +2446,10 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
 
             // ── Array ops ───────────────────────────────────────────────
             Op::InArray(arr) => {
-                let key = ctx.pop().into_string();
+                let key_val = ctx.pop();
+                let k = key_val.as_str_cow();
                 let name = ctx.str_ref(arr);
-                let b = ctx.rt.array_has(name, &key);
+                let b = ctx.rt.array_has(name, k.as_ref());
                 ctx.push(Value::Num(if b { 1.0 } else { 0.0 }));
             }
             Op::DeleteArray(arr) => {
@@ -2438,9 +2457,10 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 ctx.rt.array_delete(&name, None);
             }
             Op::DeleteElem(arr) => {
-                let key = ctx.pop().into_string();
-                let name = ctx.str_ref(arr).to_string();
-                ctx.rt.array_delete(&name, Some(&key));
+                let key_val = ctx.pop();
+                let k = key_val.as_str_cow();
+                let name = ctx.cp.strings.get(arr);
+                ctx.rt.array_delete(name, Some(k.as_ref()));
             }
 
             // ── Multi-dimensional array key ─────────────────────────────

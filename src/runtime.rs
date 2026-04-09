@@ -4,11 +4,6 @@ use std::collections::HashMap;
 /// Fast hash map for awk variables and arrays. Uses FxHash (no DoS resistance,
 /// but ~2× faster than SipHash for short string keys typical in awk programs).
 pub type AwkMap<K, V> = rustc_hash::FxHashMap<K, V>;
-
-/// Initial capacity for stdout batching (`print` accumulates here until flush).
-/// Large END blocks (e.g. `for (k in a) print …`) grow this heavily; starting larger
-/// avoids repeated `Vec` reallocations without a hard upper bound on output size.
-const DEFAULT_PRINT_BUF_CAPACITY: usize = 512 * 1024;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::Path;
@@ -18,6 +13,11 @@ use std::sync::{Arc, Mutex};
 use crate::error::{Error, Result};
 use memchr::memmem;
 use regex::Regex;
+
+/// Initial capacity for stdout batching (`print` accumulates here until flush).
+/// Large END blocks (e.g. `for (k in a) print …`) grow this heavily; starting larger
+/// avoids repeated `Vec` reallocations without a hard upper bound on output size.
+const DEFAULT_PRINT_BUF_CAPACITY: usize = 512 * 1024;
 
 type SharedInputReader = Arc<Mutex<BufReader<Box<dyn Read + Send>>>>;
 
@@ -1164,6 +1164,7 @@ impl Runtime {
     }
 
     /// `key in arr` — true iff `arr` is an array that has `key` (POSIX: subscript was used).
+    #[inline]
     pub fn array_has(&self, name: &str, key: &str) -> bool {
         match self.get_global_var(name) {
             Some(Value::Array(a)) => a.contains_key(key),
