@@ -62,7 +62,7 @@
 //!   [`JitCompileOptions::vm_default`] so field reads compile to a direct **`call`** to
 //!   [`crate::vm::jit_field_callback`] (symbol **`awkrs_jit_field_load`**) instead of
 //!   **`call_indirect`** through the `field_fn` parameter. Field *values* are still
-//!   [`Runtime::field_as_number`] (parse record text), not a plain memory load — AWK fields are
+//!   [`crate::runtime::Runtime::field_as_number`] (parse record text), not a plain memory load — AWK fields are
 //!   string slices / parsed numbers, not a `Vec<f64>`.
 //! - **Mixed fused field+slot** — for [`Op::AddFieldToSlot`] / [`Op::AddMulFieldsToSlot`] in mixed
 //!   chunks, the JIT emits the field callback(s) first, then [`MIXED_ADD_FIELDNUM_TO_SLOT`] /
