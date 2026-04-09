@@ -763,6 +763,30 @@ fn jit_split_uses_fs_variable() {
 }
 
 #[test]
+fn jit_patsplit_fpat() {
+    let (c, o, e) = run_awkrs_stdin_args_env(
+        std::iter::empty::<&str>(),
+        "BEGIN { FPAT=\"[^,]+\"; n = patsplit(\"a,b\", arr); print n, arr[1], arr[2] }",
+        "",
+        jit_env(),
+    );
+    assert_eq!(c, 0, "stderr: {e}");
+    assert_eq!(o, "2 a b\n");
+}
+
+#[test]
+fn jit_match_builtin_rstart() {
+    let (c, o, e) = run_awkrs_stdin_args_env(
+        std::iter::empty::<&str>(),
+        r#"BEGIN { print match("foo123bar", "[0-9]+"), RSTART, RLENGTH }"#,
+        "",
+        jit_env(),
+    );
+    assert_eq!(c, 0, "stderr: {e}");
+    assert_eq!(o.trim(), "4 4 3");
+}
+
+#[test]
 fn jit_sum_fields_loop() {
     // for (i=1; i<=NF; i++) sum += $i
     let (c, o, e) = run_awkrs_stdin_args_env(

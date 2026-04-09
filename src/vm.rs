@@ -454,6 +454,8 @@ fn jit_mixed_op_dispatch(
         MIXED_TO_BOOL, MIXED_TRUTHINESS,         MIXED_TYPEOF_ARRAY_ELEM, MIXED_TYPEOF_FIELD,
         MIXED_TYPEOF_SLOT, MIXED_TYPEOF_VALUE, MIXED_TYPEOF_VAR, MIXED_BUILTIN_ARG,
         MIXED_BUILTIN_CALL, MIXED_PRINTF_FLUSH, MIXED_SPLIT, MIXED_SPLIT_WITH_FS,
+        MIXED_PATSPLIT, MIXED_PATSPLIT_SEP, MIXED_PATSPLIT_FP, MIXED_PATSPLIT_FP_SEP,
+        MIXED_MATCH_BUILTIN, MIXED_MATCH_BUILTIN_ARR,
     };
 
     fn mixed_jit_slot_load_raw(slot: usize) -> f64 {
@@ -931,6 +933,50 @@ fn jit_mixed_op_dispatch(
             let n = parts.len();
             ctx.rt.split_into_array(&name, &parts);
             n as f64
+        }
+        MIXED_PATSPLIT => {
+            let arr_name = ctx.str_ref(a1).to_string();
+            let s = jit_f64_to_value(ctx, a2).as_str();
+            builtins::patsplit(ctx.rt, &s, &arr_name, None, None).unwrap_or(0.0)
+        }
+        MIXED_PATSPLIT_SEP => {
+            let arr_name = ctx.str_ref(a1).to_string();
+            let s = jit_f64_to_value(ctx, a2).as_str();
+            let seps_s = jit_f64_to_value(ctx, a3).into_string();
+            builtins::patsplit(ctx.rt, &s, &arr_name, None, Some(seps_s.as_str())).unwrap_or(0.0)
+        }
+        MIXED_PATSPLIT_FP => {
+            let arr_name = ctx.str_ref(a1).to_string();
+            let s = jit_f64_to_value(ctx, a2).as_str();
+            let fp = jit_f64_to_value(ctx, a3).as_str();
+            builtins::patsplit(ctx.rt, &s, &arr_name, Some(&fp), None).unwrap_or(0.0)
+        }
+        MIXED_PATSPLIT_FP_SEP => {
+            let arr_idx = a1 & 0xFFFF;
+            let seps_idx = a1 >> 16;
+            let arr_name = ctx.str_ref(arr_idx).to_string();
+            let seps_name = ctx.str_ref(seps_idx).to_string();
+            let s = jit_f64_to_value(ctx, a2).as_str();
+            let fp = jit_f64_to_value(ctx, a3).as_str();
+            builtins::patsplit(
+                ctx.rt,
+                &s,
+                &arr_name,
+                Some(&fp),
+                Some(seps_name.as_str()),
+            )
+            .unwrap_or(0.0)
+        }
+        MIXED_MATCH_BUILTIN => {
+            let s = jit_f64_to_value(ctx, a2).as_str();
+            let re_pat = jit_f64_to_value(ctx, a3).as_str();
+            builtins::match_fn(ctx.rt, &s, &re_pat, None).unwrap_or(0.0)
+        }
+        MIXED_MATCH_BUILTIN_ARR => {
+            let arr_name = ctx.str_ref(a1).to_string();
+            let s = jit_f64_to_value(ctx, a2).as_str();
+            let re_pat = jit_f64_to_value(ctx, a3).as_str();
+            builtins::match_fn(ctx.rt, &s, &re_pat, Some(arr_name.as_str())).unwrap_or(0.0)
         }
         _ => 0.0,
     }
