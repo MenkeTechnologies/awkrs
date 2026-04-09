@@ -2,15 +2,28 @@
 
 use std::io::{self, IsTerminal, Write};
 
+use clap::builder::styling::{AnsiColor, Effects, Style, Styles};
 use clap::CommandFactory;
 
 use crate::cli::Args;
+
+fn cyber_styles() -> Styles {
+    Styles::styled()
+        .header(Style::new().fg_color(Some(AnsiColor::Cyan.into())).effects(Effects::BOLD | Effects::UNDERLINE))
+        .usage(Style::new().fg_color(Some(AnsiColor::Yellow.into())).effects(Effects::BOLD))
+        .literal(Style::new().fg_color(Some(AnsiColor::Green.into())).effects(Effects::BOLD))
+        .placeholder(Style::new().fg_color(Some(AnsiColor::Magenta.into())))
+        .valid(Style::new().fg_color(Some(AnsiColor::Green.into())))
+        .invalid(Style::new().fg_color(Some(AnsiColor::Red.into())).effects(Effects::BOLD))
+        .error(Style::new().fg_color(Some(AnsiColor::Red.into())).effects(Effects::BOLD))
+}
 
 /// Inner width between `┌` and `┐` (matches `tp -h` layout).
 const BOX_INNER: usize = 54;
 
 fn color_on() -> bool {
-    std::env::var_os("NO_COLOR").is_none() && io::stdout().is_terminal()
+    std::env::var_os("NO_COLOR").is_none()
+        && (io::stdout().is_terminal() || std::env::var_os("CLICOLOR_FORCE").is_some())
 }
 
 fn c_cyan(s: &str) -> String {
@@ -106,15 +119,19 @@ pub fn print_cyberpunk_help(bin_name: &str) {
     );
     let _ = writeln!(out);
 
-    let _ = Args::command()
+    let mut cmd = Args::command()
         .bin_name(bin_name)
+        .styles(cyber_styles())
         .help_template(
             "\
 {usage-heading} {usage}
 
 {all-args}",
-        )
-        .print_help();
+        );
+    if color_on() {
+        cmd = cmd.color(clap::ColorChoice::Always);
+    }
+    let _ = cmd.print_help();
     let _ = write!(out, "{}", footer(version));
     let _ = writeln!(out);
 }
