@@ -1388,7 +1388,7 @@ fn call_user(fd: &FunctionDef, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<V
 #[cfg(test)]
 mod tests {
     use super::{match_pattern, pattern_matches, range_step, run_begin};
-    use crate::ast::Pattern;
+    use crate::ast::{Expr, Pattern};
     use crate::parser::parse_program;
     use crate::runtime::Runtime;
 
@@ -1438,5 +1438,23 @@ mod tests {
         let mut rt = Runtime::new();
         run_begin(&prog, &mut rt).unwrap();
         assert_eq!(rt.vars.get("answer").unwrap().as_number(), 42.0);
+    }
+
+    #[test]
+    fn pattern_expr_matches_truthy_numeric() {
+        let prog = parse_program("").unwrap();
+        let mut rt = Runtime::new();
+        rt.set_record_from_line("anything");
+        let p = Pattern::Expr(Expr::Number(1.0));
+        assert!(pattern_matches(&p, &mut rt, &prog).unwrap());
+    }
+
+    #[test]
+    fn pattern_expr_matches_falsy_numeric_zero() {
+        let prog = parse_program("").unwrap();
+        let mut rt = Runtime::new();
+        rt.set_record_from_line("anything");
+        let p = Pattern::Expr(Expr::Number(0.0));
+        assert!(!pattern_matches(&p, &mut rt, &prog).unwrap());
     }
 }

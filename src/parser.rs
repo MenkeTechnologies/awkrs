@@ -1586,4 +1586,19 @@ mod tests {
             s => panic!("expected for-in, got {s:?}"),
         }
     }
+
+    #[test]
+    fn parses_delete_array_element_multidimensional() {
+        let p = parse_program("BEGIN { delete a[1,2] }").unwrap();
+        match first_begin_stmt(&p) {
+            Stmt::Delete { name, indices } => {
+                assert_eq!(name, "a");
+                let ix = indices.as_ref().expect("indexed delete");
+                assert_eq!(ix.len(), 2);
+                assert!(matches!(&ix[0], Expr::Number(n) if *n == 1.0));
+                assert!(matches!(&ix[1], Expr::Number(n) if *n == 2.0));
+            }
+            s => panic!("expected delete a[1,2], got {s:?}"),
+        }
+    }
 }

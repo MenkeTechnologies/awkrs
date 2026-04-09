@@ -22,6 +22,20 @@ fn logical_or_short_circuit_skips_rhs_division_by_zero() {
 }
 
 #[test]
+fn gsub_returns_substitution_count_on_record() {
+    let (c, o, _) = run_awkrs_stdin(r#"{ print gsub("o", "x") }"#, "foo\n");
+    assert_eq!(c, 0);
+    assert_eq!(o, "2\n");
+}
+
+#[test]
+fn sub_returns_at_most_one_on_record() {
+    let (c, o, _) = run_awkrs_stdin(r#"{ print sub("o", "x") }"#, "foo\n");
+    assert_eq!(c, 0);
+    assert_eq!(o, "1\n");
+}
+
+#[test]
 fn substr_start_beyond_string_yields_empty() {
     let (c, o, _) = run_awkrs_stdin(r#"BEGIN { print substr("hi", 99) }"#, "");
     assert_eq!(c, 0);

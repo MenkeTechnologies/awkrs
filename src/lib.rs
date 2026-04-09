@@ -1185,6 +1185,12 @@ mod lib_internal_tests {
     }
 
     #[test]
+    fn read_all_lines_single_newline_only() {
+        let lines = read_all_lines(Cursor::new(b"\n")).unwrap();
+        assert_eq!(lines, vec!["\n".to_string()]);
+    }
+
+    #[test]
     fn awk_float_eq_close_values() {
         assert!(awk_float_eq(1.0, 1.0));
         assert!(awk_float_eq(1e-20, 1e-20));

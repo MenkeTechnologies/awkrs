@@ -703,4 +703,12 @@ mod tests {
         assert_eq!(tokens_no_regex("++"), vec![Token::PlusPlus]);
         assert_eq!(tokens_no_regex("--"), vec![Token::MinusMinus]);
     }
+
+    #[test]
+    fn lex_switch_case_default_keywords() {
+        assert_eq!(
+            tokens_no_regex("switch case default"),
+            vec![Token::Switch, Token::Case, Token::Default]
+        );
+    }
 }

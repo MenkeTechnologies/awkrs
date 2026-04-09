@@ -1671,4 +1671,19 @@ mod tests {
         let cp = Compiler::compile_program(&prog);
         assert!(!cp.begin_chunks[0].ops.is_empty());
     }
+
+    #[test]
+    fn compile_record_rule_with_next() {
+        let prog = parse_program("{ next }").unwrap();
+        let cp = Compiler::compile_program(&prog);
+        assert_eq!(cp.record_rules.len(), 1);
+        assert!(!cp.record_rules[0].body.ops.is_empty());
+    }
+
+    #[test]
+    fn compile_delete_multidimensional_element() {
+        let prog = parse_program("BEGIN { delete a[1,2] }").unwrap();
+        let cp = Compiler::compile_program(&prog);
+        assert!(!cp.begin_chunks[0].ops.is_empty());
+    }
 }
