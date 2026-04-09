@@ -136,9 +136,29 @@ append_hf_markdown \
 
 {
   echo ""
+  echo "### 4c. Throughput: print first field (same program and input as §1)"
+  echo ""
+} >>"$OUT"
+
+append_hf_markdown \
+  -n "awkrs (JIT default)" "env -u AWKRS_JIT \"$AWKRS\" '{ print \$1 }' '$TMP_LINES'" \
+  -n "awkrs (bytecode only)" "env AWKRS_JIT=0 \"$AWKRS\" '{ print \$1 }' '$TMP_LINES'"
+
+{
+  echo ""
+  echo "### 4d. Parallel \`-j8\` (same program and input as §1 \`awkrs (parallel)\`)"
+  echo ""
+} >>"$OUT"
+
+append_hf_markdown \
+  -n "awkrs (JIT default)" "env -u AWKRS_JIT \"$AWKRS\" -j8 '{ print \$1 }' '$TMP_LINES'" \
+  -n "awkrs (bytecode only)" "env AWKRS_JIT=0 \"$AWKRS\" -j8 '{ print \$1 }' '$TMP_LINES'"
+
+{
+  echo ""
   echo "---"
   echo ""
-  echo "Throughput (§1) can use **awkrs \`-j\`** when the program is parallel-safe; **BEGIN-only** (§2) and **accumulators** (§3) are effectively single-threaded here. **§4** compares JIT vs bytecode for the same awkrs workloads. Re-run after \`cargo build --release\` on your hardware."
+  echo "Throughput (§1) can use **awkrs \`-j\`** when the program is parallel-safe; **BEGIN-only** (§2) and **accumulators** (§3) are effectively single-threaded here. **§4** compares JIT vs bytecode for every **awkrs** workload in §1–§3 (4a = §2, 4b = §3, 4c–4d = §1). Re-run after \`cargo build --release\` on your hardware."
   echo ""
 } >>"$OUT"
 
