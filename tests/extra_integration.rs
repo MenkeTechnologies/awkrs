@@ -8,6 +8,20 @@ use std::fs;
 use std::process::Command;
 
 #[test]
+fn logical_and_short_circuit_skips_rhs_division_by_zero() {
+    let (c, o, e) = run_awkrs_stdin("BEGIN { print (0 && 1/0) }", "");
+    assert_eq!(c, 0, "stderr={e:?}");
+    assert_eq!(o, "0\n");
+}
+
+#[test]
+fn logical_or_short_circuit_skips_rhs_division_by_zero() {
+    let (c, o, e) = run_awkrs_stdin("BEGIN { print (1 || 1/0) }", "");
+    assert_eq!(c, 0, "stderr={e:?}");
+    assert_eq!(o, "1\n");
+}
+
+#[test]
 fn compound_subtract_assign() {
     let (c, o, _) = run_awkrs_stdin("BEGIN { x = 5; x -= 2; print x }", "");
     assert_eq!(c, 0);

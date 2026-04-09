@@ -1235,7 +1235,10 @@ impl<'a> Parser<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::{Expr, GetlineRedir, Pattern, PrintRedir, Stmt, SwitchArm, SwitchLabel};
+    use crate::ast::{
+        Expr, GetlineRedir, IncDecOp, IncDecTarget, Pattern, PrintRedir, Stmt, SwitchArm,
+        SwitchLabel,
+    };
 
     fn first_begin_stmt(prog: &crate::ast::Program) -> &Stmt {
         let rule = prog
@@ -1496,6 +1499,35 @@ mod tests {
                 assert!(indices.is_none());
             }
             s => panic!("expected delete array, got {s:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_prefix_increment_var() {
+        let p = parse_program("BEGIN { ++x }").unwrap();
+        match first_begin_stmt(&p) {
+            Stmt::Expr(Expr::IncDec { op, target }) => {
+                assert_eq!(*op, IncDecOp::PreInc);
+                assert!(matches!(target, IncDecTarget::Var(ref s) if s == "x"));
+            }
+            s => panic!("expected ++x expr, got {s:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_postfix_increment_field() {
+        let p = parse_program("BEGIN { $1++ }").unwrap();
+        match first_begin_stmt(&p) {
+            Stmt::Expr(Expr::IncDec { op, target }) => {
+                assert_eq!(*op, IncDecOp::PostInc);
+                match target {
+                    IncDecTarget::Field(inner) => {
+                        assert!(matches!(inner.as_ref(), Expr::Number(n) if *n == 1.0));
+                    }
+                    t => panic!("expected $1++, target={t:?}"),
+                }
+            }
+            s => panic!("expected $1++, got {s:?}"),
         }
     }
 }

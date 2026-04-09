@@ -1161,6 +1161,30 @@ mod lib_internal_tests {
     }
 
     #[test]
+    fn split_bytes_into_owned_lines_trailing_line_without_newline() {
+        assert_eq!(
+            split_bytes_into_owned_lines(b"only"),
+            vec!["only".to_string()]
+        );
+        assert_eq!(
+            split_bytes_into_owned_lines(b"a\nb"),
+            vec!["a".to_string(), "b".to_string()]
+        );
+    }
+
+    #[test]
+    fn split_bytes_into_owned_lines_lone_carriage_return_not_trimmed_as_crlf() {
+        // `\r` alone is not the "CR before LF" case; line is preserved (lossy UTF-8).
+        assert_eq!(split_bytes_into_owned_lines(b"a\rb"), vec!["a\rb".to_string()]);
+    }
+
+    #[test]
+    fn read_all_lines_last_line_without_newline() {
+        let lines = read_all_lines(Cursor::new(b"hello")).unwrap();
+        assert_eq!(lines, vec!["hello".to_string()]);
+    }
+
+    #[test]
     fn awk_float_eq_close_values() {
         assert!(awk_float_eq(1.0, 1.0));
         assert!(awk_float_eq(1e-20, 1e-20));
@@ -1182,6 +1206,18 @@ mod lib_internal_tests {
     #[test]
     fn match_nr_mod_eq_pattern_wrong_len() {
         let ops = vec![Op::GetNR, Op::PushNum(2.0), Op::Mod];
+        assert!(match_nr_mod_eq_pattern(&ops).is_none());
+    }
+
+    #[test]
+    fn match_nr_mod_eq_pattern_wrong_ops() {
+        let ops = vec![
+            Op::PushNum(3.0),
+            Op::GetNR,
+            Op::Mod,
+            Op::PushNum(1.0),
+            Op::CmpEq,
+        ];
         assert!(match_nr_mod_eq_pattern(&ops).is_none());
     }
 
