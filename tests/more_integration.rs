@@ -977,3 +977,71 @@ fn mktime_invalid_is_minus_one() {
     assert_eq!(c, 0);
     assert_eq!(o.trim(), "-1");
 }
+
+// ── Bitwise compl, asort/asorti two-arg, -e chaining, switch default, $expr ─
+
+#[test]
+fn compl_bitwise_not_zero() {
+    let (c, o, _) = run_awkrs_stdin("BEGIN { print compl(0) }", "");
+    assert_eq!(c, 0);
+    assert_eq!(o.trim(), "-1");
+}
+
+#[test]
+fn asort_two_arg_fills_dest_leaves_src() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { a["x"]=3; a["y"]=1; n=asort(a,t); print n, t["1"], t["2"], a["x"]+0 }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "2 1 3 3\n");
+}
+
+#[test]
+fn asorti_two_arg_fills_dest_leaves_src() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { a["b"]=1; a["a"]=2; n=asorti(a,t); print n, t["1"], t["2"], a["a"]+0 }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "2 a b 2\n");
+}
+
+#[test]
+fn multiple_dash_e_program_fragments_concatenate() {
+    let out = Command::new(env!("CARGO_BIN_EXE_awkrs"))
+        .args(["-e", "BEGIN { x = 7 }", "-e", "BEGIN { print x }"])
+        .output()
+        .expect("spawn awkrs -e ... -e ...");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "7\n");
+}
+
+#[test]
+fn switch_default_only_runs_when_no_case_matches() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { switch (99) { case 1: print "a"; break; default: print "ok" } }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "ok\n");
+}
+
+#[test]
+fn strtonum_empty_string_is_zero() {
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { print strtonum("") }"#, "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "0\n");
+}
+
+#[test]
+fn dollar_field_dynamic_expression() {
+    let (c, o, _) = run_awkrs_stdin("{ print $(1 + 1) }", "a b c\n");
+    assert_eq!(c, 0);
+    assert_eq!(o, "b\n");
+}
