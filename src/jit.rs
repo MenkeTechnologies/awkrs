@@ -15,9 +15,10 @@
 //! General array subscripts and string-producing ops compile in **mixed mode**:
 //! stack values may be NaN-boxed string handles, and `val_dispatch` opcodes ≥ 100
 //! (`MIXED_*`) preserve string keys and coercion semantics. Fused slot peepholes
-//! (`IncrSlot`, `IncDecSlot`, `AddFieldToSlot`, `JumpIfSlotGeNum`, …) in a mixed
-//! chunk also use `MIXED_*` so slot values are read/written with `Value` coercion,
-//! not raw `fadd` on NaN-boxed bits. `SetField` / `CompoundAssignField` in mixed
+//! (`IncrSlot`, `IncDecSlot`, `JumpIfSlotGeNum`, …) in a mixed chunk use `MIXED_*` so slot values
+//! are read/written with `Value` coercion. [`Op::AddFieldToSlot`] / [`Op::AddMulFieldsToSlot`]
+//! emit the field callback from native code, then [`MIXED_ADD_FIELDNUM_TO_SLOT`] /
+//! [`MIXED_ADD_MUL_FIELDNUMS_TO_SLOT`] for the mixed slot update only. `SetField` / `CompoundAssignField` in mixed
 //! chunks use `MIXED_SET_FIELD` / `MIXED_COMPOUND_ASSIGN_FIELD` so RHS values are
 //! NaN-box aware. Multidimensional keys (`JoinArrayKey`) use `MIXED_JOIN_KEY_ARG`
 //! / `MIXED_JOIN_ARRAY_KEY` with `SUBSEP` like the VM. The fused `ArrayFieldAddConst`
@@ -57,7 +58,13 @@
 //!   **`AWKRS_JIT_MIN_INVOCATIONS`**, default **3**). The VM uses [`try_compile_with_options`] with
 //!   [`JitCompileOptions::vm_default`] so field reads compile to a direct **`call`** to
 //!   [`crate::vm::jit_field_callback`] (symbol **`awkrs_jit_field_load`**) instead of
-//!   **`call_indirect`** through the `field_fn` parameter.
+//!   **`call_indirect`** through the `field_fn` parameter. Field *values* are still
+//!   [`Runtime::field_as_number`] (parse record text), not a plain memory load — AWK fields are
+//!   string slices / parsed numbers, not a `Vec<f64>`.
+//! - **Mixed fused field+slot** — for [`Op::AddFieldToSlot`] / [`Op::AddMulFieldsToSlot`] in mixed
+//!   chunks, the JIT emits the field callback(s) first, then [`MIXED_ADD_FIELDNUM_TO_SLOT`] /
+//!   [`MIXED_ADD_MUL_FIELDNUMS_TO_SLOT`] so `val_dispatch` only applies mixed slot coercion (no
+//!   second `field_as_number` for the same `$n`).
 //! - **Chunk dispatch cache** — each [`crate::bytecode::Chunk`] holds a `jit_lock` with the first
 //!   eligibility/compile result so the VM does not re-run [`is_jit_eligible`] / [`try_compile`] every
 //!   record (VM `try_jit_dispatch`).
@@ -445,6 +452,12 @@ pub const MIXED_SUB_INDEX_STASH: u32 = 200;
 pub const MIXED_SUB_INDEX: u32 = 201;
 pub const MIXED_GSUB_INDEX_STASH: u32 = 202;
 pub const MIXED_GSUB_INDEX: u32 = 203;
+/// `slot += $field` fused (mixed): field numeric value already in **a2** (JIT emits a field
+/// callback first); **a1** = slot index. Avoids re-reading the field inside `val_dispatch` (cf.
+/// [`MIXED_ADD_FIELD_TO_SLOT`]).
+pub const MIXED_ADD_FIELDNUM_TO_SLOT: u32 = 206;
+/// `slot += $f1 * $f2` fused (mixed): **a2** / **a3** hold the two field values; **a1** = slot.
+pub const MIXED_ADD_MUL_FIELDNUMS_TO_SLOT: u32 = 207;
 
 /// Pack `argc` (low 16 bits) and redirect kind (high 16 bits: 1=overwrite, 2=append, 3=pipe, 4=coproc).
 #[inline]
@@ -1365,11 +1378,11 @@ pub fn try_compile_with_options(
 
     let mixed = needs_mixed_mode(ops);
     use crate::jit::{
-        mixed_encode_array_compound, mixed_encode_array_incdec, mixed_encode_field_slot,
-        mixed_encode_slot_incdec, mixed_encode_slot_pair, pack_print_redir, MIXED_ADD,
-        MIXED_ADD_FIELD_TO_SLOT, MIXED_ADD_MUL_FIELDS_TO_SLOT, MIXED_ADD_SLOT_TO_SLOT,
-        MIXED_ARRAY_COMPOUND, MIXED_ARRAY_DELETE_ALL, MIXED_ARRAY_DELETE_ELEM, MIXED_ARRAY_GET,
-        MIXED_ARRAY_IN, MIXED_ARRAY_INCDEC, MIXED_ARRAY_SET, MIXED_BUILTIN_ARG, MIXED_BUILTIN_CALL,
+        mixed_encode_array_compound, mixed_encode_array_incdec, mixed_encode_slot_incdec,
+        mixed_encode_slot_pair, pack_print_redir, MIXED_ADD, MIXED_ADD_FIELDNUM_TO_SLOT,
+        MIXED_ADD_MUL_FIELDNUMS_TO_SLOT, MIXED_ADD_SLOT_TO_SLOT, MIXED_ARRAY_COMPOUND,
+        MIXED_ARRAY_DELETE_ALL, MIXED_ARRAY_DELETE_ELEM, MIXED_ARRAY_GET, MIXED_ARRAY_IN,
+        MIXED_ARRAY_INCDEC, MIXED_ARRAY_SET, MIXED_BUILTIN_ARG, MIXED_BUILTIN_CALL,
         MIXED_CALL_USER_ARG, MIXED_CALL_USER_CALL, MIXED_COMPOUND_ASSIGN_FIELD, MIXED_CONCAT,
         MIXED_CONCAT_POOL, MIXED_DECR_SLOT, MIXED_DIV, MIXED_GETLINE_COPROC, MIXED_GETLINE_FILE,
         MIXED_GETLINE_INTO_RECORD, MIXED_GETLINE_PRIMARY, MIXED_GET_FIELD, MIXED_GET_SLOT,
@@ -2936,16 +2949,24 @@ pub fn try_compile_with_options(
                 // ── Fused field+slot ops ───────────────────────────────
                 Op::AddFieldToSlot { field, slot } => {
                     if mixed {
-                        let enc = mixed_encode_field_slot(field, slot);
+                        let arg = builder.ins().iconst(types::I32, field as i64);
+                        let fv = emit_field_call(
+                            &mut builder,
+                            field_sig_ir,
+                            field_fn_ptr,
+                            vmctx,
+                            arg,
+                            field_direct,
+                        );
                         let op_c = builder
                             .ins()
-                            .iconst(types::I32, i64::from(MIXED_ADD_FIELD_TO_SLOT));
-                        let a1 = builder.ins().iconst(types::I32, i64::from(enc));
+                            .iconst(types::I32, i64::from(MIXED_ADD_FIELDNUM_TO_SLOT));
+                        let a1 = builder.ins().iconst(types::I32, i64::from(slot));
                         let z = builder.ins().f64const(0.0);
                         builder.ins().call_indirect(
                             val_sig_ir,
                             val_fn_ptr,
-                            &[vmctx, op_c, a1, z, z],
+                            &[vmctx, op_c, a1, fv, z],
                         );
                     } else if use_slot_ssa {
                         let arg = builder.ins().iconst(types::I32, field as i64);
@@ -2983,17 +3004,32 @@ pub fn try_compile_with_options(
                 }
                 Op::AddMulFieldsToSlot { f1, f2, slot } => {
                     if mixed {
-                        let enc = u32::from(f1) | (u32::from(f2) << 16);
+                        let a1 = builder.ins().iconst(types::I32, f1 as i64);
+                        let v1 = emit_field_call(
+                            &mut builder,
+                            field_sig_ir,
+                            field_fn_ptr,
+                            vmctx,
+                            a1,
+                            field_direct,
+                        );
+                        let a2f = builder.ins().iconst(types::I32, f2 as i64);
+                        let v2 = emit_field_call(
+                            &mut builder,
+                            field_sig_ir,
+                            field_fn_ptr,
+                            vmctx,
+                            a2f,
+                            field_direct,
+                        );
                         let op_c = builder
                             .ins()
-                            .iconst(types::I32, i64::from(MIXED_ADD_MUL_FIELDS_TO_SLOT));
-                        let a1 = builder.ins().iconst(types::I32, i64::from(enc));
-                        let a2 = builder.ins().f64const(f64::from(slot));
-                        let z = builder.ins().f64const(0.0);
+                            .iconst(types::I32, i64::from(MIXED_ADD_MUL_FIELDNUMS_TO_SLOT));
+                        let slot_a1 = builder.ins().iconst(types::I32, i64::from(slot));
                         builder.ins().call_indirect(
                             val_sig_ir,
                             val_fn_ptr,
-                            &[vmctx, op_c, a1, a2, z],
+                            &[vmctx, op_c, slot_a1, v1, v2],
                         );
                     } else if use_slot_ssa {
                         let a1 = builder.ins().iconst(types::I32, f1 as i64);

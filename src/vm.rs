@@ -489,7 +489,8 @@ fn jit_scratch_slot_store_num(ctx: &mut VmCtx<'_>, slot: usize, n: f64) {
 fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64) -> f64 {
     use crate::ast::BinOp;
     use crate::jit::{
-        MIXED_ADD, MIXED_ADD_FIELD_TO_SLOT, MIXED_ADD_MUL_FIELDS_TO_SLOT, MIXED_ADD_SLOT_TO_SLOT,
+        MIXED_ADD, MIXED_ADD_FIELDNUM_TO_SLOT, MIXED_ADD_FIELD_TO_SLOT,
+        MIXED_ADD_MUL_FIELDNUMS_TO_SLOT, MIXED_ADD_MUL_FIELDS_TO_SLOT, MIXED_ADD_SLOT_TO_SLOT,
         MIXED_ARRAY_COMPOUND, MIXED_ARRAY_DELETE_ALL, MIXED_ARRAY_DELETE_ELEM, MIXED_ARRAY_GET,
         MIXED_ARRAY_IN, MIXED_ARRAY_INCDEC, MIXED_ARRAY_SET, MIXED_BUILTIN_ARG, MIXED_BUILTIN_CALL,
         MIXED_CALL_USER_ARG, MIXED_CALL_USER_CALL, MIXED_CMP_EQ, MIXED_CMP_GE, MIXED_CMP_GT,
@@ -894,11 +895,25 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
             jit_scratch_slot_store_num(ctx, slot, old + field_val);
             0.0
         }
+        MIXED_ADD_FIELDNUM_TO_SLOT => {
+            let slot = a1 as usize;
+            let field_val = a2;
+            let old = jit_f64_to_value(ctx, jit_scratch_slot_raw(ctx, slot)).as_number();
+            jit_scratch_slot_store_num(ctx, slot, old + field_val);
+            0.0
+        }
         MIXED_ADD_MUL_FIELDS_TO_SLOT => {
             let f1 = (a1 & 0xffff) as i32;
             let f2 = ((a1 >> 16) & 0xffff) as i32;
             let slot = a2 as usize;
             let p = ctx.rt.field_as_number(f1) * ctx.rt.field_as_number(f2);
+            let old = jit_f64_to_value(ctx, jit_scratch_slot_raw(ctx, slot)).as_number();
+            jit_scratch_slot_store_num(ctx, slot, old + p);
+            0.0
+        }
+        MIXED_ADD_MUL_FIELDNUMS_TO_SLOT => {
+            let slot = a1 as usize;
+            let p = a2 * a3;
             let old = jit_f64_to_value(ctx, jit_scratch_slot_raw(ctx, slot)).as_number();
             jit_scratch_slot_store_num(ctx, slot, old + p);
             0.0
