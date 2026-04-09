@@ -112,9 +112,33 @@ fi
 
 {
   echo ""
+  echo "## 4. awkrs: JIT vs bytecode VM"
+  echo ""
+  echo "Same **awkrs** binary: default path (JIT attempted for eligible chunks) vs \`AWKRS_JIT=0\` (bytecode interpreter only). Use \`env -u AWKRS_JIT\` so a shell \`AWKRS_JIT\` alias does not skew the “JIT on” run."
+  echo ""
+  echo "### 4a. CPU-bound BEGIN (same program as §2)"
+  echo ""
+} >>"$OUT"
+
+append_hf_markdown \
+  -n "awkrs (JIT default)" "env -u AWKRS_JIT \"$AWKRS\" 'BEGIN { s = 0; for (i = 1; i < 400001; i = i + 1) s += i; print s }' </dev/null" \
+  -n "awkrs (bytecode only)" "env AWKRS_JIT=0 \"$AWKRS\" 'BEGIN { s = 0; for (i = 1; i < 400001; i = i + 1) s += i; print s }' </dev/null"
+
+{
+  echo ""
+  echo "### 4b. Sum first column (same program and input as §3)"
+  echo ""
+} >>"$OUT"
+
+append_hf_markdown \
+  -n "awkrs (JIT default)" "env -u AWKRS_JIT \"$AWKRS\" '{ s += \$1 } END { print s }' '$TMP_LINES'" \
+  -n "awkrs (bytecode only)" "env AWKRS_JIT=0 \"$AWKRS\" '{ s += \$1 } END { print s }' '$TMP_LINES'"
+
+{
+  echo ""
   echo "---"
   echo ""
-  echo "Throughput (§1) can use **awkrs \`-j\`** when the program is parallel-safe; **BEGIN-only** (§2) and **accumulators** (§3) are effectively single-threaded here. Re-run after \`cargo build --release\` on your hardware."
+  echo "Throughput (§1) can use **awkrs \`-j\`** when the program is parallel-safe; **BEGIN-only** (§2) and **accumulators** (§3) are effectively single-threaded here. **§4** compares JIT vs bytecode for the same awkrs workloads. Re-run after \`cargo build --release\` on your hardware."
   echo ""
 } >>"$OUT"
 

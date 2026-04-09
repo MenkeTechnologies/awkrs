@@ -403,8 +403,11 @@ impl Drop for NestedJitTlsGuard {
 }
 
 fn jit_f64_to_value(ctx: &VmCtx<'_>, x: f64) -> Value {
-    use crate::jit::{decode_nan_str_bits, is_nan_str};
+    use crate::jit::{decode_nan_str_bits, is_nan_str, is_nan_uninit};
     let bits = x.to_bits();
+    if is_nan_uninit(bits) {
+        return Value::Uninit;
+    }
     if is_nan_str(bits) {
         let (is_dyn, idx) = decode_nan_str_bits(bits).unwrap_or((true, 0));
         if is_dyn {
@@ -451,9 +454,10 @@ fn typeof_scalar_name_for_jit(ctx: &mut VmCtx<'_>, name: &str) -> Value {
 }
 
 fn value_to_jit_f64(_ctx: &mut VmCtx<'_>, v: Value) -> f64 {
-    use crate::jit::nan_str_dyn;
+    use crate::jit::{nan_str_dyn, nan_uninit};
     match v {
         Value::Num(n) => n,
+        Value::Uninit => nan_uninit(),
         Value::Str(s) => {
             let idx = JIT_DYN_STRINGS.with(|c| {
                 let mut c = c.borrow_mut();
@@ -463,7 +467,6 @@ fn value_to_jit_f64(_ctx: &mut VmCtx<'_>, v: Value) -> f64 {
             });
             nan_str_dyn(idx)
         }
-        Value::Uninit => 0.0,
         Value::Array(_) => 0.0,
     }
 }
@@ -1865,6 +1868,9 @@ extern "C" fn jit_val_dispatch(op: u32, a1: u32, a2: f64, a3: f64) -> f64 {
 /// Try JIT dispatch for the full instruction set. Converts slots to/from f64[],
 /// sets up the field callback via thread-local, and executes.
 fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Result<Option<VmSignal>> {
+    if crate::jit::jit_disabled_by_env() {
+        return Ok(None);
+    }
     if !crate::jit::is_jit_eligible(ops) || !crate::jit::jit_call_builtins_ok(ops, ctx.cp) {
         return Ok(None);
     }

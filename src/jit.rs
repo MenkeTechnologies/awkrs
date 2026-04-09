@@ -28,7 +28,8 @@
 //! `field_dispatch`, `io_dispatch`, and `val_dispatch`.
 //!
 //! The VM tries [`try_jit_execute`] before falling back to the interpreter for
-//! eligible chunks. Mixed-mode chunks (strings,
+//! eligible chunks. Set **`AWKRS_JIT=0`** to force the bytecode interpreter
+//! (for A/B benchmarks against JIT; default is to attempt JIT). Mixed-mode chunks (strings,
 //! regex `~`, general array ops, `print`/`printf` with arguments, whitelisted
 //! [`Op::CallBuiltin`], [`Op::CallUser`], [`Op::SubFn`]/[`Op::GsubFn`], etc.)
 //! compile through `val_dispatch` (`MIXED_*`). Chunks that fail [`is_jit_eligible`]
@@ -185,6 +186,28 @@ pub fn decode_nan_str_bits(bits: u64) -> Option<(bool, u32)> {
     let is_dyn = (bits & NAN_STR_DYN_BIT) != 0;
     let idx = (bits & 0xffff_ffff) as u32;
     Some((is_dyn, idx))
+}
+
+// ── Uninit in mixed-mode JIT slots ─────────────────────────────────────────
+//
+// `Value::Uninit` cannot use raw `0.0` in the slot buffer: that decodes as numeric
+// zero and breaks `typeof` / string coercions. Use a dedicated quiet-NaN pattern
+// (high 32 bits `0x7FFD_0000`, low 32 bits zero) that does not match
+// [`is_nan_str`].
+
+/// Upper 32 bits of the mixed-mode JIT encoding for [`Value::Uninit`].
+pub const NAN_UNINIT_HI32: u32 = 0x7FFD_0000;
+/// Full bit pattern for [`nan_uninit`].
+pub const NAN_UNINIT_TAG: u64 = (NAN_UNINIT_HI32 as u64) << 32;
+
+#[inline]
+pub fn nan_uninit() -> f64 {
+    f64::from_bits(NAN_UNINIT_TAG)
+}
+
+#[inline]
+pub fn is_nan_uninit(bits: u64) -> bool {
+    bits == NAN_UNINIT_TAG
 }
 
 /// Encode `arr` pool index with [`BinOp`] for [`MIXED_ARRAY_COMPOUND`].
@@ -2773,6 +2796,9 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                     redir: crate::bytecode::RedirKind::Stdout,
                 } if argc > 0 => {
                     let n = argc as usize;
+                    if stack.len() < n {
+                        return None;
+                    }
                     let mut vals: Vec<cranelift_codegen::ir::Value> = Vec::with_capacity(n);
                     for _ in 0..n {
                         vals.push(stack.pop().expect("Print argc"));
@@ -2800,6 +2826,9 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                     redir: crate::bytecode::RedirKind::Stdout,
                 } if argc > 0 => {
                     let n = argc as usize;
+                    if stack.len() < n {
+                        return None;
+                    }
                     let mut vals: Vec<cranelift_codegen::ir::Value> = Vec::with_capacity(n);
                     for _ in 0..n {
                         vals.push(stack.pop().expect("Printf argc"));
@@ -2826,6 +2855,9 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                     if argc > 0 && redir != crate::bytecode::RedirKind::Stdout =>
                 {
                     let n = argc as usize;
+                    if stack.len() < n + 1 {
+                        return None;
+                    }
                     let path = stack.pop().expect("Printf redir path");
                     let mut vals: Vec<_> =
                         (0..n).map(|_| stack.pop().expect("Printf arg")).collect();
@@ -2850,6 +2882,9 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                 }
                 Op::Print { argc, redir } if redir != crate::bytecode::RedirKind::Stdout => {
                     let n = argc as usize;
+                    if stack.len() < n + 1 {
+                        return None;
+                    }
                     let path = stack.pop().expect("Print redir path");
                     let zf = builder.ins().f64const(0.0);
                     if n > 0 {
@@ -3296,11 +3331,17 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
 
 // ── Public dispatch API ────────────────────────────────────────────────────
 
-/// Always `true`: eligible bytecode chunks are JIT-compiled when compilation succeeds.
-/// There is no environment-variable gate.
+/// When `AWKRS_JIT` is exactly `0`, skip JIT and use the bytecode VM only.
 #[inline]
-pub fn jit_enabled() -> bool {
-    true
+pub(crate) fn jit_disabled_by_env() -> bool {
+    use std::sync::OnceLock;
+    static CACHE: OnceLock<bool> = OnceLock::new();
+    *CACHE.get_or_init(|| {
+        matches!(
+            std::env::var_os("AWKRS_JIT").as_deref(),
+            Some(s) if s == "0"
+        )
+    })
 }
 
 /// Try to JIT-compile and execute a chunk. Returns `Some(f64)` on success.
@@ -3311,6 +3352,9 @@ pub fn try_jit_execute(
     state: &mut JitRuntimeState<'_>,
     cp: &CompiledProgram,
 ) -> Option<f64> {
+    if jit_disabled_by_env() {
+        return None;
+    }
     let hash = ops_hash(ops);
 
     // Check cache first
@@ -3494,6 +3538,9 @@ impl JitNumericChunk {
 
 /// Legacy dispatch — if the chunk is pure-numeric, run via JIT.
 pub fn try_jit_dispatch_numeric_chunk(ops: &[Op]) -> Option<f64> {
+    if jit_disabled_by_env() {
+        return None;
+    }
     let jit = try_compile_numeric_expr(ops)?;
     Some(jit.call_f64())
 }
@@ -3519,6 +3566,13 @@ mod tests {
     fn is_nan_str_recognizes_dyn_bit() {
         let h = nan_str_dyn(0);
         assert!(is_nan_str(h.to_bits()));
+    }
+
+    #[test]
+    fn nan_uninit_distinct_from_string_handles() {
+        let u = nan_uninit();
+        assert!(is_nan_uninit(u.to_bits()));
+        assert!(!is_nan_str(u.to_bits()));
     }
 
     /// Minimal in-process `var_dispatch` for unit tests (mirrors `jit_var_dispatch` numerics).
