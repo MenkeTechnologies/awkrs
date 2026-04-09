@@ -138,7 +138,12 @@ impl<'a> Lexer<'a> {
             self.bump();
             let mut s = String::new();
             while let Some(d) = self.peek() {
-                if d == '/' && !s.ends_with('\\') {
+                if d == '/' && {
+                    // Count consecutive trailing backslashes: odd means the
+                    // slash is escaped, even (including zero) means it terminates.
+                    let trailing = s.bytes().rev().take_while(|&b| b == b'\\').count();
+                    trailing % 2 == 0
+                } {
                     self.bump();
                     return Ok(Token::Regexp(s));
                 }
@@ -582,6 +587,39 @@ mod tests {
         let mut l = Lexer::new("/foo/");
         match l.next_token(true).unwrap() {
             Token::Regexp(s) => assert_eq!(s, "foo"),
+            t => panic!("expected Regexp, got {t:?}"),
+        }
+    }
+
+    #[test]
+    fn lex_regex_escaped_slash() {
+        // /a\/b/ — the slash is escaped, regex is "a\/b"
+        let mut l = Lexer::new(r#"/a\/b/"#);
+        match l.next_token(true).unwrap() {
+            Token::Regexp(s) => assert_eq!(s, r"a\/b"),
+            t => panic!("expected Regexp, got {t:?}"),
+        }
+    }
+
+    #[test]
+    fn lex_regex_escaped_backslash_before_slash() {
+        // /a\\/ — the backslash is escaped (even count), so / terminates.
+        // Regex content is "a\\"
+        let mut l = Lexer::new(r#"/a\\/"#);
+        match l.next_token(true).unwrap() {
+            Token::Regexp(s) => assert_eq!(s, r"a\\"),
+            t => panic!("expected Regexp, got {t:?}"),
+        }
+    }
+
+    #[test]
+    fn lex_regex_triple_backslash_before_slash() {
+        // /a\\\\/ — three backslashes then slash: odd count means slash is escaped,
+        // Wait, four chars: \\\\  is two escaped backslashes. Let's test /a\\\/b/
+        // which is a\\ + \/ + b = regex "a\\\/b" (slash is escaped by 3rd backslash)
+        let mut l = Lexer::new(r#"/a\\\/b/"#);
+        match l.next_token(true).unwrap() {
+            Token::Regexp(s) => assert_eq!(s, r"a\\\/b"),
             t => panic!("expected Regexp, got {t:?}"),
         }
     }

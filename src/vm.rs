@@ -588,8 +588,14 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                     s.chars().map(|c| c.to_string()).collect()
                 } else if fs == " " {
                     s.split_whitespace().map(String::from).collect()
+                } else if fs.len() == 1 {
+                    s.split(&*fs).map(String::from).collect()
                 } else {
-                    s.split(&fs).map(String::from).collect()
+                    // POSIX: multi-char FS is a regex.
+                    match regex::Regex::new(&fs) {
+                        Ok(re) => re.split(&s).map(String::from).collect(),
+                        Err(_) => s.split(&*fs).map(String::from).collect(),
+                    }
                 };
                 let n = parts.len();
                 ctx.rt.split_into_array(&arr_name, &parts);
@@ -962,9 +968,11 @@ fn exec_getline(ctx: &mut VmCtx<'_>, var: Option<u32>, source: GetlineSource) ->
     if let Some(l) = line {
         let trimmed = l.trim_end_matches(['\n', '\r']).to_string();
         if let Some(var_idx) = var {
+            // getline var — read into variable only, do NOT touch $0/fields/NF.
             let name = ctx.str_ref(var_idx).to_string();
             ctx.set_var(&name, Value::Str(trimmed));
         } else {
+            // getline (no var) — update $0 and re-split fields, then update NF.
             let fs = ctx
                 .rt
                 .vars
@@ -972,15 +980,14 @@ fn exec_getline(ctx: &mut VmCtx<'_>, var: Option<u32>, source: GetlineSource) ->
                 .map(|v| v.as_str())
                 .unwrap_or_else(|| " ".into());
             ctx.rt.set_field_sep_split(&fs, &trimmed);
+            let nf = ctx.rt.field_ranges.len() as f64;
+            ctx.rt.vars.insert("NF".into(), Value::Num(nf));
         }
         if matches!(source, GetlineSource::Primary) {
             ctx.rt.nr += 1.0;
             ctx.rt.fnr += 1.0;
         }
     }
-    ctx.rt
-        .vars
-        .insert("NF".into(), Value::Num(ctx.rt.fields.len() as f64));
     Ok(())
 }
 

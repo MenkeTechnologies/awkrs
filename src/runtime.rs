@@ -230,11 +230,25 @@ fn split_fields_into(record: &str, fs: &str, field_ranges: &mut Vec<(u32, u32)>)
         }
         field_ranges.push((start as u32, bytes.len() as u32));
     } else {
-        let mut pos = 0;
-        for part in record.split(fs) {
-            let end = pos + part.len();
-            field_ranges.push((pos as u32, end as u32));
-            pos = end + fs.len();
+        // POSIX: multi-character FS is treated as a regular expression.
+        match Regex::new(fs) {
+            Ok(re) => {
+                let mut last = 0;
+                for m in re.find_iter(record) {
+                    field_ranges.push((last as u32, m.start() as u32));
+                    last = m.end();
+                }
+                field_ranges.push((last as u32, record.len() as u32));
+            }
+            Err(_) => {
+                // Fall back to literal split if the FS is not a valid regex.
+                let mut pos = 0;
+                for part in record.split(fs) {
+                    let end = pos + part.len();
+                    field_ranges.push((pos as u32, end as u32));
+                    pos = end + fs.len();
+                }
+            }
         }
     }
 }

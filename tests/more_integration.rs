@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{run_awkrs_file, run_awkrs_stdin};
+use common::{run_awkrs_file, run_awkrs_stdin, run_awkrs_stdin_args};
 use std::process::{Command, Stdio};
 
 #[test]
@@ -743,4 +743,76 @@ fn file_input_slurped_fast_path_two_lines() {
     let _ = std::fs::remove_file(&path);
     assert_eq!(c, 0, "stderr={e:?}");
     assert_eq!(o, "aa\ncc\n");
+}
+
+// ── Multi-char FS regex (bug fix) ──────────────────────────────────────────
+
+#[test]
+fn fs_regex_character_class() {
+    // FS="[,:]" should split on comma OR colon (regex), not the literal "[,:]".
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN{FS="[,:]"} {print $2}"#, "a,b:c\n");
+    assert_eq!(c, 0);
+    assert_eq!(o, "b\n");
+}
+
+#[test]
+fn fs_regex_alternation() {
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN{FS="::|-"} {print $1, $2, $3}"#, "x::y-z\n");
+    assert_eq!(c, 0);
+    assert_eq!(o, "x y z\n");
+}
+
+#[test]
+fn fs_regex_plus_whitespace() {
+    // FS=" +" (one or more spaces, not default whitespace trimming)
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN{FS=" +"} {print $2}"#, "a   b   c\n");
+    assert_eq!(c, 0);
+    assert_eq!(o, "b\n");
+}
+
+#[test]
+fn split_uses_regex_for_multichar_fs() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"{ n = split($0, a, "[,:]"); print n; print a[1]; print a[2]; print a[3] }"#,
+        "x,y:z\n",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "3\nx\ny\nz\n");
+}
+
+#[test]
+fn fs_flag_regex_character_class() {
+    // -F '[,:]' should also work as regex.
+    let (c, o, _) = run_awkrs_stdin_args(["-F", "[,:]"], "{ print $2 }", "a,b:c\n");
+    assert_eq!(c, 0);
+    assert_eq!(o, "b\n");
+}
+
+// ── getline var should not clobber NF (bug fix) ────────────────────────────
+
+#[test]
+fn getline_var_preserves_nf() {
+    // Read a line into variable x — NF should reflect $0's fields, not change.
+    let dir = std::env::temp_dir();
+    let path = dir.join(format!("awkrs_gl_nf_{}.txt", std::process::id()));
+    std::fs::write(&path, "extra\n").expect("temp data");
+    let prog = format!(
+        r#"{{ print NF; getline x < "{}"; print NF }}"#,
+        path.display()
+    );
+    let (c, o, e) = run_awkrs_stdin(&prog, "a b c\n");
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(c, 0, "stderr={e:?}");
+    // NF should be 3 before and after getline-into-var.
+    assert_eq!(o, "3\n3\n");
+}
+
+// ── Regex literal with escaped backslash (bug fix) ─────────────────────────
+
+#[test]
+fn regex_escaped_backslash_terminates_correctly() {
+    // /\\/ should match a literal backslash. The regex body is "\\".
+    let (c, o, _) = run_awkrs_stdin(r#"/\\/ { print "yes" }"#, "a\\b\nno\n");
+    assert_eq!(c, 0);
+    assert_eq!(o, "yes\n");
 }
