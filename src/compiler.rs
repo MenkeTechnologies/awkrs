@@ -704,6 +704,39 @@ impl Compiler {
             "match" => self.compile_match(args, ops),
             "asort" => self.compile_asort(args, ops),
             "asorti" => self.compile_asorti(args, ops),
+            "typeof" => {
+                if args.len() != 1 {
+                    for a in args {
+                        self.compile_expr(a, ops);
+                    }
+                    let name_idx = self.strings.intern("typeof");
+                    ops.push(Op::CallBuiltin(name_idx, args.len() as u16));
+                    return;
+                }
+                match &args[0] {
+                    Expr::Var(name) => {
+                        if let Some(slot) = self.var_slot(name) {
+                            ops.push(Op::TypeofSlot(slot));
+                        } else {
+                            let idx = self.strings.intern(name);
+                            ops.push(Op::TypeofVar(idx));
+                        }
+                    }
+                    Expr::Index { name, indices } => {
+                        let arr_idx = self.strings.intern(name);
+                        self.compile_array_key(indices, ops);
+                        ops.push(Op::TypeofArrayElem(arr_idx));
+                    }
+                    Expr::Field(inner) => {
+                        self.compile_expr(inner, ops);
+                        ops.push(Op::TypeofField);
+                    }
+                    other => {
+                        self.compile_expr(other, ops);
+                        ops.push(Op::TypeofValue);
+                    }
+                }
+            }
             _ => {
                 for a in args {
                     self.compile_expr(a, ops);

@@ -34,6 +34,7 @@ use clap::Parser;
 use memchr::memchr;
 use memchr::memmem;
 use rayon::prelude::*;
+use rayon::ThreadPool;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -116,13 +117,16 @@ pub fn run(bin_name: &str) -> Result<()> {
 
     let mut range_state: Vec<bool> = vec![false; prog.rules.len()];
 
-    // Parallel record mode only reads regular files fully; stdin is always streamed line-by-line.
-    let use_parallel = threads > 1 && parallel_ok && !files.is_empty();
+    // Parallel record mode: whole regular files in memory, or stdin in chunks of `--read-ahead` lines.
+    let use_parallel_files = threads > 1 && parallel_ok && !files.is_empty();
+    let stdin_parallel =
+        files.is_empty() && threads > 1 && parallel_ok && !uses_primary_getline(cp.as_ref());
     if threads > 1 && !parallel_ok {
         eprintln!("{bin_name}: warning: program is not parallel-safe (range patterns, exit, getline without file, getline coprocess, cross-record assignments, …); running sequentially (use a single thread to silence this warning)");
     }
 
     let mut nr_global = 0.0f64;
+    let chunk_lines = args.read_ahead.max(1);
 
     if files.is_empty() {
         rt.filename = "-".into();
@@ -132,7 +136,11 @@ pub fn run(bin_name: &str) -> Result<()> {
             vm_run_end(cp.as_ref(), &mut rt)?;
             std::process::exit(rt.exit_code);
         }
-        process_file(None, &prog, cp.as_ref(), &mut range_state, &mut rt)?;
+        if stdin_parallel {
+            process_stdin_parallel(&cp, &mut rt, threads, chunk_lines)?;
+        } else {
+            process_file(None, &prog, cp.as_ref(), &mut range_state, &mut rt)?;
+        }
         vm_run_endfile(cp.as_ref(), &mut rt)?;
     } else {
         for p in &files {
@@ -144,7 +152,7 @@ pub fn run(bin_name: &str) -> Result<()> {
                 vm_run_end(cp.as_ref(), &mut rt)?;
                 std::process::exit(rt.exit_code);
             }
-            let n = if use_parallel {
+            let n = if use_parallel_files {
                 process_file_parallel(Some(p.as_path()), &prog, &cp, &mut rt, threads, nr_global)?
             } else {
                 process_file(
@@ -178,66 +186,42 @@ struct ParallelRecordOut {
     exit_code: i32,
 }
 
-fn read_all_lines<R: Read>(mut r: R) -> Result<Vec<String>> {
-    let mut buf = BufReader::new(&mut r);
-    let mut lines = Vec::new();
-    let mut s = String::new();
-    loop {
-        s.clear();
-        let n = buf.read_line(&mut s).map_err(Error::Io)?;
-        if n == 0 {
-            break;
-        }
-        lines.push(s.clone());
-    }
-    Ok(lines)
-}
-
-/// Per-record workers run the bytecode VM (`vm_pattern_matches` / `vm_run_rule`), same as sequential mode.
-/// Each worker gets `Arc::clone` of the shared program (O(1)) and a fresh `Runtime` (slots, VM stack, fields, print capture).
-fn process_file_parallel(
-    path: Option<&Path>,
-    _prog: &Program,
-    cp: &Arc<CompiledProgram>,
-    rt: &mut Runtime,
-    threads: usize,
-    nr_offset: f64,
-) -> Result<usize> {
-    let reader: Box<dyn Read + Send> = if let Some(p) = path {
-        Box::new(File::open(p).map_err(|e| Error::ProgramFile(p.to_path_buf(), e))?)
-    } else {
-        Box::new(std::io::stdin())
-    };
-    let lines = read_all_lines(reader)?;
-    let nlines = lines.len();
-    if nlines == 0 {
-        return Ok(0);
-    }
-
-    let shared_cp = Arc::clone(cp);
-    let shared_globals = Arc::new(rt.vars.clone());
-    let shared_slots = Arc::new(rt.slots.clone());
-    let fname = rt.filename.clone();
-    let seed_base = rt.rand_seed;
-    let numeric_dec = rt.numeric_decimal;
-
-    let pool = rayon::ThreadPoolBuilder::new()
+fn parallel_pool(threads: usize) -> Result<ThreadPool> {
+    rayon::ThreadPoolBuilder::new()
         .num_threads(threads)
         .build()
-        .map_err(|e| Error::Runtime(format!("rayon pool: {e}")))?;
+        .map_err(|e| Error::Runtime(format!("rayon pool: {e}")))
+}
 
+/// Run record rules for `lines` in parallel; `line_base` is the 0-based index of `lines[0]` within
+/// the current input file, and `nr_offset` is global `NR` before the first line of that file.
+fn process_lines_parallel_chunk(
+    pool: &ThreadPool,
+    lines: Vec<String>,
+    line_base: usize,
+    nr_offset: f64,
+    cp: &Arc<CompiledProgram>,
+    fname: String,
+    shared_globals: Arc<crate::runtime::AwkMap<String, Value>>,
+    shared_slots: Arc<Vec<Value>>,
+    seed_base: u64,
+    numeric_dec: char,
+    csv_mode: bool,
+) -> Result<Vec<(usize, ParallelRecordOut)>> {
+    let shared_cp = Arc::clone(cp);
     let results: Vec<std::result::Result<(usize, ParallelRecordOut), Error>> = pool.install(|| {
         lines
             .into_par_iter()
             .enumerate()
-            .map(|(i, line)| {
+            .map(|(j, line)| {
+                let i = line_base + j;
                 let cp = Arc::clone(&shared_cp);
                 let mut local = Runtime::for_parallel_worker(
                     Arc::clone(&shared_globals),
                     fname.clone(),
                     seed_base ^ (i as u64).wrapping_mul(0x9e3779b97f4a7c15),
                     numeric_dec,
-                    rt.csv_mode,
+                    csv_mode,
                 );
                 local.slots = (*shared_slots).clone();
                 local.nr = nr_offset + i as f64 + 1.0;
@@ -298,22 +282,153 @@ fn process_file_parallel(
     for r in results {
         outs.push(r?);
     }
-    outs.sort_by_key(|(i, _)| *i);
+    Ok(outs)
+}
 
-    let mut stdout = io::stdout().lock();
-    for (_, out) in &outs {
+fn write_parallel_chunk_output(
+    outs: &mut [(usize, ParallelRecordOut)],
+    stdout: &mut impl Write,
+    rt: &mut Runtime,
+) -> Result<()> {
+    outs.sort_by_key(|(i, _)| *i);
+    for (_, out) in outs.iter() {
         for chunk in &out.prints {
             stdout.write_all(chunk.as_bytes()).map_err(Error::Io)?;
         }
     }
-
-    for (_, out) in &outs {
+    for (_, out) in outs.iter() {
         if out.exit_pending {
             rt.exit_pending = true;
             rt.exit_code = out.exit_code;
             break;
         }
     }
+    Ok(())
+}
+
+/// Chunked parallel stdin: buffer up to `chunk_lines` records per batch, process with rayon, emit in order.
+fn process_stdin_parallel(
+    cp: &Arc<CompiledProgram>,
+    rt: &mut Runtime,
+    threads: usize,
+    chunk_lines: usize,
+) -> Result<()> {
+    let pool = parallel_pool(threads)?;
+    let shared_globals = Arc::new(rt.vars.clone());
+    let shared_slots = Arc::new(rt.slots.clone());
+    let fname = rt.filename.clone();
+    let seed_base = rt.rand_seed;
+    let numeric_dec = rt.numeric_decimal;
+    let csv_mode = rt.csv_mode;
+    let stdin_nr_offset = rt.nr;
+
+    let mut stdin = BufReader::new(std::io::stdin());
+    let mut line_base = 0usize;
+    let mut stdout = io::stdout().lock();
+
+    loop {
+        let mut chunk = Vec::with_capacity(chunk_lines);
+        for _ in 0..chunk_lines {
+            let mut s = String::new();
+            let n = stdin.read_line(&mut s).map_err(Error::Io)?;
+            if n == 0 {
+                break;
+            }
+            chunk.push(s);
+        }
+        if chunk.is_empty() {
+            break;
+        }
+
+        let mut outs = process_lines_parallel_chunk(
+            &pool,
+            chunk,
+            line_base,
+            stdin_nr_offset,
+            cp,
+            fname.clone(),
+            Arc::clone(&shared_globals),
+            Arc::clone(&shared_slots),
+            seed_base,
+            numeric_dec,
+            csv_mode,
+        )?;
+
+        let n = outs.len();
+        write_parallel_chunk_output(&mut outs, &mut stdout, rt)?;
+
+        line_base += n;
+        rt.nr = stdin_nr_offset + line_base as f64;
+        rt.fnr = line_base as f64;
+
+        if rt.exit_pending {
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn read_all_lines<R: Read>(mut r: R) -> Result<Vec<String>> {
+    let mut buf = BufReader::new(&mut r);
+    let mut lines = Vec::new();
+    let mut s = String::new();
+    loop {
+        s.clear();
+        let n = buf.read_line(&mut s).map_err(Error::Io)?;
+        if n == 0 {
+            break;
+        }
+        lines.push(s.clone());
+    }
+    Ok(lines)
+}
+
+/// Per-record workers run the bytecode VM (`vm_pattern_matches` / `vm_run_rule`), same as sequential mode.
+/// Each worker gets `Arc::clone` of the shared program (O(1)) and a fresh `Runtime` (slots, VM stack, fields, print capture).
+fn process_file_parallel(
+    path: Option<&Path>,
+    _prog: &Program,
+    cp: &Arc<CompiledProgram>,
+    rt: &mut Runtime,
+    threads: usize,
+    nr_offset: f64,
+) -> Result<usize> {
+    let reader: Box<dyn Read + Send> = if let Some(p) = path {
+        Box::new(File::open(p).map_err(|e| Error::ProgramFile(p.to_path_buf(), e))?)
+    } else {
+        Box::new(std::io::stdin())
+    };
+    let lines = read_all_lines(reader)?;
+    let nlines = lines.len();
+    if nlines == 0 {
+        return Ok(0);
+    }
+
+    let shared_globals = Arc::new(rt.vars.clone());
+    let shared_slots = Arc::new(rt.slots.clone());
+    let fname = rt.filename.clone();
+    let seed_base = rt.rand_seed;
+    let numeric_dec = rt.numeric_decimal;
+    let csv_mode = rt.csv_mode;
+
+    let pool = parallel_pool(threads)?;
+
+    let mut outs = process_lines_parallel_chunk(
+        &pool,
+        lines,
+        0,
+        nr_offset,
+        cp,
+        fname,
+        shared_globals,
+        shared_slots,
+        seed_base,
+        numeric_dec,
+        csv_mode,
+    )?;
+
+    let mut stdout = io::stdout().lock();
+    write_parallel_chunk_output(&mut outs, &mut stdout, rt)?;
 
     Ok(nlines)
 }

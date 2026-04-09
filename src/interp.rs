@@ -86,7 +86,7 @@ impl<'a> ExecCtx<'a> {
                 "FNR" => Value::Num(self.rt.fnr),
                 "NF" => Value::Num(self.rt.fields.len() as f64),
                 "FILENAME" => Value::Str(self.rt.filename.clone()),
-                _ => Value::Str(String::new()),
+                _ => Value::Uninit,
             })
     }
 
@@ -890,6 +890,23 @@ fn apply_binop(op: BinOp, old: &Value, new: &Value) -> Result<Value> {
     Ok(Value::Num(n))
 }
 
+fn interp_typeof_scalar(ctx: &ExecCtx<'_>, name: &str) -> &'static str {
+    match name {
+        "NR" | "FNR" | "NF" => return "number",
+        "FILENAME" => return "string",
+        _ => {}
+    }
+    for frame in ctx.locals.iter().rev() {
+        if let Some(v) = frame.get(name) {
+            return builtins::awk_typeof_value(v);
+        }
+    }
+    if let Some(v) = ctx.rt.get_global_var(name) {
+        return builtins::awk_typeof_value(v);
+    }
+    "uninitialized"
+}
+
 fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> {
     if let Some(fd) = ctx.prog.funcs.get(name) {
         return call_user(fd, args, ctx);
@@ -1220,6 +1237,32 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
             let s = eval_expr(&args[0], ctx)?.as_str();
             Ok(Value::Num(builtins::awk_strtonum(&s)))
         }
+        "typeof" => {
+            if args.len() != 1 {
+                return Err(Error::Runtime("`typeof` expects one argument".into()));
+            }
+            match &args[0] {
+                Expr::Var(name) => Ok(Value::Str(interp_typeof_scalar(ctx, name).into())),
+                Expr::Index { name, indices } => {
+                    let k = array_key(ctx, indices)?;
+                    let t = builtins::awk_typeof_array_elem(ctx.rt, name, &k);
+                    Ok(Value::Str(t.into()))
+                }
+                Expr::Field(inner) => {
+                    let i = eval_expr(inner, ctx)?.as_number() as i32;
+                    let t = if ctx.rt.field_is_unassigned(i) {
+                        "uninitialized"
+                    } else {
+                        "string"
+                    };
+                    Ok(Value::Str(t.into()))
+                }
+                e => {
+                    let v = eval_expr(e, ctx)?;
+                    Ok(Value::Str(builtins::awk_typeof_value(&v).into()))
+                }
+            }
+        }
         "asort" => {
             let src = match args.first() {
                 Some(Expr::Var(n)) => n.as_str(),
@@ -1300,7 +1343,7 @@ fn call_user(fd: &FunctionDef, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<V
         .map(|e| eval_expr(e, ctx))
         .collect::<Result<_>>()?;
     while vals.len() < fd.params.len() {
-        vals.push(Value::Str(String::new()));
+        vals.push(Value::Uninit);
     }
     vals.truncate(fd.params.len());
     let mut frame = HashMap::new();

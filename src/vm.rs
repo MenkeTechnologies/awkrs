@@ -106,7 +106,7 @@ impl<'a> VmCtx<'a> {
                     self.rt.field_ranges.len()
                 } as f64),
                 "FILENAME" => Value::Str(self.rt.filename.clone()),
-                _ => Value::Str(String::new()),
+                _ => Value::Uninit,
             })
     }
 
@@ -148,6 +148,27 @@ impl<'a> VmCtx<'a> {
 
     fn str_ref(&self, idx: u32) -> &str {
         self.cp.strings.get(idx)
+    }
+
+    /// `typeof(name)` for a simple identifier (mirrors lvalue resolution order).
+    fn typeof_scalar_name(&self, name: &str) -> Value {
+        match name {
+            "NR" | "FNR" | "NF" => return Value::Str("number".into()),
+            "FILENAME" => return Value::Str("string".into()),
+            _ => {}
+        }
+        for frame in self.locals.iter().rev() {
+            if let Some(v) = frame.get(name) {
+                return Value::Str(builtins::awk_typeof_value(v).into());
+            }
+        }
+        if let Some(&slot) = self.cp.slot_map.get(name) {
+            return Value::Str(builtins::awk_typeof_value(&self.rt.slots[slot as usize]).into());
+        }
+        if let Some(v) = self.rt.get_global_var(name) {
+            return Value::Str(builtins::awk_typeof_value(v).into());
+        }
+        Value::Str("uninitialized".into())
     }
 }
 
@@ -351,6 +372,35 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 let name = ctx.str_ref(arr);
                 let v = ctx.rt.array_get(name, &key);
                 ctx.push(v);
+            }
+            Op::TypeofVar(idx) => {
+                let name = ctx.str_ref(idx);
+                let t = ctx.typeof_scalar_name(name);
+                ctx.push(t);
+            }
+            Op::TypeofSlot(slot) => {
+                let t = builtins::awk_typeof_value(&ctx.rt.slots[slot as usize]);
+                ctx.push(Value::Str(t.into()));
+            }
+            Op::TypeofArrayElem(arr) => {
+                let key = ctx.pop().into_string();
+                let name = ctx.str_ref(arr);
+                let t = builtins::awk_typeof_array_elem(ctx.rt, name, &key);
+                ctx.push(Value::Str(t.into()));
+            }
+            Op::TypeofField => {
+                let i = ctx.pop().as_number() as i32;
+                let t = if ctx.rt.field_is_unassigned(i) {
+                    "uninitialized"
+                } else {
+                    "string"
+                };
+                ctx.push(Value::Str(t.into()));
+            }
+            Op::TypeofValue => {
+                let v = ctx.pop();
+                let t = builtins::awk_typeof_value(&v);
+                ctx.push(Value::Str(t.into()));
             }
             Op::SetArrayElem(arr) => {
                 let val = ctx.pop();
@@ -1406,6 +1456,12 @@ fn exec_call_builtin(ctx: &mut VmCtx<'_>, name: &str, argc: u16) -> Result<()> {
             }
             Value::Num(builtins::awk_strtonum(&args[0].as_str()))
         }
+        "typeof" => {
+            if argc != 1 {
+                return Err(Error::Runtime("`typeof` expects one argument".into()));
+            }
+            Value::Str(builtins::awk_typeof_value(&args[0]).into())
+        }
         _ => return Err(Error::Runtime(format!("unknown function `{name}`"))),
     };
     ctx.push(result);
@@ -1425,7 +1481,7 @@ fn exec_call_user(ctx: &mut VmCtx<'_>, name: &str, argc: u16) -> Result<()> {
     let mut vals: Vec<Value> = ctx.stack.drain(start..).collect();
 
     while vals.len() < func.params.len() {
-        vals.push(Value::Str(String::new()));
+        vals.push(Value::Uninit);
     }
     vals.truncate(func.params.len());
 

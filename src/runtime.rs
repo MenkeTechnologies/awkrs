@@ -25,6 +25,9 @@ pub struct CoprocHandle {
 
 #[derive(Debug, Clone)]
 pub enum Value {
+    /// Never assigned (missing global, missing function argument, or fresh slot).
+    /// String/number contexts treat this like `""` / `0` (same as gawk *untyped*).
+    Uninit,
     Str(String),
     Num(f64),
     Array(AwkMap<String, Value>),
@@ -33,6 +36,7 @@ pub enum Value {
 impl Value {
     pub fn as_str(&self) -> String {
         match self {
+            Value::Uninit => String::new(),
             Value::Str(s) => s.clone(),
             Value::Num(n) => format_number(*n),
             Value::Array(_) => String::new(),
@@ -43,6 +47,7 @@ impl Value {
     #[inline]
     pub fn as_str_cow(&self) -> Cow<'_, str> {
         match self {
+            Value::Uninit => Cow::Borrowed(""),
             Value::Str(s) => Cow::Borrowed(s.as_str()),
             Value::Num(n) => Cow::Owned(format_number(*n)),
             Value::Array(_) => Cow::Borrowed(""),
@@ -63,6 +68,7 @@ impl Value {
     /// for the Str case, one `write!` for Num.
     pub fn write_to(&self, buf: &mut Vec<u8>) {
         match self {
+            Value::Uninit => {}
             Value::Str(s) => buf.extend_from_slice(s.as_bytes()),
             Value::Num(n) => {
                 use std::io::Write;
@@ -79,6 +85,7 @@ impl Value {
 
     pub fn as_number(&self) -> f64 {
         match self {
+            Value::Uninit => 0.0,
             Value::Num(n) => *n,
             Value::Str(s) => parse_number(s),
             Value::Array(_) => 0.0,
@@ -87,6 +94,7 @@ impl Value {
 
     pub fn truthy(&self) -> bool {
         match self {
+            Value::Uninit => false,
             Value::Num(n) => *n != 0.0,
             Value::Str(s) => !s.is_empty() && s.parse::<f64>().map(|n| n != 0.0).unwrap_or(true),
             Value::Array(a) => !a.is_empty(),
@@ -98,6 +106,7 @@ impl Value {
     #[inline]
     pub fn into_string(self) -> String {
         match self {
+            Value::Uninit => String::new(),
             Value::Str(s) => s,
             Value::Num(n) => format_number(n),
             Value::Array(_) => String::new(),
@@ -109,6 +118,7 @@ impl Value {
     #[inline]
     pub fn append_to_string(&self, buf: &mut String) {
         match self {
+            Value::Uninit => {}
             Value::Str(s) => buf.push_str(s),
             Value::Num(n) => {
                 use std::fmt::Write;
@@ -126,6 +136,7 @@ impl Value {
     /// POSIX-style: true if the value is numeric (including string that looks like number).
     pub fn is_numeric_str(&self) -> bool {
         match self {
+            Value::Uninit => false,
             Value::Num(_) => true,
             Value::Str(s) => {
                 let t = s.trim();
@@ -871,6 +882,15 @@ impl Runtime {
         } else {
             self.field_ranges.len()
         }
+    }
+
+    /// True when `$i` is out of range for the current record (`i >= 1` and `i > NF`).
+    #[inline]
+    pub fn field_is_unassigned(&mut self, i: i32) -> bool {
+        if i < 1 {
+            return false;
+        }
+        (i as usize) > self.nf()
     }
 
     pub fn set_field(&mut self, i: i32, val: &str) {

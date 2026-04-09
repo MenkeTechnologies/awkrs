@@ -163,6 +163,17 @@ pub enum Op {
     /// Pop `argc` args, call user function by name index, push result.
     CallUser(u32, u16),
 
+    /// `typeof(var)` — interned name; push `"string"` / `"number"` / `"array"` / `"uninitialized"`.
+    TypeofVar(u32),
+    /// `typeof` for a scalar in a slot (same semantics as [`TypeofVar`]).
+    TypeofSlot(u16),
+    /// Pop key, `typeof(arr[key])` for existing array or `"uninitialized"`.
+    TypeofArrayElem(u32),
+    /// Pop field index, `typeof($n)` — fields beyond `NF` are `"uninitialized"`.
+    TypeofField,
+    /// Pop any value; `typeof` never reports `"uninitialized"` (only from lvalue forms above).
+    TypeofValue,
+
     // ── Array operations ────────────────────────────────────────────────
     /// Pop key, push `Num(1)` if key in array, else `Num(0)`.
     InArray(u32),
@@ -355,7 +366,7 @@ pub struct CompiledProgram {
 impl CompiledProgram {
     /// Create the initial slots Vec from the runtime's current variable state.
     pub fn init_slots(&self, vars: &AwkMap<String, Value>) -> Vec<Value> {
-        let mut slots = vec![Value::Str(String::new()); self.slot_count as usize];
+        let mut slots = vec![Value::Uninit; self.slot_count as usize];
         for (i, name) in self.slot_names.iter().enumerate() {
             if let Some(v) = vars.get(name) {
                 slots[i] = v.clone();

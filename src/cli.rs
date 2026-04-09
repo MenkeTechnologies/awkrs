@@ -108,7 +108,8 @@ pub struct Args {
     #[arg(short = 'j', long = "threads", value_name = "N")]
     pub threads: Option<usize>,
 
-    /// Read-ahead queue depth between reader thread and engine (lines).
+    /// Stdin chunk size (lines per batch) when using **`-j`** parallel record mode without input files;
+    /// each batch is processed in parallel and printed in order before the next batch is read.
     #[arg(long = "read-ahead", default_value_t = 1024usize)]
     pub read_ahead: usize,
 

@@ -1,4 +1,4 @@
-//! awk builtins: gsub, sub, match, string helpers, math, time (gawk-style), bitwise, sort.
+//! awk builtins: gsub, sub, match, string helpers, math, time (gawk-style), bitwise, sort, typeof.
 
 use crate::error::{Error, Result};
 use crate::runtime::{Runtime, Value};
@@ -543,6 +543,28 @@ pub fn asorti(rt: &mut Runtime, src: &str, dest: Option<&str>) -> Result<f64> {
         }
     }
     Ok(n as f64)
+}
+
+/// Classify a [`Value`] for the `typeof()` builtin (`"uninitialized"` only for [`Value::Uninit`]).
+#[inline]
+pub fn awk_typeof_value(v: &Value) -> &'static str {
+    match v {
+        Value::Uninit => "uninitialized",
+        Value::Num(_) => "number",
+        Value::Str(_) => "string",
+        Value::Array(_) => "array",
+    }
+}
+
+/// `typeof(arr[key])` when `arr` is a known array name in the runtime.
+pub fn awk_typeof_array_elem(rt: &Runtime, name: &str, key: &str) -> &'static str {
+    match rt.get_global_var(name) {
+        Some(Value::Array(a)) => a
+            .get(key)
+            .map(|v| awk_typeof_value(v))
+            .unwrap_or("uninitialized"),
+        _ => "uninitialized",
+    }
 }
 
 #[cfg(test)]
