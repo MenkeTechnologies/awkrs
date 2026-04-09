@@ -146,6 +146,8 @@ pub enum Op {
 
     // ── Flow signals (cause VM to return) ───────────────────────────────
     Next,
+    /// Skip remaining records in the current file; run `ENDFILE` then open the next file.
+    NextFile,
     /// Pop exit code from stack.
     ExitWithCode,
     /// Exit with code 0.

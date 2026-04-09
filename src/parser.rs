@@ -431,6 +431,11 @@ impl<'a> Parser<'a> {
                 self.consume_stmt_end()?;
                 Ok(Stmt::Next)
             }
+            Token::NextFile => {
+                self.bump(false)?;
+                self.consume_stmt_end()?;
+                Ok(Stmt::NextFile)
+            }
             Token::Exit => {
                 self.bump(false)?;
                 let e = if matches!(

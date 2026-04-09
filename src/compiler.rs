@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 /// from Runtime fields. These bypass the slot system and use the HashMap path.
 const SPECIAL_VARS: &[&str] = &[
     "NR", "FNR", "NF", "FILENAME", "FS", "OFS", "ORS", "SUBSEP", "OFMT", "FPAT", "RSTART",
-    "RLENGTH", "ENVIRON",
+    "RLENGTH", "ENVIRON", "ARGC", "ARGV",
 ];
 
 /// Tracks break/continue jump patches for loops.
@@ -359,6 +359,10 @@ impl Compiler {
 
             Stmt::Next => {
                 ops.push(Op::Next);
+            }
+
+            Stmt::NextFile => {
+                ops.push(Op::NextFile);
             }
 
             Stmt::Exit(e) => {
@@ -867,7 +871,12 @@ fn collect_array_names_stmt(s: &Stmt, names: &mut HashSet<String>) {
             GetlineRedir::File(e) | GetlineRedir::Coproc(e) => collect_array_names_expr(e, names),
             GetlineRedir::Primary => {}
         },
-        Stmt::Break | Stmt::Continue | Stmt::Next | Stmt::Exit(None) | Stmt::Return(None) => {}
+        Stmt::Break
+        | Stmt::Continue
+        | Stmt::Next
+        | Stmt::NextFile
+        | Stmt::Exit(None)
+        | Stmt::Return(None) => {}
     }
 }
 

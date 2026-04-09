@@ -78,6 +78,8 @@ pub enum Stmt {
     Break,
     Continue,
     Next,
+    /// Skip remaining records in the current input file (POSIX / gawk).
+    NextFile,
     Exit(Option<Expr>),
     Delete {
         name: String,

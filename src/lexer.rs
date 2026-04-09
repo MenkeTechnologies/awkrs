@@ -16,6 +16,7 @@ pub enum Token {
     Break,
     Continue,
     Next,
+    NextFile,
     Exit,
     In,
     Function,
@@ -274,6 +275,7 @@ impl<'a> Lexer<'a> {
                 "break" => Token::Break,
                 "continue" => Token::Continue,
                 "next" => Token::Next,
+                "nextfile" => Token::NextFile,
                 "exit" => Token::Exit,
                 "in" => Token::In,
                 "function" => Token::Function,
@@ -662,6 +664,11 @@ mod tests {
             tokens_no_regex("break continue next exit"),
             vec![Token::Break, Token::Continue, Token::Next, Token::Exit]
         );
+    }
+
+    #[test]
+    fn lex_nextfile_keyword() {
+        assert_eq!(tokens_no_regex("nextfile"), vec![Token::NextFile]);
     }
 
     #[test]

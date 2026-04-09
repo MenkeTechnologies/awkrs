@@ -855,3 +855,101 @@ fn do_while_continue_skips_to_condition() {
     assert_eq!(c, 0);
     assert_eq!(o, "a\n");
 }
+
+// ── POSIX math, ARGC/ARGV, nextfile, time builtins ─────────────────────────
+
+#[test]
+fn posix_math_builtins() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN {
+            print sin(0), cos(0), atan2(0, 1), exp(0), log(1)
+        }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "0 1 0 1 0\n");
+}
+
+#[test]
+fn argc_argv_includes_executable_and_input_paths() {
+    let dir = std::env::temp_dir();
+    let id = std::process::id();
+    let f1 = dir.join(format!("awkrs_argv1_{id}.txt"));
+    let f2 = dir.join(format!("awkrs_argv2_{id}.txt"));
+    std::fs::write(&f1, "x\n").unwrap();
+    std::fs::write(&f2, "y\n").unwrap();
+    let bin = env!("CARGO_BIN_EXE_awkrs");
+    let out = Command::new(bin)
+        .arg(
+            r#"BEGIN {
+            print ARGC
+            for (i = 0; i < ARGC; i++) print ARGV[i]
+        }"#,
+        )
+        .arg(&f1)
+        .arg(&f2)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("spawn awkrs");
+    let _ = std::fs::remove_file(&f1);
+    let _ = std::fs::remove_file(&f2);
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let mut lines = stdout.lines();
+    assert_eq!(lines.next(), Some("3"));
+    assert_eq!(lines.next(), Some(bin));
+    assert!(lines
+        .next()
+        .unwrap()
+        .ends_with(&format!("awkrs_argv1_{id}.txt")));
+    assert!(lines
+        .next()
+        .unwrap()
+        .ends_with(&format!("awkrs_argv2_{id}.txt")));
+    assert_eq!(lines.next(), None);
+}
+
+#[test]
+fn nextfile_skips_remaining_records_in_current_file() {
+    let dir = std::env::temp_dir();
+    let id = std::process::id();
+    let f1 = dir.join(format!("awkrs_nf_a_{id}.txt"));
+    let f2 = dir.join(format!("awkrs_nf_b_{id}.txt"));
+    std::fs::write(&f1, "skip\nmore\n").unwrap();
+    std::fs::write(&f2, "keep\n").unwrap();
+    let bin = env!("CARGO_BIN_EXE_awkrs");
+    let out = Command::new(bin)
+        .arg(r#"{ if (NR == 1) nextfile; print }"#)
+        .arg(&f1)
+        .arg(&f2)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("spawn awkrs");
+    let _ = std::fs::remove_file(&f1);
+    let _ = std::fs::remove_file(&f2);
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "keep\n");
+}
+
+#[test]
+fn systime_positive() {
+    let (c, o, _) = run_awkrs_stdin("BEGIN { print (systime() > 1000000000) }", "");
+    assert_eq!(c, 0);
+    assert_eq!(o.trim(), "1");
+}
+
+#[test]
+fn strftime_epoch_utc() {
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { print strftime("%Y-%m-%d", 0, 1) }"#, "");
+    assert_eq!(c, 0);
+    assert_eq!(o.trim(), "1970-01-01");
+}
+
+#[test]
+fn mktime_invalid_is_minus_one() {
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { print mktime("nope") }"#, "");
+    assert_eq!(c, 0);
+    assert_eq!(o.trim(), "-1");
+}

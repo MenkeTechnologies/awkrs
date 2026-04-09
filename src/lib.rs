@@ -90,6 +90,7 @@ pub fn run(bin_name: &str) -> Result<()> {
         locale_numeric::set_locale_numeric_from_env();
         rt.numeric_decimal = locale_numeric::decimal_point_from_locale();
     }
+    rt.init_argv(&files);
     apply_assigns(&args, &mut rt)?;
     if let Some(fs) = &args.field_sep {
         rt.vars
@@ -238,6 +239,11 @@ fn process_file_parallel(
                     if run {
                         match vm_run_rule(rule, &cp, &mut local, Some(&mut buf)) {
                             Ok(Flow::Next) => break,
+                            Ok(Flow::NextFile) => {
+                                return Err(Error::Runtime(
+                                    "`nextfile` cannot be used in parallel record mode".into(),
+                                ));
+                            }
                             Ok(Flow::ExitPending) => {
                                 return Ok((
                                     i,
@@ -895,6 +901,7 @@ fn dispatch_rules(
         if run {
             match vm_run_rule(rule, cp, rt, None) {
                 Ok(Flow::Next) => break,
+                Ok(Flow::NextFile) => return Ok(true),
                 Ok(Flow::ExitPending) => return Ok(true),
                 Ok(Flow::Normal) => {}
                 Ok(Flow::Break) | Ok(Flow::Continue) => {}

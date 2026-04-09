@@ -55,6 +55,7 @@ fn stmt_blocks_parallel(s: &Stmt) -> bool {
         Stmt::Expr(e) => expr_blocks_parallel(e),
         Stmt::Print { args, redir } => redir.is_some() || args.iter().any(expr_blocks_parallel),
         Stmt::Printf { args, redir } => redir.is_some() || args.iter().any(expr_blocks_parallel),
+        Stmt::NextFile => true,
         Stmt::Break | Stmt::Continue | Stmt::Next | Stmt::Return(_) => false,
         Stmt::Delete { .. } => true,
     }
@@ -101,6 +102,12 @@ mod tests {
     #[test]
     fn parallel_unsafe_exit_in_rule() {
         let p = parse_program("{ exit 0 }").unwrap();
+        assert!(!record_rules_parallel_safe(&p));
+    }
+
+    #[test]
+    fn parallel_unsafe_nextfile_in_rule() {
+        let p = parse_program("{ nextfile }").unwrap();
         assert!(!record_rules_parallel_safe(&p));
     }
 

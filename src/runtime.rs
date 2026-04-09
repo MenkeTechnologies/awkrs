@@ -348,6 +348,23 @@ impl Runtime {
         }
     }
 
+    /// Initialize POSIX **`ARGC`** / **`ARGV`**: **`ARGV[0]`** is the process name; **`ARGV[1..]`** are input file paths (none when reading stdin only).
+    pub fn init_argv(&mut self, files: &[std::path::PathBuf]) {
+        use std::env;
+        let bin = env::args().next().unwrap_or_else(|| "awkrs".to_string());
+        let mut argv = vec![bin];
+        for f in files {
+            argv.push(f.to_string_lossy().into_owned());
+        }
+        let argc = argv.len();
+        self.vars.insert("ARGC".into(), Value::Num(argc as f64));
+        let mut map = AwkMap::default();
+        for (i, s) in argv.iter().enumerate() {
+            map.insert(i.to_string(), Value::Str(s.clone()));
+        }
+        self.vars.insert("ARGV".into(), Value::Array(map));
+    }
+
     /// Worker runtime for parallel record processing: empty overlay `vars`, shared read-only globals.
     pub fn for_parallel_worker(
         shared_globals: Arc<AwkMap<String, Value>>,

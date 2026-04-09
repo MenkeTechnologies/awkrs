@@ -1,7 +1,8 @@
-//! awk builtins: gsub, sub, match, string helpers.
+//! awk builtins: gsub, sub, match, string helpers, math, and time (gawk-style).
 
 use crate::error::{Error, Result};
 use crate::runtime::{Runtime, Value};
+use chrono::{Local, LocalResult, NaiveDate, TimeZone, Utc};
 use regex::Regex;
 
 /// Check if a regex pattern is a plain literal (no metacharacters).
@@ -311,6 +312,90 @@ pub fn patsplit(
     }
 
     Ok(n as f64)
+}
+
+/// Seconds since the Unix epoch (same idea as POSIX `awk` / gawk `systime()`).
+pub fn awk_systime() -> f64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
+}
+
+/// gawk-style `strftime([format [, timestamp[, utc]]])`.
+pub fn awk_strftime(args: &[Value]) -> std::result::Result<Value, String> {
+    let (fmt, ts, utc) = match args.len() {
+        0 => ("%c".to_string(), awk_systime(), false),
+        1 => (args[0].as_str(), awk_systime(), false),
+        2 => (args[0].as_str(), args[1].as_number(), false),
+        3 => (
+            args[0].as_str(),
+            args[1].as_number(),
+            args[2].as_number() != 0.0,
+        ),
+        _ => return Err("strftime: expected 0 to 3 arguments".into()),
+    };
+    let secs = ts.floor() as i64;
+    let nsec = ((ts - secs as f64) * 1e9).round().max(0.0).min(1e9 - 1.0) as u32;
+    let out = if utc {
+        Utc.timestamp_opt(secs, nsec)
+            .single()
+            .ok_or_else(|| "strftime: timestamp out of range".to_string())?
+            .format(&fmt)
+            .to_string()
+    } else {
+        Local
+            .timestamp_opt(secs, nsec)
+            .single()
+            .ok_or_else(|| "strftime: timestamp out of range".to_string())?
+            .format(&fmt)
+            .to_string()
+    };
+    Ok(Value::Str(out))
+}
+
+/// gawk-style `mktime(datespec)` — `"YYYY MM DD HH MM SS"` (whitespace-separated).
+pub fn awk_mktime(s: &str) -> f64 {
+    let parts: Vec<&str> = s.split_whitespace().collect();
+    if parts.len() < 6 {
+        return -1.0;
+    }
+    let y: i32 = match parts[0].parse() {
+        Ok(v) => v,
+        Err(_) => return -1.0,
+    };
+    let mo: u32 = match parts[1].parse() {
+        Ok(v) => v,
+        Err(_) => return -1.0,
+    };
+    let d: u32 = match parts[2].parse() {
+        Ok(v) => v,
+        Err(_) => return -1.0,
+    };
+    let h: u32 = match parts[3].parse() {
+        Ok(v) => v,
+        Err(_) => return -1.0,
+    };
+    let mi: u32 = match parts[4].parse() {
+        Ok(v) => v,
+        Err(_) => return -1.0,
+    };
+    let se: u32 = match parts[5].parse() {
+        Ok(v) => v,
+        Err(_) => return -1.0,
+    };
+    let naive = match NaiveDate::from_ymd_opt(y, mo, d) {
+        Some(date) => match date.and_hms_opt(h, mi, se) {
+            Some(n) => n,
+            None => return -1.0,
+        },
+        None => return -1.0,
+    };
+    match Local.from_local_datetime(&naive) {
+        LocalResult::Single(dt) => dt.timestamp() as f64,
+        LocalResult::Ambiguous(_, _) | LocalResult::None => -1.0,
+    }
 }
 
 #[cfg(test)]

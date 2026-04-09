@@ -158,6 +158,7 @@ static EMPTY_STR: Value = Value::Str(String::new());
 enum VmSignal {
     Normal,
     Next,
+    NextFile,
     Return(Value),
     ExitPending,
 }
@@ -169,6 +170,9 @@ pub fn vm_run_begin(cp: &CompiledProgram, rt: &mut Runtime) -> Result<()> {
     for chunk in &cp.begin_chunks {
         match execute(chunk, &mut ctx)? {
             VmSignal::Next => return Err(Error::Runtime("`next` is invalid in BEGIN".into())),
+            VmSignal::NextFile => {
+                return Err(Error::Runtime("`nextfile` is invalid in BEGIN".into()));
+            }
             VmSignal::Return(_) => return Err(Error::Runtime("`return` outside function".into())),
             VmSignal::ExitPending => {
                 ctx.recycle();
@@ -186,6 +190,9 @@ pub fn vm_run_end(cp: &CompiledProgram, rt: &mut Runtime) -> Result<()> {
     for chunk in &cp.end_chunks {
         match execute(chunk, &mut ctx)? {
             VmSignal::Next => return Err(Error::Runtime("`next` is invalid in END".into())),
+            VmSignal::NextFile => {
+                return Err(Error::Runtime("`nextfile` is invalid in END".into()));
+            }
             VmSignal::Return(_) => return Err(Error::Runtime("`return` outside function".into())),
             VmSignal::ExitPending => {
                 ctx.recycle();
@@ -203,6 +210,9 @@ pub fn vm_run_beginfile(cp: &CompiledProgram, rt: &mut Runtime) -> Result<()> {
     for chunk in &cp.beginfile_chunks {
         match execute(chunk, &mut ctx)? {
             VmSignal::Next => return Err(Error::Runtime("`next` is invalid in BEGINFILE".into())),
+            VmSignal::NextFile => {
+                return Err(Error::Runtime("`nextfile` is invalid in BEGINFILE".into()));
+            }
             VmSignal::Return(_) => return Err(Error::Runtime("`return` outside function".into())),
             VmSignal::ExitPending => {
                 ctx.recycle();
@@ -220,6 +230,9 @@ pub fn vm_run_endfile(cp: &CompiledProgram, rt: &mut Runtime) -> Result<()> {
     for chunk in &cp.endfile_chunks {
         match execute(chunk, &mut ctx)? {
             VmSignal::Next => return Err(Error::Runtime("`next` is invalid in ENDFILE".into())),
+            VmSignal::NextFile => {
+                return Err(Error::Runtime("`nextfile` is invalid in ENDFILE".into()));
+            }
             VmSignal::Return(_) => return Err(Error::Runtime("`return` outside function".into())),
             VmSignal::ExitPending => {
                 ctx.recycle();
@@ -277,6 +290,7 @@ pub fn vm_run_rule(
     let result = match execute(&rule.body, &mut ctx)? {
         VmSignal::Normal => Ok(Flow::Normal),
         VmSignal::Next => Ok(Flow::Next),
+        VmSignal::NextFile => Ok(Flow::NextFile),
         VmSignal::Return(_) => Err(Error::Runtime(
             "`return` used outside function in rule action".into(),
         )),
@@ -556,6 +570,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
 
             // ── Flow signals ────────────────────────────────────────────
             Op::Next => return Ok(VmSignal::Next),
+            Op::NextFile => return Ok(VmSignal::NextFile),
             Op::ExitWithCode => {
                 let code = ctx.pop().as_number() as i32;
                 ctx.rt.exit_code = code;
@@ -1235,6 +1250,49 @@ fn exec_call_builtin(ctx: &mut VmCtx<'_>, name: &str, argc: u16) -> Result<()> {
         "toupper" => Value::Str(args[0].as_str().to_uppercase()),
         "int" => Value::Num(args[0].as_number().trunc()),
         "sqrt" => Value::Num(args[0].as_number().sqrt()),
+        "sin" => {
+            if argc != 1 {
+                return Err(Error::Runtime("`sin` expects one argument".into()));
+            }
+            Value::Num(args[0].as_number().sin())
+        }
+        "cos" => {
+            if argc != 1 {
+                return Err(Error::Runtime("`cos` expects one argument".into()));
+            }
+            Value::Num(args[0].as_number().cos())
+        }
+        "atan2" => {
+            if argc != 2 {
+                return Err(Error::Runtime("`atan2` expects two arguments".into()));
+            }
+            Value::Num(args[0].as_number().atan2(args[1].as_number()))
+        }
+        "exp" => {
+            if argc != 1 {
+                return Err(Error::Runtime("`exp` expects one argument".into()));
+            }
+            Value::Num(args[0].as_number().exp())
+        }
+        "log" => {
+            if argc != 1 {
+                return Err(Error::Runtime("`log` expects one argument".into()));
+            }
+            Value::Num(args[0].as_number().ln())
+        }
+        "systime" => {
+            if argc != 0 {
+                return Err(Error::Runtime("`systime` expects no arguments".into()));
+            }
+            Value::Num(builtins::awk_systime())
+        }
+        "strftime" => builtins::awk_strftime(&args).map_err(|s| Error::Runtime(s))?,
+        "mktime" => {
+            if argc != 1 {
+                return Err(Error::Runtime("`mktime` expects one argument".into()));
+            }
+            Value::Num(builtins::awk_mktime(&args[0].as_str()))
+        }
         "rand" => Value::Num(ctx.rt.rand()),
         "srand" => {
             let n = args.first().map(|v| v.as_number() as u32);
@@ -1321,6 +1379,13 @@ fn exec_call_user(ctx: &mut VmCtx<'_>, name: &str, argc: u16) -> Result<()> {
             ctx.locals.pop();
             ctx.in_function = was_fn;
             return Err(Error::Runtime("invalid jump out of function (next)".into()));
+        }
+        Ok(VmSignal::NextFile) => {
+            ctx.locals.pop();
+            ctx.in_function = was_fn;
+            return Err(Error::Runtime(
+                "invalid jump out of function (nextfile)".into(),
+            ));
         }
         Ok(VmSignal::ExitPending) => {
             ctx.locals.pop();

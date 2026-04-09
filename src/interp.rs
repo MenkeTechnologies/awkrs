@@ -15,6 +15,8 @@ pub enum Flow {
     Break,
     Continue,
     Next,
+    /// Skip to the next input file (invalid in `BEGIN`/`END`/`BEGINFILE`/`ENDFILE`).
+    NextFile,
     Return(Value),
     /// POSIX: run `END`, then exit with `Runtime.exit_code`.
     ExitPending,
@@ -106,6 +108,9 @@ pub fn run_begin(prog: &Program, rt: &mut Runtime) -> Result<()> {
             for s in &rule.stmts {
                 match exec_stmt(s, &mut ctx)? {
                     Flow::Next => return Err(Error::Runtime("`next` is invalid in BEGIN".into())),
+                    Flow::NextFile => {
+                        return Err(Error::Runtime("`nextfile` is invalid in BEGIN".into()));
+                    }
                     Flow::Return(_) => {
                         return Err(Error::Runtime("`return` outside function".into()));
                     }
@@ -125,6 +130,9 @@ pub fn run_end(prog: &Program, rt: &mut Runtime) -> Result<()> {
             for s in &rule.stmts {
                 match exec_stmt(s, &mut ctx)? {
                     Flow::Next => return Err(Error::Runtime("`next` is invalid in END".into())),
+                    Flow::NextFile => {
+                        return Err(Error::Runtime("`nextfile` is invalid in END".into()));
+                    }
                     Flow::Return(_) => {
                         return Err(Error::Runtime("`return` outside function".into()));
                     }
@@ -146,6 +154,9 @@ pub fn run_beginfile(prog: &Program, rt: &mut Runtime) -> Result<()> {
                     Flow::Next => {
                         return Err(Error::Runtime("`next` is invalid in BEGINFILE".into()));
                     }
+                    Flow::NextFile => {
+                        return Err(Error::Runtime("`nextfile` is invalid in BEGINFILE".into()));
+                    }
                     Flow::Return(_) => {
                         return Err(Error::Runtime("`return` outside function".into()));
                     }
@@ -166,6 +177,9 @@ pub fn run_endfile(prog: &Program, rt: &mut Runtime) -> Result<()> {
                 match exec_stmt(s, &mut ctx)? {
                     Flow::Next => {
                         return Err(Error::Runtime("`next` is invalid in ENDFILE".into()));
+                    }
+                    Flow::NextFile => {
+                        return Err(Error::Runtime("`nextfile` is invalid in ENDFILE".into()));
                     }
                     Flow::Return(_) => {
                         return Err(Error::Runtime("`return` outside function".into()));
@@ -196,6 +210,7 @@ pub fn run_rule_on_record(
             f @ (Flow::Break
             | Flow::Continue
             | Flow::Next
+            | Flow::NextFile
             | Flow::Return(_)
             | Flow::ExitPending) => {
                 return Ok(f);
@@ -288,7 +303,9 @@ fn exec_stmt(s: &Stmt, ctx: &mut ExecCtx<'_>) -> Result<Flow> {
                         Flow::Normal => {}
                         Flow::Break => break 'outer,
                         Flow::Continue => continue 'outer,
-                        f @ (Flow::Next | Flow::Return(_) | Flow::ExitPending) => return Ok(f),
+                        f @ (Flow::Next | Flow::NextFile | Flow::Return(_) | Flow::ExitPending) => {
+                            return Ok(f);
+                        }
                     }
                 }
             }
@@ -304,7 +321,9 @@ fn exec_stmt(s: &Stmt, ctx: &mut ExecCtx<'_>) -> Result<Flow> {
                         }
                         continue 'outer;
                     }
-                    f @ (Flow::Next | Flow::Return(_) | Flow::ExitPending) => return Ok(f),
+                    f @ (Flow::Next | Flow::NextFile | Flow::Return(_) | Flow::ExitPending) => {
+                        return Ok(f);
+                    }
                 }
             }
             if !truthy(&eval_expr(cond, ctx)?) {
@@ -336,7 +355,9 @@ fn exec_stmt(s: &Stmt, ctx: &mut ExecCtx<'_>) -> Result<Flow> {
                             }
                             continue 'outer;
                         }
-                        f @ (Flow::Next | Flow::Return(_) | Flow::ExitPending) => return Ok(f),
+                        f @ (Flow::Next | Flow::NextFile | Flow::Return(_) | Flow::ExitPending) => {
+                            return Ok(f);
+                        }
                     }
                 }
                 if let Some(it) = iter {
@@ -353,7 +374,9 @@ fn exec_stmt(s: &Stmt, ctx: &mut ExecCtx<'_>) -> Result<Flow> {
                         Flow::Normal => {}
                         Flow::Break => break 'outer,
                         Flow::Continue => continue 'outer,
-                        f @ (Flow::Next | Flow::Return(_) | Flow::ExitPending) => return Ok(f),
+                        f @ (Flow::Next | Flow::NextFile | Flow::Return(_) | Flow::ExitPending) => {
+                            return Ok(f);
+                        }
                     }
                 }
             }
@@ -450,6 +473,12 @@ fn exec_stmt(s: &Stmt, ctx: &mut ExecCtx<'_>) -> Result<Flow> {
                 return Err(Error::Runtime("`next` used inside a function".into()));
             }
             return Ok(Flow::Next);
+        }
+        Stmt::NextFile => {
+            if ctx.in_function {
+                return Err(Error::Runtime("`nextfile` used inside a function".into()));
+            }
+            return Ok(Flow::NextFile);
         }
         Stmt::Exit(e) => {
             let code = if let Some(x) = e {
@@ -955,6 +984,39 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
             let n = eval_expr(&args[0], ctx)?.as_number();
             Ok(Value::Num(n.sqrt()))
         }
+        "sin" if args.len() == 1 => {
+            let n = eval_expr(&args[0], ctx)?.as_number();
+            Ok(Value::Num(n.sin()))
+        }
+        "cos" if args.len() == 1 => {
+            let n = eval_expr(&args[0], ctx)?.as_number();
+            Ok(Value::Num(n.cos()))
+        }
+        "atan2" if args.len() == 2 => {
+            let y = eval_expr(&args[0], ctx)?.as_number();
+            let x = eval_expr(&args[1], ctx)?.as_number();
+            Ok(Value::Num(y.atan2(x)))
+        }
+        "exp" if args.len() == 1 => {
+            let n = eval_expr(&args[0], ctx)?.as_number();
+            Ok(Value::Num(n.exp()))
+        }
+        "log" if args.len() == 1 => {
+            let n = eval_expr(&args[0], ctx)?.as_number();
+            Ok(Value::Num(n.ln()))
+        }
+        "systime" if args.is_empty() => Ok(Value::Num(builtins::awk_systime())),
+        "strftime" => {
+            let vals: Vec<Value> = args
+                .iter()
+                .map(|e| eval_expr(e, ctx))
+                .collect::<Result<_>>()?;
+            builtins::awk_strftime(&vals).map_err(|s| Error::Runtime(s))
+        }
+        "mktime" if args.len() == 1 => {
+            let s = eval_expr(&args[0], ctx)?.as_str();
+            Ok(Value::Num(builtins::awk_mktime(&s)))
+        }
         "rand" if args.is_empty() => Ok(Value::Num(ctx.rt.rand())),
         "srand" => {
             let n = if let Some(e) = args.first() {
@@ -1124,11 +1186,11 @@ fn call_user(fd: &FunctionDef, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<V
                 result = v;
                 break;
             }
-            Ok(Flow::Next) | Ok(Flow::Break) | Ok(Flow::Continue) => {
+            Ok(Flow::Next) | Ok(Flow::NextFile) | Ok(Flow::Break) | Ok(Flow::Continue) => {
                 ctx.locals.pop();
                 ctx.in_function = was_fn;
                 return Err(Error::Runtime(
-                    "invalid jump out of function (break/continue/next)".into(),
+                    "invalid jump out of function (break/continue/next/nextfile)".into(),
                 ));
             }
             Ok(Flow::ExitPending) => {
