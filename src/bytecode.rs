@@ -242,6 +242,30 @@ pub enum Op {
         limit: f64,
         target: usize,
     },
+    /// `sum += $f1 * $f2` fused.
+    AddMulFieldsToSlot {
+        f1: u16,
+        f2: u16,
+        slot: u16,
+    },
+    /// `a[$field] += delta` with numeric delta (common `a[$5] += 1`).
+    ArrayFieldAddConst {
+        arr: u32,
+        field: u16,
+        delta: f64,
+    },
+    /// `print $f1 sep $f2` to stdout (sep is interned string pool index).
+    PrintFieldSepField {
+        f1: u16,
+        sep: u32,
+        f2: u16,
+    },
+    /// `print $f1, $f2, $f3` to stdout (three fields, OFS between).
+    PrintThreeFieldsStdout {
+        f1: u16,
+        f2: u16,
+        f3: u16,
+    },
 }
 
 // ── Compiled structures ─────────────────────────────────────────────────────

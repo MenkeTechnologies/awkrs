@@ -20,7 +20,7 @@ pub use error::{Error, Result};
 
 use crate::ast::parallel;
 use crate::ast::{Pattern, Program};
-use crate::bytecode::{CompiledPattern, CompiledProgram};
+use crate::bytecode::{CompiledPattern, CompiledProgram, Op};
 use crate::cli::{Args, MawkWAction};
 use crate::compiler::Compiler;
 use crate::interp::{range_step, Flow};
@@ -32,6 +32,7 @@ use crate::vm::{
 };
 use clap::Parser;
 use memchr::memchr;
+use memchr::memmem;
 use rayon::prelude::*;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Write};
@@ -393,6 +394,26 @@ enum InlineAction {
         val: u16,
         slot: u16,
     },
+    AddMulFieldsToSlot {
+        f1: u16,
+        f2: u16,
+        slot: u16,
+    },
+    ArrayFieldAddConst {
+        arr: u32,
+        field: u16,
+        delta: f64,
+    },
+    PrintFieldSepField {
+        f1: u16,
+        sep: u32,
+        f2: u16,
+    },
+    PrintThreeFieldsStdout {
+        f1: u16,
+        f2: u16,
+        f3: u16,
+    },
 }
 
 /// Pattern for inline fast path.
@@ -400,6 +421,36 @@ enum InlineAction {
 enum InlinePattern {
     Always,
     LiteralContains(String),
+    /// `NR % modulus` compared to `eq_val` (numeric `==`), e.g. `NR % 2 == 0`.
+    NrModEq {
+        modulus: f64,
+        eq_val: f64,
+    },
+}
+
+fn match_nr_mod_eq_pattern(ops: &[Op]) -> Option<(f64, f64)> {
+    if ops.len() != 5 {
+        return None;
+    }
+    match (&ops[0], &ops[1], &ops[2], &ops[3], &ops[4]) {
+        (Op::GetNR, Op::PushNum(m), Op::Mod, Op::PushNum(eq), Op::CmpEq) => Some((*m, *eq)),
+        _ => None,
+    }
+}
+
+#[inline]
+fn awk_float_eq(a: f64, b: f64) -> bool {
+    (a - b).abs() <= f64::EPSILON * 128.0 * a.abs().max(b.abs()).max(1.0)
+}
+
+fn set_record_from_line_bytes(rt: &mut Runtime, fs: &str, line_bytes: &[u8]) {
+    match std::str::from_utf8(line_bytes) {
+        Ok(line) => rt.set_field_sep_split(fs, line),
+        Err(_) => {
+            let lossy = String::from_utf8_lossy(line_bytes);
+            rt.set_field_sep_split(fs, &lossy);
+        }
+    }
 }
 
 /// Detect programs that can bypass the full VM dispatch loop.
@@ -413,24 +464,38 @@ fn detect_inline_program(cp: &CompiledProgram) -> Option<(InlinePattern, InlineA
         CompiledPattern::LiteralRegexp(idx) => {
             InlinePattern::LiteralContains(cp.strings.get(*idx).to_string())
         }
+        CompiledPattern::Expr(chunk) => {
+            let (m, eq) = match_nr_mod_eq_pattern(&chunk.ops)?;
+            InlinePattern::NrModEq {
+                modulus: m,
+                eq_val: eq,
+            }
+        }
         _ => return None,
     };
     let ops = &rule.body.ops;
     let action = if ops.len() == 1 {
         match ops[0] {
-            bytecode::Op::PrintFieldStdout(f) => InlineAction::PrintFieldStdout(f),
-            bytecode::Op::AddFieldToSlot { field, slot } => {
-                InlineAction::AddFieldToSlot { field, slot }
+            Op::PrintFieldStdout(f) => InlineAction::PrintFieldStdout(f),
+            Op::AddFieldToSlot { field, slot } => InlineAction::AddFieldToSlot { field, slot },
+            Op::AddMulFieldsToSlot { f1, f2, slot } => {
+                InlineAction::AddMulFieldsToSlot { f1, f2, slot }
+            }
+            Op::ArrayFieldAddConst { arr, field, delta } => {
+                InlineAction::ArrayFieldAddConst { arr, field, delta }
+            }
+            Op::PrintFieldSepField { f1, sep, f2 } => {
+                InlineAction::PrintFieldSepField { f1, sep, f2 }
+            }
+            Op::PrintThreeFieldsStdout { f1, f2, f3 } => {
+                InlineAction::PrintThreeFieldsStdout { f1, f2, f3 }
             }
             _ => return None,
         }
     } else if ops.len() == 3 {
         // PushNum(N) + CompoundAssignSlot(slot, Add) + Pop → AddConstToSlot
-        if let (
-            bytecode::Op::PushNum(n),
-            bytecode::Op::CompoundAssignSlot(slot, crate::ast::BinOp::Add),
-            bytecode::Op::Pop,
-        ) = (ops[0], ops[1], ops[2])
+        if let (Op::PushNum(n), Op::CompoundAssignSlot(slot, crate::ast::BinOp::Add), Op::Pop) =
+            (ops[0], ops[1], ops[2])
         {
             let val = n as u16;
             if n >= 0.0 && n == val as f64 {
@@ -444,6 +509,13 @@ fn detect_inline_program(cp: &CompiledProgram) -> Option<(InlinePattern, InlineA
     } else {
         return None;
     };
+
+    if let CompiledPattern::Expr(_) = &rule.pattern {
+        if !matches!(action, InlineAction::PrintFieldStdout(_)) {
+            return None;
+        }
+    }
+
     Some((pattern, action))
 }
 
@@ -466,7 +538,7 @@ fn process_file_slurp(
 
     // Try the inlined fast path for trivial single-rule programs.
     if let Some((pattern, action)) = detect_inline_program(cp) {
-        return process_file_slurp_inline(data, &fs, pattern, action, rt);
+        return process_file_slurp_inline(data, &fs, pattern, action, cp, rt);
     }
 
     let mut count = 0usize;
@@ -512,6 +584,7 @@ fn process_file_slurp_inline(
     fs: &str,
     pattern: InlinePattern,
     action: InlineAction,
+    cp: &CompiledProgram,
     rt: &mut Runtime,
 ) -> Result<usize> {
     // Ultra-fast path: for PrintFieldStdout with default FS=" " and field > 0,
@@ -534,6 +607,17 @@ fn process_file_slurp_inline(
     let ors_len = rt.ors_bytes.len().min(64);
     ors_local[..ors_len].copy_from_slice(&rt.ors_bytes[..ors_len]);
 
+    let mut ofs_local = [0u8; 64];
+    let ofs_len = rt.ofs_bytes.len().min(64);
+    ofs_local[..ofs_len].copy_from_slice(&rt.ofs_bytes[..ofs_len]);
+
+    let literal_finder = match &pattern {
+        InlinePattern::LiteralContains(needle) if !needle.is_empty() => {
+            Some(memmem::Finder::new(needle.as_bytes()))
+        }
+        _ => None,
+    };
+
     while pos < len {
         let eol = memchr(b'\n', &data[pos..len])
             .map(|i| pos + i)
@@ -551,46 +635,70 @@ fn process_file_slurp_inline(
 
         let line_bytes = &data[pos..end];
 
-        // Test pattern on raw bytes — skip record setup if pattern doesn't match.
-        // Use from_utf8_unchecked for the contains() call — benchmark data is ASCII,
-        // and even for non-ASCII the worst case is a false negative (safe).
-        if let InlinePattern::LiteralContains(ref needle) = pattern {
-            // SAFETY: we only use this for `contains()` which operates on bytes internally.
-            // A false match on invalid UTF-8 boundary is fine — awk would match it too.
-            let line_str = unsafe { std::str::from_utf8_unchecked(line_bytes) };
-            if !line_str.contains(needle.as_str()) {
-                pos = eol + 1;
-                continue;
+        match &pattern {
+            InlinePattern::LiteralContains(_) => {
+                if let Some(ref finder) = literal_finder {
+                    if finder.find(line_bytes).is_none() {
+                        pos = eol + 1;
+                        continue;
+                    }
+                }
             }
+            InlinePattern::NrModEq { modulus, eq_val } => {
+                let rem = rt.nr % modulus;
+                if !awk_float_eq(rem, *eq_val) {
+                    pos = eol + 1;
+                    continue;
+                }
+            }
+            InlinePattern::Always => {}
         }
 
-        // AddConstToSlot doesn't need record or fields at all.
         match action {
             InlineAction::AddConstToSlot { val, slot } => {
                 let sv = rt.slots[slot as usize].as_number();
                 rt.slots[slot as usize] = Value::Num(sv + val as f64);
             }
-            _ => {
-                // Set up record + fields for actions that need them.
-                match std::str::from_utf8(line_bytes) {
-                    Ok(line) => rt.set_field_sep_split(fs, line),
-                    Err(_) => {
-                        let lossy = String::from_utf8_lossy(line_bytes);
-                        rt.set_field_sep_split(fs, &lossy);
-                    }
-                }
-                match action {
-                    InlineAction::PrintFieldStdout(field) => {
-                        rt.print_field_to_buf(field as usize);
-                        rt.print_buf.extend_from_slice(&ors_local[..ors_len]);
-                    }
-                    InlineAction::AddFieldToSlot { field, slot } => {
-                        let fv = rt.field_as_number(field as i32);
-                        let sv = rt.slots[slot as usize].as_number();
-                        rt.slots[slot as usize] = Value::Num(sv + fv);
-                    }
-                    InlineAction::AddConstToSlot { .. } => unreachable!(),
-                }
+            InlineAction::AddMulFieldsToSlot { f1, f2, slot } => {
+                set_record_from_line_bytes(rt, fs, line_bytes);
+                let p = rt.field_as_number(f1 as i32) * rt.field_as_number(f2 as i32);
+                let old = rt.slots[slot as usize].as_number();
+                rt.slots[slot as usize] = Value::Num(old + p);
+            }
+            InlineAction::ArrayFieldAddConst { arr, field, delta } => {
+                set_record_from_line_bytes(rt, fs, line_bytes);
+                let name = cp.strings.get(arr);
+                let key = rt.field(field as i32).as_str();
+                let old = rt.array_get(name, &key).as_number();
+                rt.array_set(name, key, Value::Num(old + delta));
+            }
+            InlineAction::PrintFieldSepField { f1, sep, f2 } => {
+                set_record_from_line_bytes(rt, fs, line_bytes);
+                let sep_s = cp.strings.get(sep);
+                rt.print_field_to_buf(f1 as usize);
+                rt.print_buf.extend_from_slice(sep_s.as_bytes());
+                rt.print_field_to_buf(f2 as usize);
+                rt.print_buf.extend_from_slice(&ors_local[..ors_len]);
+            }
+            InlineAction::PrintThreeFieldsStdout { f1, f2, f3 } => {
+                set_record_from_line_bytes(rt, fs, line_bytes);
+                rt.print_field_to_buf(f1 as usize);
+                rt.print_buf.extend_from_slice(&ofs_local[..ofs_len]);
+                rt.print_field_to_buf(f2 as usize);
+                rt.print_buf.extend_from_slice(&ofs_local[..ofs_len]);
+                rt.print_field_to_buf(f3 as usize);
+                rt.print_buf.extend_from_slice(&ors_local[..ors_len]);
+            }
+            InlineAction::PrintFieldStdout(field) => {
+                set_record_from_line_bytes(rt, fs, line_bytes);
+                rt.print_field_to_buf(field as usize);
+                rt.print_buf.extend_from_slice(&ors_local[..ors_len]);
+            }
+            InlineAction::AddFieldToSlot { field, slot } => {
+                set_record_from_line_bytes(rt, fs, line_bytes);
+                let fv = rt.field_as_number(field as i32);
+                let sv = rt.slots[slot as usize].as_number();
+                rt.slots[slot as usize] = Value::Num(sv + fv);
             }
         }
 

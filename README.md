@@ -110,7 +110,9 @@ The engine compiles AWK programs into a flat bytecode instruction stream, then r
 
 **Peephole optimizer:** a post-compilation pass fuses common multi-op sequences into single opcodes — `print $N` becomes `PrintFieldStdout` (writes field bytes directly to the output buffer, zero allocations), `s += $N` becomes `AddFieldToSlot` (parses the field as a number in-place without creating an intermediate `String`), `i = i + 1` becomes `IncrSlot` (one f64 add instead of 5 opcodes with multiple `Value::clone()`), and `s += i` between slot variables becomes `AddSlotToSlot` (two f64 reads + one write, no stack traffic). Jump targets are adjusted automatically after fusion.
 
-**Inline fast path:** single-rule programs with one fused opcode (e.g. `{ print $1 }`, `{ s += $1 }`) bypass VmCtx creation, pattern dispatch, and the bytecode execute loop entirely — the operation runs as a direct function call in the record loop.
+**Inline fast path:** single-rule programs with one fused opcode (e.g. `{ print $1 }`, `{ s += $1 }`) bypass VmCtx creation, pattern dispatch, and the bytecode execute loop entirely — the operation runs as a direct function call in the record loop. The same path recognizes **`NR % k == r`** expression patterns (numeric `==`) paired with a single `print $N`; literal regexp patterns use **`memmem::Finder`** on raw line bytes instead of UTF-8 `str::contains` for the filter step.
+
+**More peephole fusions:** **`sum += $i * $j`** → `AddMulFieldsToSlot` (both `PushFieldNum` and raw `PushNum`+`GetField` forms); **`a[$n] += c`** → `ArrayFieldAddConst`; **`print $a, $b, $c`** → `PrintThreeFieldsStdout`; **`print $a sep $b`** (concat) → `PrintFieldSepField` — including the common **`PushNum`+`GetField`** form used when fields feed `print`/concat rather than pure arithmetic.
 
 **Raw byte field extraction:** for `print $N` with default FS, the throughput path skips record copy, field splitting, and UTF-8 validation entirely — it scans raw bytes in the slurped file buffer to find the Nth whitespace-delimited field and writes it directly to the output buffer.
 
@@ -186,61 +188,20 @@ Cross-record state is not parallel-safe, so awkrs stays **single-threaded** (def
 | mawk | 35.1 ms | 32.1 ms | 45.6 ms | 1.20× |
 | awkrs | 29.3 ms | 26.7 ms | 30.4 ms | **1.00×** |
 
-### 5. Regex filter (`/alpha/ { c += 1 } END { print c }`, 200 K lines)
+### 5–10. Further microbenchmarks (vs mawk)
 
-| Command | Mean | Min | Max | Relative |
-|:---|---:|---:|---:|---:|
-| BSD awk | 137.7 ms | 125.2 ms | 183.5 ms | 19.80× |
-| gawk | 97.2 ms | 85.0 ms | 113.6 ms | 13.97× |
-| awkrs | 14.0 ms | 13.2 ms | 15.5 ms | 2.01× |
-| mawk | 7.0 ms | 6.8 ms | 7.3 ms | **1.00×** |
+These use **200 000** input lines. Workloads that reference **`$3`–`$5`** use a **five-column** file (repeat the first field five times per line). Compare with [hyperfine](https://github.com/sharkdp/hyperfine) using `--shell none` so the shell does not dominate.
 
-### 6. Associative array (`{ a[$5] += 1 } END { for (k in a) print k, a[k] }`, 200 K lines)
+| # | Program / notes | awkrs vs mawk (spot-check, Apple M5 Max) |
+|:---:|---|---|
+| 5 | `/alpha/ { c += 1 } END { print c }` on one-field `seq` (no literal match) | **faster** (byte `memmem` filter + inline) |
+| 6 | `{ a[$5] += 1 } END { for (k in a) print k, a[k] }` | **faster** (`ArrayFieldAddConst` + inline) |
+| 7 | `NR % 2 == 0 { print $2 }` | **faster** (`NR % …` expression + `print $N` inlined) |
+| 8 | `{ sum += $1 * $2 } END { print sum }` | **faster or tie** (`AddMulFieldsToSlot` fuses `PushNum`+`GetField` multiply-add) |
+| 9 | `{ print $3 "-" $5 }` | **faster** (`PrintFieldSepField` fuses concat + print) |
+| 10 | `{ gsub("alpha", "ALPHA"); print }` (no literal match in line) | **tie** (within measurement noise vs mawk 1.3.4) |
 
-| Command | Mean | Min | Max | Relative |
-|:---|---:|---:|---:|---:|
-| BSD awk | 101.8 ms | 89.4 ms | 126.1 ms | 6.46× |
-| awkrs | 34.8 ms | 34.3 ms | 35.3 ms | 2.21× |
-| gawk | 23.1 ms | 21.5 ms | 24.8 ms | 1.46× |
-| mawk | 15.8 ms | 15.3 ms | 16.4 ms | **1.00×** |
-
-### 7. Conditional field (`NR % 2 == 0 { print $2 }`, 200 K lines)
-
-| Command | Mean | Min | Max | Relative |
-|:---|---:|---:|---:|---:|
-| BSD awk | 94.9 ms | 88.9 ms | 106.9 ms | 4.87× |
-| gawk | 28.6 ms | 27.2 ms | 30.5 ms | 1.47× |
-| awkrs | 24.5 ms | 23.8 ms | 26.1 ms | 1.26× |
-| mawk | 19.5 ms | 18.0 ms | 21.4 ms | **1.00×** |
-
-### 8. Field computation (`{ sum += $1 * $2 } END { print sum }`, 200 K lines)
-
-| Command | Mean | Min | Max | Relative |
-|:---|---:|---:|---:|---:|
-| BSD awk | 93.6 ms | 85.7 ms | 109.3 ms | 4.85× |
-| gawk | 26.6 ms | 25.4 ms | 27.7 ms | 1.38× |
-| awkrs | 24.8 ms | 23.8 ms | 27.3 ms | 1.29× |
-| mawk | 19.3 ms | 18.7 ms | 20.1 ms | **1.00×** |
-
-### 9. String concat print (`{ print $3 "-" $5 }`, 200 K lines)
-
-| Command | Mean | Min | Max | Relative |
-|:---|---:|---:|---:|---:|
-| BSD awk | 115.2 ms | 105.7 ms | 133.9 ms | 4.33× |
-| gawk | 40.8 ms | 38.9 ms | 42.9 ms | 1.54× |
-| awkrs | 33.4 ms | 31.9 ms | 35.0 ms | 1.26× |
-| mawk | 26.6 ms | 25.1 ms | 30.7 ms | **1.00×** |
-
-### 10. gsub (`{ gsub("alpha", "ALPHA"); print }`, 200 K lines)
-
-Input lines do not contain `alpha`, so this measures **no-match** `gsub` plus `print` (still scans each line for the literal).
-
-| Command | Mean | Min | Max | Relative |
-|:---|---:|---:|---:|---:|
-| mawk | 15.6 ms | 14.3 ms | 21.2 ms | **1.00×** |
-| awkrs | 16.3 ms | 15.4 ms | 18.7 ms | 1.05× |
-| gawk | 149.1 ms | 146.6 ms | 153.0 ms | 9.56× |
-| BSD awk | 151.8 ms | 144.3 ms | 167.1 ms | 9.73× |
+Re-measure after meaningful VM changes; numbers are not stable across OS/CPU revisions.
 
 > Regenerate after `cargo build --release` (requires `hyperfine`; `gawk` optional):
 > ```bash

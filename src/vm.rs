@@ -695,6 +695,60 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 let dv = ctx.rt.slots[dst as usize].as_number();
                 ctx.rt.slots[dst as usize] = Value::Num(dv + sv);
             }
+            Op::AddMulFieldsToSlot { f1, f2, slot } => {
+                let p = ctx.rt.field_as_number(f1 as i32) * ctx.rt.field_as_number(f2 as i32);
+                let old = ctx.rt.slots[slot as usize].as_number();
+                ctx.rt.slots[slot as usize] = Value::Num(old + p);
+            }
+            Op::ArrayFieldAddConst { arr, field, delta } => {
+                let name = ctx.str_ref(arr).to_string();
+                let key = ctx.rt.field(field as i32).as_str();
+                let old = ctx.rt.array_get(&name, &key).as_number();
+                ctx.rt.array_set(&name, key, Value::Num(old + delta));
+            }
+            Op::PrintFieldSepField { f1, sep, f2 } => {
+                let sep_s = ctx.str_ref(sep).to_string();
+                if let Some(ref mut buf) = ctx.print_out {
+                    let ors_b = ctx.rt.ors_bytes.clone();
+                    let v1 = ctx.rt.field(f1 as i32).as_str();
+                    let v2 = ctx.rt.field(f2 as i32).as_str();
+                    let ors = String::from_utf8_lossy(&ors_b);
+                    buf.push(format!("{v1}{sep_s}{v2}{ors}"));
+                } else {
+                    ctx.rt.print_field_to_buf(f1 as usize);
+                    ctx.rt.print_buf.extend_from_slice(sep_s.as_bytes());
+                    ctx.rt.print_field_to_buf(f2 as usize);
+                    let mut ors_local = [0u8; 64];
+                    let ors_len = ctx.rt.ors_bytes.len().min(64);
+                    ors_local[..ors_len].copy_from_slice(&ctx.rt.ors_bytes[..ors_len]);
+                    ctx.rt.print_buf.extend_from_slice(&ors_local[..ors_len]);
+                }
+            }
+            Op::PrintThreeFieldsStdout { f1, f2, f3 } => {
+                if let Some(ref mut buf) = ctx.print_out {
+                    let ofs_b = ctx.rt.ofs_bytes.clone();
+                    let ors_b = ctx.rt.ors_bytes.clone();
+                    let v1 = ctx.rt.field(f1 as i32).as_str();
+                    let v2 = ctx.rt.field(f2 as i32).as_str();
+                    let v3 = ctx.rt.field(f3 as i32).as_str();
+                    let ofs = String::from_utf8_lossy(&ofs_b);
+                    let ors = String::from_utf8_lossy(&ors_b);
+                    buf.push(format!("{v1}{ofs}{v2}{ofs}{v3}{ors}"));
+                } else {
+                    let mut ofs_local = [0u8; 64];
+                    let ofs_len = ctx.rt.ofs_bytes.len().min(64);
+                    ofs_local[..ofs_len].copy_from_slice(&ctx.rt.ofs_bytes[..ofs_len]);
+                    let mut ors_local = [0u8; 64];
+                    let ors_len = ctx.rt.ors_bytes.len().min(64);
+                    ors_local[..ors_len].copy_from_slice(&ctx.rt.ors_bytes[..ors_len]);
+                    ctx.rt.print_field_to_buf(f1 as usize);
+                    ctx.rt.print_buf.extend_from_slice(&ofs_local[..ofs_len]);
+                    ctx.rt.print_field_to_buf(f2 as usize);
+                    ctx.rt.print_buf.extend_from_slice(&ofs_local[..ofs_len]);
+                    ctx.rt.print_field_to_buf(f3 as usize);
+                    ctx.rt.print_buf.extend_from_slice(&ors_local[..ors_len]);
+                }
+            }
             Op::JumpIfSlotGeNum {
                 slot,
                 limit,

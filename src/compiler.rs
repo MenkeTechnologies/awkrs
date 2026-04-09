@@ -146,6 +146,7 @@ impl Compiler {
             Pattern::Expr(e) => {
                 let mut ops = Vec::new();
                 self.compile_expr(e, &mut ops);
+                peephole_optimize(&mut ops);
                 CompiledPattern::Expr(Chunk { ops })
             }
             Pattern::Range(_, _) => CompiledPattern::Range,
@@ -991,6 +992,202 @@ fn peephole_optimize(ops: &mut Vec<Op>) {
                     3,
                 ));
                 i += 4;
+                continue;
+            }
+        }
+
+        // `sum += $f1 * $f2` when fields are still `PushNum`+`GetField` (rhs is `$1 * $2`, not yet fused to PushFieldNum).
+        if i + 7 <= ops.len() {
+            if let (
+                Op::PushNum(n1),
+                Op::GetField,
+                Op::PushNum(n2),
+                Op::GetField,
+                Op::Mul,
+                Op::CompoundAssignSlot(slot, BinOp::Add),
+                Op::Pop,
+            ) = (
+                ops[i],
+                ops[i + 1],
+                ops[i + 2],
+                ops[i + 3],
+                ops[i + 4],
+                ops[i + 5],
+                ops[i + 6],
+            ) {
+                let f1 = n1 as u16;
+                let f2 = n2 as u16;
+                if n1 >= 0.0 && n1 == f1 as f64 && n2 >= 0.0 && n2 == f2 as f64 {
+                    fusions.push((i, Op::AddMulFieldsToSlot { f1, f2, slot }, 6));
+                    i += 7;
+                    continue;
+                }
+            }
+        }
+
+        // `a[$n] += delta` with `$n` as GetField (array subscript is a field expr, not numeric PushFieldNum).
+        if i + 5 <= ops.len() {
+            if let (
+                Op::PushNum(n),
+                Op::GetField,
+                Op::PushNum(delta),
+                Op::CompoundAssignIndex(arr, BinOp::Add),
+                Op::Pop,
+            ) = (ops[i], ops[i + 1], ops[i + 2], ops[i + 3], ops[i + 4])
+            {
+                let field = n as u16;
+                if n >= 0.0 && n == field as f64 {
+                    fusions.push((i, Op::ArrayFieldAddConst { arr, field, delta }, 4));
+                    i += 5;
+                    continue;
+                }
+            }
+        }
+
+        // `print $a, $b, $c` with three `PushNum`+`GetField` (not PushFieldNum — print uses string form).
+        if i + 7 <= ops.len() {
+            if let (
+                Op::PushNum(n1),
+                Op::GetField,
+                Op::PushNum(n2),
+                Op::GetField,
+                Op::PushNum(n3),
+                Op::GetField,
+                Op::Print {
+                    argc: 3,
+                    redir: RedirKind::Stdout,
+                },
+            ) = (
+                ops[i],
+                ops[i + 1],
+                ops[i + 2],
+                ops[i + 3],
+                ops[i + 4],
+                ops[i + 5],
+                ops[i + 6],
+            ) {
+                let f1 = n1 as u16;
+                let f2 = n2 as u16;
+                let f3 = n3 as u16;
+                if n1 >= 0.0
+                    && n1 == f1 as f64
+                    && n2 >= 0.0
+                    && n2 == f2 as f64
+                    && n3 >= 0.0
+                    && n3 == f3 as f64
+                {
+                    fusions.push((i, Op::PrintThreeFieldsStdout { f1, f2, f3 }, 6));
+                    i += 7;
+                    continue;
+                }
+            }
+        }
+
+        // `print $f1 sep $f2` with GetField+Concat form.
+        if i + 8 <= ops.len() {
+            if let (
+                Op::PushNum(n1),
+                Op::GetField,
+                Op::PushStr(sep),
+                Op::Concat,
+                Op::PushNum(n2),
+                Op::GetField,
+                Op::Concat,
+                Op::Print {
+                    argc: 1,
+                    redir: RedirKind::Stdout,
+                },
+            ) = (
+                ops[i],
+                ops[i + 1],
+                ops[i + 2],
+                ops[i + 3],
+                ops[i + 4],
+                ops[i + 5],
+                ops[i + 6],
+                ops[i + 7],
+            ) {
+                let f1 = n1 as u16;
+                let f2 = n2 as u16;
+                if n1 >= 0.0 && n1 == f1 as f64 && n2 >= 0.0 && n2 == f2 as f64 {
+                    fusions.push((i, Op::PrintFieldSepField { f1, sep, f2 }, 7));
+                    i += 8;
+                    continue;
+                }
+            }
+        }
+
+        // `sum += $f1 * $f2` → AddMulFieldsToSlot (PushFieldNum form)
+        if i + 5 <= ops.len() {
+            if let (
+                Op::PushFieldNum(f1),
+                Op::PushFieldNum(f2),
+                Op::Mul,
+                Op::CompoundAssignSlot(slot, BinOp::Add),
+                Op::Pop,
+            ) = (ops[i], ops[i + 1], ops[i + 2], ops[i + 3], ops[i + 4])
+            {
+                fusions.push((i, Op::AddMulFieldsToSlot { f1, f2, slot }, 4));
+                i += 5;
+                continue;
+            }
+        }
+
+        // `a[$field] += delta` (delta constant) → ArrayFieldAddConst
+        if i + 4 <= ops.len() {
+            if let (
+                Op::PushFieldNum(field),
+                Op::PushNum(delta),
+                Op::CompoundAssignIndex(arr, BinOp::Add),
+                Op::Pop,
+            ) = (ops[i], ops[i + 1], ops[i + 2], ops[i + 3])
+            {
+                fusions.push((i, Op::ArrayFieldAddConst { arr, field, delta }, 3));
+                i += 4;
+                continue;
+            }
+        }
+
+        // `print $f1, $f2, $f3` → PrintThreeFieldsStdout
+        if i + 4 <= ops.len() {
+            if let (
+                Op::PushFieldNum(f1),
+                Op::PushFieldNum(f2),
+                Op::PushFieldNum(f3),
+                Op::Print {
+                    argc: 3,
+                    redir: RedirKind::Stdout,
+                },
+            ) = (ops[i], ops[i + 1], ops[i + 2], ops[i + 3])
+            {
+                fusions.push((i, Op::PrintThreeFieldsStdout { f1, f2, f3 }, 3));
+                i += 4;
+                continue;
+            }
+        }
+
+        // `print $f1 sep $f2` → PrintFieldSepField
+        if i + 6 <= ops.len() {
+            if let (
+                Op::PushFieldNum(f1),
+                Op::PushStr(sep),
+                Op::Concat,
+                Op::PushFieldNum(f2),
+                Op::Concat,
+                Op::Print {
+                    argc: 1,
+                    redir: RedirKind::Stdout,
+                },
+            ) = (
+                ops[i],
+                ops[i + 1],
+                ops[i + 2],
+                ops[i + 3],
+                ops[i + 4],
+                ops[i + 5],
+            ) {
+                fusions.push((i, Op::PrintFieldSepField { f1, sep, f2 }, 5));
+                i += 6;
                 continue;
             }
         }
