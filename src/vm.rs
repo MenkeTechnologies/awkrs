@@ -311,7 +311,11 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 ctx.set_var(&name, val);
             }
             Op::GetSlot(slot) => {
-                ctx.push(ctx.rt.slots[slot as usize].clone());
+                let v = match &ctx.rt.slots[slot as usize] {
+                    Value::Num(n) => Value::Num(*n),
+                    other => other.clone(),
+                };
+                ctx.push(v);
             }
             Op::SetSlot(slot) => {
                 ctx.rt.slots[slot as usize] = ctx.peek().clone();
@@ -329,14 +333,14 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 ctx.push(val);
             }
             Op::GetArrayElem(arr) => {
-                let key = ctx.pop().as_str();
+                let key = ctx.pop().into_string();
                 let name = ctx.str_ref(arr);
                 let v = ctx.rt.array_get(name, &key);
                 ctx.push(v);
             }
             Op::SetArrayElem(arr) => {
                 let val = ctx.pop();
-                let key = ctx.pop().as_str();
+                let key = ctx.pop().into_string();
                 let name = ctx.cp.strings.get(arr);
                 ctx.rt.array_set(name, key, val.clone());
                 ctx.push(val);
@@ -353,8 +357,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             }
             Op::CompoundAssignSlot(slot, bop) => {
                 let rhs = ctx.pop();
-                let old = &ctx.rt.slots[slot as usize];
-                let new_val = apply_binop(bop, old, &rhs)?;
+                let new_val = apply_binop(bop, &ctx.rt.slots[slot as usize], &rhs)?;
                 ctx.rt.slots[slot as usize] = new_val.clone();
                 ctx.push(new_val);
             }
@@ -369,7 +372,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             }
             Op::CompoundAssignIndex(arr, bop) => {
                 let rhs = ctx.pop();
-                let key = ctx.pop().as_str();
+                let key = ctx.pop().into_string();
                 let name = ctx.cp.strings.get(arr);
                 let old = ctx.rt.array_get(name, &key);
                 let new_val = apply_binop(bop, &old, &rhs)?;
@@ -397,8 +400,10 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 ctx.set_var(&name, Value::Num(n - 1.0));
             }
             Op::IncDecSlot(slot, kind) => {
-                let old = &ctx.rt.slots[slot as usize];
-                let old_n = old.as_number();
+                let old_n = match &ctx.rt.slots[slot as usize] {
+                    Value::Num(v) => *v,
+                    other => other.as_number(),
+                };
                 let delta = incdec_delta(kind);
                 let new_n = old_n + delta;
                 ctx.rt.slots[slot as usize] = Value::Num(new_n);
@@ -414,7 +419,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 ctx.push(Value::Num(incdec_push(kind, old_n, new_n)));
             }
             Op::IncDecIndex(arr, kind) => {
-                let key = ctx.pop().as_str();
+                let key = ctx.pop().into_string();
                 let name = ctx.cp.strings.get(arr);
                 let old_n = ctx.rt.array_get(name, &key).as_number();
                 let delta = incdec_delta(kind);
@@ -580,7 +585,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
 
             // ── Array ops ───────────────────────────────────────────────
             Op::InArray(arr) => {
-                let key = ctx.pop().as_str();
+                let key = ctx.pop().into_string();
                 let name = ctx.str_ref(arr);
                 let b = ctx.rt.array_has(name, &key);
                 ctx.push(Value::Num(if b { 1.0 } else { 0.0 }));
@@ -590,7 +595,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 ctx.rt.array_delete(&name, None);
             }
             Op::DeleteElem(arr) => {
-                let key = ctx.pop().as_str();
+                let key = ctx.pop().into_string();
                 let name = ctx.str_ref(arr).to_string();
                 ctx.rt.array_delete(&name, Some(&key));
             }
@@ -725,7 +730,10 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             }
             Op::AddFieldToSlot { field, slot } => {
                 let field_val = ctx.rt.field_as_number(field as i32);
-                let old = ctx.rt.slots[slot as usize].as_number();
+                let old = match &ctx.rt.slots[slot as usize] {
+                    Value::Num(v) => *v,
+                    other => other.as_number(),
+                };
                 ctx.rt.slots[slot as usize] = Value::Num(old + field_val);
             }
             Op::PrintFieldStdout(field) => {
@@ -745,22 +753,37 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             }
             Op::IncrSlot(slot) => {
                 let s = slot as usize;
-                let n = ctx.rt.slots[s].as_number();
+                let n = match &ctx.rt.slots[s] {
+                    Value::Num(v) => *v,
+                    other => other.as_number(),
+                };
                 ctx.rt.slots[s] = Value::Num(n + 1.0);
             }
             Op::DecrSlot(slot) => {
                 let s = slot as usize;
-                let n = ctx.rt.slots[s].as_number();
+                let n = match &ctx.rt.slots[s] {
+                    Value::Num(v) => *v,
+                    other => other.as_number(),
+                };
                 ctx.rt.slots[s] = Value::Num(n - 1.0);
             }
             Op::AddSlotToSlot { src, dst } => {
-                let sv = ctx.rt.slots[src as usize].as_number();
-                let dv = ctx.rt.slots[dst as usize].as_number();
+                let sv = match &ctx.rt.slots[src as usize] {
+                    Value::Num(v) => *v,
+                    other => other.as_number(),
+                };
+                let dv = match &ctx.rt.slots[dst as usize] {
+                    Value::Num(v) => *v,
+                    other => other.as_number(),
+                };
                 ctx.rt.slots[dst as usize] = Value::Num(dv + sv);
             }
             Op::AddMulFieldsToSlot { f1, f2, slot } => {
                 let p = ctx.rt.field_as_number(f1 as i32) * ctx.rt.field_as_number(f2 as i32);
-                let old = ctx.rt.slots[slot as usize].as_number();
+                let old = match &ctx.rt.slots[slot as usize] {
+                    Value::Num(v) => *v,
+                    other => other.as_number(),
+                };
                 ctx.rt.slots[slot as usize] = Value::Num(old + p);
             }
             Op::ArrayFieldAddConst { arr, field, delta } => {
@@ -817,7 +840,10 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 limit,
                 target,
             } => {
-                let v = ctx.rt.slots[slot as usize].as_number();
+                let v = match &ctx.rt.slots[slot as usize] {
+                    Value::Num(n) => *n,
+                    other => other.as_number(),
+                };
                 if v >= limit {
                     pc = target;
                     continue;
@@ -893,6 +919,14 @@ fn locale_str_cmp(a: &str, b: &str) -> Ordering {
 }
 
 fn awk_cmp_eq(a: &Value, b: &Value) -> Value {
+    // Fast path: both Num — skip is_numeric_str() entirely.
+    if let (Value::Num(an), Value::Num(bn)) = (a, b) {
+        return Value::Num(if (an - bn).abs() < f64::EPSILON {
+            1.0
+        } else {
+            0.0
+        });
+    }
     if a.is_numeric_str() && b.is_numeric_str() {
         let an = a.as_number();
         let bn = b.as_number();
@@ -902,11 +936,24 @@ fn awk_cmp_eq(a: &Value, b: &Value) -> Value {
             0.0
         });
     }
-    let ord = locale_str_cmp(&a.as_str(), &b.as_str());
+    let ls = a.as_str_cow();
+    let rs = b.as_str_cow();
+    let ord = locale_str_cmp(&ls, &rs);
     Value::Num(if ord == Ordering::Equal { 1.0 } else { 0.0 })
 }
 
 fn awk_cmp_rel(op: BinOp, a: &Value, b: &Value) -> Value {
+    // Fast path: both Num — skip is_numeric_str() entirely.
+    if let (Value::Num(an), Value::Num(bn)) = (a, b) {
+        let ok = match op {
+            BinOp::Lt => an < bn,
+            BinOp::Le => an <= bn,
+            BinOp::Gt => an > bn,
+            BinOp::Ge => an >= bn,
+            _ => unreachable!(),
+        };
+        return Value::Num(if ok { 1.0 } else { 0.0 });
+    }
     if a.is_numeric_str() && b.is_numeric_str() {
         let an = a.as_number();
         let bn = b.as_number();
@@ -919,8 +966,8 @@ fn awk_cmp_rel(op: BinOp, a: &Value, b: &Value) -> Value {
         };
         return Value::Num(if ok { 1.0 } else { 0.0 });
     }
-    let ls = a.as_str();
-    let rs = b.as_str();
+    let ls = a.as_str_cow();
+    let rs = b.as_str_cow();
     let ord = locale_str_cmp(&ls, &rs);
     let ok = match op {
         BinOp::Lt => ord == Ordering::Less,
