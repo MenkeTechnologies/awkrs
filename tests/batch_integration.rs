@@ -4,7 +4,9 @@ mod common;
 
 use common::{run_awkrs_stdin, run_awkrs_stdin_args};
 use std::fs;
-use std::process::Command;
+use std::io::Write;
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
 
 #[test]
 fn begin_sets_ofs_between_print_fields() {
@@ -362,4 +364,77 @@ fn begin_end_nr() {
     let (c, o, _) = run_awkrs_stdin("BEGIN { print NR } END { print NR }", "a\nb\n");
     assert_eq!(c, 0);
     assert_eq!(o, "0\n2\n");
+}
+
+// ── aw alias binary, exit, --, getline $0, mktime, recursion ───────────────
+
+#[test]
+fn aw_short_binary_runs_same_engine() {
+    let out = Command::new(env!("CARGO_BIN_EXE_aw"))
+        .arg(r#"BEGIN { print "ok" }"#)
+        .output()
+        .expect("spawn aw");
+    assert_eq!(out.status.code(), Some(0), "stderr={}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "ok\n");
+}
+
+#[test]
+fn exit_statement_without_expression_exits_zero() {
+    let (c, o, _) = run_awkrs_stdin("BEGIN { exit }", "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "");
+}
+
+#[test]
+fn double_dash_program_operand_after_end_of_options() {
+    // `--` ends option parsing; the next argument is the awk program (POSIX / gawk style).
+    let mut child = Command::new(env!("CARGO_BIN_EXE_awkrs"))
+        .args(["--", "BEGIN { print 42 }"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn awkrs -- program");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(b"")
+        .expect("write stdin");
+    let out = child.wait_with_output().expect("wait");
+    assert_eq!(out.status.code(), Some(0), "stderr={}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "42\n");
+}
+
+#[test]
+fn getline_file_redirect_without_var_sets_dollar_zero() {
+    let path: PathBuf =
+        std::env::temp_dir().join(format!("awkrs_getline_d0_{}.txt", std::process::id()));
+    fs::write(&path, "fromfile\n").expect("write temp");
+    let p = path.to_string_lossy().replace('\\', "/");
+    let prog = format!("BEGIN {{ getline < \"{p}\"; print $0 }}");
+    let (c, o, e) = run_awkrs_stdin(&prog, "");
+    let _ = fs::remove_file(&path);
+    assert_eq!(c, 0, "stderr={e:?}");
+    assert_eq!(o, "fromfile\n");
+}
+
+#[test]
+fn mktime_valid_datespec_returns_positive_epoch() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { t = mktime("2020 06 15 12 0 0"); print (t > 1000000000) }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o.trim(), "1");
+}
+
+#[test]
+fn user_function_recursion_fibonacci() {
+    let (c, o, _) = run_awkrs_stdin(
+        "function fib(n) { return n <= 1 ? n : fib(n-1) + fib(n-2) } BEGIN { print fib(6) }",
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "8\n");
 }
