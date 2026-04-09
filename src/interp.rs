@@ -92,12 +92,17 @@ impl<'a> ExecCtx<'a> {
 
     fn set_var(&mut self, name: &str, val: Value) {
         for frame in self.locals.iter_mut().rev() {
-            if frame.contains_key(name) {
-                frame.insert(name.to_string(), val);
+            if let Some(v) = frame.get_mut(name) {
+                *v = val;
                 return;
             }
         }
-        self.rt.vars.insert(name.to_string(), val);
+        match self.rt.vars.get_mut(name) {
+            Some(v) => *v = val,
+            None => {
+                self.rt.vars.insert(name.to_string(), val);
+            }
+        }
     }
 }
 

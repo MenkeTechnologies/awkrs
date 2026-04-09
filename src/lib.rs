@@ -877,9 +877,7 @@ fn process_file_slurp_inline(
             InlineAction::ArrayFieldAddConst { arr, field, delta } => {
                 set_record_from_line_bytes(rt, fs, line_bytes);
                 let name = cp.strings.get(arr);
-                let key = rt.field(field as i32).as_str();
-                let old = rt.array_get(name, &key).as_number();
-                rt.array_set(name, key, Value::Num(old + delta));
+                rt.array_field_add_delta(name, field as i32, delta);
             }
             InlineAction::PrintFieldSepField { f1, sep, f2 } => {
                 set_record_from_line_bytes(rt, fs, line_bytes);

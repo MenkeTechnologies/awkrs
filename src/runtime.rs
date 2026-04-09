@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 
 /// Fast hash map for awk variables and arrays. Uses FxHash (no DoS resistance,
@@ -1023,6 +1024,67 @@ impl Runtime {
         } else {
             let mut m = AwkMap::default();
             m.insert(key, val);
+            self.vars.insert(name.to_string(), Value::Array(m));
+        }
+    }
+
+    /// Fused `a[$field] += delta` (constant field index, e.g. `$5`): build the key from
+    /// the split record once and update the array in one map pass.
+    ///
+    /// Avoids `field(i).as_str()` which allocated twice per call (field string + clone for
+    /// `as_str()`), and avoids separate `array_get` + `array_set` lookups.
+    pub fn array_field_add_delta(&mut self, name: &str, field: i32, delta: f64) {
+        self.ensure_fields_split();
+        let key = self.field_subscript_string(field);
+        self.array_add_numeric(name, key, delta);
+    }
+
+    #[inline]
+    fn field_subscript_string(&self, field: i32) -> String {
+        if field < 1 {
+            return String::new();
+        }
+        let idx = (field - 1) as usize;
+        if self.fields_dirty {
+            return self.fields.get(idx).cloned().unwrap_or_default();
+        }
+        self.field_ranges
+            .get(idx)
+            .map(|&(s, e)| self.record[s as usize..e as usize].to_string())
+            .unwrap_or_default()
+    }
+
+    fn array_add_numeric(&mut self, name: &str, key: String, delta: f64) {
+        if let Some(existing) = self.vars.get_mut(name) {
+            match existing {
+                Value::Array(a) => {
+                    match a.entry(key) {
+                        Entry::Occupied(mut e) => {
+                            let n = e.get().as_number() + delta;
+                            e.insert(Value::Num(n));
+                        }
+                        Entry::Vacant(e) => {
+                            e.insert(Value::Num(delta));
+                        }
+                    }
+                    return;
+                }
+                _ => {
+                    let mut m = AwkMap::default();
+                    m.insert(key, Value::Num(delta));
+                    *existing = Value::Array(m);
+                    return;
+                }
+            }
+        }
+        if let Some(Value::Array(a)) = self.global_readonly.as_ref().and_then(|g| g.get(name)) {
+            let mut copy = a.clone();
+            let old = copy.get(&key).map(|v| v.as_number()).unwrap_or(0.0);
+            copy.insert(key, Value::Num(old + delta));
+            self.vars.insert(name.to_string(), Value::Array(copy));
+        } else {
+            let mut m = AwkMap::default();
+            m.insert(key, Value::Num(delta));
             self.vars.insert(name.to_string(), Value::Array(m));
         }
     }

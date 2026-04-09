@@ -147,7 +147,7 @@ The engine compiles AWK programs into a flat bytecode instruction stream, then r
  │ HARDWARE: APPLE M5 MAX &nbsp;&nbsp; OS: macOS &nbsp;&nbsp; ARCH: arm64         │
  └──────────────────────────────────────────────────────────────┘
 
-Measured with [hyperfine](https://github.com/sharkdp/hyperfine) (`--shell none` for spot-checks below). BSD awk (`/usr/bin/awk`), GNU gawk 5.4.0, mawk 1.3.4, awkrs **0.1.13**. **Relative** = mean time ÷ **fastest** mean in that table. **awkrs** has two rows: default (**JIT** attempted) vs **`AWKRS_JIT=0`** (**bytecode** only) — same means as [`benchmarks/benchmark-readme-jit.md`](benchmarks/benchmark-readme-jit.md) from `./scripts/benchmark-readme-jit-vs-vm.sh` (regenerate to refresh awkrs columns). BSD / gawk / mawk means are from the same historical run as before; re-measure all engines together when you need a fully consistent sheet. [`benchmarks/benchmark-results.md`](benchmarks/benchmark-results.md) is from `./scripts/benchmark-vs-awk.sh` (cross-engine §1–§4 plus JIT vs bytecode §4a–§4d).
+Measured with [hyperfine](https://github.com/sharkdp/hyperfine) (`--shell none` for spot-checks below). BSD awk (`/usr/bin/awk`), GNU gawk 5.4.0, mawk 1.3.4, awkrs **0.1.13**. **Relative** = mean time ÷ **fastest** mean in that table. **awkrs** has two rows: default (**JIT** attempted) vs **`AWKRS_JIT=0`** (**bytecode** only) — same means as [`benchmarks/benchmark-readme-jit.md`](benchmarks/benchmark-readme-jit.md) from `./scripts/benchmark-readme-jit-vs-vm.sh` (regenerate to refresh awkrs columns). **§6** is a single hyperfine run with all five engines on the same 200 K-line input; **§1–§5** and **§7–§10** still mix an older BSD/gawk/mawk sheet with refreshed awkrs rows unless you re-measure everything together. [`benchmarks/benchmark-results.md`](benchmarks/benchmark-results.md) is from `./scripts/benchmark-vs-awk.sh` (cross-engine §1–§4 plus JIT vs bytecode §4a–§4d).
 
 ### 1. Throughput: `{ print $1 }` over 200 K lines
 
@@ -207,11 +207,11 @@ Cross-record state is not parallel-safe, so awkrs stays **single-threaded** (def
 
 | Command | Mean | Min | Max | Relative |
 |:---|---:|---:|---:|---:|
-| BSD awk | 110.3 ms | 98.3 ms | 162.1 ms | 7.82× |
-| gawk | 22.7 ms | 20.7 ms | 24.7 ms | 1.61× |
-| mawk | 14.1 ms | 13.1 ms | 15.7 ms | **1.00×** |
-| awkrs (JIT) | 90.1 ms | 77.2 ms | 109.2 ms | 6.39× |
-| awkrs (bytecode) | 62.9 ms | 56.4 ms | 75.6 ms | 4.46× |
+| BSD awk | 170.3 ms | 161.6 ms | 182.8 ms | 2.98× |
+| gawk | 75.5 ms | 70.5 ms | 82.6 ms | 1.32× |
+| mawk | 86.2 ms | 73.0 ms | 103.8 ms | 1.51× |
+| awkrs (JIT) | 72.4 ms | 67.1 ms | 80.8 ms | 1.27× |
+| awkrs (bytecode) | 57.1 ms | 47.6 ms | 67.5 ms | **1.00×** |
 
 ### 7. Conditional field (`NR % 2 == 0 { print $2 }`, 200 K lines)
 

@@ -113,8 +113,8 @@ impl<'a> VmCtx<'a> {
 
     fn set_var(&mut self, name: &str, val: Value) {
         for frame in self.locals.iter_mut().rev() {
-            if frame.contains_key(name) {
-                frame.insert(name.to_string(), val);
+            if let Some(v) = frame.get_mut(name) {
+                *v = val;
                 return;
             }
         }
@@ -129,7 +129,12 @@ impl<'a> VmCtx<'a> {
             "ORS" => self.rt.ors_bytes = val.as_str().into_bytes(),
             _ => {}
         }
-        self.rt.vars.insert(name.to_string(), val);
+        match self.rt.vars.get_mut(name) {
+            Some(v) => *v = val,
+            None => {
+                self.rt.vars.insert(name.to_string(), val);
+            }
+        }
     }
 
     #[inline]
@@ -1438,9 +1443,7 @@ extern "C" fn jit_array_field_add_const(arr_idx: u32, field: i32, delta: f64) {
             let rt = unsafe { &mut *rt_ptr };
             let cp = unsafe { &*cp_ptr };
             let name = cp.strings.get(arr_idx);
-            let key = rt.field(field).as_str();
-            let old = rt.array_get(name, &key).as_number();
-            rt.array_set(name, key, Value::Num(old + delta));
+            rt.array_field_add_delta(name, field, delta);
         })
     })
 }
@@ -2598,9 +2601,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             }
             Op::ArrayFieldAddConst { arr, field, delta } => {
                 let name = ctx.cp.strings.get(arr);
-                let key = ctx.rt.field(field as i32).as_str();
-                let old = ctx.rt.array_get(name, &key).as_number();
-                ctx.rt.array_set(name, key, Value::Num(old + delta));
+                ctx.rt.array_field_add_delta(name, field as i32, delta);
             }
             Op::PrintFieldSepField { f1, sep, f2 } => {
                 let sep_s = ctx.str_ref(sep).to_string();
