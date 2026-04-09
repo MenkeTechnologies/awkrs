@@ -398,3 +398,90 @@ fn compare_nan_never_equals_itself_awk_semantics() {
     assert_eq!(c, 0);
     assert_eq!(o, "0\n");
 }
+
+// ── FILENAME, match() globals, sub/gsub target, system(), mawk -W ─────────
+
+#[test]
+fn filename_stdin_is_dash() {
+    let (c, o, _) = run_awkrs_stdin("{ print FILENAME }", "a\n");
+    assert_eq!(c, 0);
+    assert_eq!(o, "-\n");
+}
+
+#[test]
+fn filename_reflects_input_file_basename() {
+    let dir = std::env::temp_dir();
+    let id = std::process::id();
+    let base = format!("awkrs_filename_{id}.txt");
+    let path = dir.join(&base);
+    fs::write(&path, "x\n").expect("write temp");
+    let (c, o, e) = run_awkrs_file("{ print FILENAME }", &path);
+    let _ = fs::remove_file(&path);
+    assert_eq!(c, 0, "stderr={e:?}");
+    let printed = o.trim_end();
+    assert!(
+        printed.ends_with(&base),
+        "expected path ending with {base:?}, got {printed:?}"
+    );
+}
+
+#[test]
+fn match_builtin_sets_rstart_rlength() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { match("foo123bar", "[0-9]+"); print RSTART, RLENGTH }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "4 3\n");
+}
+
+#[test]
+fn match_no_match_sets_rstart_zero_rlength_negative() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { match("abc", "z"); print RSTART, RLENGTH }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "0 -1\n");
+}
+
+#[test]
+fn system_reports_nonzero_exit_status() {
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { print system("exit 4") }"#, "");
+    assert_eq!(c, 0);
+    assert_eq!(o.trim(), "4");
+}
+
+#[test]
+fn sub_third_arg_replaces_in_scalar_variable() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { x = "hello"; sub("l", "L", x); print x }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "heLlo\n");
+}
+
+#[test]
+fn gsub_third_arg_replaces_all_in_scalar_variable() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { x = "ll"; gsub("l", "L", x); print x }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "LL\n");
+}
+
+#[test]
+fn mawk_w_version_matches_dash_capital_v() {
+    let w = Command::new(env!("CARGO_BIN_EXE_awkrs"))
+        .args(["-W", "version"])
+        .output()
+        .expect("spawn awkrs -W version");
+    assert!(w.status.success(), "stderr={}", String::from_utf8_lossy(&w.stderr));
+    let dash_v = Command::new(env!("CARGO_BIN_EXE_awkrs"))
+        .arg("-V")
+        .output()
+        .expect("spawn awkrs -V");
+    assert_eq!(w.stdout, dash_v.stdout);
+}
