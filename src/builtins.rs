@@ -5,7 +5,7 @@ use crate::runtime::{Runtime, Value};
 use regex::Regex;
 
 /// Check if a regex pattern is a plain literal (no metacharacters).
-fn is_literal_pattern(pat: &str) -> bool {
+pub(crate) fn is_literal_pattern(pat: &str) -> bool {
     !pat.bytes().any(|b| {
         matches!(
             b,
@@ -26,19 +26,43 @@ fn is_literal_pattern(pat: &str) -> bool {
     })
 }
 
-/// Literal string gsub — uses stdlib `match_indices` for SIMD-optimized search.
-fn literal_replace_all(s: &str, needle: &str, repl: &str) -> (String, usize) {
+/// Literal `gsub` fast path: plain pattern and replacement without `&` / `\` escapes.
+#[inline]
+pub(crate) fn gsub_literal_eligible(re_pat: &str, repl: &str) -> bool {
+    is_literal_pattern(re_pat) && !repl.contains('&') && !repl.contains('\\')
+}
+
+/// True when `needle` does not occur in `hay` (same semantics as `!hay.contains(needle)` for `gsub`).
+fn literal_substring_absent(rt: &mut Runtime, needle: &str, hay: &str) -> bool {
+    if needle.is_empty() {
+        return !hay.contains(needle);
+    }
+    rt.literal_substring_finder(needle)
+        .find(hay.as_bytes())
+        .is_none()
+}
+
+/// Literal global replace — `memmem::Finder` (cached on `rt`) for repeated scans over the same needle.
+fn literal_replace_all(s: &str, needle: &str, repl: &str, rt: &mut Runtime) -> (String, usize) {
     if needle.is_empty() {
         return (s.to_string(), 0);
     }
+    let finder = rt.literal_substring_finder(needle);
+    let hay = s.as_bytes();
     let mut out = String::with_capacity(s.len());
     let mut count = 0usize;
-    let mut last = 0;
-    for (start, _) in s.match_indices(needle) {
-        out.push_str(&s[last..start]);
+    let mut last = 0usize;
+    let mut off = 0usize;
+    while off < hay.len() {
+        let Some(rel) = finder.find(&hay[off..]) else {
+            break;
+        };
+        let abs = off + rel;
+        out.push_str(&s[last..abs]);
         out.push_str(repl);
         count += 1;
-        last = start + needle.len();
+        last = abs + needle.len();
+        off = last;
     }
     out.push_str(&s[last..]);
     (out, count)
@@ -58,10 +82,10 @@ pub fn gsub(
 
     let n = if let Some(t) = target {
         if use_literal {
-            if !t.contains(re_pat) {
+            if literal_substring_absent(rt, re_pat, t) {
                 0
             } else {
-                let (new_s, c) = literal_replace_all(t.as_str(), re_pat, repl);
+                let (new_s, c) = literal_replace_all(t.as_str(), re_pat, repl, rt);
                 *t = new_s;
                 c
             }
@@ -80,11 +104,11 @@ pub fn gsub(
         // Replace `$0` in one step — do not restore the old record only to overwrite it again.
         let cur = std::mem::take(&mut rt.record);
         let (new_s, c) = if use_literal {
-            if !cur.contains(re_pat) {
+            if literal_substring_absent(rt, re_pat, &cur) {
                 rt.record = cur;
                 return Ok(0.0);
             }
-            literal_replace_all(&cur, re_pat, repl)
+            literal_replace_all(&cur, re_pat, repl, rt)
         } else {
             rt.ensure_regex(re_pat).map_err(Error::Runtime)?;
             let re = rt.regex_ref(re_pat);
@@ -287,4 +311,71 @@ pub fn patsplit(
     }
 
     Ok(n as f64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{gsub, match_fn, patsplit, sub_fn};
+    use crate::runtime::{Runtime, Value};
+
+    fn rt_with_fs() -> Runtime {
+        let mut rt = Runtime::new();
+        rt.vars.insert("FS".into(), Value::Str(" ".into()));
+        rt
+    }
+
+    #[test]
+    fn gsub_literal_on_record_replaces_and_resplits() {
+        let mut rt = rt_with_fs();
+        rt.record = "foofoo".into();
+        let n = gsub(&mut rt, "foo", "bar", None).unwrap();
+        assert_eq!(n, 2.0);
+        assert_eq!(rt.record, "barbar");
+    }
+
+    #[test]
+    fn gsub_regex_with_amp_replacement() {
+        let mut rt = rt_with_fs();
+        rt.record = "ab".into();
+        let n = gsub(&mut rt, "a", "X&Y", None).unwrap();
+        assert_eq!(n, 1.0);
+        assert_eq!(rt.record, "XaYb");
+    }
+
+    #[test]
+    fn sub_first_match_only() {
+        let mut rt = rt_with_fs();
+        rt.record = "aaa".into();
+        let n = sub_fn(&mut rt, "a", "b", None).unwrap();
+        assert_eq!(n, 1.0);
+        assert_eq!(rt.record, "baa");
+    }
+
+    #[test]
+    fn match_sets_rstart_rlength_on_hit() {
+        let mut rt = Runtime::new();
+        let n = match_fn(&mut rt, "foo123bar", "[0-9]+", None).unwrap();
+        assert_eq!(n, 4.0);
+        assert_eq!(rt.vars.get("RSTART").unwrap().as_number(), 4.0);
+        assert_eq!(rt.vars.get("RLENGTH").unwrap().as_number(), 3.0);
+    }
+
+    #[test]
+    fn match_sets_rstart_zero_on_miss() {
+        let mut rt = Runtime::new();
+        let n = match_fn(&mut rt, "abc", "[0-9]+", None).unwrap();
+        assert_eq!(n, 0.0);
+        assert_eq!(rt.vars.get("RSTART").unwrap().as_number(), 0.0);
+        assert_eq!(rt.vars.get("RLENGTH").unwrap().as_number(), -1.0);
+    }
+
+    #[test]
+    fn patsplit_fills_array() {
+        let mut rt = Runtime::new();
+        let n = patsplit(&mut rt, "x y z", "parts", Some("[a-z]+"), None).unwrap();
+        assert_eq!(n, 3.0);
+        assert_eq!(rt.array_get("parts", "1").as_str(), "x");
+        assert_eq!(rt.array_get("parts", "2").as_str(), "y");
+        assert_eq!(rt.array_get("parts", "3").as_str(), "z");
+    }
 }

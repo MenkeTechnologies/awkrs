@@ -2,6 +2,7 @@
 
 use std::ffi::OsString;
 use std::io::Write;
+use std::path::Path;
 use std::process::{Command, Stdio};
 
 pub fn run_awkrs_stdin(program: &str, stdin: &str) -> (i32, String, String) {
@@ -92,6 +93,23 @@ where
         .write_all(stdin.as_bytes())
         .expect("write stdin");
     let out = child.wait_with_output().expect("wait");
+    let code = out.status.code().unwrap_or(-1);
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    (code, stdout, stderr)
+}
+
+/// Run `awkrs PROGRAM FILE` (no stdin) — exercises slurped-file fast paths.
+#[allow(dead_code)] // Used by `integration` only; `more_integration` shares this crate.
+pub fn run_awkrs_file(program: &str, path: &Path) -> (i32, String, String) {
+    let bin = env!("CARGO_BIN_EXE_awkrs");
+    let out = Command::new(bin)
+        .arg(program)
+        .arg(path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("spawn awkrs with file");
     let code = out.status.code().unwrap_or(-1);
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();

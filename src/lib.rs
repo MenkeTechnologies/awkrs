@@ -20,7 +20,7 @@ pub use error::{Error, Result};
 
 use crate::ast::parallel;
 use crate::ast::{Pattern, Program};
-use crate::bytecode::{CompiledPattern, CompiledProgram, Op};
+use crate::bytecode::{CompiledPattern, CompiledProgram, Op, RedirKind, SubTarget};
 use crate::cli::{Args, MawkWAction};
 use crate::compiler::Compiler;
 use crate::interp::{range_step, Flow};
@@ -414,6 +414,11 @@ enum InlineAction {
         f2: u16,
         f3: u16,
     },
+    /// `{ gsub("pat", "repl"); print }` on `$0` — literal pattern + simple replacement (pool indices).
+    GsubLiteralPrint {
+        pat: u32,
+        repl: u32,
+    },
 }
 
 /// Pattern for inline fast path.
@@ -506,6 +511,31 @@ fn detect_inline_program(cp: &CompiledProgram) -> Option<(InlinePattern, InlineA
         } else {
             return None;
         }
+    } else if ops.len() == 5 {
+        match (&ops[0], &ops[1], &ops[2], &ops[3], &ops[4]) {
+            (
+                Op::PushStr(pat_idx),
+                Op::PushStr(repl_idx),
+                Op::GsubFn(SubTarget::Record),
+                Op::Pop,
+                Op::Print {
+                    argc: 0,
+                    redir: RedirKind::Stdout,
+                },
+            ) => {
+                let pat = cp.strings.get(*pat_idx);
+                let repl = cp.strings.get(*repl_idx);
+                if !pat.is_empty() && crate::builtins::gsub_literal_eligible(pat, repl) {
+                    InlineAction::GsubLiteralPrint {
+                        pat: *pat_idx,
+                        repl: *repl_idx,
+                    }
+                } else {
+                    return None;
+                }
+            }
+            _ => return None,
+        }
     } else {
         return None;
     };
@@ -591,6 +621,9 @@ fn process_file_slurp_inline(
     // skip field splitting + record copy entirely and scan bytes directly.
     // Only when the pattern matches every record (`Always`); `LiteralContains` must filter per line.
     if matches!(pattern, InlinePattern::Always) {
+        if let InlineAction::GsubLiteralPrint { pat, repl } = action {
+            return process_file_gsub_literal_print(&data, fs, pat, repl, cp, rt);
+        }
         if let InlineAction::PrintFieldStdout(field) = action {
             if field > 0 && fs == " " {
                 return process_file_print_field_raw(&data, field as usize, rt);
@@ -700,6 +733,64 @@ fn process_file_slurp_inline(
                 let sv = rt.slots[slot as usize].as_number();
                 rt.slots[slot as usize] = Value::Num(sv + fv);
             }
+            InlineAction::GsubLiteralPrint { .. } => {
+                unreachable!("GsubLiteralPrint is handled in process_file_gsub_literal_print")
+            }
+        }
+
+        pos = eol + 1;
+    }
+    Ok(count)
+}
+
+/// Slurp path for `{ gsub("needle", "repl"); print }` on `$0`: no VM, no record copy when the needle is absent.
+fn process_file_gsub_literal_print(
+    data: &[u8],
+    fs: &str,
+    pat: u32,
+    repl: u32,
+    cp: &CompiledProgram,
+    rt: &mut Runtime,
+) -> Result<usize> {
+    let needle = cp.strings.get(pat);
+    let repl_s = cp.strings.get(repl);
+    debug_assert!(!needle.is_empty() && crate::builtins::gsub_literal_eligible(needle, repl_s));
+
+    let finder = memmem::Finder::new(needle.as_bytes());
+    let mut ors_local = [0u8; 64];
+    let ors_len = rt.ors_bytes.len().min(64);
+    ors_local[..ors_len].copy_from_slice(&rt.ors_bytes[..ors_len]);
+
+    let mut count = 0usize;
+    let mut pos = 0usize;
+    let len = data.len();
+
+    while pos < len {
+        let eol = memchr(b'\n', &data[pos..len])
+            .map(|i| pos + i)
+            .unwrap_or(len);
+        let end = if eol > pos && data[eol - 1] == b'\r' {
+            eol - 1
+        } else {
+            eol
+        };
+
+        count += 1;
+        rt.nr += 1.0;
+        rt.fnr += 1.0;
+
+        let line_bytes = &data[pos..end];
+
+        let no_match = needle.len() > line_bytes.len() || finder.find(line_bytes).is_none();
+
+        if no_match {
+            rt.print_buf.extend_from_slice(line_bytes);
+            rt.print_buf.extend_from_slice(&ors_local[..ors_len]);
+        } else {
+            set_record_from_line_bytes(rt, fs, line_bytes);
+            crate::builtins::gsub(rt, needle, repl_s, None)?;
+            rt.print_buf.extend_from_slice(rt.record.as_bytes());
+            rt.print_buf.extend_from_slice(&ors_local[..ors_len]);
         }
 
         pos = eol + 1;

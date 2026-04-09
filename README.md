@@ -110,7 +110,7 @@ The engine compiles AWK programs into a flat bytecode instruction stream, then r
 
 **Peephole optimizer:** a post-compilation pass fuses common multi-op sequences into single opcodes — `print $N` becomes `PrintFieldStdout` (writes field bytes directly to the output buffer, zero allocations), `s += $N` becomes `AddFieldToSlot` (parses the field as a number in-place without creating an intermediate `String`), `i = i + 1` becomes `IncrSlot` (one f64 add instead of 5 opcodes with multiple `Value::clone()`), and `s += i` between slot variables becomes `AddSlotToSlot` (two f64 reads + one write, no stack traffic). Jump targets are adjusted automatically after fusion.
 
-**Inline fast path:** single-rule programs with one fused opcode (e.g. `{ print $1 }`, `{ s += $1 }`) bypass VmCtx creation, pattern dispatch, and the bytecode execute loop entirely — the operation runs as a direct function call in the record loop.
+**Inline fast path:** single-rule programs with one fused opcode (e.g. `{ print $1 }`, `{ s += $1 }`) bypass VmCtx creation, pattern dispatch, and the bytecode execute loop entirely — the operation runs as a direct function call in the record loop. Slurped **regular files** also recognize `{ gsub("lit", "repl"); print }` on `$0` with a literal pattern and simple replacement: when the needle is absent, the loop writes each line from the file buffer with **ORS** and skips VM + field split.
 
 **Raw byte field extraction:** for `print $N` with default FS, the throughput path skips record copy, field splitting, and UTF-8 validation entirely — it scans raw bytes in the slurped file buffer to find the Nth whitespace-delimited field and writes it directly to the output buffer.
 
@@ -128,7 +128,7 @@ The engine compiles AWK programs into a flat bytecode instruction stream, then r
 
 **Field split (lazy path):** `ensure_fields_split` fills `field_ranges` using `FS` from `cached_fs` without cloning `FS` on every field access.
 
-**`sub` / `gsub`:** when the target is `$0`, the engine applies the new record in one step (no restore-then-overwrite of the old string). Literal patterns with zero matches skip `set_field_sep_split`; `sub`/`gsub` VM opcodes pass pattern/replacement `&str` via `Cow` so constant string operands do not allocate per call.
+**`sub` / `gsub`:** when the target is `$0`, the engine applies the new record in one step (no restore-then-overwrite of the old string). Literal patterns with zero matches skip `set_field_sep_split`; literal needles reuse a cached **`memmem::Finder`** for the scan (no `str::contains` per line). `sub`/`gsub` VM opcodes pass pattern/replacement `&str` via `Cow` so constant string operands do not allocate per call.
 
 **Numeric fields:** `parse_number` fast-paths plain decimal integer field text (common for `seq`-style data) before falling back to `str::parse::<f64>()`.
 
@@ -233,14 +233,14 @@ Cross-record state is not parallel-safe, so awkrs stays **single-threaded** (def
 
 ### 10. gsub (`{ gsub("alpha", "ALPHA"); print }`, 200 K lines)
 
-Input lines do not contain `alpha`, so this measures **no-match** `gsub` plus `print` (still scans each line for the literal).
+Input lines do not contain `alpha`, so this measures **no-match** `gsub` plus `print` (still scans each line for the literal). On **regular file** input, awkrs uses a **slurp inline** path: byte `memmem` scan + `print` without VM or per-line `set_field_sep_split` when the literal is absent.
 
 | Command | Mean | Min | Max | Relative |
 |:---|---:|---:|---:|---:|
-| mawk | 16.3 ms | 14.3 ms | 21.4 ms | **1.00×** |
-| awkrs | 16.8 ms | 15.7 ms | 19.0 ms | 1.03× |
-| gawk | 90.1 ms | 87.7 ms | 93.5 ms | 5.52× |
-| BSD awk | 61.2 ms | 56.1 ms | 71.3 ms | 3.74× |
+| awkrs | 3.7 ms | 3.1 ms | 5.1 ms | **1.00×** |
+| mawk | 16.3 ms | 14.7 ms | 21.1 ms | 4.41× |
+| gawk | 89.4 ms | 87.2 ms | 94.0 ms | 24.16× |
+| BSD awk | 59.6 ms | 53.4 ms | 71.2 ms | 16.11× |
 
 > Regenerate after `cargo build --release` (requires `hyperfine`; `gawk` optional):
 > ```bash
@@ -269,7 +269,7 @@ cargo test
 
 On pushes and pull requests to `main`, [GitHub Actions](.github/workflows/ci.yml) runs `cargo fmt --check`, `cargo clippy` (deny warnings), `cargo test` on Ubuntu and macOS, and `cargo doc` with `RUSTDOCFLAGS=-D warnings`.
 
-Library unit tests cover `format` (including locale decimal radix for float conversions), the lexer, the parser (including error paths), parallel-record static safety in `ast::parallel`, bytecode (`StringPool`, slot init), compiler smoke checks, and `runtime::Value` helpers. Integration tests live in `tests/integration.rs` and `tests/more_integration.rs` with shared helpers in `tests/common.rs`. End-to-end coverage includes the **`in`** operator, **`-N` / `--use-lc-numeric`** with `LC_NUMERIC`, **`-v` / `--assign`**, **`--version`** / **`-V`**, **`-C`**, coprocess and pipe I/O, and **stdin vs. file** parallel record behavior.
+Library unit tests cover `format` (including locale decimal radix for float conversions), the lexer, the parser (including error paths), **`Error` diagnostics**, **`cli::Args`** (including **`-W`** / **`mawk` compatibility**), **`builtins`** (`gsub`, `sub`, `match`, `patsplit`), **`interp`** (pattern matching, range steps, `BEGIN` execution), parallel-record static safety in `ast::parallel`, bytecode (`StringPool`, slot init), compiler smoke checks, and `runtime::Value` helpers. Integration tests live in `tests/integration.rs` and `tests/more_integration.rs` with shared helpers in `tests/common.rs` (including **file-argument** runs that exercise the slurped-input path). End-to-end coverage includes the **`in`** operator, **`-F` / `--field-separator`**, **`-f` program files**, **`-N` / `--use-lc-numeric`** with `LC_NUMERIC`, **`-v` / `--assign`**, **`--version`** / **`-V`**, **`-C`**, coprocess and pipe I/O, and **stdin vs. file** parallel record behavior.
 
 ---
 

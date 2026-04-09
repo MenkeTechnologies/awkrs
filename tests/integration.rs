@@ -1,8 +1,10 @@
 mod common;
 
-use common::{run_awkrs_stdin, run_awkrs_stdin_args, run_awkrs_stdin_args_env};
+use common::{run_awkrs_file, run_awkrs_stdin, run_awkrs_stdin_args, run_awkrs_stdin_args_env};
 use std::ffi::OsString;
+use std::fs;
 use std::io::Write;
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 #[test]
@@ -123,6 +125,28 @@ fn gsub_on_record() {
     let (code, stdout, _) = run_awkrs_stdin("{ gsub(\"o\", \"x\"); print }", "hello\n");
     assert_eq!(code, 0);
     assert_eq!(stdout, "hellx\n");
+}
+
+#[test]
+fn gsub_literal_print_slurped_file_no_match() {
+    let path: PathBuf =
+        std::env::temp_dir().join(format!("awkrs-gsub-slurp-{}.txt", std::process::id()));
+    fs::write(&path, "1\n2\n3\n").expect("write temp");
+    let (code, stdout, _) = run_awkrs_file(r#"{ gsub("alpha", "ALPHA"); print }"#, &path);
+    let _ = fs::remove_file(&path);
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "1\n2\n3\n");
+}
+
+#[test]
+fn gsub_literal_print_slurped_file_with_match() {
+    let path: PathBuf =
+        std::env::temp_dir().join(format!("awkrs-gsub-slurp-m-{}.txt", std::process::id()));
+    fs::write(&path, "x alphay\n").expect("write temp");
+    let (code, stdout, _) = run_awkrs_file(r#"{ gsub("alpha", "ALPHA"); print }"#, &path);
+    let _ = fs::remove_file(&path);
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "x ALPHAy\n");
 }
 
 #[test]
@@ -439,6 +463,52 @@ fn assign_flag_sets_variable_before_begin() {
     let (code, stdout, _) = run_awkrs_stdin_args(["-v", "x=99"], "BEGIN { print x }", "");
     assert_eq!(code, 0);
     assert_eq!(stdout, "99\n");
+}
+
+#[test]
+fn field_separator_flag_splits_columns() {
+    let (code, stdout, _) = run_awkrs_stdin_args(["-F", ","], "{ print $2 }", "a,b,c\n");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "b\n");
+}
+
+#[test]
+fn long_field_separator_flag() {
+    let (code, stdout, _) =
+        run_awkrs_stdin_args(["--field-separator", ":"], "{ print $3 }", "p:q:r\n");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "r\n");
+}
+
+#[test]
+fn progfile_option_reads_script_from_file() {
+    let dir = std::env::temp_dir();
+    let id = std::process::id();
+    let path = dir.join(format!("awkrs_progfile_{id}.awk"));
+    std::fs::write(&path, "{ print $2 }\n").expect("write awk program");
+    let bin = env!("CARGO_BIN_EXE_awkrs");
+    let mut child = Command::new(bin)
+        .args(["-f", path.to_str().expect("path utf-8")])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn awkrs -f");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(b"one two three\n")
+        .expect("write stdin");
+    let out = child.wait_with_output().expect("wait");
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "two\n");
 }
 
 #[test]

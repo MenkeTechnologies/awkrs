@@ -11,6 +11,7 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{Arc, Mutex};
 
 use crate::error::{Error, Result};
+use memchr::memmem;
 use regex::Regex;
 
 type SharedInputReader = Arc<Mutex<BufReader<Box<dyn Read + Send>>>>;
@@ -280,6 +281,8 @@ pub struct Runtime {
     pub slots: Vec<Value>,
     /// Compiled regex cache — avoids recompiling the same pattern every record.
     pub regex_cache: AwkMap<String, Regex>,
+    /// Cached substring searchers for literal `sub`/`gsub` patterns — faster than `str::contains` per line.
+    pub memmem_finder_cache: AwkMap<String, memmem::Finder<'static>>,
     /// Persistent stdout buffer — shared across record iterations, flushed at file boundaries.
     pub print_buf: Vec<u8>,
     /// Cached OFS bytes — avoids HashMap lookup + Vec alloc on every `print` call.
@@ -323,6 +326,7 @@ impl Runtime {
             numeric_decimal: '.',
             slots: Vec::new(),
             regex_cache: AwkMap::default(),
+            memmem_finder_cache: AwkMap::default(),
             print_buf: Vec::with_capacity(65536),
             ofs_bytes: b" ".to_vec(),
             ors_bytes: b"\n".to_vec(),
@@ -362,6 +366,7 @@ impl Runtime {
             numeric_decimal,
             slots: Vec::new(),
             regex_cache: AwkMap::default(),
+            memmem_finder_cache: AwkMap::default(),
             print_buf: Vec::new(),
             ofs_bytes: b" ".to_vec(),
             ors_bytes: b"\n".to_vec(),
@@ -381,6 +386,16 @@ impl Runtime {
     /// Get a cached regex (must call `ensure_regex` first).
     pub fn regex_ref(&self, pat: &str) -> &Regex {
         &self.regex_cache[pat]
+    }
+
+    /// Cached [`memmem::Finder`] for a literal pattern string (non-empty).
+    /// Used by literal `gsub`/`sub` to scan records with SIMD-friendly substring search.
+    pub fn literal_substring_finder(&mut self, pat: &str) -> &memmem::Finder<'static> {
+        if !self.memmem_finder_cache.contains_key(pat) {
+            let f = memmem::Finder::new(pat.as_bytes()).into_owned();
+            self.memmem_finder_cache.insert(pat.to_string(), f);
+        }
+        &self.memmem_finder_cache[pat]
     }
 
     /// Resolve a global name: per-record overlay, then shared `BEGIN` snapshot.
@@ -919,6 +934,7 @@ impl Clone for Runtime {
             numeric_decimal: self.numeric_decimal,
             slots: self.slots.clone(),
             regex_cache: self.regex_cache.clone(),
+            memmem_finder_cache: self.memmem_finder_cache.clone(),
             print_buf: Vec::new(),
             ofs_bytes: self.ofs_bytes.clone(),
             ors_bytes: self.ors_bytes.clone(),
