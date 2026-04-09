@@ -1050,20 +1050,14 @@ fn dollar_field_dynamic_expression() {
 
 #[test]
 fn strftime_zero_args_produces_non_empty_timestamp() {
-    let (c, o, _) = run_awkrs_stdin(
-        "BEGIN { x = strftime(); print (length(x) > 0) }",
-        "",
-    );
+    let (c, o, _) = run_awkrs_stdin("BEGIN { x = strftime(); print (length(x) > 0) }", "");
     assert_eq!(c, 0);
     assert_eq!(o.trim(), "1");
 }
 
 #[test]
 fn typeof_array_variable_is_array() {
-    let (c, o, _) = run_awkrs_stdin(
-        "BEGIN { a[1] = 1; print typeof(a) }",
-        "",
-    );
+    let (c, o, _) = run_awkrs_stdin("BEGIN { a[1] = 1; print typeof(a) }", "");
     assert_eq!(c, 0);
     assert_eq!(o, "array\n");
 }

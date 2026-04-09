@@ -374,7 +374,12 @@ fn aw_short_binary_runs_same_engine() {
         .arg(r#"BEGIN { print "ok" }"#)
         .output()
         .expect("spawn aw");
-    assert_eq!(out.status.code(), Some(0), "stderr={}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert_eq!(String::from_utf8_lossy(&out.stdout), "ok\n");
 }
 
@@ -402,7 +407,12 @@ fn double_dash_program_operand_after_end_of_options() {
         .write_all(b"")
         .expect("write stdin");
     let out = child.wait_with_output().expect("wait");
-    assert_eq!(out.status.code(), Some(0), "stderr={}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert_eq!(String::from_utf8_lossy(&out.stdout), "42\n");
 }
 

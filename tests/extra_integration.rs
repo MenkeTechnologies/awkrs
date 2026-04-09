@@ -493,10 +493,7 @@ fn match_builtin_sets_rstart_rlength() {
 
 #[test]
 fn match_no_match_sets_rstart_zero_rlength_negative() {
-    let (c, o, _) = run_awkrs_stdin(
-        r#"BEGIN { match("abc", "z"); print RSTART, RLENGTH }"#,
-        "",
-    );
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { match("abc", "z"); print RSTART, RLENGTH }"#, "");
     assert_eq!(c, 0);
     assert_eq!(o, "0 -1\n");
 }
@@ -510,20 +507,14 @@ fn system_reports_nonzero_exit_status() {
 
 #[test]
 fn sub_third_arg_replaces_in_scalar_variable() {
-    let (c, o, _) = run_awkrs_stdin(
-        r#"BEGIN { x = "hello"; sub("l", "L", x); print x }"#,
-        "",
-    );
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { x = "hello"; sub("l", "L", x); print x }"#, "");
     assert_eq!(c, 0);
     assert_eq!(o, "heLlo\n");
 }
 
 #[test]
 fn gsub_third_arg_replaces_all_in_scalar_variable() {
-    let (c, o, _) = run_awkrs_stdin(
-        r#"BEGIN { x = "ll"; gsub("l", "L", x); print x }"#,
-        "",
-    );
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { x = "ll"; gsub("l", "L", x); print x }"#, "");
     assert_eq!(c, 0);
     assert_eq!(o, "LL\n");
 }
@@ -534,7 +525,11 @@ fn mawk_w_version_matches_dash_capital_v() {
         .args(["-W", "version"])
         .output()
         .expect("spawn awkrs -W version");
-    assert!(w.status.success(), "stderr={}", String::from_utf8_lossy(&w.stderr));
+    assert!(
+        w.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&w.stderr)
+    );
     let dash_v = Command::new(env!("CARGO_BIN_EXE_awkrs"))
         .arg("-V")
         .output()
@@ -572,10 +567,7 @@ fn empty_ofs_joins_print_args_without_separator() {
 
 #[test]
 fn close_one_way_pipe_returns_zero() {
-    let (c, o, _) = run_awkrs_stdin(
-        r#"BEGIN { print "q" | "cat"; print close("cat") }"#,
-        "",
-    );
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { print "q" | "cat"; print close("cat") }"#, "");
     assert_eq!(c, 0);
     assert_eq!(o, "q\n0\n");
 }
@@ -596,7 +588,12 @@ fn endfile_runs_once_per_input_file() {
         .expect("spawn awkrs two files");
     let _ = fs::remove_file(&f1);
     let _ = fs::remove_file(&f2);
-    assert_eq!(out.status.code(), Some(0), "stderr={}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert_eq!(String::from_utf8_lossy(&out.stdout), "E\nE\n");
 }
 
@@ -619,10 +616,7 @@ fn log_zero_is_negative_infinity() {
     let (c, o, _) = run_awkrs_stdin("BEGIN { print log(0) }", "");
     assert_eq!(c, 0);
     let t = o.trim();
-    assert!(
-        t.eq_ignore_ascii_case("-inf"),
-        "expected -inf, got {o:?}"
-    );
+    assert!(t.eq_ignore_ascii_case("-inf"), "expected -inf, got {o:?}");
 }
 
 #[test]
@@ -630,10 +624,7 @@ fn sqrt_negative_one_is_nan() {
     let (c, o, _) = run_awkrs_stdin("BEGIN { print sqrt(-1) }", "");
     assert_eq!(c, 0);
     let t = o.trim();
-    assert!(
-        t.eq_ignore_ascii_case("nan"),
-        "expected NaN, got {o:?}"
-    );
+    assert!(t.eq_ignore_ascii_case("nan"), "expected NaN, got {o:?}");
 }
 
 // ── JIT integration tests (AWKRS_JIT=1) ──────────────────────────────────
@@ -1046,12 +1037,7 @@ fn jit_getline_from_file() {
         "BEGIN {{ getline x < \"{}\"; print x }}",
         path_str.replace('\\', "\\\\")
     );
-    let (c, o, e) = run_awkrs_stdin_args_env(
-        std::iter::empty::<&str>(),
-        &prog,
-        "",
-        jit_env(),
-    );
+    let (c, o, e) = run_awkrs_stdin_args_env(std::iter::empty::<&str>(), &prog, "", jit_env());
     let _ = std::fs::remove_file(&path);
     assert_eq!(c, 0, "stderr: {e}");
     assert_eq!(o, "fromfile\n");

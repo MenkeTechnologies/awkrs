@@ -214,15 +214,8 @@ mod tests {
 
     #[test]
     fn read_ahead_parses_alongside_parallel_threads() {
-        let a = Args::try_parse_from([
-            "awkrs",
-            "-j",
-            "2",
-            "--read-ahead",
-            "16",
-            "{ print $1 }",
-        ])
-        .unwrap();
+        let a = Args::try_parse_from(["awkrs", "-j", "2", "--read-ahead", "16", "{ print $1 }"])
+            .unwrap();
         assert_eq!(a.threads, Some(2));
         assert_eq!(a.read_ahead, 16);
     }

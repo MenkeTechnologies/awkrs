@@ -1176,7 +1176,10 @@ mod lib_internal_tests {
     #[test]
     fn split_bytes_into_owned_lines_lone_carriage_return_not_trimmed_as_crlf() {
         // `\r` alone is not the "CR before LF" case; line is preserved (lossy UTF-8).
-        assert_eq!(split_bytes_into_owned_lines(b"a\rb"), vec!["a\rb".to_string()]);
+        assert_eq!(
+            split_bytes_into_owned_lines(b"a\rb"),
+            vec!["a\rb".to_string()]
+        );
     }
 
     #[test]
