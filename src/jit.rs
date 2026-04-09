@@ -39,6 +39,11 @@ pub const JIT_VAR_OP_COMPOUND_SUB: u32 = 5;
 pub const JIT_VAR_OP_COMPOUND_MUL: u32 = 6;
 pub const JIT_VAR_OP_COMPOUND_DIV: u32 = 7;
 pub const JIT_VAR_OP_COMPOUND_MOD: u32 = 8;
+/// Expression `++name` / `--name` (prefix) on HashMap-path names — `arg` ignored.
+pub const JIT_VAR_OP_INCDEC_PRE_INC: u32 = 9;
+pub const JIT_VAR_OP_INCDEC_POST_INC: u32 = 10;
+pub const JIT_VAR_OP_INCDEC_PRE_DEC: u32 = 11;
+pub const JIT_VAR_OP_INCDEC_POST_DEC: u32 = 12;
 
 #[inline]
 fn jit_var_op_for_compound(bop: BinOp) -> u32 {
@@ -49,6 +54,16 @@ fn jit_var_op_for_compound(bop: BinOp) -> u32 {
         BinOp::Div => JIT_VAR_OP_COMPOUND_DIV,
         BinOp::Mod => JIT_VAR_OP_COMPOUND_MOD,
         _ => unreachable!("filtered by is_jit_eligible"),
+    }
+}
+
+#[inline]
+fn jit_var_op_for_incdec(kind: IncDecOp) -> u32 {
+    match kind {
+        IncDecOp::PreInc => JIT_VAR_OP_INCDEC_PRE_INC,
+        IncDecOp::PostInc => JIT_VAR_OP_INCDEC_POST_INC,
+        IncDecOp::PreDec => JIT_VAR_OP_INCDEC_PRE_DEC,
+        IncDecOp::PostDec => JIT_VAR_OP_INCDEC_POST_DEC,
     }
 }
 
@@ -75,7 +90,8 @@ fn ops_hash(ops: &[Op]) -> u64 {
 ///
 /// The VM fills `slots` from the interpreter runtime and supplies callbacks
 /// that match the bytecode interpreter (`field_fn`, `array_field_add`, and
-/// `var_dispatch` for `GetVar` / `SetVar` / fused `IncrVar` / `CompoundAssignVar`, etc.).
+/// `var_dispatch` for `GetVar` / `SetVar` / fused `IncrVar` / `CompoundAssignVar` /
+/// `IncDecVar`, etc.).
 pub struct JitRuntimeState<'a> {
     pub slots: &'a mut [f64],
     pub field_fn: extern "C" fn(i32) -> f64,
@@ -124,7 +140,8 @@ unsafe impl Send for JitChunk {}
 unsafe impl Sync for JitChunk {}
 
 /// Machine ABI: `array_field_add` is for fused `a[$field] += delta`; `var_dispatch`
-/// multiplexes `GetVar` / `SetVar` / `IncrVar` / `CompoundAssignVar` (see `JIT_VAR_OP_*`).
+/// multiplexes `GetVar` / `SetVar` / `IncrVar` / `DecrVar` / `CompoundAssignVar` /
+/// `IncDecVar` (see `JIT_VAR_OP_*`).
 type JitFn = extern "C" fn(
     *mut f64,
     extern "C" fn(i32) -> f64,
@@ -234,6 +251,9 @@ pub fn is_jit_eligible(ops: &[Op]) -> bool {
             Op::GetVar(_) => depth += 1,
             Op::SetVar(_) => {}
             Op::IncrVar(_) | Op::DecrVar(_) => {}
+
+            // HashMap-path `++x` / `x++` when not fused to IncrVar/DecrVar (push result)
+            Op::IncDecVar(_, _) => depth += 1,
 
             // Inc/dec slot (push result)
             Op::IncDecSlot(_, _) => depth += 1,
@@ -551,6 +571,16 @@ pub fn try_compile(ops: &[Op]) -> Option<JitChunk> {
                     let call = builder
                         .ins()
                         .call_indirect(var_sig_ir, var_fn_ptr, &[opv, ni, rhs]);
+                    stack.push(builder.inst_results(call)[0]);
+                }
+                Op::IncDecVar(idx, kind) => {
+                    let cop = jit_var_op_for_incdec(kind);
+                    let opv = builder.ins().iconst(types::I32, i64::from(cop));
+                    let ni = builder.ins().iconst(types::I32, idx as i64);
+                    let z = builder.ins().f64const(0.0);
+                    let call = builder
+                        .ins()
+                        .call_indirect(var_sig_ir, var_fn_ptr, &[opv, ni, z]);
                     stack.push(builder.inst_results(call)[0]);
                 }
 
@@ -1100,6 +1130,111 @@ pub fn try_jit_dispatch_numeric_chunk(ops: &[Op]) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
+
+    thread_local! {
+        static TEST_JIT_VARS: RefCell<Vec<f64>> = const { RefCell::new(Vec::new()) };
+    }
+
+    /// Minimal in-process `var_dispatch` for unit tests (mirrors `jit_var_dispatch` numerics).
+    extern "C" fn test_var_dispatch(op: u32, name_idx: u32, arg: f64) -> f64 {
+        use crate::ast::BinOp;
+        use crate::jit::{
+            JIT_VAR_OP_COMPOUND_ADD, JIT_VAR_OP_COMPOUND_DIV, JIT_VAR_OP_COMPOUND_MOD,
+            JIT_VAR_OP_COMPOUND_MUL, JIT_VAR_OP_COMPOUND_SUB, JIT_VAR_OP_DECR, JIT_VAR_OP_GET,
+            JIT_VAR_OP_INCDEC_POST_DEC, JIT_VAR_OP_INCDEC_POST_INC, JIT_VAR_OP_INCDEC_PRE_DEC,
+            JIT_VAR_OP_INCDEC_PRE_INC, JIT_VAR_OP_INCR, JIT_VAR_OP_SET,
+        };
+        TEST_JIT_VARS.with(|cell| {
+            let mut v = cell.borrow_mut();
+            let i = name_idx as usize;
+            if v.len() <= i {
+                v.resize(i + 1, 0.0);
+            }
+            match op {
+                JIT_VAR_OP_GET => v[i],
+                JIT_VAR_OP_SET => {
+                    v[i] = arg;
+                    arg
+                }
+                JIT_VAR_OP_INCR => {
+                    v[i] += 1.0;
+                    0.0
+                }
+                JIT_VAR_OP_DECR => {
+                    v[i] -= 1.0;
+                    0.0
+                }
+                JIT_VAR_OP_COMPOUND_ADD
+                | JIT_VAR_OP_COMPOUND_SUB
+                | JIT_VAR_OP_COMPOUND_MUL
+                | JIT_VAR_OP_COMPOUND_DIV
+                | JIT_VAR_OP_COMPOUND_MOD => {
+                    let bop = match op {
+                        JIT_VAR_OP_COMPOUND_ADD => BinOp::Add,
+                        JIT_VAR_OP_COMPOUND_SUB => BinOp::Sub,
+                        JIT_VAR_OP_COMPOUND_MUL => BinOp::Mul,
+                        JIT_VAR_OP_COMPOUND_DIV => BinOp::Div,
+                        JIT_VAR_OP_COMPOUND_MOD => BinOp::Mod,
+                        _ => unreachable!(),
+                    };
+                    let a = v[i];
+                    let b = arg;
+                    let n = match bop {
+                        BinOp::Add => a + b,
+                        BinOp::Sub => a - b,
+                        BinOp::Mul => a * b,
+                        BinOp::Div => a / b,
+                        BinOp::Mod => a % b,
+                        _ => 0.0,
+                    };
+                    v[i] = n;
+                    n
+                }
+                JIT_VAR_OP_INCDEC_PRE_INC
+                | JIT_VAR_OP_INCDEC_POST_INC
+                | JIT_VAR_OP_INCDEC_PRE_DEC
+                | JIT_VAR_OP_INCDEC_POST_DEC => {
+                    let kind = match op {
+                        JIT_VAR_OP_INCDEC_PRE_INC => IncDecOp::PreInc,
+                        JIT_VAR_OP_INCDEC_POST_INC => IncDecOp::PostInc,
+                        JIT_VAR_OP_INCDEC_PRE_DEC => IncDecOp::PreDec,
+                        JIT_VAR_OP_INCDEC_POST_DEC => IncDecOp::PostDec,
+                        _ => unreachable!(),
+                    };
+                    let old_n = v[i];
+                    let delta = match kind {
+                        IncDecOp::PreInc | IncDecOp::PostInc => 1.0,
+                        IncDecOp::PreDec | IncDecOp::PostDec => -1.0,
+                    };
+                    let new_n = old_n + delta;
+                    v[i] = new_n;
+                    match kind {
+                        IncDecOp::PreInc | IncDecOp::PreDec => new_n,
+                        IncDecOp::PostInc | IncDecOp::PostDec => old_n,
+                    }
+                }
+                _ => 0.0,
+            }
+        })
+    }
+
+    fn setup_test_vars(initial: &[f64]) {
+        TEST_JIT_VARS.with(|c| {
+            *c.borrow_mut() = initial.to_vec();
+        });
+    }
+
+    fn snapshot_test_vars() -> Vec<f64> {
+        TEST_JIT_VARS.with(|c| c.borrow().clone())
+    }
+
+    fn exec_with_test_var(ops: &[Op]) -> f64 {
+        let chunk = try_compile(ops).expect("compile failed");
+        let mut slots = [0.0f64; 0];
+        let mut state = JitRuntimeState::new(&mut slots, dummy_field, dummy_array, test_var_dispatch);
+        chunk.execute(&mut state)
+    }
 
     extern "C" fn dummy_field(_: i32) -> f64 {
         0.0
@@ -1571,6 +1706,46 @@ mod tests {
             Op::IncrVar(1),
             Op::PushNum(0.0),
         ]));
+    }
+
+    #[test]
+    fn jit_eligible_incdec_var() {
+        assert!(is_jit_eligible(&[
+            Op::IncDecVar(0, IncDecOp::PostInc),
+            Op::PushNum(0.0),
+        ]));
+    }
+
+    #[test]
+    fn jit_incdec_var_post_inc() {
+        setup_test_vars(&[10.0]);
+        let r = exec_with_test_var(&[Op::IncDecVar(0, IncDecOp::PostInc)]);
+        assert!((r - 10.0).abs() < 1e-15);
+        assert!((snapshot_test_vars()[0] - 11.0).abs() < 1e-15);
+    }
+
+    #[test]
+    fn jit_incdec_var_pre_inc() {
+        setup_test_vars(&[10.0]);
+        let r = exec_with_test_var(&[Op::IncDecVar(0, IncDecOp::PreInc)]);
+        assert!((r - 11.0).abs() < 1e-15);
+        assert!((snapshot_test_vars()[0] - 11.0).abs() < 1e-15);
+    }
+
+    #[test]
+    fn jit_incdec_var_post_dec() {
+        setup_test_vars(&[10.0]);
+        let r = exec_with_test_var(&[Op::IncDecVar(0, IncDecOp::PostDec)]);
+        assert!((r - 10.0).abs() < 1e-15);
+        assert!((snapshot_test_vars()[0] - 9.0).abs() < 1e-15);
+    }
+
+    #[test]
+    fn jit_incdec_var_pre_dec() {
+        setup_test_vars(&[10.0]);
+        let r = exec_with_test_var(&[Op::IncDecVar(0, IncDecOp::PreDec)]);
+        assert!((r - 9.0).abs() < 1e-15);
+        assert!((snapshot_test_vars()[0] - 9.0).abs() < 1e-15);
     }
 
     #[test]

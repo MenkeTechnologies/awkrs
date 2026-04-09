@@ -405,7 +405,8 @@ extern "C" fn jit_var_dispatch(op: u32, name_idx: u32, arg: f64) -> f64 {
         use crate::jit::{
             JIT_VAR_OP_COMPOUND_ADD, JIT_VAR_OP_COMPOUND_DIV, JIT_VAR_OP_COMPOUND_MOD,
             JIT_VAR_OP_COMPOUND_MUL, JIT_VAR_OP_COMPOUND_SUB, JIT_VAR_OP_DECR, JIT_VAR_OP_GET,
-            JIT_VAR_OP_INCR, JIT_VAR_OP_SET,
+            JIT_VAR_OP_INCDEC_POST_DEC, JIT_VAR_OP_INCDEC_POST_INC, JIT_VAR_OP_INCDEC_PRE_DEC,
+            JIT_VAR_OP_INCDEC_PRE_INC, JIT_VAR_OP_INCR, JIT_VAR_OP_SET,
         };
         match op {
             JIT_VAR_OP_GET => ctx.get_var(name_owned.as_str()).as_number(),
@@ -453,6 +454,25 @@ extern "C" fn jit_var_dispatch(op: u32, name_idx: u32, arg: f64) -> f64 {
                 ctx.set_var(name_owned.as_str(), Value::Num(n));
                 sync_jit_slot_if_scalar(ctx, name_owned.as_str());
                 n
+            }
+            JIT_VAR_OP_INCDEC_PRE_INC
+            | JIT_VAR_OP_INCDEC_POST_INC
+            | JIT_VAR_OP_INCDEC_PRE_DEC
+            | JIT_VAR_OP_INCDEC_POST_DEC => {
+                let kind = match op {
+                    JIT_VAR_OP_INCDEC_PRE_INC => IncDecOp::PreInc,
+                    JIT_VAR_OP_INCDEC_POST_INC => IncDecOp::PostInc,
+                    JIT_VAR_OP_INCDEC_PRE_DEC => IncDecOp::PreDec,
+                    JIT_VAR_OP_INCDEC_POST_DEC => IncDecOp::PostDec,
+                    _ => unreachable!(),
+                };
+                let old = ctx.get_var(name_owned.as_str());
+                let old_n = old.as_number();
+                let delta = incdec_delta(kind);
+                let new_n = old_n + delta;
+                ctx.set_var(name_owned.as_str(), Value::Num(new_n));
+                sync_jit_slot_if_scalar(ctx, name_owned.as_str());
+                incdec_push(kind, old_n, new_n)
             }
             _ => 0.0,
         }
