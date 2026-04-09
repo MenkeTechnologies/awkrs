@@ -639,9 +639,6 @@ mod tests {
 
     #[test]
     fn lex_increment_decrement_not_supported_as_tokens() {
-        assert_eq!(
-            tokens_no_regex("++"),
-            vec![Token::Plus, Token::Plus]
-        );
+        assert_eq!(tokens_no_regex("++"), vec![Token::Plus, Token::Plus]);
     }
 }

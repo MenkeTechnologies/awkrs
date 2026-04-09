@@ -50,11 +50,7 @@ fn multi_char_field_separator_flag() {
 
 #[test]
 fn two_v_flags_combine() {
-    let (c, o, _) = run_awkrs_stdin_args(
-        ["-v", "a=1", "-v", "b=2"],
-        "BEGIN { print a + b }",
-        "",
-    );
+    let (c, o, _) = run_awkrs_stdin_args(["-v", "a=1", "-v", "b=2"], "BEGIN { print a + b }", "");
     assert_eq!(c, 0);
     assert_eq!(o, "3\n");
 }
@@ -76,16 +72,18 @@ fn include_prepends_script() {
         .output()
         .expect("spawn");
     let _ = fs::remove_file(&inc);
-    assert_eq!(out.status.code(), Some(0), "stderr={}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert_eq!(String::from_utf8_lossy(&out.stdout), "hi\n");
 }
 
 #[test]
 fn for_loop_sum_indices() {
-    let (c, o, _) = run_awkrs_stdin(
-        "BEGIN { s=0; for (i=1;i<=5;i=i+1) s+=i; print s }",
-        "",
-    );
+    let (c, o, _) = run_awkrs_stdin("BEGIN { s=0; for (i=1;i<=5;i=i+1) s+=i; print s }", "");
     assert_eq!(c, 0);
     assert_eq!(o, "15\n");
 }
@@ -144,10 +142,7 @@ fn printf_width_d() {
 
 #[test]
 fn begin_end_order_with_multiple_rules() {
-    let (c, o, _) = run_awkrs_stdin(
-        "BEGIN { print 1 } { } END { print 2 }",
-        "x\n",
-    );
+    let (c, o, _) = run_awkrs_stdin("BEGIN { print 1 } { } END { print 2 }", "x\n");
     assert_eq!(c, 0);
     assert_eq!(o, "1\n2\n");
 }
@@ -201,10 +196,7 @@ fn unary_plus_on_string() {
 
 #[test]
 fn array_delete_then_missing_is_empty() {
-    let (c, o, _) = run_awkrs_stdin(
-        "BEGIN { a[\"x\"]=1; delete a[\"x\"]; print a[\"x\"] }",
-        "",
-    );
+    let (c, o, _) = run_awkrs_stdin("BEGIN { a[\"x\"]=1; delete a[\"x\"]; print a[\"x\"] }", "");
     assert_eq!(c, 0);
     assert_eq!(o, "\n");
 }
@@ -246,7 +238,12 @@ fn beginfile_runs_before_records() {
         .output()
         .expect("spawn");
     let _ = fs::remove_file(&path);
-    assert_eq!(out.status.code(), Some(0), "stderr={}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert_eq!(String::from_utf8_lossy(&out.stdout), "bf\nz\nef\n");
 }
 

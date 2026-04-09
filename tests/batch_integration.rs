@@ -22,20 +22,14 @@ fn begin_sets_ors_between_print_lines() {
 
 #[test]
 fn subsep_default_joins_multidim_subscript() {
-    let (c, o, _) = run_awkrs_stdin(
-        "BEGIN { a[1,2]=9; print a[1,2] }",
-        "",
-    );
+    let (c, o, _) = run_awkrs_stdin("BEGIN { a[1,2]=9; print a[1,2] }", "");
     assert_eq!(c, 0);
     assert_eq!(o, "9\n");
 }
 
 #[test]
 fn subsep_custom_changes_key() {
-    let (c, o, _) = run_awkrs_stdin(
-        "BEGIN { SUBSEP=\"@\"; a[1,2]=3; print a[1,2] }",
-        "",
-    );
+    let (c, o, _) = run_awkrs_stdin("BEGIN { SUBSEP=\"@\"; a[1,2]=3; print a[1,2] }", "");
     assert_eq!(c, 0);
     assert_eq!(o, "3\n");
 }
@@ -70,10 +64,7 @@ fn preincrement_via_assignment_sum() {
 
 #[test]
 fn while_loop_counter() {
-    let (c, o, _) = run_awkrs_stdin(
-        "BEGIN { i=0; while (i < 4) i=i+1; print i }",
-        "",
-    );
+    let (c, o, _) = run_awkrs_stdin("BEGIN { i=0; while (i < 4) i=i+1; print i }", "");
     assert_eq!(c, 0);
     assert_eq!(o, "4\n");
 }
@@ -204,7 +195,12 @@ fn print_redirect_overwrite_creates_file() {
         ))
         .output()
         .expect("spawn");
-    assert_eq!(out.status.code(), Some(0), "stderr={}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let s = fs::read_to_string(&f).expect("read");
     let _ = fs::remove_file(&f);
     assert_eq!(s, "hi\n");

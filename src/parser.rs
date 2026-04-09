@@ -1195,14 +1195,22 @@ mod tests {
     #[test]
     fn parses_exit_with_code() {
         let p = parse_program("BEGIN { exit 5 }").unwrap();
-        let rule = p.rules.iter().find(|r| matches!(r.pattern, Pattern::Begin)).unwrap();
+        let rule = p
+            .rules
+            .iter()
+            .find(|r| matches!(r.pattern, Pattern::Begin))
+            .unwrap();
         assert!(matches!(rule.stmts.first(), Some(Stmt::Exit(Some(_)))));
     }
 
     #[test]
     fn parses_exit_default() {
         let p = parse_program("BEGIN { exit }").unwrap();
-        let rule = p.rules.iter().find(|r| matches!(r.pattern, Pattern::Begin)).unwrap();
+        let rule = p
+            .rules
+            .iter()
+            .find(|r| matches!(r.pattern, Pattern::Begin))
+            .unwrap();
         assert!(matches!(rule.stmts.first(), Some(Stmt::Exit(None))));
     }
 
