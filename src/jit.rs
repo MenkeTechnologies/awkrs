@@ -53,6 +53,9 @@
 //!
 //! ## Performance (implemented vs future)
 //!
+//! - **Cranelift `opt_level = speed`** — [`new_jit_module`] sets ISA flags (`settings::builder()`
+//!   defaults to **`none`**). The **`speed`** tier improves register allocation, instruction
+//!   selection, and dead-code elimination on native code.
 //! - **Tiered compilation** — [`crate::bytecode::Chunk::jit_invocation_count`] increments on each
 //!   VM entry; compilation is skipped until [`jit_min_invocations_before_compile`] (env
 //!   **`AWKRS_JIT_MIN_INVOCATIONS`**, default **3**). The VM uses [`try_compile_with_options`] with
@@ -1236,6 +1239,8 @@ fn new_jit_module(opts: &JitCompileOptions) -> Option<JITModule> {
     let mut flag_builder = settings::builder();
     flag_builder.set("use_colocated_libcalls", "false").ok()?;
     flag_builder.set("is_pic", "false").ok()?;
+    // Cranelift defaults `opt_level` to `none`; `speed` enables stronger regalloc, instruction
+    // selection, and dead-code elimination on emitted machine code (typical single-digit % win).
     flag_builder.set("opt_level", "speed").ok()?;
     let isa_builder = cranelift_native::builder().ok()?;
     let isa = isa_builder
