@@ -86,6 +86,10 @@ pub enum Op {
 
     /// `++`/`--` on a named variable (HashMap path).
     IncDecVar(u32, IncDecOp),
+    /// `i++`/`++i` statement (result discarded) on HashMap-path variable.
+    IncrVar(u32),
+    /// `i--`/`--i` statement (result discarded) on HashMap-path variable.
+    DecrVar(u32),
     /// `++`/`--` on a slotted scalar.
     IncDecSlot(u16, IncDecOp),
     /// Pop field index; `++`/`--` `$n`; push resulting numeric value.
@@ -223,6 +227,9 @@ pub enum Op {
         field: u16,
         slot: u16,
     },
+    /// `s .. "lit"` fused: append interned string to TOS in-place, no clone.
+    /// Eliminates: PushStr(idx) + Concat (2 ops → 1).
+    ConcatPoolStr(u32),
     /// `print $N` to stdout fused: write field N bytes directly to print_buf.
     /// Eliminates: PushNum + GetField + Print{1,Stdout} (3 ops → 1).
     PrintFieldStdout(u16),

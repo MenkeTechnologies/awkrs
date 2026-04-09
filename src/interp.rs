@@ -293,26 +293,24 @@ fn exec_stmt(s: &Stmt, ctx: &mut ExecCtx<'_>) -> Result<Flow> {
                 }
             }
         }
-        Stmt::DoWhile { body, cond } => {
-            'outer: loop {
-                for t in body {
-                    match exec_stmt(t, ctx)? {
-                        Flow::Normal => {}
-                        Flow::Break => break 'outer,
-                        Flow::Continue => {
-                            if !truthy(&eval_expr(cond, ctx)?) {
-                                break 'outer;
-                            }
-                            continue 'outer;
+        Stmt::DoWhile { body, cond } => 'outer: loop {
+            for t in body {
+                match exec_stmt(t, ctx)? {
+                    Flow::Normal => {}
+                    Flow::Break => break 'outer,
+                    Flow::Continue => {
+                        if !truthy(&eval_expr(cond, ctx)?) {
+                            break 'outer;
                         }
-                        f @ (Flow::Next | Flow::Return(_) | Flow::ExitPending) => return Ok(f),
+                        continue 'outer;
                     }
-                }
-                if !truthy(&eval_expr(cond, ctx)?) {
-                    break;
+                    f @ (Flow::Next | Flow::Return(_) | Flow::ExitPending) => return Ok(f),
                 }
             }
-        }
+            if !truthy(&eval_expr(cond, ctx)?) {
+                break;
+            }
+        },
         Stmt::ForC {
             init,
             cond,

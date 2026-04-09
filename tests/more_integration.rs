@@ -831,10 +831,7 @@ fn incdec_scalar_pre_post() {
 
 #[test]
 fn do_while_runs_at_least_once() {
-    let (c, o, _) = run_awkrs_stdin(
-        r#"BEGIN { k = 0; do { k++ } while (k < 3); print k }"#,
-        "",
-    );
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { k = 0; do { k++ } while (k < 3); print k }"#, "");
     assert_eq!(c, 0);
     assert_eq!(o, "3\n");
 }

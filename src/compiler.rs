@@ -1034,6 +1034,23 @@ fn peephole_optimize(ops: &mut Vec<Op>) {
                 i += 2;
                 continue;
             }
+            // Pattern: IncDecVar(idx, Pre/PostInc) + Pop → IncrVar(idx)
+            // Pattern: IncDecVar(idx, Pre/PostDec) + Pop → DecrVar(idx)
+            if let (Op::IncDecVar(idx, kind), Op::Pop) = (ops[i], ops[i + 1]) {
+                let fused = match kind {
+                    IncDecOp::PreInc | IncDecOp::PostInc => Op::IncrVar(idx),
+                    IncDecOp::PreDec | IncDecOp::PostDec => Op::DecrVar(idx),
+                };
+                fusions.push((i, fused, 1));
+                i += 2;
+                continue;
+            }
+            // Pattern: PushStr(idx) + Concat → ConcatPoolStr(idx)
+            if let (Op::PushStr(idx), Op::Concat) = (ops[i], ops[i + 1]) {
+                fusions.push((i, Op::ConcatPoolStr(idx), 1));
+                i += 2;
+                continue;
+            }
         }
 
         // Pattern: GetSlot(s) + PushNum(1.0) + Add + SetSlot(s) + Pop

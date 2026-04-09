@@ -337,8 +337,8 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             Op::SetArrayElem(arr) => {
                 let val = ctx.pop();
                 let key = ctx.pop().as_str();
-                let name = ctx.str_ref(arr).to_string();
-                ctx.rt.array_set(&name, key, val.clone());
+                let name = ctx.cp.strings.get(arr);
+                ctx.rt.array_set(name, key, val.clone());
                 ctx.push(val);
             }
 
@@ -370,11 +370,10 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             Op::CompoundAssignIndex(arr, bop) => {
                 let rhs = ctx.pop();
                 let key = ctx.pop().as_str();
-                let name = ctx.str_ref(arr);
+                let name = ctx.cp.strings.get(arr);
                 let old = ctx.rt.array_get(name, &key);
                 let new_val = apply_binop(bop, &old, &rhs)?;
-                let name = name.to_string();
-                ctx.rt.array_set(&name, key, new_val.clone());
+                ctx.rt.array_set(name, key, new_val.clone());
                 ctx.push(new_val);
             }
 
@@ -386,6 +385,16 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 let new_n = old_n + delta;
                 ctx.set_var(&name, Value::Num(new_n));
                 ctx.push(Value::Num(incdec_push(kind, old_n, new_n)));
+            }
+            Op::IncrVar(idx) => {
+                let name = ctx.str_ref(idx).to_string();
+                let n = ctx.get_var(&name).as_number();
+                ctx.set_var(&name, Value::Num(n + 1.0));
+            }
+            Op::DecrVar(idx) => {
+                let name = ctx.str_ref(idx).to_string();
+                let n = ctx.get_var(&name).as_number();
+                ctx.set_var(&name, Value::Num(n - 1.0));
             }
             Op::IncDecSlot(slot, kind) => {
                 let old = &ctx.rt.slots[slot as usize];
@@ -401,21 +410,16 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 let old_n = old.as_number();
                 let delta = incdec_delta(kind);
                 let new_n = old_n + delta;
-                let newv = Value::Num(new_n);
-                let s = newv.as_str();
-                ctx.rt.set_field(idx, &s);
+                ctx.rt.set_field_num(idx, new_n);
                 ctx.push(Value::Num(incdec_push(kind, old_n, new_n)));
             }
             Op::IncDecIndex(arr, kind) => {
                 let key = ctx.pop().as_str();
-                let name = ctx.str_ref(arr);
-                let old = ctx.rt.array_get(name, &key);
-                let old_n = old.as_number();
+                let name = ctx.cp.strings.get(arr);
+                let old_n = ctx.rt.array_get(name, &key).as_number();
                 let delta = incdec_delta(kind);
                 let new_n = old_n + delta;
-                let new_val = Value::Num(new_n);
-                let name_owned = name.to_string();
-                ctx.rt.array_set(&name_owned, key, new_val);
+                ctx.rt.array_set(name, key, Value::Num(new_n));
                 ctx.push(Value::Num(incdec_push(kind, old_n, new_n)));
             }
 
@@ -702,6 +706,13 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             }
 
             // ── Fused opcodes ──────────────────────────────────────────
+            Op::ConcatPoolStr(idx) => {
+                let pool_str = ctx.cp.strings.get(idx);
+                // Reuse the TOS String allocation: pop, append, push back.
+                let mut s = ctx.pop().into_string();
+                s.push_str(pool_str);
+                ctx.push(Value::Str(s));
+            }
             Op::GetNR => ctx.push(Value::Num(ctx.rt.nr)),
             Op::GetFNR => ctx.push(Value::Num(ctx.rt.fnr)),
             Op::GetNF => {
@@ -753,10 +764,10 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 ctx.rt.slots[slot as usize] = Value::Num(old + p);
             }
             Op::ArrayFieldAddConst { arr, field, delta } => {
-                let name = ctx.str_ref(arr).to_string();
+                let name = ctx.cp.strings.get(arr);
                 let key = ctx.rt.field(field as i32).as_str();
-                let old = ctx.rt.array_get(&name, &key).as_number();
-                ctx.rt.array_set(&name, key, Value::Num(old + delta));
+                let old = ctx.rt.array_get(name, &key).as_number();
+                ctx.rt.array_set(name, key, Value::Num(old + delta));
             }
             Op::PrintFieldSepField { f1, sep, f2 } => {
                 let sep_s = ctx.str_ref(sep).to_string();

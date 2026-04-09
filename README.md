@@ -108,7 +108,7 @@ If the program is not parallel-safe, the engine **falls back to sequential** pro
 
 The engine compiles AWK programs into a flat bytecode instruction stream, then runs them on a stack-based virtual machine. This eliminates the recursive AST-walking overhead of a tree interpreter — no per-node pattern matching, no heap pointer chasing through `Box<Expr>`, and better CPU cache locality from contiguous instruction arrays. Short-circuit `&&`/`||` and all control flow (loops, break/continue, if/else) are resolved to jump-patched offsets at compile time. The string pool interns all variable names and string constants so the VM refers to them by cheap `u32` index.
 
-**Peephole optimizer:** a post-compilation pass fuses common multi-op sequences into single opcodes — `print $N` becomes `PrintFieldStdout` (writes field bytes directly to the output buffer, zero allocations), `s += $N` becomes `AddFieldToSlot` (parses the field as a number in-place without creating an intermediate `String`), `i = i + 1` becomes `IncrSlot` (one f64 add instead of 5 opcodes with multiple `Value::clone()`), and `s += i` between slot variables becomes `AddSlotToSlot` (two f64 reads + one write, no stack traffic). Jump targets are adjusted automatically after fusion.
+**Peephole optimizer:** a post-compilation pass fuses common multi-op sequences into single opcodes — `print $N` becomes `PrintFieldStdout` (writes field bytes directly to the output buffer, zero allocations), `s += $N` becomes `AddFieldToSlot` (parses the field as a number in-place without creating an intermediate `String`), `i = i + 1` / `i++` / `++i` becomes `IncrSlot` and `i--` / `--i` becomes `DecrSlot` (one f64 add instead of push+pop stack traffic), `s += i` between slot variables becomes `AddSlotToSlot` (two f64 reads + one write, no stack traffic), `$1 "," $2` string literal concatenation becomes `ConcatPoolStr` (appends the interned string directly to the TOS buffer — no clone from the string pool), and HashMap-path `NR++` / `NR--` statements fuse to `IncrVar` / `DecrVar` (skip pushing a result that's immediately discarded). Jump targets are adjusted automatically after fusion.
 
 **Inline fast path:** single-rule programs with one fused opcode (e.g. `{ print $1 }`, `{ s += $1 }`) bypass VmCtx creation, pattern dispatch, and the bytecode execute loop entirely — the operation runs as a direct function call in the record loop. Slurped **regular files** also recognize `{ gsub("lit", "repl"); print }` on `$0` with a literal pattern and simple replacement: when the needle is absent, the loop writes each line from the file buffer with **ORS** and skips VM + field split.
 
@@ -150,10 +150,10 @@ Measured with [hyperfine](https://github.com/sharkdp/hyperfine) (`--shell none` 
 
 | Command | Mean | Min | Max | Relative |
 |:---|---:|---:|---:|---:|
-| BSD awk | 40.6 ms | 35.9 ms | 51.8 ms | 10.41× |
-| gawk | 27.9 ms | 23.4 ms | 43.4 ms | 7.15× |
-| mawk | 15.2 ms | 13.1 ms | 26.4 ms | 3.90× |
-| awkrs | 3.9 ms | 3.1 ms | 9.8 ms | **1.00×** |
+| BSD awk | 40.0 ms | 36.1 ms | 50.7 ms | 8.82× |
+| gawk | 24.6 ms | 22.1 ms | 30.8 ms | 5.41× |
+| mawk | 15.1 ms | 12.8 ms | 20.0 ms | 3.32× |
+| awkrs | 4.5 ms | 3.1 ms | 17.2 ms | **1.00×** |
 
 ### 2. CPU-bound BEGIN (no input)
 
@@ -161,10 +161,10 @@ Measured with [hyperfine](https://github.com/sharkdp/hyperfine) (`--shell none` 
 
 | Command | Mean | Min | Max | Relative |
 |:---|---:|---:|---:|---:|
-| gawk | 18.6 ms | 16.8 ms | 20.9 ms | 4.04× |
-| BSD awk | 14.2 ms | 12.3 ms | 16.4 ms | 3.09× |
-| mawk | 8.5 ms | 7.4 ms | 9.7 ms | 1.85× |
-| awkrs | 4.6 ms | 4.2 ms | 5.5 ms | **1.00×** |
+| gawk | 18.7 ms | 16.6 ms | 21.8 ms | 3.64× |
+| BSD awk | 14.4 ms | 12.4 ms | 18.7 ms | 2.79× |
+| mawk | 8.7 ms | 7.0 ms | 10.5 ms | 1.69× |
+| awkrs | 5.1 ms | 4.1 ms | 12.1 ms | **1.00×** |
 
 ### 3. Sum first column (`{ s += $1 } END { print s }`, 200 K lines)
 
@@ -172,64 +172,64 @@ Cross-record state is not parallel-safe, so awkrs stays **single-threaded** (def
 
 | Command | Mean | Min | Max | Relative |
 |:---|---:|---:|---:|---:|
-| BSD awk | 31.2 ms | 28.2 ms | 43.4 ms | 5.29× |
-| gawk | 16.1 ms | 14.8 ms | 18.8 ms | 2.73× |
-| mawk | 8.6 ms | 7.8 ms | 10.3 ms | 1.46× |
-| awkrs | 5.9 ms | 5.1 ms | 9.7 ms | **1.00×** |
+| BSD awk | 32.2 ms | 28.4 ms | 41.7 ms | 5.52× |
+| gawk | 16.0 ms | 14.1 ms | 17.7 ms | 2.74× |
+| mawk | 8.5 ms | 7.5 ms | 11.4 ms | 1.45× |
+| awkrs | 5.8 ms | 4.9 ms | 9.5 ms | **1.00×** |
 
 ### 4. Multi-field print (`{ print $1, $3, $5 }`, 200 K lines, 5 fields/line)
 
 | Command | Mean | Min | Max | Relative |
 |:---|---:|---:|---:|---:|
-| BSD awk | 126.1 ms | 119.0 ms | 162.4 ms | 9.85× |
-| gawk | 57.9 ms | 52.9 ms | 64.6 ms | 4.52× |
-| mawk | 36.8 ms | 31.3 ms | 48.4 ms | 2.88× |
-| awkrs | 12.8 ms | 11.5 ms | 20.4 ms | **1.00×** |
+| BSD awk | 125.1 ms | 115.5 ms | 169.0 ms | 10.06× |
+| gawk | 57.6 ms | 53.4 ms | 67.3 ms | 4.64× |
+| mawk | 32.8 ms | 30.6 ms | 41.6 ms | 2.64× |
+| awkrs | 12.4 ms | 11.2 ms | 13.9 ms | **1.00×** |
 
 ### 5. Regex filter (`/alpha/ { c += 1 } END { print c }`, 200 K lines)
 
 | Command | Mean | Min | Max | Relative |
 |:---|---:|---:|---:|---:|
-| gawk | 74.3 ms | 72.7 ms | 78.5 ms | 24.77× |
-| BSD awk | 39.2 ms | 34.7 ms | 57.9 ms | 13.07× |
-| mawk | 5.1 ms | 4.6 ms | 6.9 ms | 1.70× |
-| awkrs | 3.0 ms | 2.4 ms | 12.2 ms | **1.00×** |
+| BSD awk | 125.9 ms | 116.5 ms | 157.9 ms | 29.51× |
+| gawk | 80.7 ms | 78.9 ms | 87.6 ms | 18.92× |
+| mawk | 5.3 ms | 4.4 ms | 7.0 ms | 1.25× |
+| awkrs | 4.3 ms | 3.5 ms | 6.1 ms | **1.00×** |
 
 ### 6. Associative array (`{ a[$5] += 1 } END { for (k in a) print k, a[k] }`, 200 K lines)
 
 | Command | Mean | Min | Max | Relative |
 |:---|---:|---:|---:|---:|
-| BSD awk | 165.0 ms | 153.6 ms | 176.1 ms | 3.16× |
-| gawk | 121.2 ms | 107.8 ms | 150.2 ms | 2.32× |
-| mawk | 86.9 ms | 66.1 ms | 108.5 ms | 1.66× |
-| awkrs | 52.2 ms | 47.1 ms | 68.8 ms | **1.00×** |
+| BSD awk | 104.6 ms | 100.7 ms | 115.5 ms | 7.11× |
+| gawk | 23.0 ms | 21.4 ms | 24.6 ms | 1.56× |
+| mawk | 14.7 ms | 13.5 ms | 16.2 ms | **1.00×** |
+| awkrs | 18.3 ms | 17.1 ms | 21.2 ms | 1.24× |
 
 ### 7. Conditional field (`NR % 2 == 0 { print $2 }`, 200 K lines)
 
 | Command | Mean | Min | Max | Relative |
 |:---|---:|---:|---:|---:|
-| BSD awk | 104.6 ms | 100.8 ms | 117.5 ms | 10.57× |
-| gawk | 28.5 ms | 27.1 ms | 31.5 ms | 2.88× |
-| mawk | 17.4 ms | 16.4 ms | 20.2 ms | 1.76× |
-| awkrs | 9.9 ms | 8.9 ms | 15.9 ms | **1.00×** |
+| BSD awk | 111.6 ms | 98.0 ms | 162.7 ms | 10.23× |
+| gawk | 29.6 ms | 27.7 ms | 35.2 ms | 2.71× |
+| mawk | 19.0 ms | 16.8 ms | 22.9 ms | 1.74× |
+| awkrs | 10.9 ms | 9.6 ms | 13.2 ms | **1.00×** |
 
 ### 8. Field computation (`{ sum += $1 * $2 } END { print sum }`, 200 K lines)
 
 | Command | Mean | Min | Max | Relative |
 |:---|---:|---:|---:|---:|
-| BSD awk | 103.8 ms | 97.9 ms | 139.6 ms | 9.03× |
-| gawk | 25.8 ms | 24.6 ms | 27.6 ms | 2.24× |
-| mawk | 20.3 ms | 16.9 ms | 49.8 ms | 1.77× |
-| awkrs | 11.5 ms | 10.6 ms | 16.2 ms | **1.00×** |
+| BSD awk | 104.2 ms | 93.8 ms | 126.6 ms | 9.49× |
+| gawk | 25.0 ms | 23.6 ms | 27.1 ms | 2.27× |
+| mawk | 16.3 ms | 15.2 ms | 18.6 ms | 1.48× |
+| awkrs | 11.0 ms | 10.0 ms | 13.0 ms | **1.00×** |
 
 ### 9. String concat print (`{ print $3 "-" $5 }`, 200 K lines)
 
 | Command | Mean | Min | Max | Relative |
 |:---|---:|---:|---:|---:|
-| BSD awk | 130.4 ms | 118.8 ms | 147.7 ms | 11.75× |
-| gawk | 40.0 ms | 36.9 ms | 44.3 ms | 3.60× |
-| mawk | 24.9 ms | 23.4 ms | 29.3 ms | 2.24× |
-| awkrs | 11.1 ms | 10.2 ms | 12.6 ms | **1.00×** |
+| BSD awk | 120.4 ms | 114.2 ms | 141.8 ms | 10.58× |
+| gawk | 40.0 ms | 38.0 ms | 44.1 ms | 3.52× |
+| mawk | 24.8 ms | 23.0 ms | 28.0 ms | 2.18× |
+| awkrs | 11.4 ms | 10.2 ms | 12.7 ms | **1.00×** |
 
 ### 10. gsub (`{ gsub("alpha", "ALPHA"); print }`, 200 K lines)
 
@@ -237,10 +237,10 @@ Input lines do not contain `alpha`, so this measures **no-match** `gsub` plus `p
 
 | Command | Mean | Min | Max | Relative |
 |:---|---:|---:|---:|---:|
-| gawk | 94.3 ms | 87.6 ms | 126.4 ms | 26.19× |
-| BSD awk | 57.3 ms | 52.9 ms | 66.5 ms | 15.92× |
-| mawk | 16.1 ms | 14.4 ms | 23.5 ms | 4.47× |
-| awkrs | 3.6 ms | 3.1 ms | 5.3 ms | **1.00×** |
+| BSD awk | 169.3 ms | 153.3 ms | 211.8 ms | 21.04× |
+| gawk | 111.0 ms | 104.9 ms | 136.1 ms | 13.79× |
+| mawk | 18.5 ms | 15.5 ms | 25.6 ms | 2.30× |
+| awkrs | 8.0 ms | 6.2 ms | 13.1 ms | **1.00×** |
 
 > Regenerate after `cargo build --release` (requires `hyperfine`; `gawk` optional):
 > ```bash

@@ -780,6 +780,38 @@ impl Runtime {
         self.vars.insert("NF".into(), Value::Num(nf));
     }
 
+    /// Set a field to a numeric value directly, formatting in-place without
+    /// allocating a temporary `Value::Num` and round-tripping through `as_str()`.
+    pub fn set_field_num(&mut self, i: i32, n: f64) {
+        if i < 1 {
+            return;
+        }
+        if !self.fields_dirty {
+            self.fields.clear();
+            for &(s, e) in &self.field_ranges {
+                self.fields
+                    .push(self.record[s as usize..e as usize].to_string());
+            }
+            self.fields_dirty = true;
+        }
+        let idx = (i - 1) as usize;
+        if self.fields.len() <= idx {
+            self.fields.resize(idx + 1, String::new());
+        }
+        // Format number into the existing String, reusing its allocation.
+        self.fields[idx].clear();
+        if n.fract() == 0.0 && n.abs() < 1e15 {
+            use std::fmt::Write;
+            let _ = write!(self.fields[idx], "{}", n as i64);
+        } else {
+            use std::fmt::Write;
+            let _ = write!(self.fields[idx], "{n}");
+        }
+        self.rebuild_record();
+        let nf = self.fields.len() as f64;
+        self.vars.insert("NF".into(), Value::Num(nf));
+    }
+
     fn rebuild_record(&mut self) {
         let ofs = self
             .vars
@@ -837,24 +869,30 @@ impl Runtime {
     }
 
     pub fn array_set(&mut self, name: &str, key: String, val: Value) {
-        if !self.vars.contains_key(name) {
-            if let Some(Value::Array(a)) = self.global_readonly.as_ref().and_then(|g| g.get(name)) {
-                self.vars.insert(name.to_string(), Value::Array(a.clone()));
+        // Fast path: array already exists in vars — no name allocation needed.
+        if let Some(existing) = self.vars.get_mut(name) {
+            match existing {
+                Value::Array(a) => {
+                    a.insert(key, val);
+                    return;
+                }
+                _ => {
+                    let mut m = AwkMap::default();
+                    m.insert(key, val);
+                    *existing = Value::Array(m);
+                    return;
+                }
             }
         }
-        let e = self
-            .vars
-            .entry(name.to_string())
-            .or_insert_with(|| Value::Array(AwkMap::default()));
-        match e {
-            Value::Array(a) => {
-                a.insert(key, val);
-            }
-            _ => {
-                let mut m = AwkMap::default();
-                m.insert(key, val);
-                *e = Value::Array(m);
-            }
+        // Slow path: first access — copy from readonly globals or create new.
+        if let Some(Value::Array(a)) = self.global_readonly.as_ref().and_then(|g| g.get(name)) {
+            let mut copy = a.clone();
+            copy.insert(key, val);
+            self.vars.insert(name.to_string(), Value::Array(copy));
+        } else {
+            let mut m = AwkMap::default();
+            m.insert(key, val);
+            self.vars.insert(name.to_string(), Value::Array(m));
         }
     }
 

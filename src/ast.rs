@@ -186,10 +186,7 @@ pub enum IncDecOp {
 pub enum IncDecTarget {
     Var(String),
     Field(Box<Expr>),
-    Index {
-        name: String,
-        indices: Vec<Expr>,
-    },
+    Index { name: String, indices: Vec<Expr> },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
