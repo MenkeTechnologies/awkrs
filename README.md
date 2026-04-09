@@ -115,7 +115,7 @@ The engine compiles AWK programs into a flat bytecode instruction stream, then r
 
 **Inline fast path:** single-rule programs with one fused opcode (e.g. `{ print $1 }`, `{ s += $1 }`) bypass VmCtx creation, pattern dispatch, and the bytecode execute loop entirely — the operation runs as a direct function call in the record loop. Memory-mapped **regular files** also recognize `{ gsub("lit", "repl"); print }` on `$0` with a literal pattern and simple replacement: when the needle is absent, the loop writes each line from the mapped buffer with **ORS** and skips VM + field split.
 
-**Raw byte field extraction:** for `print $N` with default FS, the throughput path skips record copy, field splitting, and UTF-8 validation entirely — it scans raw bytes in the mapped file buffer to find the Nth whitespace-delimited field and writes it directly to the output buffer.
+**Raw byte field extraction:** for `print $N` with default FS, the throughput path skips record copy, field splitting, and UTF-8 validation entirely — it scans raw bytes in the mapped file buffer to find the Nth whitespace-delimited field, writes it to the output buffer, then appends **`ORS`** from the same cached **`Runtime::ors_bytes`** as the VM (not a hardcoded newline). Slurp inline paths append full **`OFS`** / **`ORS`** byte slices — no length cap.
 
 **Indexed variable slots:** scalar variables are assigned `u16` slot indices at compile time and stored in a flat `Vec<Value>` — variable reads and writes are direct array indexing instead of `HashMap` lookups. Special awk variables (`NR`, `FS`, `OFS`, …) and array names remain on the HashMap path.
 

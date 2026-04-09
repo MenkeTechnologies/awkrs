@@ -745,6 +745,33 @@ fn file_input_slurped_fast_path_two_lines() {
     assert_eq!(o, "aa\ncc\n");
 }
 
+/// Memory-mapped `print $N` fast path must use `ORS` from BEGIN (not a literal newline).
+#[test]
+fn slurp_print_field_respects_custom_ors() {
+    let dir = std::env::temp_dir();
+    let path = dir.join(format!("awkrs_ors_{}.txt", std::process::id()));
+    std::fs::write(&path, "a b\n").expect("temp data");
+    let (c, o, e) = run_awkrs_file(r#"BEGIN { ORS = "X" } { print $1 }"#, &path);
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(c, 0, "stderr={e:?}");
+    assert_eq!(o, "aX");
+}
+
+/// Slurp inline paths must not truncate `ORS` to 64 bytes (regression).
+#[test]
+fn slurp_inline_long_ors_not_truncated() {
+    let dir = std::env::temp_dir();
+    let path = dir.join(format!("awkrs_orslong_{}.txt", std::process::id()));
+    std::fs::write(&path, "a b\n").expect("temp data");
+    let ors: String = "Y".repeat(70);
+    let prog = format!(r#"BEGIN {{ ORS = "{ors}" }} {{ print $1 }}"#);
+    let (c, o, e) = run_awkrs_file(&prog, &path);
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(c, 0, "stderr={e:?}");
+    let want = format!("a{ors}");
+    assert_eq!(o, want);
+}
+
 // ── FPAT / CSV (gawk-style) ───────────────────────────────────────────────
 
 #[test]

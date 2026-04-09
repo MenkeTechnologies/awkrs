@@ -832,15 +832,6 @@ fn process_file_slurp_inline(
     let mut pos = 0;
     let len = data.len();
 
-    // Pre-copy ORS to stack for the print path.
-    let mut ors_local = [0u8; 64];
-    let ors_len = rt.ors_bytes.len().min(64);
-    ors_local[..ors_len].copy_from_slice(&rt.ors_bytes[..ors_len]);
-
-    let mut ofs_local = [0u8; 64];
-    let ofs_len = rt.ofs_bytes.len().min(64);
-    ofs_local[..ofs_len].copy_from_slice(&rt.ofs_bytes[..ofs_len]);
-
     let literal_finder = match &pattern {
         InlinePattern::LiteralContains(needle) if !needle.is_empty() => {
             Some(memmem::Finder::new(needle.as_bytes()))
@@ -906,21 +897,21 @@ fn process_file_slurp_inline(
                 rt.print_field_to_buf(f1 as usize);
                 rt.print_buf.extend_from_slice(sep_s.as_bytes());
                 rt.print_field_to_buf(f2 as usize);
-                rt.print_buf.extend_from_slice(&ors_local[..ors_len]);
+                rt.print_buf.extend_from_slice(&rt.ors_bytes);
             }
             InlineAction::PrintThreeFieldsStdout { f1, f2, f3 } => {
                 set_record_from_line_bytes(rt, fs, line_bytes);
                 rt.print_field_to_buf(f1 as usize);
-                rt.print_buf.extend_from_slice(&ofs_local[..ofs_len]);
+                rt.print_buf.extend_from_slice(&rt.ofs_bytes);
                 rt.print_field_to_buf(f2 as usize);
-                rt.print_buf.extend_from_slice(&ofs_local[..ofs_len]);
+                rt.print_buf.extend_from_slice(&rt.ofs_bytes);
                 rt.print_field_to_buf(f3 as usize);
-                rt.print_buf.extend_from_slice(&ors_local[..ors_len]);
+                rt.print_buf.extend_from_slice(&rt.ors_bytes);
             }
             InlineAction::PrintFieldStdout(field) => {
                 set_record_from_line_bytes(rt, fs, line_bytes);
                 rt.print_field_to_buf(field as usize);
-                rt.print_buf.extend_from_slice(&ors_local[..ors_len]);
+                rt.print_buf.extend_from_slice(&rt.ors_bytes);
             }
             InlineAction::AddFieldToSlot { field, slot } => {
                 set_record_from_line_bytes(rt, fs, line_bytes);
@@ -952,9 +943,6 @@ fn process_file_gsub_literal_print(
     debug_assert!(!needle.is_empty() && crate::builtins::gsub_literal_eligible(needle, repl_s));
 
     let finder = memmem::Finder::new(needle.as_bytes());
-    let mut ors_local = [0u8; 64];
-    let ors_len = rt.ors_bytes.len().min(64);
-    ors_local[..ors_len].copy_from_slice(&rt.ors_bytes[..ors_len]);
 
     let mut count = 0usize;
     let mut pos = 0usize;
@@ -980,12 +968,12 @@ fn process_file_gsub_literal_print(
 
         if no_match {
             rt.print_buf.extend_from_slice(line_bytes);
-            rt.print_buf.extend_from_slice(&ors_local[..ors_len]);
+            rt.print_buf.extend_from_slice(&rt.ors_bytes);
         } else {
             set_record_from_line_bytes(rt, fs, line_bytes);
             crate::builtins::gsub(rt, needle, repl_s, None)?;
             rt.print_buf.extend_from_slice(rt.record.as_bytes());
-            rt.print_buf.extend_from_slice(&ors_local[..ors_len]);
+            rt.print_buf.extend_from_slice(&rt.ors_bytes);
         }
 
         pos = eol + 1;
@@ -995,12 +983,11 @@ fn process_file_gsub_literal_print(
 
 /// Absolute fastest path: print $N with FS=" " directly from raw bytes.
 /// No record copy, no field_ranges, no UTF-8 validation, no set_field_sep_split.
-/// Scans bytes directly in the mmap'd/slurped buffer.
+/// Scans bytes directly in the mmap'd/slurped buffer. Appends [`Runtime::ors_bytes`] like the VM print path.
 fn process_file_print_field_raw(data: &[u8], field_idx: usize, rt: &mut Runtime) -> Result<usize> {
     let mut count = 0usize;
     let mut pos = 0;
     let len = data.len();
-    let ors = b"\n"; // ORS default — fast path only fires when FS is default too
 
     while pos < len {
         let eol = memchr(b'\n', &data[pos..len])
@@ -1061,7 +1048,7 @@ fn process_file_print_field_raw(data: &[u8], field_idx: usize, rt: &mut Runtime)
             rt.print_buf
                 .extend_from_slice(&line[field_start..field_end]);
         }
-        rt.print_buf.extend_from_slice(ors);
+        rt.print_buf.extend_from_slice(&rt.ors_bytes);
 
         pos = eol + 1;
     }
@@ -1342,6 +1329,7 @@ mod lib_internal_tests {
     use crate::bytecode::{GetlineSource, Op};
     use crate::compiler::Compiler;
     use crate::parser::parse_program;
+    use crate::vm::{flush_print_buf, vm_run_begin, vm_run_beginfile};
     use std::io::Cursor;
 
     #[test]
@@ -1500,6 +1488,33 @@ mod lib_internal_tests {
             })
         });
         assert!(has_primary);
+    }
+
+    #[test]
+    fn print_field_raw_appends_runtime_ors_bytes() {
+        let mut rt = Runtime::new();
+        rt.ors_bytes = b"X".to_vec();
+        process_file_print_field_raw(b"a b\n", 1, &mut rt).unwrap();
+        assert_eq!(rt.print_buf, b"aX");
+    }
+
+    #[test]
+    fn process_file_slurp_inline_honors_ors_after_begin() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("awkrs_ors_slurp_{}.txt", std::process::id()));
+        std::fs::write(&path, "a b\n").unwrap();
+        let prog = parse_program("BEGIN { ORS = \"X\" } { print $1 }").unwrap();
+        let cp = Compiler::compile_program(&prog);
+        let mut rt = Runtime::new();
+        rt.init_argv(std::slice::from_ref(&path));
+        rt.slots = cp.init_slots(&rt.vars);
+        vm_run_begin(&cp, &mut rt).unwrap();
+        flush_print_buf(&mut rt.print_buf).unwrap();
+        vm_run_beginfile(&cp, &mut rt).unwrap();
+        let mut range_state = vec![false; prog.rules.len()];
+        process_file_slurp(&path, &prog, &cp, &mut range_state, &mut rt).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(rt.print_buf, b"aX", "print_buf={:?}", rt.print_buf);
     }
 }
 
