@@ -12,6 +12,9 @@ use std::cmp::Ordering;
 use std::io::{self, Write};
 use std::mem;
 
+/// Max interned identifier length resolved via stack buffer (`with_short_pool_name_mut`).
+const POOL_NAME_STACK_MAX: usize = 128;
+
 // ── VM context ──────────────────────────────────────────────────────────────
 
 struct ForInState {
@@ -111,6 +114,21 @@ impl<'a> VmCtx<'a> {
             })
     }
 
+    /// Run `f` with `str_ref(idx)` as `&str` without a heap allocation when the name is short.
+    fn with_short_pool_name_mut<T>(&mut self, idx: u32, f: impl FnOnce(&mut Self, &str) -> T) -> T {
+        let s = self.str_ref(idx);
+        if s.len() <= POOL_NAME_STACK_MAX {
+            let mut buf = [0u8; POOL_NAME_STACK_MAX];
+            buf[..s.len()].copy_from_slice(s.as_bytes());
+            let name = std::str::from_utf8(&buf[..s.len()])
+                .expect("interned identifier must be valid UTF-8");
+            f(self, name)
+        } else {
+            let owned = s.to_string();
+            f(self, owned.as_str())
+        }
+    }
+
     fn set_var(&mut self, name: &str, val: Value) {
         for frame in self.locals.iter_mut().rev() {
             if let Some(v) = frame.get_mut(name) {
@@ -138,42 +156,21 @@ impl<'a> VmCtx<'a> {
     }
 
     /// Resolve variable name from the string pool without a heap `String` when the
-    /// identifier is short (≤128 bytes), e.g. `for (k in a)`.
+    /// identifier is short (see [`POOL_NAME_STACK_MAX`]), e.g. `for (k in a)`.
     fn set_var_interned(&mut self, var_idx: u32, val: Value) {
-        let s = self.str_ref(var_idx);
-        const MAX_STACK_IDENT: usize = 128;
-        if s.len() <= MAX_STACK_IDENT {
-            let mut buf = [0u8; MAX_STACK_IDENT];
-            buf[..s.len()].copy_from_slice(s.as_bytes());
-            let name = std::str::from_utf8(&buf[..s.len()])
-                .expect("interned identifier must be valid UTF-8");
-            self.set_var(name, val);
-        } else {
-            let name = s.to_string();
-            self.set_var(&name, val);
-        }
+        self.with_short_pool_name_mut(var_idx, |ctx, name| {
+            ctx.set_var(name, val);
+        });
     }
 
     /// Same as [`set_var_interned`](Self::set_var_interned) plus JIT slot sync for compiled loops.
     fn set_var_interned_jit_sync(&mut self, var_idx: u32, val: Value) {
-        let s = self.str_ref(var_idx);
-        const MAX_STACK_IDENT: usize = 128;
-        if s.len() <= MAX_STACK_IDENT {
-            let mut buf = [0u8; MAX_STACK_IDENT];
-            buf[..s.len()].copy_from_slice(s.as_bytes());
-            let name = std::str::from_utf8(&buf[..s.len()])
-                .expect("interned identifier must be valid UTF-8");
-            self.set_var(name, val);
-            if let Some(&slot) = self.cp.slot_map.get(name) {
-                sync_jit_slot_value(self, slot);
+        self.with_short_pool_name_mut(var_idx, |ctx, name| {
+            ctx.set_var(name, val);
+            if let Some(&slot) = ctx.cp.slot_map.get(name) {
+                sync_jit_slot_value(ctx, slot);
             }
-        } else {
-            let name = s.to_string();
-            self.set_var(&name, val);
-            if let Some(&slot) = self.cp.slot_map.get(name.as_str()) {
-                sync_jit_slot_value(self, slot);
-            }
-        }
+        });
     }
 
     #[inline]
@@ -2132,8 +2129,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             }
             Op::SetVar(idx) => {
                 let val = ctx.peek().clone();
-                let name = ctx.str_ref(idx).to_string();
-                ctx.set_var(&name, val);
+                ctx.set_var_interned(idx, val);
             }
             Op::GetSlot(slot) => {
                 let v = match &ctx.rt.slots[slot as usize] {
@@ -2205,10 +2201,12 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             // ── Compound assignment ─────────────────────────────────────
             Op::CompoundAssignVar(idx, bop) => {
                 let rhs = ctx.pop();
-                let name = ctx.str_ref(idx).to_string();
-                let old = ctx.get_var(&name);
-                let new_val = apply_binop(bop, &old, &rhs)?;
-                ctx.set_var(&name, new_val.clone());
+                let new_val = ctx.with_short_pool_name_mut(idx, |ctx, name| -> crate::error::Result<Value> {
+                    let old = ctx.get_var(name);
+                    let new_val = apply_binop(bop, &old, &rhs)?;
+                    ctx.set_var(name, new_val.clone());
+                    Ok(new_val)
+                })?;
                 ctx.push(new_val);
             }
             Op::CompoundAssignSlot(slot, bop) => {
@@ -2241,23 +2239,27 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             }
 
             Op::IncDecVar(idx, kind) => {
-                let name = ctx.str_ref(idx).to_string();
-                let old = ctx.get_var(&name);
-                let old_n = old.as_number();
                 let delta = incdec_delta(kind);
-                let new_n = old_n + delta;
-                ctx.set_var(&name, Value::Num(new_n));
+                let (old_n, new_n) = ctx.with_short_pool_name_mut(idx, |ctx, name| {
+                    let old = ctx.get_var(name);
+                    let old_n = old.as_number();
+                    let new_n = old_n + delta;
+                    ctx.set_var(name, Value::Num(new_n));
+                    (old_n, new_n)
+                });
                 ctx.push(Value::Num(incdec_push(kind, old_n, new_n)));
             }
             Op::IncrVar(idx) => {
-                let name = ctx.str_ref(idx).to_string();
-                let n = ctx.get_var(&name).as_number();
-                ctx.set_var(&name, Value::Num(n + 1.0));
+                ctx.with_short_pool_name_mut(idx, |ctx, name| {
+                    let n = ctx.get_var(name).as_number();
+                    ctx.set_var(name, Value::Num(n + 1.0));
+                });
             }
             Op::DecrVar(idx) => {
-                let name = ctx.str_ref(idx).to_string();
-                let n = ctx.get_var(&name).as_number();
-                ctx.set_var(&name, Value::Num(n - 1.0));
+                ctx.with_short_pool_name_mut(idx, |ctx, name| {
+                    let n = ctx.get_var(name).as_number();
+                    ctx.set_var(name, Value::Num(n - 1.0));
+                });
             }
             Op::IncDecSlot(slot, kind) => {
                 let old_n = match &ctx.rt.slots[slot as usize] {
@@ -2881,6 +2883,9 @@ fn exec_print(ctx: &mut VmCtx<'_>, argc: u16, redir: RedirKind, is_printf: bool)
             ctx.rt.print_buf.extend_from_slice(ctx.rt.record.as_bytes());
         } else {
             let start = ctx.stack.len() - argc;
+            ctx.rt
+                .print_buf
+                .reserve(argc.saturating_mul(32).saturating_add(ors_len));
             for i in 0..argc {
                 if i > 0 {
                     ctx.rt.print_buf.extend_from_slice(&ofs_local[..ofs_len]);

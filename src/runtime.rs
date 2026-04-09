@@ -1154,11 +1154,7 @@ impl Runtime {
 
     pub fn array_keys(&self, name: &str) -> Vec<String> {
         match self.get_global_var(name) {
-            Some(Value::Array(a)) => {
-                let mut v = Vec::with_capacity(a.len());
-                v.extend(a.keys().cloned());
-                v
-            }
+            Some(Value::Array(a)) => a.keys().cloned().collect(),
             _ => Vec::new(),
         }
     }
