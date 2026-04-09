@@ -349,6 +349,292 @@ use std::cell::RefCell;
 thread_local! {
     /// ForIn iterator stack for JIT-compiled for-in loops.
     static JIT_FORIN_ITERS: RefCell<Vec<ForInState>> = const { RefCell::new(Vec::new()) };
+    /// Dynamic string storage for NaN-boxed JIT stack values (indices via [`crate::jit::nan_str_dyn`]).
+    static JIT_DYN_STRINGS: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    /// Buffered `print` arguments for mixed-mode JIT (`MIXED_PRINT_ARG` / `MIXED_PRINT_FLUSH`).
+    static MIXED_PRINT_SLOTS: RefCell<Vec<Option<f64>>> = RefCell::new(Vec::new());
+}
+
+fn jit_f64_to_value(ctx: &VmCtx<'_>, x: f64) -> Value {
+    use crate::jit::{decode_nan_str_bits, is_nan_str};
+    let bits = x.to_bits();
+    if is_nan_str(bits) {
+        let (is_dyn, idx) = decode_nan_str_bits(bits).unwrap_or((true, 0));
+        if is_dyn {
+            let s = JIT_DYN_STRINGS.with(|c| {
+                c.borrow()
+                    .get(idx as usize)
+                    .cloned()
+                    .unwrap_or_default()
+            });
+            Value::Str(s)
+        } else {
+            Value::Str(ctx.str_ref(idx).to_string())
+        }
+    } else {
+        Value::Num(x)
+    }
+}
+
+fn value_to_jit_f64(_ctx: &mut VmCtx<'_>, v: Value) -> f64 {
+    use crate::jit::nan_str_dyn;
+    match v {
+        Value::Num(n) => n,
+        Value::Str(s) => {
+            let idx = JIT_DYN_STRINGS.with(|c| {
+                let mut c = c.borrow_mut();
+                let idx = c.len();
+                c.push(s);
+                idx as u32
+            });
+            nan_str_dyn(idx)
+        }
+        Value::Uninit => 0.0,
+        Value::Array(_) => 0.0,
+    }
+}
+
+fn jit_mixed_op_dispatch(
+    ctx: &mut VmCtx<'_>,
+    op: u32,
+    a1: u32,
+    a2: f64,
+    a3: f64,
+) -> f64 {
+    use crate::ast::BinOp;
+    use crate::jit::{
+        MIXED_ADD, MIXED_ARRAY_COMPOUND, MIXED_ARRAY_DELETE_ALL, MIXED_ARRAY_DELETE_ELEM,
+        MIXED_ARRAY_GET, MIXED_ARRAY_IN, MIXED_ARRAY_INCDEC, MIXED_ARRAY_SET, MIXED_CMP_EQ,
+        MIXED_CMP_GE, MIXED_CMP_GT, MIXED_CMP_LE, MIXED_CMP_LT, MIXED_CMP_NE, MIXED_CONCAT,
+        MIXED_CONCAT_POOL, MIXED_DIV, MIXED_GET_FIELD, MIXED_GET_SLOT, MIXED_GET_VAR, MIXED_MOD,
+        MIXED_MUL, MIXED_NEG, MIXED_NOT, MIXED_POS, MIXED_PRINT_ARG, MIXED_PRINT_FLUSH,
+        MIXED_PUSH_STR, MIXED_REGEX_MATCH, MIXED_REGEX_NOT_MATCH, MIXED_SET_VAR, MIXED_SUB,
+        MIXED_TO_BOOL, MIXED_TRUTHINESS,
+    };
+
+    match op {
+        MIXED_PUSH_STR => crate::jit::nan_str_pool(a1),
+        MIXED_CONCAT => {
+            let a = jit_f64_to_value(ctx, a2);
+            let b = jit_f64_to_value(ctx, a3);
+            let mut s = a.into_string();
+            b.append_to_string(&mut s);
+            value_to_jit_f64(ctx, Value::Str(s))
+        }
+        MIXED_CONCAT_POOL => {
+            let pool = ctx.str_ref(a1).to_string();
+            let a = jit_f64_to_value(ctx, a2);
+            let mut s = a.into_string();
+            s.push_str(&pool);
+            value_to_jit_f64(ctx, Value::Str(s))
+        }
+        MIXED_ADD | MIXED_SUB | MIXED_MUL | MIXED_DIV | MIXED_MOD => {
+            let a = jit_f64_to_value(ctx, a2);
+            let b = jit_f64_to_value(ctx, a3);
+            let n = match op {
+                MIXED_ADD => a.as_number() + b.as_number(),
+                MIXED_SUB => a.as_number() - b.as_number(),
+                MIXED_MUL => a.as_number() * b.as_number(),
+                MIXED_DIV => a.as_number() / b.as_number(),
+                MIXED_MOD => a.as_number() % b.as_number(),
+                _ => unreachable!(),
+            };
+            n
+        }
+        MIXED_CMP_EQ => {
+            let r = awk_cmp_eq(&jit_f64_to_value(ctx, a2), &jit_f64_to_value(ctx, a3));
+            r.as_number()
+        }
+        MIXED_CMP_NE => {
+            let eq = awk_cmp_eq(&jit_f64_to_value(ctx, a2), &jit_f64_to_value(ctx, a3));
+            Value::Num(if eq.as_number() != 0.0 { 0.0 } else { 1.0 }).as_number()
+        }
+        MIXED_CMP_LT | MIXED_CMP_LE | MIXED_CMP_GT | MIXED_CMP_GE => {
+            let bop = match op {
+                MIXED_CMP_LT => BinOp::Lt,
+                MIXED_CMP_LE => BinOp::Le,
+                MIXED_CMP_GT => BinOp::Gt,
+                MIXED_CMP_GE => BinOp::Ge,
+                _ => unreachable!(),
+            };
+            awk_cmp_rel(bop, &jit_f64_to_value(ctx, a2), &jit_f64_to_value(ctx, a3)).as_number()
+        }
+        MIXED_NEG => {
+            let v = jit_f64_to_value(ctx, a2);
+            Value::Num(-v.as_number()).as_number()
+        }
+        MIXED_POS => jit_f64_to_value(ctx, a2).as_number(),
+        MIXED_NOT => {
+            let v = jit_f64_to_value(ctx, a2);
+            Value::Num(if truthy(&v) { 0.0 } else { 1.0 }).as_number()
+        }
+        MIXED_TO_BOOL => {
+            let v = jit_f64_to_value(ctx, a2);
+            Value::Num(if truthy(&v) { 1.0 } else { 0.0 }).as_number()
+        }
+        MIXED_TRUTHINESS => {
+            let v = jit_f64_to_value(ctx, a2);
+            Value::Num(if truthy(&v) { 1.0 } else { 0.0 }).as_number()
+        }
+        MIXED_GET_FIELD => {
+            let i = a2 as i32;
+            let v = ctx.rt.field(i);
+            value_to_jit_f64(ctx, v)
+        }
+        MIXED_GET_VAR => {
+            let name = ctx.str_ref(a1).to_string();
+            let v = ctx.get_var(&name);
+            value_to_jit_f64(ctx, v)
+        }
+        MIXED_SET_VAR => {
+            let name = ctx.str_ref(a1).to_string();
+            let val = jit_f64_to_value(ctx, a2);
+            ctx.set_var(&name, val);
+            0.0
+        }
+        MIXED_GET_SLOT => {
+            let ptr = JIT_SLOTS_PTR.get();
+            let len = JIT_SLOTS_LEN.get();
+            let slot = a1 as usize;
+            if ptr.is_null() || slot >= len {
+                return 0.0;
+            }
+            unsafe { *ptr.add(slot) }
+        }
+        MIXED_REGEX_MATCH | MIXED_REGEX_NOT_MATCH => {
+            let s = jit_f64_to_value(ctx, a2).as_str();
+            let pat = jit_f64_to_value(ctx, a3).as_str();
+            if ctx.rt.ensure_regex(&pat).is_err() {
+                return 0.0;
+            }
+            let m = ctx.rt.regex_ref(&pat).is_match(&s);
+            let hit = if op == MIXED_REGEX_MATCH { m } else { !m };
+            if hit { 1.0 } else { 0.0 }
+        }
+        MIXED_PRINT_ARG => {
+            let pos = a1 as usize;
+            MIXED_PRINT_SLOTS.with(|c| {
+                let mut v = c.borrow_mut();
+                if v.len() <= pos {
+                    v.resize(pos + 1, None);
+                }
+                v[pos] = Some(a2);
+            });
+            0.0
+        }
+        MIXED_PRINT_FLUSH => {
+            let argc = a1 as usize;
+            MIXED_PRINT_SLOTS.with(|c| {
+                let mut slots = c.borrow_mut();
+                let mut ofs_local = [0u8; 64];
+                let ofs_len = ctx.rt.ofs_bytes.len().min(64);
+                ofs_local[..ofs_len].copy_from_slice(&ctx.rt.ofs_bytes[..ofs_len]);
+                let mut ors_local = [0u8; 64];
+                let ors_len = ctx.rt.ors_bytes.len().min(64);
+                ors_local[..ors_len].copy_from_slice(&ctx.rt.ors_bytes[..ors_len]);
+                if ctx.print_out.is_some() {
+                    let mut line = String::new();
+                    for i in 0..argc {
+                        let f = slots.get(i).and_then(|x| *x).unwrap_or(0.0);
+                        if i > 0 {
+                            line.push_str(std::str::from_utf8(&ofs_local[..ofs_len]).unwrap_or(""));
+                        }
+                        line.push_str(&jit_f64_to_value(ctx, f).as_str());
+                    }
+                    line.push_str(std::str::from_utf8(&ors_local[..ors_len]).unwrap_or(""));
+                    ctx.print_out.as_mut().unwrap().push(line);
+                } else {
+                    for i in 0..argc {
+                        let f = slots.get(i).and_then(|x| *x).unwrap_or(0.0);
+                        if i > 0 {
+                            ctx.rt.print_buf.extend_from_slice(&ofs_local[..ofs_len]);
+                        }
+                        ctx.rt
+                            .print_buf
+                            .extend_from_slice(jit_f64_to_value(ctx, f).as_str().as_bytes());
+                    }
+                    ctx.rt.print_buf.extend_from_slice(&ors_local[..ors_len]);
+                }
+                slots.clear();
+            });
+            0.0
+        }
+        MIXED_ARRAY_GET => {
+            let name = ctx.cp.strings.get(a1);
+            let key = jit_f64_to_value(ctx, a2).into_string();
+            let v = ctx.rt.array_get(name, &key);
+            value_to_jit_f64(ctx, v)
+        }
+        MIXED_ARRAY_SET => {
+            let name = ctx.cp.strings.get(a1);
+            let key = jit_f64_to_value(ctx, a2).into_string();
+            let val = jit_f64_to_value(ctx, a3);
+            ctx.rt.array_set(name, key, val.clone());
+            value_to_jit_f64(ctx, val)
+        }
+        MIXED_ARRAY_IN => {
+            let name = ctx.cp.strings.get(a1);
+            let key = jit_f64_to_value(ctx, a2).into_string();
+            if ctx.rt.array_has(name, &key) {
+                1.0
+            } else {
+                0.0
+            }
+        }
+        MIXED_ARRAY_DELETE_ELEM => {
+            let name = ctx.cp.strings.get(a1).to_string();
+            let key = jit_f64_to_value(ctx, a2).into_string();
+            ctx.rt.array_delete(&name, Some(&key));
+            0.0
+        }
+        MIXED_ARRAY_DELETE_ALL => {
+            let name = ctx.cp.strings.get(a1).to_string();
+            ctx.rt.array_delete(&name, None);
+            0.0
+        }
+        MIXED_ARRAY_COMPOUND => {
+            let arr = a1 & 0xffff;
+            let bcode = (a1 >> 16) & 0xffff;
+            let bop = match bcode {
+                0 => BinOp::Add,
+                1 => BinOp::Sub,
+                2 => BinOp::Mul,
+                3 => BinOp::Div,
+                4 => BinOp::Mod,
+                _ => BinOp::Add,
+            };
+            let name = ctx.cp.strings.get(arr);
+            let key = jit_f64_to_value(ctx, a2).into_string();
+            let old = ctx.rt.array_get(name, &key);
+            let rhs = jit_f64_to_value(ctx, a3);
+            let newv = apply_binop(bop, &old, &rhs).unwrap_or(Value::Num(0.0));
+            let n = newv.as_number();
+            ctx.rt.array_set(name, key, Value::Num(n));
+            n
+        }
+        MIXED_ARRAY_INCDEC => {
+            let arr = a1 & 0xffff;
+            let kcode = (a1 >> 16) & 0xffff;
+            let kind = match kcode {
+                0 => IncDecOp::PreInc,
+                1 => IncDecOp::PostInc,
+                2 => IncDecOp::PreDec,
+                3 => IncDecOp::PostDec,
+                _ => IncDecOp::PreInc,
+            };
+            let name = ctx.cp.strings.get(arr);
+            let key = jit_f64_to_value(ctx, a2).into_string();
+            let old_n = ctx.rt.array_get(name, &key).as_number();
+            let delta = match kind {
+                IncDecOp::PreInc | IncDecOp::PostInc => 1.0,
+                IncDecOp::PreDec | IncDecOp::PostDec => -1.0,
+            };
+            let new_n = old_n + delta;
+            ctx.rt.array_set(name, key, Value::Num(new_n));
+            incdec_push(kind, old_n, new_n)
+        }
+        _ => 0.0,
+    }
 }
 
 fn sync_jit_slot_if_scalar(ctx: &VmCtx<'_>, name: &str) {
@@ -363,6 +649,21 @@ fn sync_jit_slot_if_scalar(ctx: &VmCtx<'_>, name: &str) {
     let v = ctx.rt.slots[slot as usize].as_number();
     unsafe {
         ptr.add(slot as usize).write(v);
+    }
+}
+
+/// After interpreter/callback code mutates `rt.slots[slot]` (e.g. string loop vars),
+/// mirror `Value` into the JIT scratch buffer so `GetSlot` / `MIXED_GET_SLOT` see it.
+fn sync_jit_slot_value(ctx: &mut VmCtx<'_>, slot: u16) {
+    let ptr = JIT_SLOTS_PTR.get();
+    let len = JIT_SLOTS_LEN.get();
+    if ptr.is_null() || (slot as usize) >= len {
+        return;
+    }
+    let v = ctx.rt.slots[slot as usize].clone();
+    let f = value_to_jit_f64(ctx, v);
+    unsafe {
+        ptr.add(slot as usize).write(f);
     }
 }
 
@@ -666,6 +967,17 @@ extern "C" fn jit_val_dispatch(op: u32, a1: u32, a2: f64, a3: f64) -> f64 {
         _ => {}
     }
 
+    if op >= 100 {
+        return JIT_VMCTX_PTR.with(|cell| {
+            let p = cell.get();
+            if p.is_null() {
+                return 0.0;
+            }
+            let ctx = unsafe { &mut *p };
+            jit_mixed_op_dispatch(ctx, op, a1, a2, a3)
+        });
+    }
+
     JIT_VMCTX_PTR.with(|cell| {
         let p = cell.get();
         if p.is_null() {
@@ -772,6 +1084,9 @@ extern "C" fn jit_val_dispatch(op: u32, a1: u32, a2: f64, a3: f64) -> f64 {
                         state.index += 1;
                         let name = ctx.str_ref(var_idx).to_string();
                         ctx.set_var(&name, Value::Str(key));
+                        if let Some(&slot) = ctx.cp.slot_map.get(name.as_str()) {
+                            sync_jit_slot_value(ctx, slot);
+                        }
                         1.0 // has next
                     }
                 })
@@ -813,9 +1128,22 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Option<VmSignal> {
         return None;
     }
 
+    let mixed = crate::jit::needs_mixed_mode(ops);
+
     // Build f64 slot array from runtime slots
     let slot_count = ctx.rt.slots.len();
-    let mut jit_slots: Vec<f64> = ctx.rt.slots.iter().map(|v| v.as_number()).collect();
+    JIT_DYN_STRINGS.with(|c| c.borrow_mut().clear());
+    MIXED_PRINT_SLOTS.with(|c| c.borrow_mut().clear());
+    let mut jit_slots: Vec<f64> = if mixed {
+        ctx.rt
+            .slots
+            .clone()
+            .into_iter()
+            .map(|v| value_to_jit_f64(ctx, v))
+            .collect()
+    } else {
+        ctx.rt.slots.iter().map(|v| v.as_number()).collect()
+    };
 
     // Set thread-local Runtime + program pointers for JIT callbacks
     let rt_ptr: *mut Runtime = ctx.rt;
@@ -850,13 +1178,23 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Option<VmSignal> {
     JIT_FORIN_ITERS.with(|c| c.borrow_mut().clear());
 
     // JIT compilation failed — fall back to interpreter.
-    result.as_ref()?;
+    let Some(result) = result else {
+        JIT_DYN_STRINGS.with(|c| c.borrow_mut().clear());
+        MIXED_PRINT_SLOTS.with(|c| c.borrow_mut().clear());
+        return None;
+    };
 
     // Write back modified slots
-    for (i, &jit_val) in jit_slots.iter().enumerate().take(slot_count) {
-        let old = ctx.rt.slots[i].as_number();
-        if (jit_val - old).abs() > f64::EPSILON || (old == 0.0 && jit_val != 0.0) {
-            ctx.rt.slots[i] = Value::Num(jit_val);
+    if mixed {
+        for (i, &jit_val) in jit_slots.iter().enumerate().take(slot_count) {
+            ctx.rt.slots[i] = jit_f64_to_value(ctx, jit_val);
+        }
+    } else {
+        for (i, &jit_val) in jit_slots.iter().enumerate().take(slot_count) {
+            let old = ctx.rt.slots[i].as_number();
+            if (jit_val - old).abs() > f64::EPSILON || (old == 0.0 && jit_val != 0.0) {
+                ctx.rt.slots[i] = Value::Num(jit_val);
+            }
         }
     }
 
@@ -867,32 +1205,53 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Option<VmSignal> {
         JIT_VAL_SIGNAL_NEXT_FILE,
     };
     match sig {
-        JIT_VAL_SIGNAL_NEXT => return Some(VmSignal::Next),
-        JIT_VAL_SIGNAL_NEXT_FILE => return Some(VmSignal::NextFile),
+        JIT_VAL_SIGNAL_NEXT => {
+            JIT_DYN_STRINGS.with(|c| c.borrow_mut().clear());
+            MIXED_PRINT_SLOTS.with(|c| c.borrow_mut().clear());
+            return Some(VmSignal::Next);
+        }
+        JIT_VAL_SIGNAL_NEXT_FILE => {
+            JIT_DYN_STRINGS.with(|c| c.borrow_mut().clear());
+            MIXED_PRINT_SLOTS.with(|c| c.borrow_mut().clear());
+            return Some(VmSignal::NextFile);
+        }
         JIT_VAL_SIGNAL_EXIT_DEFAULT => {
             ctx.rt.exit_code = 0;
             ctx.rt.exit_pending = true;
+            JIT_DYN_STRINGS.with(|c| c.borrow_mut().clear());
+            MIXED_PRINT_SLOTS.with(|c| c.borrow_mut().clear());
             return Some(VmSignal::ExitPending);
         }
         JIT_VAL_SIGNAL_EXIT_CODE => {
             let code = JIT_SIGNAL_ARG.with(|c| c.get()) as i32;
             ctx.rt.exit_code = code;
             ctx.rt.exit_pending = true;
+            JIT_DYN_STRINGS.with(|c| c.borrow_mut().clear());
+            MIXED_PRINT_SLOTS.with(|c| c.borrow_mut().clear());
             return Some(VmSignal::ExitPending);
         }
         crate::jit::JIT_VAL_SIGNAL_RETURN_VAL => {
             let val = JIT_SIGNAL_ARG.with(|c| c.get());
+            JIT_DYN_STRINGS.with(|c| c.borrow_mut().clear());
+            MIXED_PRINT_SLOTS.with(|c| c.borrow_mut().clear());
             return Some(VmSignal::Return(Value::Num(val)));
         }
         crate::jit::JIT_VAL_SIGNAL_RETURN_EMPTY => {
+            JIT_DYN_STRINGS.with(|c| c.borrow_mut().clear());
+            MIXED_PRINT_SLOTS.with(|c| c.borrow_mut().clear());
             return Some(VmSignal::Return(Value::Str(String::new())));
         }
         _ => {}
     }
 
     // Normal execution — push result value (may be unused for void chunks).
-    let v = result.unwrap();
-    ctx.push(Value::Num(v));
+    ctx.push(if mixed {
+        jit_f64_to_value(ctx, result)
+    } else {
+        Value::Num(result)
+    });
+    JIT_DYN_STRINGS.with(|c| c.borrow_mut().clear());
+    MIXED_PRINT_SLOTS.with(|c| c.borrow_mut().clear());
     Some(VmSignal::Normal)
 }
 
