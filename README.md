@@ -13,7 +13,7 @@
 [![Docs.rs](https://docs.rs/awkrs/badge.svg)](https://docs.rs/awkrs)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-### `[AWK BYTECODE ENGINE // PARALLEL RECORD PROCESSOR // RUST CORE]`
+### `[WORLDS FASTEST AWK BYTECODE ENGINE // PARALLEL RECORD PROCESSOR // RUST CORE]`
 
  ┌──────────────────────────────────────────────────────────────┐
  │ STATUS: ONLINE &nbsp;&nbsp; THREAT LEVEL: NEON &nbsp;&nbsp; SIGNAL: ████████░░ │
