@@ -5,9 +5,11 @@
 //! conditionals), field access via callback (constant `PushFieldNum`, dynamic
 //! `GetField`, NR/FNR/NF, and fused field+slot ops), and fused peephole opcodes.
 //!
-//! Execution takes a [`JitRuntimeState`]: mutable `f64` slot storage plus an
+//! Execution takes a [`JitRuntimeState`]: mutable `f64` slot storage, an
 //! `extern "C"` field callback (`i32` field index → `f64`; negative indices for
-//! NR/FNR/NF per VM convention).
+//! NR/FNR/NF per VM convention), and an `extern "C"` **`a[$field] += delta`**
+//! helper for fused `Op::ArrayFieldAddConst` (mutates the interpreter’s
+//! array map; uses the same thread-local `Runtime` + `CompiledProgram` as the VM).
 //!
 //! Enable with `AWKRS_JIT=1`. The VM tries [`try_jit_execute`] before falling
 //! back to the interpreter for eligible chunks.
@@ -42,19 +44,31 @@ fn ops_hash(ops: &[Op]) -> u64 {
 // ── Runtime state passed into JIT execution ───────────────────────────────
 
 /// Per-invocation inputs for running a [`JitChunk`]: backing storage for numeric
-/// slots and the field resolver used by `PushFieldNum`, fused field+slot ops, etc.
+/// slots, the field resolver, and the fused array update callback.
 ///
-/// The VM fills `slots` from the interpreter runtime and supplies a callback
-/// that reads `$N` as `f64` (and NR/FNR/NF for negative indices).
+/// The VM fills `slots` from the interpreter runtime and supplies callbacks
+/// that match the bytecode interpreter (`field_fn` for `$N` as `f64`, and
+/// `array_field_add` for the fused array opcode).
 pub struct JitRuntimeState<'a> {
     pub slots: &'a mut [f64],
     pub field_fn: extern "C" fn(i32) -> f64,
+    /// Fused `a[$field] += delta` — interned array name index, constant field
+    /// number, delta (see VM).
+    pub array_field_add: extern "C" fn(u32, i32, f64),
 }
 
 impl<'a> JitRuntimeState<'a> {
     #[inline]
-    pub fn new(slots: &'a mut [f64], field_fn: extern "C" fn(i32) -> f64) -> Self {
-        Self { slots, field_fn }
+    pub fn new(
+        slots: &'a mut [f64],
+        field_fn: extern "C" fn(i32) -> f64,
+        array_field_add: extern "C" fn(u32, i32, f64),
+    ) -> Self {
+        Self {
+            slots,
+            field_fn,
+            array_field_add,
+        }
     }
 }
 
@@ -63,7 +77,7 @@ impl<'a> JitRuntimeState<'a> {
 /// Holds generated machine code. Keep alive while calling [`JitChunk::execute`].
 pub struct JitChunk {
     _module: JITModule,
-    /// `extern "C" fn(slots: *mut f64, field_fn: extern "C" fn(i32) -> f64) -> f64`
+    /// `extern "C" fn(slots, field_fn, array_field_add) -> f64`
     fn_ptr: *const u8,
     /// Number of f64 values the function expects in the slots pointer (diagnostic).
     #[allow(dead_code)]
@@ -78,14 +92,20 @@ pub struct JitChunk {
 unsafe impl Send for JitChunk {}
 unsafe impl Sync for JitChunk {}
 
-/// Machine ABI: `(slots: *mut f64, field_fn: extern "C" fn(i32) -> f64) -> f64`
-type JitFn = extern "C" fn(*mut f64, extern "C" fn(i32) -> f64) -> f64;
+/// Machine ABI: third argument is `extern "C" fn(u32, i32, f64)` for
+/// the fused `a[$field] += delta` opcode (may be a no-op if the chunk never calls it).
+type JitFn =
+    extern "C" fn(*mut f64, extern "C" fn(i32) -> f64, extern "C" fn(u32, i32, f64)) -> f64;
 
 impl JitChunk {
-    /// Run the compiled chunk using the given [`JitRuntimeState`] (slots + field callback).
+    /// Run the compiled chunk using the given [`JitRuntimeState`].
     pub fn execute(&self, state: &mut JitRuntimeState<'_>) -> f64 {
         let f: JitFn = unsafe { mem::transmute(self.fn_ptr) };
-        f(state.slots.as_mut_ptr(), state.field_fn)
+        f(
+            state.slots.as_mut_ptr(),
+            state.field_fn,
+            state.array_field_add,
+        )
     }
 }
 
@@ -95,7 +115,8 @@ impl JitChunk {
 ///
 /// Eligible ops: numeric constants, slot access, arithmetic, comparisons,
 /// control flow, field access (`PushFieldNum`, `GetField`, NR/FNR/NF, fused
-/// field+slot ops), and fused peephole opcodes.
+/// field+slot ops), fused `a[$n] += delta`, and
+/// other fused peephole opcodes.
 pub fn is_jit_eligible(ops: &[Op]) -> bool {
     if ops.is_empty() {
         return false;
@@ -188,6 +209,9 @@ pub fn is_jit_eligible(ops: &[Op]) -> bool {
             // Fused loop condition
             Op::JumpIfSlotGeNum { .. } => {}
 
+            // Fused `a[$field] += delta` — mutates runtime array, no stack effect.
+            Op::ArrayFieldAddConst { .. } => {}
+
             _ => return false,
         }
     }
@@ -240,6 +264,7 @@ fn needs_field_callback(ops: &[Op]) -> bool {
                 | Op::GetNR
                 | Op::GetFNR
                 | Op::GetNF
+                | Op::ArrayFieldAddConst { .. }
         )
     })
 }
@@ -272,11 +297,12 @@ pub fn try_compile(ops: &[Op]) -> Option<JitChunk> {
     let mut ctx = module.make_context();
     let mut func_ctx = FunctionBuilderContext::new();
 
-    // Function signature: (slots: *mut f64, field_fn: fn(i32) -> f64) -> f64
+    // Function signature: (slots, field_fn, array_field_add) -> f64
     let ptr_type = module.target_config().pointer_type();
     let mut sig = module.make_signature();
     sig.params.push(AbiParam::new(ptr_type)); // slots pointer
     sig.params.push(AbiParam::new(ptr_type)); // field callback fn pointer
+    sig.params.push(AbiParam::new(ptr_type)); // array_field_add fn pointer
     sig.returns.push(AbiParam::new(types::F64));
 
     // Declare the field callback signature for indirect calls
@@ -284,6 +310,13 @@ pub fn try_compile(ops: &[Op]) -> Option<JitChunk> {
     field_sig.params.push(AbiParam::new(types::I32));
     field_sig.returns.push(AbiParam::new(types::F64));
     let _field_sig_ref = module.declare_anonymous_function(&field_sig).ok()?;
+
+    // `array_field_add(arr_pool_idx, field, delta)` — void
+    let mut array_sig = module.make_signature();
+    array_sig.params.push(AbiParam::new(types::I32));
+    array_sig.params.push(AbiParam::new(types::I32));
+    array_sig.params.push(AbiParam::new(types::F64));
+    let _array_sig_ref = module.declare_anonymous_function(&array_sig).ok()?;
 
     let func_id = module
         .declare_function("awkrs_jit_chunk", Linkage::Export, &sig)
@@ -317,12 +350,14 @@ pub fn try_compile(ops: &[Op]) -> Option<JitChunk> {
     {
         let mut builder = FunctionBuilder::new(&mut ctx.func, &mut func_ctx);
 
-        // Import the field callback signature
+        // Import callback signatures
         let field_sig_ir = builder.import_signature(field_sig);
+        let array_sig_ir = builder.import_signature(array_sig);
 
         // ── Cranelift Variables for function params (survive across blocks) ──
         let var_slots_ptr = builder.declare_var(ptr_type);
         let var_field_fn = builder.declare_var(ptr_type);
+        let var_array_fn = builder.declare_var(ptr_type);
 
         // Entry block with function params
         let entry_block = builder.create_block();
@@ -348,8 +383,10 @@ pub fn try_compile(ops: &[Op]) -> Option<JitChunk> {
         // Store params into variables so they're accessible from any block
         let slots_ptr_val = builder.block_params(entry_block)[0];
         let field_fn_val = builder.block_params(entry_block)[1];
+        let array_fn_val = builder.block_params(entry_block)[2];
         builder.def_var(var_slots_ptr, slots_ptr_val);
         builder.def_var(var_field_fn, field_fn_val);
+        builder.def_var(var_array_fn, array_fn_val);
 
         // Seal entry block — its only predecessor is the function entry
         builder.seal_block(entry_block);
@@ -386,6 +423,7 @@ pub fn try_compile(ops: &[Op]) -> Option<JitChunk> {
             // Read function params from variables (valid in any block)
             let slots_ptr = builder.use_var(var_slots_ptr);
             let field_fn_ptr = builder.use_var(var_field_fn);
+            let array_fn_ptr = builder.use_var(var_array_fn);
 
             match ops[pc] {
                 // ── Constants ───────────────────────────────────────────
@@ -759,6 +797,17 @@ pub fn try_compile(ops: &[Op]) -> Option<JitChunk> {
                         .store(MemFlags::trusted(), sum, slots_ptr, offset);
                 }
 
+                Op::ArrayFieldAddConst { arr, field, delta } => {
+                    let arr_idx = builder.ins().iconst(types::I32, i64::from(arr));
+                    let field_idx = builder.ins().iconst(types::I32, i64::from(field));
+                    let d = builder.ins().f64const(delta);
+                    builder.ins().call_indirect(
+                        array_sig_ir,
+                        array_fn_ptr,
+                        &[arr_idx, field_idx, d],
+                    );
+                }
+
                 // ── Fused loop condition ───────────────────────────────
                 Op::JumpIfSlotGeNum {
                     slot,
@@ -836,7 +885,7 @@ pub fn jit_enabled() -> bool {
 
 /// Try to JIT-compile and execute a chunk. Returns `Some(f64)` on success.
 ///
-/// The caller supplies [`JitRuntimeState`] (bytecode slots as `f64` and the field callback).
+/// The caller supplies [`JitRuntimeState`] (slots, field callback, array fused-op callback).
 pub fn try_jit_execute(ops: &[Op], state: &mut JitRuntimeState<'_>) -> Option<f64> {
     if !jit_enabled() {
         return None;
@@ -920,8 +969,9 @@ impl JitNumericChunk {
         extern "C" fn dummy_field(_: i32) -> f64 {
             0.0
         }
+        extern "C" fn dummy_array(_: u32, _: i32, _: f64) {}
         let mut empty_slots: [f64; 0] = [];
-        let mut state = JitRuntimeState::new(&mut empty_slots, dummy_field);
+        let mut state = JitRuntimeState::new(&mut empty_slots, dummy_field, dummy_array);
         self.inner.execute(&mut state)
     }
 }
@@ -945,22 +995,24 @@ mod tests {
         0.0
     }
 
+    extern "C" fn dummy_array(_: u32, _: i32, _: f64) {}
+
     fn exec(ops: &[Op]) -> f64 {
         let chunk = try_compile(ops).expect("compile failed");
         let mut slots = [0.0f64; 0];
-        let mut state = JitRuntimeState::new(&mut slots, dummy_field);
+        let mut state = JitRuntimeState::new(&mut slots, dummy_field, dummy_array);
         chunk.execute(&mut state)
     }
 
     fn exec_with_slots(ops: &[Op], slots: &mut [f64]) -> f64 {
         let chunk = try_compile(ops).expect("compile failed");
-        let mut state = JitRuntimeState::new(slots, dummy_field);
+        let mut state = JitRuntimeState::new(slots, dummy_field, dummy_array);
         chunk.execute(&mut state)
     }
 
     fn exec_with_fields(ops: &[Op], slots: &mut [f64], field_fn: extern "C" fn(i32) -> f64) -> f64 {
         let chunk = try_compile(ops).expect("compile failed");
-        let mut state = JitRuntimeState::new(slots, field_fn);
+        let mut state = JitRuntimeState::new(slots, field_fn, dummy_array);
         chunk.execute(&mut state)
     }
 
@@ -1382,6 +1434,31 @@ mod tests {
                 redir: crate::bytecode::RedirKind::Stdout,
             },
         ]));
+    }
+
+    #[test]
+    fn jit_eligible_array_field_add_const() {
+        assert!(is_jit_eligible(&[
+            Op::ArrayFieldAddConst {
+                arr: 0,
+                field: 1,
+                delta: 1.0,
+            },
+            Op::PushNum(0.0),
+        ]));
+    }
+
+    #[test]
+    fn jit_array_field_add_const_straight_line() {
+        let ops = [
+            Op::ArrayFieldAddConst {
+                arr: 0,
+                field: 1,
+                delta: 2.0,
+            },
+            Op::PushNum(0.0),
+        ];
+        assert!((exec(&ops)).abs() < 1e-15);
     }
 
     // ── Dup ────────────────────────────────────────────────────────────

@@ -329,6 +329,9 @@ thread_local! {
     /// Raw pointer to the current Runtime, set before JIT execution so the
     /// field callback can access `field_as_number`, `nr`, `fnr`, `nf`.
     static JIT_RT_PTR: Cell<*mut Runtime> = const { Cell::new(std::ptr::null_mut()) };
+    /// Raw pointer to the current [`CompiledProgram`], set before JIT execution
+    /// so fused `ArrayFieldAddConst` can resolve interned array names.
+    static JIT_CP_PTR: Cell<*const CompiledProgram> = const { Cell::new(std::ptr::null()) };
 }
 
 /// Field callback passed to JIT-compiled code.
@@ -350,6 +353,25 @@ extern "C" fn jit_field_callback(i: i32) -> f64 {
     })
 }
 
+/// Fused `a[$field] += delta` — matches `Op::ArrayFieldAddConst` in the VM loop.
+extern "C" fn jit_array_field_add_const(arr_idx: u32, field: i32, delta: f64) {
+    JIT_RT_PTR.with(|rt_cell| {
+        JIT_CP_PTR.with(|cp_cell| {
+            let rt_ptr = rt_cell.get();
+            let cp_ptr = cp_cell.get();
+            if rt_ptr.is_null() || cp_ptr.is_null() {
+                return;
+            }
+            let rt = unsafe { &mut *rt_ptr };
+            let cp = unsafe { &*cp_ptr };
+            let name = cp.strings.get(arr_idx);
+            let key = rt.field(field).as_str();
+            let old = rt.array_get(name, &key).as_number();
+            rt.array_set(name, key, Value::Num(old + delta));
+        })
+    })
+}
+
 /// Try JIT dispatch for the full instruction set. Converts slots to/from f64[],
 /// sets up the field callback via thread-local, and executes.
 fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Option<f64> {
@@ -361,15 +383,22 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Option<f64> {
     let slot_count = ctx.rt.slots.len();
     let mut jit_slots: Vec<f64> = ctx.rt.slots.iter().map(|v| v.as_number()).collect();
 
-    // Set thread-local Runtime pointer for the field callback
+    // Set thread-local Runtime + program pointers for JIT callbacks
     let rt_ptr: *mut Runtime = ctx.rt;
+    let cp_ptr: *const CompiledProgram = ctx.cp;
     JIT_RT_PTR.with(|cell| cell.set(rt_ptr));
+    JIT_CP_PTR.with(|cell| cell.set(cp_ptr));
 
-    let mut jit_state = crate::jit::JitRuntimeState::new(&mut jit_slots, jit_field_callback);
+    let mut jit_state = crate::jit::JitRuntimeState::new(
+        &mut jit_slots,
+        jit_field_callback,
+        jit_array_field_add_const,
+    );
     let result = crate::jit::try_jit_execute(ops, &mut jit_state);
 
-    // Clear the pointer
+    // Clear pointers
     JIT_RT_PTR.with(|cell| cell.set(std::ptr::null_mut()));
+    JIT_CP_PTR.with(|cell| cell.set(std::ptr::null()));
 
     // Write back modified slots
     if result.is_some() {

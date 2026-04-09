@@ -2,7 +2,8 @@
 
 mod common;
 
-use common::{run_awkrs_file, run_awkrs_stdin, run_awkrs_stdin_args};
+use common::{run_awkrs_file, run_awkrs_stdin, run_awkrs_stdin_args, run_awkrs_stdin_args_env};
+use std::ffi::OsString;
 use std::fs;
 use std::process::Command;
 
@@ -86,6 +87,18 @@ fn for_loop_sum_indices() {
     let (c, o, _) = run_awkrs_stdin("BEGIN { s=0; for (i=1;i<=5;i=i+1) s+=i; print s }", "");
     assert_eq!(c, 0);
     assert_eq!(o, "15\n");
+}
+
+#[test]
+fn jit_array_field_add_const_fused_opcode() {
+    let (c, o, e) = run_awkrs_stdin_args_env(
+        std::iter::empty::<&str>(),
+        "{ a[$1] += 1 } END { print a[\"x\"] + 0 }",
+        "x\nx\nx\n",
+        [(OsString::from("AWKRS_JIT"), OsString::from("1"))],
+    );
+    assert_eq!(c, 0, "stderr: {e}");
+    assert_eq!(o, "3\n");
 }
 
 #[test]
