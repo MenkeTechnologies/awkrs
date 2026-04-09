@@ -1,5 +1,4 @@
 use std::borrow::Cow;
-use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 
 /// Fast hash map for awk variables and arrays. Uses FxHash (no DoS resistance,
@@ -1033,59 +1032,81 @@ impl Runtime {
     ///
     /// Avoids `field(i).as_str()` which allocated twice per call (field string + clone for
     /// `as_str()`), and avoids separate `array_get` + `array_set` lookups.
+    ///
+    /// Uses a substring of `record` / `fields` as `&str` for `get_mut` so repeated field
+    /// values do not allocate a `String` per line; inserts still allocate once for the key.
     pub fn array_field_add_delta(&mut self, name: &str, field: i32, delta: f64) {
         self.ensure_fields_split();
-        let key = self.field_subscript_string(field);
-        self.array_add_numeric(name, key, delta);
-    }
-
-    #[inline]
-    fn field_subscript_string(&self, field: i32) -> String {
         if field < 1 {
-            return String::new();
+            Self::apply_array_numeric_delta(&mut self.vars, &self.global_readonly, name, "", delta);
+            return;
         }
         let idx = (field - 1) as usize;
         if self.fields_dirty {
-            return self.fields.get(idx).cloned().unwrap_or_default();
+            let key = self.fields.get(idx).map(|s| s.as_str()).unwrap_or("");
+            Self::apply_array_numeric_delta(
+                &mut self.vars,
+                &self.global_readonly,
+                name,
+                key,
+                delta,
+            );
+            return;
         }
-        self.field_ranges
-            .get(idx)
-            .map(|&(s, e)| self.record[s as usize..e as usize].to_string())
-            .unwrap_or_default()
+        let (s, e) = match self.field_ranges.get(idx) {
+            Some(&(s, e)) => (s as usize, e as usize),
+            None => {
+                Self::apply_array_numeric_delta(
+                    &mut self.vars,
+                    &self.global_readonly,
+                    name,
+                    "",
+                    delta,
+                );
+                return;
+            }
+        };
+        let key = &self.record[s..e];
+        Self::apply_array_numeric_delta(&mut self.vars, &self.global_readonly, name, key, delta);
     }
 
-    fn array_add_numeric(&mut self, name: &str, key: String, delta: f64) {
-        if let Some(existing) = self.vars.get_mut(name) {
+    /// Shared body for [`array_field_add_delta`](Self::array_field_add_delta); separate from
+    /// `&mut self` so callers can borrow `record` / `fields` for `key` while mutating `vars`.
+    fn apply_array_numeric_delta(
+        vars: &mut AwkMap<String, Value>,
+        global_readonly: &Option<Arc<AwkMap<String, Value>>>,
+        name: &str,
+        key: &str,
+        delta: f64,
+    ) {
+        if let Some(existing) = vars.get_mut(name) {
             match existing {
                 Value::Array(a) => {
-                    match a.entry(key) {
-                        Entry::Occupied(mut e) => {
-                            let n = e.get().as_number() + delta;
-                            e.insert(Value::Num(n));
-                        }
-                        Entry::Vacant(e) => {
-                            e.insert(Value::Num(delta));
-                        }
+                    if let Some(v) = a.get_mut(key) {
+                        let n = v.as_number() + delta;
+                        *v = Value::Num(n);
+                    } else {
+                        a.insert(key.to_string(), Value::Num(delta));
                     }
                     return;
                 }
                 _ => {
                     let mut m = AwkMap::default();
-                    m.insert(key, Value::Num(delta));
+                    m.insert(key.to_string(), Value::Num(delta));
                     *existing = Value::Array(m);
                     return;
                 }
             }
         }
-        if let Some(Value::Array(a)) = self.global_readonly.as_ref().and_then(|g| g.get(name)) {
+        if let Some(Value::Array(a)) = global_readonly.as_ref().and_then(|g| g.get(name)) {
             let mut copy = a.clone();
-            let old = copy.get(&key).map(|v| v.as_number()).unwrap_or(0.0);
-            copy.insert(key, Value::Num(old + delta));
-            self.vars.insert(name.to_string(), Value::Array(copy));
+            let old = copy.get(key).map(|v| v.as_number()).unwrap_or(0.0);
+            copy.insert(key.to_string(), Value::Num(old + delta));
+            vars.insert(name.to_string(), Value::Array(copy));
         } else {
             let mut m = AwkMap::default();
-            m.insert(key, Value::Num(delta));
-            self.vars.insert(name.to_string(), Value::Array(m));
+            m.insert(key.to_string(), Value::Num(delta));
+            vars.insert(name.to_string(), Value::Array(m));
         }
     }
 

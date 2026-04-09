@@ -137,6 +137,45 @@ impl<'a> VmCtx<'a> {
         }
     }
 
+    /// Resolve variable name from the string pool without a heap `String` when the
+    /// identifier is short (≤128 bytes), e.g. `for (k in a)`.
+    fn set_var_interned(&mut self, var_idx: u32, val: Value) {
+        let s = self.str_ref(var_idx);
+        const MAX_STACK_IDENT: usize = 128;
+        if s.len() <= MAX_STACK_IDENT {
+            let mut buf = [0u8; MAX_STACK_IDENT];
+            buf[..s.len()].copy_from_slice(s.as_bytes());
+            let name = std::str::from_utf8(&buf[..s.len()])
+                .expect("interned identifier must be valid UTF-8");
+            self.set_var(name, val);
+        } else {
+            let name = s.to_string();
+            self.set_var(&name, val);
+        }
+    }
+
+    /// Same as [`set_var_interned`](Self::set_var_interned) plus JIT slot sync for compiled loops.
+    fn set_var_interned_jit_sync(&mut self, var_idx: u32, val: Value) {
+        let s = self.str_ref(var_idx);
+        const MAX_STACK_IDENT: usize = 128;
+        if s.len() <= MAX_STACK_IDENT {
+            let mut buf = [0u8; MAX_STACK_IDENT];
+            buf[..s.len()].copy_from_slice(s.as_bytes());
+            let name = std::str::from_utf8(&buf[..s.len()])
+                .expect("interned identifier must be valid UTF-8");
+            self.set_var(name, val);
+            if let Some(&slot) = self.cp.slot_map.get(name) {
+                sync_jit_slot_value(self, slot);
+            }
+        } else {
+            let name = s.to_string();
+            self.set_var(&name, val);
+            if let Some(&slot) = self.cp.slot_map.get(name.as_str()) {
+                sync_jit_slot_value(self, slot);
+            }
+        }
+    }
+
     #[inline]
     fn push(&mut self, v: Value) {
         self.stack.push(v);
@@ -1830,11 +1869,7 @@ extern "C" fn jit_val_dispatch(op: u32, a1: u32, a2: f64, a3: f64) -> f64 {
                     } else {
                         let key = mem::take(&mut state.keys[state.index]);
                         state.index += 1;
-                        let name = ctx.str_ref(var_idx).to_string();
-                        ctx.set_var(&name, Value::Str(key));
-                        if let Some(&slot) = ctx.cp.slot_map.get(name.as_str()) {
-                            sync_jit_slot_value(ctx, slot);
-                        }
+                        ctx.set_var_interned_jit_sync(var_idx, Value::Str(key));
                         1.0 // has next
                     }
                 })
@@ -2487,8 +2522,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 // Move key out of the snapshot vec — avoids cloning each `String`.
                 let key = mem::take(&mut state.keys[state.index]);
                 state.index += 1;
-                let name = ctx.str_ref(var).to_string();
-                ctx.set_var(&name, Value::Str(key));
+                ctx.set_var_interned(var, Value::Str(key));
             }
             Op::ForInEnd => {
                 ctx.for_in_iters.pop();

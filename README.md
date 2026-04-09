@@ -207,11 +207,11 @@ Cross-record state is not parallel-safe, so awkrs stays **single-threaded** (def
 
 | Command | Mean | Min | Max | Relative |
 |:---|---:|---:|---:|---:|
-| BSD awk | 170.3 ms | 161.6 ms | 182.8 ms | 2.98× |
-| gawk | 75.5 ms | 70.5 ms | 82.6 ms | 1.32× |
-| mawk | 86.2 ms | 73.0 ms | 103.8 ms | 1.51× |
-| awkrs (JIT) | 72.4 ms | 67.1 ms | 80.8 ms | 1.27× |
-| awkrs (bytecode) | 57.1 ms | 47.6 ms | 67.5 ms | **1.00×** |
+| BSD awk | 173.9 ms | 161.6 ms | 198.8 ms | 3.13× |
+| gawk | 78.4 ms | 69.1 ms | 93.6 ms | 1.41× |
+| mawk | 87.7 ms | 74.7 ms | 104.7 ms | 1.58× |
+| awkrs (JIT) | 74.9 ms | 66.4 ms | 85.2 ms | 1.35× |
+| awkrs (bytecode) | 55.6 ms | 47.8 ms | 63.4 ms | **1.00×** |
 
 ### 7. Conditional field (`NR % 2 == 0 { print $2 }`, 200 K lines)
 
