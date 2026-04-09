@@ -3349,7 +3349,10 @@ pub fn try_jit_execute(
 ///
 /// Supports the same straight-line stack discipline as [`is_jit_eligible`] for pure
 /// numeric stack ops: constants, `+ - * / %`, comparisons, unary `+`/`-`, logical
-/// [`Op::Not`] / [`Op::ToBool`], [`Op::Dup`], and [`Op::Pop`].
+/// [`Op::Not`] / [`Op::ToBool`], [`Op::Dup`], [`Op::Pop`], slot read/write ([`Op::GetSlot`],
+/// [`Op::SetSlot`]), constant field reads ([`Op::PushFieldNum`]), and [`Op::GetNR`] /
+/// [`Op::GetFNR`] / [`Op::GetNF`] (via the field callback — [`JitNumericChunk::call_f64`]
+/// passes a stub that returns `0.0`; use the VM path for real field/NR semantics).
 pub fn is_numeric_stack_eligible(ops: &[Op]) -> bool {
     let mut depth: i32 = 0;
     for op in ops {
@@ -3384,10 +3387,26 @@ pub fn is_numeric_stack_eligible(ops: &[Op]) -> bool {
                 }
                 depth -= 1;
             }
+            Op::GetSlot(_) => depth += 1,
+            Op::SetSlot(_) => {}
+            Op::PushFieldNum(_) | Op::GetNR | Op::GetFNR | Op::GetNF => depth += 1,
             _ => return false,
         }
     }
     depth == 1
+}
+
+/// Upper bound on slot indices touched by [`is_numeric_stack_eligible`] bytecode (for
+/// [`JitNumericChunk::call_f64`] backing storage).
+pub fn numeric_stack_slot_words(ops: &[Op]) -> usize {
+    let mut m = 0usize;
+    for op in ops {
+        match op {
+            Op::GetSlot(s) | Op::SetSlot(s) => m = m.max(*s as usize + 1),
+            _ => {}
+        }
+    }
+    m
 }
 
 /// Compile a pure-numeric expression (legacy API).
@@ -3397,12 +3416,16 @@ pub fn try_compile_numeric_expr(ops: &[Op]) -> Option<JitNumericChunk> {
     }
     // Use the new compiler but wrap in legacy struct
     let chunk = try_compile(ops, &empty_compiled_program())?;
-    Some(JitNumericChunk { inner: chunk })
+    Some(JitNumericChunk {
+        inner: chunk,
+        slot_words: numeric_stack_slot_words(ops),
+    })
 }
 
 /// Legacy wrapper — holds a JIT chunk compiled from pure numeric ops.
 pub struct JitNumericChunk {
     inner: JitChunk,
+    slot_words: usize,
 }
 
 impl JitNumericChunk {
@@ -3422,9 +3445,13 @@ impl JitNumericChunk {
         extern "C" fn dummy_val_dispatch(_: u32, _: u32, _: f64, _: f64) -> f64 {
             0.0
         }
-        let mut empty_slots: [f64; 0] = [];
+        let mut slots: Vec<f64> = if self.slot_words == 0 {
+            Vec::new()
+        } else {
+            vec![0.0; self.slot_words]
+        };
         let mut state = JitRuntimeState::new(
-            &mut empty_slots,
+            &mut slots,
             dummy_field,
             dummy_array,
             dummy_var,
@@ -3802,6 +3829,30 @@ mod tests {
 
         let ops_tb = [Op::PushNum(0.0), Op::ToBool];
         let j = try_compile_numeric_expr(&ops_tb).expect("compile ToBool");
+        assert!(j.call_f64().abs() < 1e-15);
+    }
+
+    #[test]
+    fn jit_numeric_expr_slots_get_set() {
+        // Store 5 in slot 0, duplicate via GetSlot, add -> 10.
+        let ops = [Op::PushNum(5.0), Op::SetSlot(0), Op::GetSlot(0), Op::Add];
+        assert_eq!(numeric_stack_slot_words(&ops), 1);
+        let j = try_compile_numeric_expr(&ops).expect("compile");
+        assert!((j.call_f64() - 10.0).abs() < 1e-15);
+    }
+
+    #[test]
+    fn jit_numeric_expr_set_pop_get() {
+        let ops = [Op::PushNum(5.0), Op::SetSlot(0), Op::Pop, Op::GetSlot(0)];
+        let j = try_compile_numeric_expr(&ops).expect("compile");
+        assert!((j.call_f64() - 5.0).abs() < 1e-15);
+    }
+
+    #[test]
+    fn jit_numeric_expr_get_slot_zero() {
+        let ops = [Op::GetSlot(0)];
+        assert_eq!(numeric_stack_slot_words(&ops), 1);
+        let j = try_compile_numeric_expr(&ops).expect("compile");
         assert!(j.call_f64().abs() < 1e-15);
     }
 
