@@ -13,8 +13,9 @@
 //!
 //! Enable with `AWKRS_JIT=1`. The VM tries [`try_jit_execute`] before falling
 //! back to the interpreter for eligible chunks. A fifth callback,
-//! [`JitRuntimeState::field_dispatch`], handles **`$n`** compound assignment and
-//! **`++$n`** / **`$n++`** (same opcode constants as HashMap-path `var_dispatch`).
+//! [`JitRuntimeState::field_dispatch`], handles numeric **`$n = val`**
+//! ([`JIT_FIELD_OP_SET_NUM`]), compound assignment, and **`++$n`** / **`$n++`**
+//! (same `JIT_VAR_OP_*` opcodes as HashMap-path `var_dispatch` where applicable).
 
 use crate::ast::{BinOp, IncDecOp};
 use crate::bytecode::Op;
@@ -44,11 +45,14 @@ pub const JIT_VAR_OP_COMPOUND_MOD: u32 = 8;
 /// Expression `++name` / `--name` (prefix) on HashMap-path names — `arg` ignored.
 ///
 /// **`field_dispatch`** uses the same opcode values for `$idx` **compound** and
-/// **inc/dec** (`CompoundAssignField`, `IncDecField`); it does not use `GET`/`SET`.
+/// **inc/dec** (`CompoundAssignField`, `IncDecField`); plain assignment uses
+/// [`JIT_FIELD_OP_SET_NUM`].
 pub const JIT_VAR_OP_INCDEC_PRE_INC: u32 = 9;
 pub const JIT_VAR_OP_INCDEC_POST_INC: u32 = 10;
 pub const JIT_VAR_OP_INCDEC_PRE_DEC: u32 = 11;
 pub const JIT_VAR_OP_INCDEC_POST_DEC: u32 = 12;
+/// `$idx = val` (numeric) — **`field_dispatch` only** (not used by `var_dispatch`).
+pub const JIT_FIELD_OP_SET_NUM: u32 = 13;
 
 #[inline]
 fn jit_var_op_for_compound(bop: BinOp) -> u32 {
@@ -95,7 +99,7 @@ fn ops_hash(ops: &[Op]) -> u64 {
 ///
 /// The VM fills `slots` from the interpreter runtime and supplies callbacks
 /// that match the bytecode interpreter (`field_fn`, `array_field_add`,
-/// `var_dispatch`, and `field_dispatch` for `CompoundAssignField` / `IncDecField`).
+/// `var_dispatch`, and `field_dispatch` for `SetField` / `CompoundAssignField` / `IncDecField`).
 pub struct JitRuntimeState<'a> {
     pub slots: &'a mut [f64],
     pub field_fn: extern "C" fn(i32) -> f64,
@@ -104,8 +108,8 @@ pub struct JitRuntimeState<'a> {
     pub array_field_add: extern "C" fn(u32, i32, f64),
     /// Multiplexed HashMap-path variable ops — see `JIT_VAR_OP_GET` and friends.
     pub var_dispatch: extern "C" fn(u32, u32, f64) -> f64,
-    /// `$idx` compound assign / `++$idx` — same `JIT_VAR_OP_*` opcodes as
-    /// [`JitRuntimeState::var_dispatch`] for compound and inc/dec (not `GET`/`SET`).
+    /// `$idx = val`, compound assign, `++$idx` — [`JIT_FIELD_OP_SET_NUM`] for assignment;
+    /// same `JIT_VAR_OP_*` as [`JitRuntimeState::var_dispatch`] for compound and inc/dec.
     pub field_dispatch: extern "C" fn(u32, i32, f64) -> f64,
 }
 
@@ -150,8 +154,8 @@ unsafe impl Sync for JitChunk {}
 
 /// Machine ABI: `array_field_add` is for fused `a[$field] += delta`; `var_dispatch`
 /// multiplexes `GetVar` / `SetVar` / `IncrVar` / `DecrVar` / `CompoundAssignVar` /
-/// `IncDecVar`; `field_dispatch` multiplexes `CompoundAssignField` / `IncDecField`
-/// (reuses `JIT_VAR_OP_*` for compound and inc/dec only).
+/// `IncDecVar`; `field_dispatch` multiplexes `SetField` ([`JIT_FIELD_OP_SET_NUM`]),
+/// `CompoundAssignField` / `IncDecField` (reuses `JIT_VAR_OP_*` for compound and inc/dec).
 type JitFn = extern "C" fn(
     *mut f64,
     extern "C" fn(i32) -> f64,
@@ -310,6 +314,13 @@ pub fn is_jit_eligible(ops: &[Op]) -> bool {
                     return false;
                 }
             }
+            // `$idx = val` — pop value, pop index, push value (numeric JIT path).
+            Op::SetField => {
+                if depth < 2 {
+                    return false;
+                }
+                depth -= 1;
+            }
 
             _ => return false,
         }
@@ -364,6 +375,7 @@ fn needs_field_callback(ops: &[Op]) -> bool {
                 | Op::GetFNR
                 | Op::GetNF
                 | Op::ArrayFieldAddConst { .. }
+                | Op::SetField
                 | Op::CompoundAssignField(_)
                 | Op::IncDecField(_)
         )
@@ -651,6 +663,20 @@ pub fn try_compile(ops: &[Op]) -> Option<JitChunk> {
                         field_mut_sig_ir,
                         field_mut_fn_ptr,
                         &[opv, idx_i32, z],
+                    );
+                    stack.push(builder.inst_results(call)[0]);
+                }
+                Op::SetField => {
+                    let val = stack.pop().expect("SetField val");
+                    let idx_f = stack.pop().expect("SetField idx");
+                    let idx_i32 = builder.ins().fcvt_to_sint_sat(types::I32, idx_f);
+                    let opv = builder
+                        .ins()
+                        .iconst(types::I32, i64::from(JIT_FIELD_OP_SET_NUM));
+                    let call = builder.ins().call_indirect(
+                        field_mut_sig_ir,
+                        field_mut_fn_ptr,
+                        &[opv, idx_i32, val],
                     );
                     stack.push(builder.inst_results(call)[0]);
                 }
@@ -1307,9 +1333,10 @@ mod tests {
     extern "C" fn test_field_dispatch(op: u32, field_idx: i32, arg: f64) -> f64 {
         use crate::ast::BinOp;
         use crate::jit::{
-            JIT_VAR_OP_COMPOUND_ADD, JIT_VAR_OP_COMPOUND_DIV, JIT_VAR_OP_COMPOUND_MOD,
-            JIT_VAR_OP_COMPOUND_MUL, JIT_VAR_OP_COMPOUND_SUB, JIT_VAR_OP_INCDEC_POST_DEC,
-            JIT_VAR_OP_INCDEC_POST_INC, JIT_VAR_OP_INCDEC_PRE_DEC, JIT_VAR_OP_INCDEC_PRE_INC,
+            JIT_FIELD_OP_SET_NUM, JIT_VAR_OP_COMPOUND_ADD, JIT_VAR_OP_COMPOUND_DIV,
+            JIT_VAR_OP_COMPOUND_MOD, JIT_VAR_OP_COMPOUND_MUL, JIT_VAR_OP_COMPOUND_SUB,
+            JIT_VAR_OP_INCDEC_POST_DEC, JIT_VAR_OP_INCDEC_POST_INC, JIT_VAR_OP_INCDEC_PRE_DEC,
+            JIT_VAR_OP_INCDEC_PRE_INC,
         };
         let i = field_idx.max(0) as usize;
         TEST_JIT_FIELDS.with(|cell| {
@@ -1318,6 +1345,10 @@ mod tests {
                 v.resize(i + 1, 0.0);
             }
             match op {
+                JIT_FIELD_OP_SET_NUM => {
+                    v[i] = arg;
+                    arg
+                }
                 JIT_VAR_OP_COMPOUND_ADD
                 | JIT_VAR_OP_COMPOUND_SUB
                 | JIT_VAR_OP_COMPOUND_MUL
@@ -1992,6 +2023,28 @@ mod tests {
         let r = exec_with_test_field(&[Op::PushNum(1.0), Op::IncDecField(IncDecOp::PostInc)]);
         assert!((r - 10.0).abs() < 1e-15);
         assert!((field_at(1) - 11.0).abs() < 1e-15);
+    }
+
+    #[test]
+    fn jit_eligible_set_field() {
+        assert!(is_jit_eligible(&[
+            Op::PushNum(1.0),
+            Op::PushNum(42.0),
+            Op::SetField,
+            Op::PushNum(0.0),
+        ]));
+    }
+
+    #[test]
+    fn jit_set_field_numeric() {
+        setup_test_fields(&[(1, 0.0)]);
+        let r = exec_with_test_field(&[
+            Op::PushNum(1.0),
+            Op::PushNum(42.0),
+            Op::SetField,
+        ]);
+        assert!((r - 42.0).abs() < 1e-15);
+        assert!((field_at(1) - 42.0).abs() < 1e-15);
     }
 
     #[test]

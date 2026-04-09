@@ -489,11 +489,17 @@ extern "C" fn jit_field_dispatch(op: u32, field_idx: i32, arg: f64) -> f64 {
         }
         let ctx = unsafe { &mut *p };
         use crate::jit::{
-            JIT_VAR_OP_COMPOUND_ADD, JIT_VAR_OP_COMPOUND_DIV, JIT_VAR_OP_COMPOUND_MOD,
-            JIT_VAR_OP_COMPOUND_MUL, JIT_VAR_OP_COMPOUND_SUB, JIT_VAR_OP_INCDEC_POST_DEC,
-            JIT_VAR_OP_INCDEC_POST_INC, JIT_VAR_OP_INCDEC_PRE_DEC, JIT_VAR_OP_INCDEC_PRE_INC,
+            JIT_FIELD_OP_SET_NUM, JIT_VAR_OP_COMPOUND_ADD, JIT_VAR_OP_COMPOUND_DIV,
+            JIT_VAR_OP_COMPOUND_MOD, JIT_VAR_OP_COMPOUND_MUL, JIT_VAR_OP_COMPOUND_SUB,
+            JIT_VAR_OP_INCDEC_POST_DEC, JIT_VAR_OP_INCDEC_POST_INC, JIT_VAR_OP_INCDEC_PRE_DEC,
+            JIT_VAR_OP_INCDEC_PRE_INC,
         };
         match op {
+            JIT_FIELD_OP_SET_NUM => {
+                let s = Value::Num(arg).as_str();
+                ctx.rt.set_field(field_idx, &s);
+                arg
+            }
             JIT_VAR_OP_COMPOUND_ADD
             | JIT_VAR_OP_COMPOUND_SUB
             | JIT_VAR_OP_COMPOUND_MUL
