@@ -342,6 +342,8 @@ thread_local! {
     static JIT_SIGNAL: Cell<u32> = const { Cell::new(0) };
     /// Argument for signal (e.g. exit code for `ExitWithCode`, return value for `ReturnVal`).
     static JIT_SIGNAL_ARG: Cell<f64> = const { Cell::new(0.0) };
+    /// `seps` pool index between [`crate::jit::MIXED_PATSPLIT_STASH_SEPS`] and [`crate::jit::MIXED_PATSPLIT_FP_SEP_WIDE`].
+    static JIT_PATSPLIT_SEPS_STASH: Cell<u32> = const { Cell::new(0) };
 }
 
 use std::cell::RefCell;
@@ -373,6 +375,7 @@ struct NestedJitTlsGuard {
     vmctx: *mut VmCtx<'static>,
     slots: *mut f64,
     len: usize,
+    patsplit_seps_stash: u32,
 }
 
 impl NestedJitTlsGuard {
@@ -383,6 +386,7 @@ impl NestedJitTlsGuard {
             vmctx: JIT_VMCTX_PTR.with(|c| c.get()),
             slots: JIT_SLOTS_PTR.with(|c| c.get()),
             len: JIT_SLOTS_LEN.with(|c| c.get()),
+            patsplit_seps_stash: JIT_PATSPLIT_SEPS_STASH.with(|c| c.get()),
         }
     }
 }
@@ -394,6 +398,7 @@ impl Drop for NestedJitTlsGuard {
         JIT_VMCTX_PTR.with(|c| c.set(self.vmctx));
         JIT_SLOTS_PTR.with(|c| c.set(self.slots));
         JIT_SLOTS_LEN.with(|c| c.set(self.len));
+        JIT_PATSPLIT_SEPS_STASH.with(|c| c.set(self.patsplit_seps_stash));
     }
 }
 
@@ -477,9 +482,10 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
         MIXED_GSUB_RECORD, MIXED_GSUB_SLOT, MIXED_GSUB_VAR, MIXED_INCDEC_SLOT, MIXED_INCR_SLOT,
         MIXED_JOIN_ARRAY_KEY, MIXED_JOIN_KEY_ARG, MIXED_MATCH_BUILTIN, MIXED_MATCH_BUILTIN_ARR,
         MIXED_MOD, MIXED_MUL, MIXED_NEG, MIXED_NOT, MIXED_PATSPLIT, MIXED_PATSPLIT_FP,
-        MIXED_PATSPLIT_FP_SEP, MIXED_PATSPLIT_SEP, MIXED_POS, MIXED_PRINTF_FLUSH,
-        MIXED_PRINTF_FLUSH_REDIR, MIXED_PRINT_ARG, MIXED_PRINT_FLUSH, MIXED_PRINT_FLUSH_REDIR,
-        MIXED_PUSH_STR, MIXED_REGEX_MATCH, MIXED_REGEX_NOT_MATCH, MIXED_SET_FIELD, MIXED_SET_VAR,
+        MIXED_PATSPLIT_FP_SEP, MIXED_PATSPLIT_FP_SEP_WIDE, MIXED_PATSPLIT_SEP,
+        MIXED_PATSPLIT_STASH_SEPS, MIXED_POS, MIXED_PRINTF_FLUSH, MIXED_PRINTF_FLUSH_REDIR,
+        MIXED_PRINT_ARG, MIXED_PRINT_FLUSH, MIXED_PRINT_FLUSH_REDIR, MIXED_PUSH_STR,
+        MIXED_REGEX_MATCH, MIXED_REGEX_NOT_MATCH, MIXED_SET_FIELD, MIXED_SET_VAR,
         MIXED_SLOT_AS_NUMBER, MIXED_SPLIT, MIXED_SPLIT_WITH_FS, MIXED_SUB, MIXED_SUB_FIELD,
         MIXED_SUB_INDEX, MIXED_SUB_INDEX_STASH, MIXED_SUB_RECORD, MIXED_SUB_SLOT, MIXED_SUB_VAR,
         MIXED_TO_BOOL, MIXED_TRUTHINESS, MIXED_TYPEOF_ARRAY_ELEM, MIXED_TYPEOF_FIELD,
@@ -1054,6 +1060,23 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
             let arr_idx = a1 & 0xFFFF;
             let seps_idx = a1 >> 16;
             let arr_name = ctx.str_ref(arr_idx).to_string();
+            let seps_name = ctx.str_ref(seps_idx).to_string();
+            let s = jit_f64_to_value(ctx, a2).as_str();
+            let fp = jit_f64_to_value(ctx, a3).as_str();
+            builtins::patsplit(ctx.rt, &s, &arr_name, Some(&fp), Some(seps_name.as_str()))
+                .unwrap_or(0.0)
+        }
+        MIXED_PATSPLIT_STASH_SEPS => {
+            JIT_PATSPLIT_SEPS_STASH.with(|c| c.set(a1));
+            0.0
+        }
+        MIXED_PATSPLIT_FP_SEP_WIDE => {
+            let seps_idx = JIT_PATSPLIT_SEPS_STASH.with(|c| {
+                let v = c.get();
+                c.set(0);
+                v
+            });
+            let arr_name = ctx.str_ref(a1).to_string();
             let seps_name = ctx.str_ref(seps_idx).to_string();
             let s = jit_f64_to_value(ctx, a2).as_str();
             let fp = jit_f64_to_value(ctx, a3).as_str();
@@ -1860,6 +1883,7 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Result<Option<VmSignal>>
     JIT_BUILTIN_ARGS.with(|c| c.borrow_mut().clear());
     JIT_CALL_USER_ARGS.with(|c| c.borrow_mut().clear());
     SUB_FN_STASH_KEY.with(|c| *c.borrow_mut() = None);
+    JIT_PATSPLIT_SEPS_STASH.with(|c| c.set(0));
     let mut jit_slots: Vec<f64> = if mixed {
         ctx.rt
             .slots
@@ -1906,6 +1930,7 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Result<Option<VmSignal>>
         JIT_BUILTIN_ARGS.with(|c| c.borrow_mut().clear());
         JIT_CALL_USER_ARGS.with(|c| c.borrow_mut().clear());
         SUB_FN_STASH_KEY.with(|c| *c.borrow_mut() = None);
+        JIT_PATSPLIT_SEPS_STASH.with(|c| c.set(0));
         return Err(e);
     }
 
@@ -1917,6 +1942,7 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Result<Option<VmSignal>>
         JIT_BUILTIN_ARGS.with(|c| c.borrow_mut().clear());
         JIT_CALL_USER_ARGS.with(|c| c.borrow_mut().clear());
         SUB_FN_STASH_KEY.with(|c| *c.borrow_mut() = None);
+        JIT_PATSPLIT_SEPS_STASH.with(|c| c.set(0));
         return Ok(None);
     };
 
@@ -1948,6 +1974,7 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Result<Option<VmSignal>>
             JIT_BUILTIN_ARGS.with(|c| c.borrow_mut().clear());
             JIT_CALL_USER_ARGS.with(|c| c.borrow_mut().clear());
             SUB_FN_STASH_KEY.with(|c| *c.borrow_mut() = None);
+            JIT_PATSPLIT_SEPS_STASH.with(|c| c.set(0));
             return Ok(Some(VmSignal::Next));
         }
         JIT_VAL_SIGNAL_NEXT_FILE => {
@@ -1957,6 +1984,7 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Result<Option<VmSignal>>
             JIT_BUILTIN_ARGS.with(|c| c.borrow_mut().clear());
             JIT_CALL_USER_ARGS.with(|c| c.borrow_mut().clear());
             SUB_FN_STASH_KEY.with(|c| *c.borrow_mut() = None);
+            JIT_PATSPLIT_SEPS_STASH.with(|c| c.set(0));
             return Ok(Some(VmSignal::NextFile));
         }
         JIT_VAL_SIGNAL_EXIT_DEFAULT => {
@@ -1968,6 +1996,7 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Result<Option<VmSignal>>
             JIT_BUILTIN_ARGS.with(|c| c.borrow_mut().clear());
             JIT_CALL_USER_ARGS.with(|c| c.borrow_mut().clear());
             SUB_FN_STASH_KEY.with(|c| *c.borrow_mut() = None);
+            JIT_PATSPLIT_SEPS_STASH.with(|c| c.set(0));
             return Ok(Some(VmSignal::ExitPending));
         }
         JIT_VAL_SIGNAL_EXIT_CODE => {
@@ -1980,6 +2009,7 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Result<Option<VmSignal>>
             JIT_BUILTIN_ARGS.with(|c| c.borrow_mut().clear());
             JIT_CALL_USER_ARGS.with(|c| c.borrow_mut().clear());
             SUB_FN_STASH_KEY.with(|c| *c.borrow_mut() = None);
+            JIT_PATSPLIT_SEPS_STASH.with(|c| c.set(0));
             return Ok(Some(VmSignal::ExitPending));
         }
         crate::jit::JIT_VAL_SIGNAL_RETURN_VAL => {
@@ -1990,6 +2020,7 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Result<Option<VmSignal>>
             JIT_BUILTIN_ARGS.with(|c| c.borrow_mut().clear());
             JIT_CALL_USER_ARGS.with(|c| c.borrow_mut().clear());
             SUB_FN_STASH_KEY.with(|c| *c.borrow_mut() = None);
+            JIT_PATSPLIT_SEPS_STASH.with(|c| c.set(0));
             return Ok(Some(VmSignal::Return(Value::Num(val))));
         }
         crate::jit::JIT_VAL_SIGNAL_RETURN_EMPTY => {
@@ -1999,6 +2030,7 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Result<Option<VmSignal>>
             JIT_BUILTIN_ARGS.with(|c| c.borrow_mut().clear());
             JIT_CALL_USER_ARGS.with(|c| c.borrow_mut().clear());
             SUB_FN_STASH_KEY.with(|c| *c.borrow_mut() = None);
+            JIT_PATSPLIT_SEPS_STASH.with(|c| c.set(0));
             return Ok(Some(VmSignal::Return(Value::Str(String::new()))));
         }
         _ => {}
@@ -2016,6 +2048,7 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Result<Option<VmSignal>>
     JIT_BUILTIN_ARGS.with(|c| c.borrow_mut().clear());
     JIT_CALL_USER_ARGS.with(|c| c.borrow_mut().clear());
     SUB_FN_STASH_KEY.with(|c| *c.borrow_mut() = None);
+    JIT_PATSPLIT_SEPS_STASH.with(|c| c.set(0));
     Ok(Some(VmSignal::Normal))
 }
 

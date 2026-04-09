@@ -37,7 +37,7 @@
 //! [`Op::Split`] compiles to [`MIXED_SPLIT`] / [`MIXED_SPLIT_WITH_FS`] (same split rules as the VM).
 //! [`Op::Patsplit`] and [`Op::MatchBuiltin`] use additional `MIXED_*` opcodes; `patsplit` with both a
 //! custom field pattern and a `seps` array packs `arr` and `seps` pool indices in `a1` (16-bit each)
-//! when both are `< 65536`, otherwise the chunk is not JIT-eligible.
+//! when both are `< 65536`, otherwise [`MIXED_PATSPLIT_STASH_SEPS`] + [`MIXED_PATSPLIT_FP_SEP_WIDE`].
 //! Non-stdout `print` / `printf` use [`MIXED_PRINT_FLUSH_REDIR`] / [`MIXED_PRINTF_FLUSH_REDIR`] with
 //! [`pack_print_redir`] (same stack order as the VM: redirect path is TOS).
 //! [`Op::GetLine`] uses [`MIXED_GETLINE_PRIMARY`] / [`MIXED_GETLINE_FILE`] / [`MIXED_GETLINE_COPROC`];
@@ -324,6 +324,10 @@ pub const MIXED_PATSPLIT_SEP: u32 = 180;
 pub const MIXED_PATSPLIT_FP: u32 = 181;
 /// [`Op::Patsplit`] with field pattern and `seps` — low 16 bits of `a1` = `arr`, high 16 = `seps` pool index (both &lt; 65536).
 pub const MIXED_PATSPLIT_FP_SEP: u32 = 182;
+/// Stash `seps` string-pool index for [`MIXED_PATSPLIT_FP_SEP_WIDE`]; `a1` = index. Emitted immediately before WIDE.
+pub const MIXED_PATSPLIT_STASH_SEPS: u32 = 204;
+/// Same as [`MIXED_PATSPLIT_FP_SEP`] when `arr` or `seps` index does not fit in 16 bits — uses stash + full `a1` for `arr`.
+pub const MIXED_PATSPLIT_FP_SEP_WIDE: u32 = 205;
 /// [`Op::MatchBuiltin`] without capture array — `a1` = 0, `a2` = s, `a3` = regex pattern.
 pub const MIXED_MATCH_BUILTIN: u32 = 183;
 /// [`Op::MatchBuiltin`] with capture array — `a1` = array name pool index, `a2` = s, `a3` = pattern.
@@ -704,6 +708,7 @@ fn builtin_supported_for_jit(name: &str, argc: u16) -> bool {
         "fflush" => argc <= 1,
         "close" => argc == 1,
         "system" => argc == 1,
+        "typeof" => argc == 1,
         _ => false,
     }
 }
@@ -1051,13 +1056,8 @@ pub fn is_jit_eligible(ops: &[Op]) -> bool {
             }
 
             // `patsplit(s, a [, fp [, seps]])` — pop fp then s if has_fp; push count
-            Op::Patsplit { arr, has_fp, seps } => {
+            Op::Patsplit { has_fp, .. } => {
                 if *has_fp {
-                    if let Some(si) = seps {
-                        if *arr >= 65536 || *si >= 65536 {
-                            return false;
-                        }
-                    }
                     if depth < 2 {
                         return false;
                     }
@@ -1205,9 +1205,10 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
         MIXED_GSUB_RECORD, MIXED_GSUB_SLOT, MIXED_GSUB_VAR, MIXED_INCDEC_SLOT, MIXED_INCR_SLOT,
         MIXED_JOIN_ARRAY_KEY, MIXED_JOIN_KEY_ARG, MIXED_MATCH_BUILTIN, MIXED_MATCH_BUILTIN_ARR,
         MIXED_MOD, MIXED_MUL, MIXED_NEG, MIXED_NOT, MIXED_PATSPLIT, MIXED_PATSPLIT_FP,
-        MIXED_PATSPLIT_FP_SEP, MIXED_PATSPLIT_SEP, MIXED_POS, MIXED_PRINTF_FLUSH,
-        MIXED_PRINTF_FLUSH_REDIR, MIXED_PRINT_ARG, MIXED_PRINT_FLUSH, MIXED_PRINT_FLUSH_REDIR,
-        MIXED_PUSH_STR, MIXED_REGEX_MATCH, MIXED_REGEX_NOT_MATCH, MIXED_SET_FIELD, MIXED_SET_VAR,
+        MIXED_PATSPLIT_FP_SEP, MIXED_PATSPLIT_FP_SEP_WIDE, MIXED_PATSPLIT_SEP,
+        MIXED_PATSPLIT_STASH_SEPS, MIXED_POS, MIXED_PRINTF_FLUSH, MIXED_PRINTF_FLUSH_REDIR,
+        MIXED_PRINT_ARG, MIXED_PRINT_FLUSH, MIXED_PRINT_FLUSH_REDIR, MIXED_PUSH_STR,
+        MIXED_REGEX_MATCH, MIXED_REGEX_NOT_MATCH, MIXED_SET_FIELD, MIXED_SET_VAR,
         MIXED_SLOT_AS_NUMBER, MIXED_SPLIT, MIXED_SPLIT_WITH_FS, MIXED_SUB, MIXED_SUB_FIELD,
         MIXED_SUB_INDEX, MIXED_SUB_INDEX_STASH, MIXED_SUB_RECORD, MIXED_SUB_SLOT, MIXED_SUB_VAR,
         MIXED_TO_BOOL, MIXED_TRUTHINESS, MIXED_TYPEOF_ARRAY_ELEM, MIXED_TYPEOF_FIELD,
@@ -1653,17 +1654,39 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         (true, Some(sepi)) => {
                             let fp = stack.pop().expect("Patsplit fp");
                             let s = stack.pop().expect("Patsplit s");
-                            let packed = arr | (sepi << 16);
-                            let op_c = builder
-                                .ins()
-                                .iconst(types::I32, i64::from(MIXED_PATSPLIT_FP_SEP));
-                            let a1 = builder.ins().iconst(types::I32, i64::from(packed));
-                            let call = builder.ins().call_indirect(
-                                val_sig_ir,
-                                val_fn_ptr,
-                                &[op_c, a1, s, fp],
-                            );
-                            stack.push(builder.inst_results(call)[0]);
+                            if arr < 65536 && sepi < 65536 {
+                                let packed = arr | (sepi << 16);
+                                let op_c = builder
+                                    .ins()
+                                    .iconst(types::I32, i64::from(MIXED_PATSPLIT_FP_SEP));
+                                let a1 = builder.ins().iconst(types::I32, i64::from(packed));
+                                let call = builder.ins().call_indirect(
+                                    val_sig_ir,
+                                    val_fn_ptr,
+                                    &[op_c, a1, s, fp],
+                                );
+                                stack.push(builder.inst_results(call)[0]);
+                            } else {
+                                let op_stash = builder
+                                    .ins()
+                                    .iconst(types::I32, i64::from(MIXED_PATSPLIT_STASH_SEPS));
+                                let a1_seps = builder.ins().iconst(types::I32, i64::from(sepi));
+                                builder.ins().call_indirect(
+                                    val_sig_ir,
+                                    val_fn_ptr,
+                                    &[op_stash, a1_seps, zf, zf],
+                                );
+                                let op_c = builder
+                                    .ins()
+                                    .iconst(types::I32, i64::from(MIXED_PATSPLIT_FP_SEP_WIDE));
+                                let a1_arr = builder.ins().iconst(types::I32, i64::from(arr));
+                                let call = builder.ins().call_indirect(
+                                    val_sig_ir,
+                                    val_fn_ptr,
+                                    &[op_c, a1_arr, s, fp],
+                                );
+                                stack.push(builder.inst_results(call)[0]);
+                            }
                         }
                     }
                 }
@@ -4589,7 +4612,7 @@ mod tests {
             },
             Op::PushNum(0.0),
         ];
-        assert!(!is_jit_eligible(&ops_fp_sep_large));
+        assert!(is_jit_eligible(&ops_fp_sep_large));
     }
 
     #[test]
