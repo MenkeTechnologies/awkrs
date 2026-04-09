@@ -10,6 +10,7 @@ use crate::runtime::AwkMap;
 use crate::runtime::{Runtime, Value};
 use std::cmp::Ordering;
 use std::io::{self, Write};
+use std::mem;
 
 // ── VM context ──────────────────────────────────────────────────────────────
 
@@ -1824,7 +1825,7 @@ extern "C" fn jit_val_dispatch(op: u32, a1: u32, a2: f64, a3: f64) -> f64 {
                     if state.index >= state.keys.len() {
                         0.0 // exhausted
                     } else {
-                        let key = state.keys[state.index].clone();
+                        let key = mem::take(&mut state.keys[state.index]);
                         state.index += 1;
                         let name = ctx.str_ref(var_idx).to_string();
                         ctx.set_var(&name, Value::Str(key));
@@ -2480,7 +2481,8 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                     pc = end_jump;
                     continue;
                 }
-                let key = state.keys[state.index].clone();
+                // Move key out of the snapshot vec — avoids cloning each `String`.
+                let key = mem::take(&mut state.keys[state.index]);
                 state.index += 1;
                 let name = ctx.str_ref(var).to_string();
                 ctx.set_var(&name, Value::Str(key));

@@ -368,7 +368,7 @@ fn exec_stmt(s: &Stmt, ctx: &mut ExecCtx<'_>) -> Result<Flow> {
         Stmt::ForIn { var, arr, body } => {
             let keys = ctx.rt.array_keys(arr);
             'outer: for k in keys {
-                ctx.set_var(var, Value::Str(k.clone()));
+                ctx.set_var(var, Value::Str(k));
                 for t in body {
                     match exec_stmt(t, ctx)? {
                         Flow::Normal => {}
