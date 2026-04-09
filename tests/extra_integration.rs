@@ -511,3 +511,186 @@ fn empty_ofs_joins_print_args_without_separator() {
     assert_eq!(c, 0);
     assert_eq!(o, "123\n");
 }
+
+// ── close(), ENDFILE, parse errors, IEEE math edges ─────────────────────────
+
+#[test]
+fn close_one_way_pipe_returns_zero() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { print "q" | "cat"; print close("cat") }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "q\n0\n");
+}
+
+#[test]
+fn endfile_runs_once_per_input_file() {
+    let dir = std::env::temp_dir();
+    let id = std::process::id();
+    let f1 = dir.join(format!("awkrs_endfile_a_{id}.txt"));
+    let f2 = dir.join(format!("awkrs_endfile_b_{id}.txt"));
+    fs::write(&f1, "x\n").expect("temp");
+    fs::write(&f2, "y\n").expect("temp");
+    let out = Command::new(env!("CARGO_BIN_EXE_awkrs"))
+        .arg(r#"ENDFILE { print "E" }"#)
+        .arg(&f1)
+        .arg(&f2)
+        .output()
+        .expect("spawn awkrs two files");
+    let _ = fs::remove_file(&f1);
+    let _ = fs::remove_file(&f2);
+    assert_eq!(out.status.code(), Some(0), "stderr={}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "E\nE\n");
+}
+
+#[test]
+fn unclosed_brace_program_exits_nonzero_with_parse_error() {
+    let out = Command::new(env!("CARGO_BIN_EXE_awkrs"))
+        .arg("{")
+        .output()
+        .expect("spawn awkrs invalid program");
+    assert_ne!(out.status.code(), Some(0));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("parse error"),
+        "expected parse error on stderr, got: {stderr:?}"
+    );
+}
+
+#[test]
+fn log_zero_is_negative_infinity() {
+    let (c, o, _) = run_awkrs_stdin("BEGIN { print log(0) }", "");
+    assert_eq!(c, 0);
+    let t = o.trim();
+    assert!(
+        t.eq_ignore_ascii_case("-inf"),
+        "expected -inf, got {o:?}"
+    );
+}
+
+#[test]
+fn sqrt_negative_one_is_nan() {
+    let (c, o, _) = run_awkrs_stdin("BEGIN { print sqrt(-1) }", "");
+    assert_eq!(c, 0);
+    let t = o.trim();
+    assert!(
+        t.eq_ignore_ascii_case("nan"),
+        "expected NaN, got {o:?}"
+    );
+}
+
+// ── JIT integration tests (AWKRS_JIT=1) ──────────────────────────────────
+
+fn jit_env() -> [(OsString, OsString); 1] {
+    [(OsString::from("AWKRS_JIT"), OsString::from("1"))]
+}
+
+#[test]
+fn jit_print_field_stdout() {
+    let (c, o, e) = run_awkrs_stdin_args_env(
+        std::iter::empty::<&str>(),
+        "{ print $1 }",
+        "hello\nworld\n",
+        jit_env(),
+    );
+    assert_eq!(c, 0, "stderr: {e}");
+    assert_eq!(o, "hello\nworld\n");
+}
+
+#[test]
+fn jit_print_two_fields() {
+    let (c, o, e) = run_awkrs_stdin_args_env(
+        std::iter::empty::<&str>(),
+        "{ print $1, $2 }",
+        "a b\nc d\n",
+        jit_env(),
+    );
+    assert_eq!(c, 0, "stderr: {e}");
+    assert_eq!(o, "a b\nc d\n");
+}
+
+#[test]
+fn jit_bare_print() {
+    let (c, o, e) = run_awkrs_stdin_args_env(
+        std::iter::empty::<&str>(),
+        "{ print }",
+        "line1\nline2\n",
+        jit_env(),
+    );
+    assert_eq!(c, 0, "stderr: {e}");
+    assert_eq!(o, "line1\nline2\n");
+}
+
+#[test]
+fn jit_match_regexp_pattern() {
+    let (c, o, e) = run_awkrs_stdin_args_env(
+        std::iter::empty::<&str>(),
+        "/yes/ { print $0 }",
+        "no\nyes\nmaybe\nyes please\n",
+        jit_env(),
+    );
+    assert_eq!(c, 0, "stderr: {e}");
+    assert_eq!(o, "yes\nyes please\n");
+}
+
+#[test]
+fn jit_next_skips_rule() {
+    let (c, o, e) = run_awkrs_stdin_args_env(
+        std::iter::empty::<&str>(),
+        "$1 == \"skip\" { next } { print $0 }",
+        "keep\nskip\nalso keep\n",
+        jit_env(),
+    );
+    assert_eq!(c, 0, "stderr: {e}");
+    assert_eq!(o, "keep\nalso keep\n");
+}
+
+#[test]
+fn jit_exit_default() {
+    let (c, o, e) = run_awkrs_stdin_args_env(
+        std::iter::empty::<&str>(),
+        "{ print; exit }",
+        "first\nsecond\n",
+        jit_env(),
+    );
+    assert_eq!(c, 0, "stderr: {e}");
+    assert_eq!(o, "first\n");
+}
+
+#[test]
+fn jit_exit_with_code() {
+    let (c, _o, e) = run_awkrs_stdin_args_env(
+        std::iter::empty::<&str>(),
+        "BEGIN { exit 42 }",
+        "",
+        jit_env(),
+    );
+    assert_eq!(c, 42, "stderr: {e}");
+}
+
+#[test]
+fn jit_array_count_pattern() {
+    // Classic: count[$1]++ then print
+    let (c, o, e) = run_awkrs_stdin_args_env(
+        std::iter::empty::<&str>(),
+        "{ a[$1] += 1 } END { print a[\"x\"] + 0, a[\"y\"] + 0 }",
+        "x\ny\nx\nx\ny\n",
+        jit_env(),
+    );
+    assert_eq!(c, 0, "stderr: {e}");
+    assert_eq!(o, "3 2\n");
+}
+
+#[test]
+fn jit_sum_fields_loop() {
+    // for (i=1; i<=NF; i++) sum += $i
+    let (c, o, e) = run_awkrs_stdin_args_env(
+        std::iter::empty::<&str>(),
+        "{ s=0; for(i=1;i<=NF;i++) s+=$i; print s }",
+        "1 2 3\n10 20\n",
+        jit_env(),
+    );
+    assert_eq!(c, 0, "stderr: {e}");
+    assert_eq!(o, "6\n30\n");
+}

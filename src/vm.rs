@@ -338,6 +338,10 @@ thread_local! {
     /// Pointer to the `jit_slots` buffer — updated when a slotted name is written via `var_dispatch`.
     static JIT_SLOTS_PTR: Cell<*mut f64> = const { Cell::new(std::ptr::null_mut()) };
     static JIT_SLOTS_LEN: Cell<usize> = const { Cell::new(0) };
+    /// Signal raised by JIT (0 = none, >0 = signal type from `JIT_VAL_SIGNAL_*`).
+    static JIT_SIGNAL: Cell<u32> = const { Cell::new(0) };
+    /// Argument for signal (e.g. exit code for `ExitWithCode`).
+    static JIT_SIGNAL_ARG: Cell<f64> = const { Cell::new(0.0) };
 }
 
 fn sync_jit_slot_if_scalar(ctx: &VmCtx<'_>, name: &str) {
@@ -545,9 +549,206 @@ extern "C" fn jit_field_dispatch(op: u32, field_idx: i32, arg: f64) -> f64 {
     })
 }
 
+/// Print side-effects from JIT: `PrintFieldStdout`, `PrintFieldSepField`,
+/// `PrintThreeFieldsStdout`, bare `print` (argc=0).
+extern "C" fn jit_io_dispatch(op: u32, a1: i32, a2: i32, a3: i32) {
+    use crate::jit::{
+        JIT_IO_PRINT_FIELD, JIT_IO_PRINT_FIELD_SEP_FIELD, JIT_IO_PRINT_RECORD,
+        JIT_IO_PRINT_THREE_FIELDS,
+    };
+    JIT_VMCTX_PTR.with(|cell| {
+        let p = cell.get();
+        if p.is_null() {
+            return;
+        }
+        let ctx = unsafe { &mut *p };
+        match op {
+            JIT_IO_PRINT_FIELD => {
+                let field = a1 as u16;
+                if let Some(ref mut buf) = ctx.print_out {
+                    let val = ctx.rt.field(field as i32);
+                    let ors = String::from_utf8_lossy(&ctx.rt.ors_bytes).into_owned();
+                    buf.push(format!("{}{}", val.as_str(), ors));
+                } else {
+                    ctx.rt.print_field_to_buf(field as usize);
+                    let ors = &ctx.rt.ors_bytes;
+                    ctx.rt.print_buf.extend_from_slice(ors);
+                }
+            }
+            JIT_IO_PRINT_FIELD_SEP_FIELD => {
+                let f1 = a1 as u16;
+                let sep_idx = a2 as u32;
+                let f2 = a3 as u16;
+                let sep_s = ctx.str_ref(sep_idx).to_string();
+                if let Some(ref mut buf) = ctx.print_out {
+                    let ors = String::from_utf8_lossy(&ctx.rt.ors_bytes).into_owned();
+                    let v1 = ctx.rt.field(f1 as i32).as_str();
+                    let v2 = ctx.rt.field(f2 as i32).as_str();
+                    buf.push(format!("{v1}{sep_s}{v2}{ors}"));
+                } else {
+                    ctx.rt.print_field_to_buf(f1 as usize);
+                    ctx.rt.print_buf.extend_from_slice(sep_s.as_bytes());
+                    ctx.rt.print_field_to_buf(f2 as usize);
+                    ctx.rt.print_buf.extend_from_slice(&ctx.rt.ors_bytes);
+                }
+            }
+            JIT_IO_PRINT_THREE_FIELDS => {
+                let f1 = a1 as u16;
+                let f2 = a2 as u16;
+                let f3 = a3 as u16;
+                if let Some(ref mut buf) = ctx.print_out {
+                    let ofs = String::from_utf8_lossy(&ctx.rt.ofs_bytes).into_owned();
+                    let ors = String::from_utf8_lossy(&ctx.rt.ors_bytes).into_owned();
+                    let v1 = ctx.rt.field(f1 as i32).as_str();
+                    let v2 = ctx.rt.field(f2 as i32).as_str();
+                    let v3 = ctx.rt.field(f3 as i32).as_str();
+                    buf.push(format!("{v1}{ofs}{v2}{ofs}{v3}{ors}"));
+                } else {
+                    let mut ofs_local = [0u8; 64];
+                    let ofs_len = ctx.rt.ofs_bytes.len().min(64);
+                    ofs_local[..ofs_len].copy_from_slice(&ctx.rt.ofs_bytes[..ofs_len]);
+                    ctx.rt.print_field_to_buf(f1 as usize);
+                    ctx.rt.print_buf.extend_from_slice(&ofs_local[..ofs_len]);
+                    ctx.rt.print_field_to_buf(f2 as usize);
+                    ctx.rt.print_buf.extend_from_slice(&ofs_local[..ofs_len]);
+                    ctx.rt.print_field_to_buf(f3 as usize);
+                    ctx.rt.print_buf.extend_from_slice(&ctx.rt.ors_bytes);
+                }
+            }
+            JIT_IO_PRINT_RECORD => {
+                // Bare `print` — print $0 + ORS
+                if let Some(ref mut buf) = ctx.print_out {
+                    let ors = String::from_utf8_lossy(&ctx.rt.ors_bytes).into_owned();
+                    buf.push(format!("{}{}", ctx.rt.record, ors));
+                } else {
+                    ctx.rt.print_buf.extend_from_slice(ctx.rt.record.as_bytes());
+                    ctx.rt.print_buf.extend_from_slice(&ctx.rt.ors_bytes);
+                }
+            }
+            _ => {}
+        }
+    })
+}
+
+/// Array ops, `MatchRegexp`, flow signals from JIT.
+extern "C" fn jit_val_dispatch(op: u32, a1: u32, a2: f64, a3: f64) -> f64 {
+    use crate::jit::{
+        JIT_VAL_ARRAY_COMPOUND_ADD, JIT_VAL_ARRAY_COMPOUND_DIV, JIT_VAL_ARRAY_COMPOUND_MOD,
+        JIT_VAL_ARRAY_COMPOUND_MUL, JIT_VAL_ARRAY_COMPOUND_SUB, JIT_VAL_ARRAY_DELETE_ALL,
+        JIT_VAL_ARRAY_DELETE_ELEM, JIT_VAL_ARRAY_GET, JIT_VAL_ARRAY_IN,
+        JIT_VAL_ARRAY_INCDEC_POST_DEC, JIT_VAL_ARRAY_INCDEC_POST_INC,
+        JIT_VAL_ARRAY_INCDEC_PRE_DEC, JIT_VAL_ARRAY_INCDEC_PRE_INC, JIT_VAL_ARRAY_SET,
+        JIT_VAL_MATCH_REGEXP, JIT_VAL_SIGNAL_EXIT_CODE, JIT_VAL_SIGNAL_EXIT_DEFAULT,
+        JIT_VAL_SIGNAL_NEXT, JIT_VAL_SIGNAL_NEXT_FILE,
+    };
+
+    // Signals — set thread-local flag and return immediately.
+    match op {
+        JIT_VAL_SIGNAL_NEXT | JIT_VAL_SIGNAL_NEXT_FILE | JIT_VAL_SIGNAL_EXIT_DEFAULT => {
+            JIT_SIGNAL.with(|c| c.set(op));
+            return 0.0;
+        }
+        JIT_VAL_SIGNAL_EXIT_CODE => {
+            JIT_SIGNAL.with(|c| c.set(op));
+            JIT_SIGNAL_ARG.with(|c| c.set(a2));
+            return 0.0;
+        }
+        _ => {}
+    }
+
+    JIT_VMCTX_PTR.with(|cell| {
+        let p = cell.get();
+        if p.is_null() {
+            return 0.0;
+        }
+        let ctx = unsafe { &mut *p };
+        match op {
+            JIT_VAL_MATCH_REGEXP => {
+                let idx = a1;
+                let pat = ctx.str_ref(idx).to_string();
+                if ctx.rt.ensure_regex(&pat).is_err() {
+                    return 0.0;
+                }
+                if ctx.rt.regex_ref(&pat).is_match(&ctx.rt.record) {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
+            JIT_VAL_ARRAY_GET => {
+                let name = ctx.cp.strings.get(a1);
+                let key = Value::Num(a2).as_str();
+                ctx.rt.array_get(name, &key).as_number()
+            }
+            JIT_VAL_ARRAY_SET => {
+                let name = ctx.cp.strings.get(a1);
+                let key = Value::Num(a2).as_str();
+                let val = Value::Num(a3);
+                ctx.rt.array_set(name, key, val);
+                a3
+            }
+            JIT_VAL_ARRAY_IN => {
+                let name = ctx.cp.strings.get(a1);
+                let key = Value::Num(a2).as_str();
+                if ctx.rt.array_has(name, &key) {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
+            JIT_VAL_ARRAY_DELETE_ELEM => {
+                let name = ctx.cp.strings.get(a1).to_string();
+                let key = Value::Num(a2).as_str();
+                ctx.rt.array_delete(&name, Some(&key));
+                0.0
+            }
+            JIT_VAL_ARRAY_DELETE_ALL => {
+                let name = ctx.cp.strings.get(a1).to_string();
+                ctx.rt.array_delete(&name, None);
+                0.0
+            }
+            JIT_VAL_ARRAY_COMPOUND_ADD | JIT_VAL_ARRAY_COMPOUND_SUB
+            | JIT_VAL_ARRAY_COMPOUND_MUL | JIT_VAL_ARRAY_COMPOUND_DIV
+            | JIT_VAL_ARRAY_COMPOUND_MOD => {
+                let name = ctx.cp.strings.get(a1);
+                let key = Value::Num(a2).as_str();
+                let old = ctx.rt.array_get(name, &key).as_number();
+                let rhs = a3;
+                let n = match op {
+                    JIT_VAL_ARRAY_COMPOUND_ADD => old + rhs,
+                    JIT_VAL_ARRAY_COMPOUND_SUB => old - rhs,
+                    JIT_VAL_ARRAY_COMPOUND_MUL => old * rhs,
+                    JIT_VAL_ARRAY_COMPOUND_DIV => old / rhs,
+                    JIT_VAL_ARRAY_COMPOUND_MOD => old % rhs,
+                    _ => unreachable!(),
+                };
+                ctx.rt.array_set(name, key, Value::Num(n));
+                n
+            }
+            JIT_VAL_ARRAY_INCDEC_PRE_INC | JIT_VAL_ARRAY_INCDEC_POST_INC
+            | JIT_VAL_ARRAY_INCDEC_PRE_DEC | JIT_VAL_ARRAY_INCDEC_POST_DEC => {
+                let name = ctx.cp.strings.get(a1);
+                let key = Value::Num(a2).as_str();
+                let old_n = ctx.rt.array_get(name, &key).as_number();
+                let delta = match op {
+                    JIT_VAL_ARRAY_INCDEC_PRE_INC | JIT_VAL_ARRAY_INCDEC_POST_INC => 1.0,
+                    _ => -1.0,
+                };
+                let new_n = old_n + delta;
+                ctx.rt.array_set(name, key, Value::Num(new_n));
+                match op {
+                    JIT_VAL_ARRAY_INCDEC_PRE_INC | JIT_VAL_ARRAY_INCDEC_PRE_DEC => new_n,
+                    _ => old_n,
+                }
+            }
+            _ => 0.0,
+        }
+    })
+}
+
 /// Try JIT dispatch for the full instruction set. Converts slots to/from f64[],
 /// sets up the field callback via thread-local, and executes.
-fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Option<f64> {
+fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Option<VmSignal> {
     if !crate::jit::jit_enabled() || !crate::jit::is_jit_eligible(ops) {
         return None;
     }
@@ -566,6 +767,8 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Option<f64> {
     });
     JIT_SLOTS_PTR.with(|cell| cell.set(jit_slots.as_mut_ptr()));
     JIT_SLOTS_LEN.with(|cell| cell.set(jit_slots.len()));
+    // Clear any stale signal.
+    JIT_SIGNAL.with(|c| c.set(0));
 
     let mut jit_state = crate::jit::JitRuntimeState::new(
         &mut jit_slots,
@@ -573,6 +776,8 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Option<f64> {
         jit_array_field_add_const,
         jit_var_dispatch,
         jit_field_dispatch,
+        jit_io_dispatch,
+        jit_val_dispatch,
     );
     let result = crate::jit::try_jit_execute(ops, &mut jit_state);
 
@@ -583,26 +788,52 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Option<f64> {
     JIT_SLOTS_PTR.with(|cell| cell.set(std::ptr::null_mut()));
     JIT_SLOTS_LEN.with(|cell| cell.set(0));
 
+    // JIT compilation failed — fall back to interpreter.
+    result.as_ref()?;
+
     // Write back modified slots
-    if result.is_some() {
-        for (i, &jit_val) in jit_slots.iter().enumerate().take(slot_count) {
-            let old = ctx.rt.slots[i].as_number();
-            if (jit_val - old).abs() > f64::EPSILON || (old == 0.0 && jit_val != 0.0) {
-                ctx.rt.slots[i] = Value::Num(jit_val);
-            }
+    for (i, &jit_val) in jit_slots.iter().enumerate().take(slot_count) {
+        let old = ctx.rt.slots[i].as_number();
+        if (jit_val - old).abs() > f64::EPSILON || (old == 0.0 && jit_val != 0.0) {
+            ctx.rt.slots[i] = Value::Num(jit_val);
         }
     }
 
-    result
+    // Check for JIT-raised signals (Next, NextFile, Exit).
+    let sig = JIT_SIGNAL.with(|c| c.replace(0));
+    use crate::jit::{
+        JIT_VAL_SIGNAL_EXIT_CODE, JIT_VAL_SIGNAL_EXIT_DEFAULT, JIT_VAL_SIGNAL_NEXT,
+        JIT_VAL_SIGNAL_NEXT_FILE,
+    };
+    match sig {
+        JIT_VAL_SIGNAL_NEXT => return Some(VmSignal::Next),
+        JIT_VAL_SIGNAL_NEXT_FILE => return Some(VmSignal::NextFile),
+        JIT_VAL_SIGNAL_EXIT_DEFAULT => {
+            ctx.rt.exit_code = 0;
+            ctx.rt.exit_pending = true;
+            return Some(VmSignal::ExitPending);
+        }
+        JIT_VAL_SIGNAL_EXIT_CODE => {
+            let code = JIT_SIGNAL_ARG.with(|c| c.get()) as i32;
+            ctx.rt.exit_code = code;
+            ctx.rt.exit_pending = true;
+            return Some(VmSignal::ExitPending);
+        }
+        _ => {}
+    }
+
+    // Normal execution — push result value (may be unused for void chunks).
+    let v = result.unwrap();
+    ctx.push(Value::Num(v));
+    Some(VmSignal::Normal)
 }
 
 // ── Core VM loop ────────────────────────────────────────────────────────────
 
 fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
     let ops = &chunk.ops;
-    if let Some(v) = try_jit_dispatch(ops, ctx) {
-        ctx.push(Value::Num(v));
-        return Ok(VmSignal::Normal);
+    if let Some(signal) = try_jit_dispatch(ops, ctx) {
+        return Ok(signal);
     }
     let len = ops.len();
     let mut pc: usize = 0;

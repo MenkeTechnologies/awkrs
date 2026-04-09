@@ -1,21 +1,22 @@
-//! Cranelift JIT compiler for numeric bytecode chunks.
+//! Cranelift JIT compiler for AWK bytecode chunks.
 //!
 //! Compiles eligible bytecode `Op` sequences into native machine code.
 //! The JIT handles numeric expressions, slot variables, control flow (loops and
-//! conditionals), field access via callback (constant `PushFieldNum`, dynamic
-//! `GetField`, NR/FNR/NF, and fused field+slot ops), and fused peephole opcodes.
+//! conditionals), field access, fused peephole opcodes, print side-effects,
+//! `MatchRegexp` pattern tests, flow signals (`Next`/`NextFile`/`Exit`), and
+//! general array operations (`GetArrayElem`, `SetArrayElem`, `InArray`,
+//! `DeleteElem`, `DeleteArray`, `CompoundAssignIndex`, `IncDecIndex`).
 //!
-//! Execution takes a [`JitRuntimeState`]: mutable `f64` slot storage, an
-//! `extern "C"` field callback (`i32` field index → `f64`; negative indices for
-//! NR/FNR/NF per VM convention), and an `extern "C"` **`a[$field] += delta`**
-//! helper for fused `Op::ArrayFieldAddConst` (mutates the interpreter’s
-//! array map; uses the same thread-local `Runtime` + `CompiledProgram` as the VM).
+//! Execution takes a [`JitRuntimeState`]: mutable `f64` slot storage and seven
+//! `extern "C"` callbacks — `field_fn` (field as number), `array_field_add`
+//! (fused `a[$field] += delta`), `var_dispatch` (HashMap-path scalar ops),
+//! `field_dispatch` (dynamic `$n` mutations), `io_dispatch` (print
+//! side-effects), and `val_dispatch` (array ops, `MatchRegexp`, flow signals).
 //!
 //! Enable with `AWKRS_JIT=1`. The VM tries [`try_jit_execute`] before falling
-//! back to the interpreter for eligible chunks. A fifth callback,
-//! [`JitRuntimeState::field_dispatch`], handles numeric **`$n = val`**
-//! ([`JIT_FIELD_OP_SET_NUM`]), compound assignment, and **`++$n`** / **`$n++`**
-//! (same `JIT_VAR_OP_*` opcodes as HashMap-path `var_dispatch` where applicable).
+//! back to the interpreter for eligible chunks. Chunks with `printf`, string
+//! concatenation, user/builtin calls, for-in, getline, or other unsupported
+//! opcodes still use the bytecode loop.
 
 use crate::ast::{BinOp, IncDecOp};
 use crate::bytecode::Op;
@@ -53,6 +54,61 @@ pub const JIT_VAR_OP_INCDEC_PRE_DEC: u32 = 11;
 pub const JIT_VAR_OP_INCDEC_POST_DEC: u32 = 12;
 /// `$idx = val` (numeric) — **`field_dispatch` only** (not used by `var_dispatch`).
 pub const JIT_FIELD_OP_SET_NUM: u32 = 13;
+
+// ── `jit_io_dispatch` opcodes (print side-effects) ───────────────────────
+
+/// `print $field` to stdout.
+pub const JIT_IO_PRINT_FIELD: u32 = 0;
+/// `print $f1 sep $f2` to stdout (sep by pool index).
+pub const JIT_IO_PRINT_FIELD_SEP_FIELD: u32 = 1;
+/// `print $f1, $f2, $f3` to stdout (OFS between, ORS after).
+pub const JIT_IO_PRINT_THREE_FIELDS: u32 = 2;
+/// Bare `print` (argc=0) — print `$0 ORS` to stdout.
+pub const JIT_IO_PRINT_RECORD: u32 = 3;
+
+// ── `jit_val_dispatch` opcodes (array, match, signals) ───────────────────
+
+pub const JIT_VAL_MATCH_REGEXP: u32 = 0;
+pub const JIT_VAL_SIGNAL_NEXT: u32 = 1;
+pub const JIT_VAL_SIGNAL_NEXT_FILE: u32 = 2;
+pub const JIT_VAL_SIGNAL_EXIT_DEFAULT: u32 = 3;
+pub const JIT_VAL_SIGNAL_EXIT_CODE: u32 = 4;
+pub const JIT_VAL_ARRAY_GET: u32 = 5;
+pub const JIT_VAL_ARRAY_SET: u32 = 6;
+pub const JIT_VAL_ARRAY_IN: u32 = 7;
+pub const JIT_VAL_ARRAY_DELETE_ELEM: u32 = 8;
+pub const JIT_VAL_ARRAY_DELETE_ALL: u32 = 9;
+pub const JIT_VAL_ARRAY_COMPOUND_ADD: u32 = 10;
+pub const JIT_VAL_ARRAY_COMPOUND_SUB: u32 = 11;
+pub const JIT_VAL_ARRAY_COMPOUND_MUL: u32 = 12;
+pub const JIT_VAL_ARRAY_COMPOUND_DIV: u32 = 13;
+pub const JIT_VAL_ARRAY_COMPOUND_MOD: u32 = 14;
+pub const JIT_VAL_ARRAY_INCDEC_PRE_INC: u32 = 15;
+pub const JIT_VAL_ARRAY_INCDEC_POST_INC: u32 = 16;
+pub const JIT_VAL_ARRAY_INCDEC_PRE_DEC: u32 = 17;
+pub const JIT_VAL_ARRAY_INCDEC_POST_DEC: u32 = 18;
+
+#[inline]
+fn jit_val_op_for_array_compound(bop: BinOp) -> u32 {
+    match bop {
+        BinOp::Add => JIT_VAL_ARRAY_COMPOUND_ADD,
+        BinOp::Sub => JIT_VAL_ARRAY_COMPOUND_SUB,
+        BinOp::Mul => JIT_VAL_ARRAY_COMPOUND_MUL,
+        BinOp::Div => JIT_VAL_ARRAY_COMPOUND_DIV,
+        BinOp::Mod => JIT_VAL_ARRAY_COMPOUND_MOD,
+        _ => unreachable!("filtered by is_jit_eligible"),
+    }
+}
+
+#[inline]
+fn jit_val_op_for_array_incdec(kind: IncDecOp) -> u32 {
+    match kind {
+        IncDecOp::PreInc => JIT_VAL_ARRAY_INCDEC_PRE_INC,
+        IncDecOp::PostInc => JIT_VAL_ARRAY_INCDEC_POST_INC,
+        IncDecOp::PreDec => JIT_VAL_ARRAY_INCDEC_PRE_DEC,
+        IncDecOp::PostDec => JIT_VAL_ARRAY_INCDEC_POST_DEC,
+    }
+}
 
 #[inline]
 fn jit_var_op_for_compound(bop: BinOp) -> u32 {
@@ -111,6 +167,12 @@ pub struct JitRuntimeState<'a> {
     /// `$idx = val`, compound assign, `++$idx` — [`JIT_FIELD_OP_SET_NUM`] for assignment;
     /// same `JIT_VAR_OP_*` as [`JitRuntimeState::var_dispatch`] for compound and inc/dec.
     pub field_dispatch: extern "C" fn(u32, i32, f64) -> f64,
+    /// Print side-effects: `PrintFieldStdout`, `PrintFieldSepField`, `PrintThreeFieldsStdout`,
+    /// bare `print` (argc=0).  `(op, a1, a2, a3)` — void.
+    pub io_dispatch: extern "C" fn(u32, i32, i32, i32),
+    /// Array ops, `MatchRegexp`, flow signals (Next/Exit).
+    /// `(op, a1, a2, a3) -> f64`.
+    pub val_dispatch: extern "C" fn(u32, u32, f64, f64) -> f64,
 }
 
 impl<'a> JitRuntimeState<'a> {
@@ -121,6 +183,8 @@ impl<'a> JitRuntimeState<'a> {
         array_field_add: extern "C" fn(u32, i32, f64),
         var_dispatch: extern "C" fn(u32, u32, f64) -> f64,
         field_dispatch: extern "C" fn(u32, i32, f64) -> f64,
+        io_dispatch: extern "C" fn(u32, i32, i32, i32),
+        val_dispatch: extern "C" fn(u32, u32, f64, f64) -> f64,
     ) -> Self {
         Self {
             slots,
@@ -128,6 +192,8 @@ impl<'a> JitRuntimeState<'a> {
             array_field_add,
             var_dispatch,
             field_dispatch,
+            io_dispatch,
+            val_dispatch,
         }
     }
 }
@@ -155,13 +221,17 @@ unsafe impl Sync for JitChunk {}
 /// Machine ABI: `array_field_add` is for fused `a[$field] += delta`; `var_dispatch`
 /// multiplexes `GetVar` / `SetVar` / `IncrVar` / `DecrVar` / `CompoundAssignVar` /
 /// `IncDecVar`; `field_dispatch` multiplexes `SetField` ([`JIT_FIELD_OP_SET_NUM`]),
-/// `CompoundAssignField` / `IncDecField` (reuses `JIT_VAR_OP_*` for compound and inc/dec).
+/// `CompoundAssignField` / `IncDecField` (reuses `JIT_VAR_OP_*` for compound and inc/dec);
+/// `io_dispatch` handles print side-effects; `val_dispatch` handles array ops,
+/// `MatchRegexp`, and flow signals.
 type JitFn = extern "C" fn(
     *mut f64,
     extern "C" fn(i32) -> f64,
     extern "C" fn(u32, i32, f64),
     extern "C" fn(u32, u32, f64) -> f64,
     extern "C" fn(u32, i32, f64) -> f64,
+    extern "C" fn(u32, i32, i32, i32),
+    extern "C" fn(u32, u32, f64, f64) -> f64,
 ) -> f64;
 
 impl JitChunk {
@@ -174,6 +244,8 @@ impl JitChunk {
             state.array_field_add,
             state.var_dispatch,
             state.field_dispatch,
+            state.io_dispatch,
+            state.val_dispatch,
         )
     }
 }
@@ -322,6 +394,76 @@ pub fn is_jit_eligible(ops: &[Op]) -> bool {
                 depth -= 1;
             }
 
+            // ── Fused print ops (no stack effect) ──────────────────────
+            Op::PrintFieldStdout(_) => {}
+            Op::PrintFieldSepField { .. } => {}
+            Op::PrintThreeFieldsStdout { .. } => {}
+            // Bare `print` (argc=0, stdout only)
+            Op::Print {
+                argc: 0,
+                redir: crate::bytecode::RedirKind::Stdout,
+            } => {}
+
+            // ── MatchRegexp (push 0/1) ─────────────────────────────────
+            Op::MatchRegexp(_) => depth += 1,
+
+            // ── Flow signals (terminate chunk) ─────────────────────────
+            Op::Next | Op::NextFile | Op::ExitDefault => {}
+            Op::ExitWithCode => {
+                if depth < 1 {
+                    return false;
+                }
+                depth -= 1;
+            }
+
+            // ── Array ops (single-key, numeric path) ───────────────────
+            Op::GetArrayElem(_) => {
+                // pop key, push value
+                if depth < 1 {
+                    return false;
+                }
+            }
+            Op::SetArrayElem(_) => {
+                // pop value, pop key, push value
+                if depth < 2 {
+                    return false;
+                }
+                depth -= 1;
+            }
+            Op::InArray(_) => {
+                // pop key, push 0/1
+                if depth < 1 {
+                    return false;
+                }
+            }
+            Op::DeleteElem(_) => {
+                // pop key
+                if depth < 1 {
+                    return false;
+                }
+                depth -= 1;
+            }
+            Op::DeleteArray(_) => {
+                // no stack effect
+            }
+            Op::CompoundAssignIndex(_, bop) => {
+                // pop rhs, pop key, push result
+                if depth < 2 {
+                    return false;
+                }
+                match bop {
+                    BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {}
+                    _ => return false,
+                }
+                depth -= 1;
+            }
+            Op::IncDecIndex(_, _) => {
+                // pop key, push result
+                if depth < 1 {
+                    return false;
+                }
+            }
+
             _ => return false,
         }
     }
@@ -410,7 +552,8 @@ pub fn try_compile(ops: &[Op]) -> Option<JitChunk> {
     let mut ctx = module.make_context();
     let mut func_ctx = FunctionBuilderContext::new();
 
-    // Function signature: (slots, field_fn, array_field_add, var_dispatch, field_dispatch) -> f64
+    // Function signature: (slots, field_fn, array_field_add, var_dispatch, field_dispatch,
+    //                      io_dispatch, val_dispatch) -> f64
     let ptr_type = module.target_config().pointer_type();
     let mut sig = module.make_signature();
     sig.params.push(AbiParam::new(ptr_type)); // slots pointer
@@ -418,6 +561,8 @@ pub fn try_compile(ops: &[Op]) -> Option<JitChunk> {
     sig.params.push(AbiParam::new(ptr_type)); // array_field_add fn pointer
     sig.params.push(AbiParam::new(ptr_type)); // var_dispatch fn pointer
     sig.params.push(AbiParam::new(ptr_type)); // field_dispatch ($n compound / incdec)
+    sig.params.push(AbiParam::new(ptr_type)); // io_dispatch (print)
+    sig.params.push(AbiParam::new(ptr_type)); // val_dispatch (array, match, signal)
     sig.returns.push(AbiParam::new(types::F64));
 
     // Declare the field callback signature for indirect calls
@@ -447,6 +592,23 @@ pub fn try_compile(ops: &[Op]) -> Option<JitChunk> {
     field_mut_sig.params.push(AbiParam::new(types::F64));
     field_mut_sig.returns.push(AbiParam::new(types::F64));
     let _field_mut_sig_ref = module.declare_anonymous_function(&field_mut_sig).ok()?;
+
+    // `io_dispatch(op, a1, a2, a3)` — void (print side-effects)
+    let mut io_sig = module.make_signature();
+    io_sig.params.push(AbiParam::new(types::I32));
+    io_sig.params.push(AbiParam::new(types::I32));
+    io_sig.params.push(AbiParam::new(types::I32));
+    io_sig.params.push(AbiParam::new(types::I32));
+    let _io_sig_ref = module.declare_anonymous_function(&io_sig).ok()?;
+
+    // `val_dispatch(op, a1, a2, a3) -> f64` (array, match, signals)
+    let mut val_sig = module.make_signature();
+    val_sig.params.push(AbiParam::new(types::I32));
+    val_sig.params.push(AbiParam::new(types::I32));
+    val_sig.params.push(AbiParam::new(types::F64));
+    val_sig.params.push(AbiParam::new(types::F64));
+    val_sig.returns.push(AbiParam::new(types::F64));
+    let _val_sig_ref = module.declare_anonymous_function(&val_sig).ok()?;
 
     let func_id = module
         .declare_function("awkrs_jit_chunk", Linkage::Export, &sig)
@@ -485,6 +647,8 @@ pub fn try_compile(ops: &[Op]) -> Option<JitChunk> {
         let array_sig_ir = builder.import_signature(array_sig);
         let var_sig_ir = builder.import_signature(var_sig);
         let field_mut_sig_ir = builder.import_signature(field_mut_sig);
+        let io_sig_ir = builder.import_signature(io_sig);
+        let val_sig_ir = builder.import_signature(val_sig);
 
         // ── Cranelift Variables for function params (survive across blocks) ──
         let var_slots_ptr = builder.declare_var(ptr_type);
@@ -492,6 +656,8 @@ pub fn try_compile(ops: &[Op]) -> Option<JitChunk> {
         let var_array_fn = builder.declare_var(ptr_type);
         let var_var_fn = builder.declare_var(ptr_type);
         let var_field_mut_fn = builder.declare_var(ptr_type);
+        let var_io_fn = builder.declare_var(ptr_type);
+        let var_val_fn = builder.declare_var(ptr_type);
 
         // Entry block with function params
         let entry_block = builder.create_block();
@@ -520,11 +686,15 @@ pub fn try_compile(ops: &[Op]) -> Option<JitChunk> {
         let array_fn_val = builder.block_params(entry_block)[2];
         let var_dispatch_val = builder.block_params(entry_block)[3];
         let field_mut_dispatch_val = builder.block_params(entry_block)[4];
+        let io_dispatch_val = builder.block_params(entry_block)[5];
+        let val_dispatch_val = builder.block_params(entry_block)[6];
         builder.def_var(var_slots_ptr, slots_ptr_val);
         builder.def_var(var_field_fn, field_fn_val);
         builder.def_var(var_array_fn, array_fn_val);
         builder.def_var(var_var_fn, var_dispatch_val);
         builder.def_var(var_field_mut_fn, field_mut_dispatch_val);
+        builder.def_var(var_io_fn, io_dispatch_val);
+        builder.def_var(var_val_fn, val_dispatch_val);
 
         // Seal entry block — its only predecessor is the function entry
         builder.seal_block(entry_block);
@@ -564,6 +734,8 @@ pub fn try_compile(ops: &[Op]) -> Option<JitChunk> {
             let array_fn_ptr = builder.use_var(var_array_fn);
             let var_fn_ptr = builder.use_var(var_var_fn);
             let field_mut_fn_ptr = builder.use_var(var_field_mut_fn);
+            let io_fn_ptr = builder.use_var(var_io_fn);
+            let val_fn_ptr = builder.use_var(var_val_fn);
 
             match ops[pc] {
                 // ── Constants ───────────────────────────────────────────
@@ -1065,6 +1237,134 @@ pub fn try_compile(ops: &[Op]) -> Option<JitChunk> {
                     stack.clear();
                 }
 
+                // ── Fused print ops (side-effect only) ─────────────────
+                Op::PrintFieldStdout(field) => {
+                    let op_c = builder.ins().iconst(types::I32, i64::from(JIT_IO_PRINT_FIELD));
+                    let a1 = builder.ins().iconst(types::I32, field as i64);
+                    let z = builder.ins().iconst(types::I32, 0);
+                    builder.ins().call_indirect(io_sig_ir, io_fn_ptr, &[op_c, a1, z, z]);
+                }
+                Op::PrintFieldSepField { f1, sep, f2 } => {
+                    let op_c = builder.ins().iconst(types::I32, i64::from(JIT_IO_PRINT_FIELD_SEP_FIELD));
+                    let a1 = builder.ins().iconst(types::I32, f1 as i64);
+                    let a2 = builder.ins().iconst(types::I32, sep as i64);
+                    let a3 = builder.ins().iconst(types::I32, f2 as i64);
+                    builder.ins().call_indirect(io_sig_ir, io_fn_ptr, &[op_c, a1, a2, a3]);
+                }
+                Op::PrintThreeFieldsStdout { f1, f2, f3 } => {
+                    let op_c = builder.ins().iconst(types::I32, i64::from(JIT_IO_PRINT_THREE_FIELDS));
+                    let a1 = builder.ins().iconst(types::I32, f1 as i64);
+                    let a2 = builder.ins().iconst(types::I32, f2 as i64);
+                    let a3 = builder.ins().iconst(types::I32, f3 as i64);
+                    builder.ins().call_indirect(io_sig_ir, io_fn_ptr, &[op_c, a1, a2, a3]);
+                }
+                Op::Print { argc: 0, redir: crate::bytecode::RedirKind::Stdout } => {
+                    let op_c = builder.ins().iconst(types::I32, i64::from(JIT_IO_PRINT_RECORD));
+                    let z = builder.ins().iconst(types::I32, 0);
+                    builder.ins().call_indirect(io_sig_ir, io_fn_ptr, &[op_c, z, z, z]);
+                }
+
+                // ── MatchRegexp (push 0/1) ────────────────────────────────
+                Op::MatchRegexp(idx) => {
+                    let op_c = builder.ins().iconst(types::I32, i64::from(JIT_VAL_MATCH_REGEXP));
+                    let a1 = builder.ins().iconst(types::I32, idx as i64);
+                    let z = builder.ins().f64const(0.0);
+                    let call = builder.ins().call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
+                    stack.push(builder.inst_results(call)[0]);
+                }
+
+                // ── Flow signals ──────────────────────────────────────────
+                Op::Next => {
+                    let op_c = builder.ins().iconst(types::I32, i64::from(JIT_VAL_SIGNAL_NEXT));
+                    let z32 = builder.ins().iconst(types::I32, 0);
+                    let z = builder.ins().f64const(0.0);
+                    builder.ins().call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z32, z, z]);
+                    builder.ins().return_(&[z]);
+                    block_terminated = true;
+                }
+                Op::NextFile => {
+                    let op_c = builder.ins().iconst(types::I32, i64::from(JIT_VAL_SIGNAL_NEXT_FILE));
+                    let z32 = builder.ins().iconst(types::I32, 0);
+                    let z = builder.ins().f64const(0.0);
+                    builder.ins().call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z32, z, z]);
+                    builder.ins().return_(&[z]);
+                    block_terminated = true;
+                }
+                Op::ExitDefault => {
+                    let op_c = builder.ins().iconst(types::I32, i64::from(JIT_VAL_SIGNAL_EXIT_DEFAULT));
+                    let z32 = builder.ins().iconst(types::I32, 0);
+                    let z = builder.ins().f64const(0.0);
+                    builder.ins().call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z32, z, z]);
+                    builder.ins().return_(&[z]);
+                    block_terminated = true;
+                }
+                Op::ExitWithCode => {
+                    let code = stack.pop().expect("ExitWithCode");
+                    let op_c = builder.ins().iconst(types::I32, i64::from(JIT_VAL_SIGNAL_EXIT_CODE));
+                    let z32 = builder.ins().iconst(types::I32, 0);
+                    let z = builder.ins().f64const(0.0);
+                    builder.ins().call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z32, code, z]);
+                    builder.ins().return_(&[z]);
+                    block_terminated = true;
+                }
+
+                // ── Array ops ─────────────────────────────────────────────
+                Op::GetArrayElem(arr) => {
+                    let key = stack.pop().expect("GetArrayElem key");
+                    let op_c = builder.ins().iconst(types::I32, i64::from(JIT_VAL_ARRAY_GET));
+                    let a1 = builder.ins().iconst(types::I32, arr as i64);
+                    let z = builder.ins().f64const(0.0);
+                    let call = builder.ins().call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, key, z]);
+                    stack.push(builder.inst_results(call)[0]);
+                }
+                Op::SetArrayElem(arr) => {
+                    let val = stack.pop().expect("SetArrayElem val");
+                    let key = stack.pop().expect("SetArrayElem key");
+                    let op_c = builder.ins().iconst(types::I32, i64::from(JIT_VAL_ARRAY_SET));
+                    let a1 = builder.ins().iconst(types::I32, arr as i64);
+                    let call = builder.ins().call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, key, val]);
+                    stack.push(builder.inst_results(call)[0]);
+                }
+                Op::InArray(arr) => {
+                    let key = stack.pop().expect("InArray key");
+                    let op_c = builder.ins().iconst(types::I32, i64::from(JIT_VAL_ARRAY_IN));
+                    let a1 = builder.ins().iconst(types::I32, arr as i64);
+                    let z = builder.ins().f64const(0.0);
+                    let call = builder.ins().call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, key, z]);
+                    stack.push(builder.inst_results(call)[0]);
+                }
+                Op::DeleteElem(arr) => {
+                    let key = stack.pop().expect("DeleteElem key");
+                    let op_c = builder.ins().iconst(types::I32, i64::from(JIT_VAL_ARRAY_DELETE_ELEM));
+                    let a1 = builder.ins().iconst(types::I32, arr as i64);
+                    let z = builder.ins().f64const(0.0);
+                    builder.ins().call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, key, z]);
+                }
+                Op::DeleteArray(arr) => {
+                    let op_c = builder.ins().iconst(types::I32, i64::from(JIT_VAL_ARRAY_DELETE_ALL));
+                    let a1 = builder.ins().iconst(types::I32, arr as i64);
+                    let z = builder.ins().f64const(0.0);
+                    builder.ins().call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
+                }
+                Op::CompoundAssignIndex(arr, bop) => {
+                    let rhs = stack.pop().expect("CompoundAssignIndex rhs");
+                    let key = stack.pop().expect("CompoundAssignIndex key");
+                    let cop = jit_val_op_for_array_compound(bop);
+                    let op_c = builder.ins().iconst(types::I32, i64::from(cop));
+                    let a1 = builder.ins().iconst(types::I32, arr as i64);
+                    let call = builder.ins().call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, key, rhs]);
+                    stack.push(builder.inst_results(call)[0]);
+                }
+                Op::IncDecIndex(arr, kind) => {
+                    let key = stack.pop().expect("IncDecIndex key");
+                    let cop = jit_val_op_for_array_incdec(kind);
+                    let op_c = builder.ins().iconst(types::I32, i64::from(cop));
+                    let a1 = builder.ins().iconst(types::I32, arr as i64);
+                    let z = builder.ins().f64const(0.0);
+                    let call = builder.ins().call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, key, z]);
+                    stack.push(builder.inst_results(call)[0]);
+                }
+
                 _ => unreachable!("filtered by is_jit_eligible"),
             }
             pc += 1;
@@ -1210,6 +1510,10 @@ impl JitNumericChunk {
         extern "C" fn dummy_field_dispatch(_: u32, _: i32, _: f64) -> f64 {
             0.0
         }
+        extern "C" fn dummy_io_dispatch(_: u32, _: i32, _: i32, _: i32) {}
+        extern "C" fn dummy_val_dispatch(_: u32, _: u32, _: f64, _: f64) -> f64 {
+            0.0
+        }
         let mut empty_slots: [f64; 0] = [];
         let mut state = JitRuntimeState::new(
             &mut empty_slots,
@@ -1217,6 +1521,8 @@ impl JitNumericChunk {
             dummy_array,
             dummy_var,
             dummy_field_dispatch,
+            dummy_io_dispatch,
+            dummy_val_dispatch,
         );
         self.inner.execute(&mut state)
     }
@@ -1236,6 +1542,7 @@ pub fn try_jit_dispatch_numeric_chunk(ops: &[Op]) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::Value;
     use std::cell::RefCell;
 
     thread_local! {
@@ -1444,6 +1751,8 @@ mod tests {
             dummy_array,
             test_var_dispatch,
             dummy_field_dispatch,
+            dummy_io_dispatch,
+            dummy_val_dispatch,
         );
         chunk.execute(&mut state)
     }
@@ -1457,6 +1766,8 @@ mod tests {
             dummy_array,
             dummy_var,
             test_field_dispatch,
+            dummy_io_dispatch,
+            dummy_val_dispatch,
         );
         chunk.execute(&mut state)
     }
@@ -1475,6 +1786,12 @@ mod tests {
         0.0
     }
 
+    extern "C" fn dummy_io_dispatch(_: u32, _: i32, _: i32, _: i32) {}
+
+    extern "C" fn dummy_val_dispatch(_: u32, _: u32, _: f64, _: f64) -> f64 {
+        0.0
+    }
+
     fn exec(ops: &[Op]) -> f64 {
         let chunk = try_compile(ops).expect("compile failed");
         let mut slots = [0.0f64; 0];
@@ -1484,6 +1801,8 @@ mod tests {
             dummy_array,
             dummy_var,
             dummy_field_dispatch,
+            dummy_io_dispatch,
+            dummy_val_dispatch,
         );
         chunk.execute(&mut state)
     }
@@ -1496,6 +1815,8 @@ mod tests {
             dummy_array,
             dummy_var,
             dummy_field_dispatch,
+            dummy_io_dispatch,
+            dummy_val_dispatch,
         );
         chunk.execute(&mut state)
     }
@@ -1508,6 +1829,8 @@ mod tests {
             dummy_array,
             dummy_var,
             dummy_field_dispatch,
+            dummy_io_dispatch,
+            dummy_val_dispatch,
         );
         chunk.execute(&mut state)
     }
@@ -2098,5 +2421,463 @@ mod tests {
         let mut slots = [0.0, 0.0];
         let r = exec_with_fields(&ops, &mut slots, fields);
         assert!((r - 600.0).abs() < 1e-15);
+    }
+
+    // ── Print opcodes (eligibility only — side effects tested via integration) ──
+
+    #[test]
+    fn jit_eligible_print_field_stdout() {
+        assert!(is_jit_eligible(&[
+            Op::PrintFieldStdout(1),
+            Op::PushNum(0.0),
+        ]));
+    }
+
+    #[test]
+    fn jit_eligible_print_field_sep_field() {
+        assert!(is_jit_eligible(&[
+            Op::PrintFieldSepField { f1: 1, sep: 0, f2: 2 },
+            Op::PushNum(0.0),
+        ]));
+    }
+
+    #[test]
+    fn jit_eligible_print_three_fields() {
+        assert!(is_jit_eligible(&[
+            Op::PrintThreeFieldsStdout { f1: 1, f2: 2, f3: 3 },
+            Op::PushNum(0.0),
+        ]));
+    }
+
+    #[test]
+    fn jit_eligible_print_record() {
+        assert!(is_jit_eligible(&[
+            Op::Print { argc: 0, redir: crate::bytecode::RedirKind::Stdout },
+            Op::PushNum(0.0),
+        ]));
+    }
+
+    #[test]
+    fn jit_rejects_print_with_args() {
+        // Print with argc > 0 is NOT eligible (for now).
+        assert!(!is_jit_eligible(&[
+            Op::PushNum(1.0),
+            Op::Print { argc: 1, redir: crate::bytecode::RedirKind::Stdout },
+        ]));
+    }
+
+    // ── Print codegen (compiles without crash) ────────────────────────────
+
+    #[test]
+    fn jit_print_field_compiles_and_runs() {
+        // Verify the codegen doesn't crash — side-effect goes to dummy.
+        let ops = [Op::PrintFieldStdout(1), Op::PushNum(0.0)];
+        let r = exec(&ops);
+        assert!(r.abs() < 1e-15);
+    }
+
+    #[test]
+    fn jit_print_three_fields_compiles() {
+        let ops = [Op::PrintThreeFieldsStdout { f1: 1, f2: 2, f3: 3 }, Op::PushNum(0.0)];
+        let r = exec(&ops);
+        assert!(r.abs() < 1e-15);
+    }
+
+    // ── MatchRegexp ───────────────────────────────────────────────────────
+
+    #[test]
+    fn jit_eligible_match_regexp() {
+        assert!(is_jit_eligible(&[Op::MatchRegexp(0)]));
+    }
+
+    #[test]
+    fn jit_match_regexp_compiles() {
+        // With dummy val_dispatch, match always returns 0.0.
+        let r = exec(&[Op::MatchRegexp(0)]);
+        assert!(r.abs() < 1e-15);
+    }
+
+    // ── Flow signals ──────────────────────────────────────────────────────
+
+    #[test]
+    fn jit_eligible_next() {
+        assert!(is_jit_eligible(&[Op::Next]));
+    }
+
+    #[test]
+    fn jit_eligible_exit_default() {
+        assert!(is_jit_eligible(&[Op::ExitDefault]));
+    }
+
+    #[test]
+    fn jit_eligible_exit_with_code() {
+        assert!(is_jit_eligible(&[Op::PushNum(1.0), Op::ExitWithCode]));
+    }
+
+    #[test]
+    fn jit_next_compiles() {
+        let r = exec(&[Op::Next]);
+        assert!(r.abs() < 1e-15);
+    }
+
+    #[test]
+    fn jit_exit_default_compiles() {
+        let r = exec(&[Op::ExitDefault]);
+        assert!(r.abs() < 1e-15);
+    }
+
+    #[test]
+    fn jit_exit_with_code_compiles() {
+        let r = exec(&[Op::PushNum(42.0), Op::ExitWithCode]);
+        assert!(r.abs() < 1e-15);
+    }
+
+    // ── Array opcodes ─────────────────────────────────────────────────────
+
+    #[test]
+    fn jit_eligible_array_get() {
+        assert!(is_jit_eligible(&[Op::PushNum(1.0), Op::GetArrayElem(0)]));
+    }
+
+    #[test]
+    fn jit_eligible_array_set() {
+        assert!(is_jit_eligible(&[
+            Op::PushNum(1.0),
+            Op::PushNum(42.0),
+            Op::SetArrayElem(0),
+        ]));
+    }
+
+    #[test]
+    fn jit_eligible_in_array() {
+        assert!(is_jit_eligible(&[Op::PushNum(1.0), Op::InArray(0)]));
+    }
+
+    #[test]
+    fn jit_eligible_delete_elem() {
+        assert!(is_jit_eligible(&[
+            Op::PushNum(1.0),
+            Op::DeleteElem(0),
+            Op::PushNum(0.0),
+        ]));
+    }
+
+    #[test]
+    fn jit_eligible_delete_array() {
+        assert!(is_jit_eligible(&[Op::DeleteArray(0), Op::PushNum(0.0)]));
+    }
+
+    #[test]
+    fn jit_eligible_compound_assign_index() {
+        assert!(is_jit_eligible(&[
+            Op::PushNum(1.0),
+            Op::PushNum(5.0),
+            Op::CompoundAssignIndex(0, BinOp::Add),
+        ]));
+    }
+
+    #[test]
+    fn jit_eligible_incdec_index() {
+        assert!(is_jit_eligible(&[
+            Op::PushNum(1.0),
+            Op::IncDecIndex(0, IncDecOp::PreInc),
+        ]));
+    }
+
+    #[test]
+    fn jit_array_get_compiles() {
+        // dummy val_dispatch returns 0.0
+        let r = exec(&[Op::PushNum(1.0), Op::GetArrayElem(0)]);
+        assert!(r.abs() < 1e-15);
+    }
+
+    #[test]
+    fn jit_array_set_compiles() {
+        let r = exec(&[Op::PushNum(1.0), Op::PushNum(42.0), Op::SetArrayElem(0)]);
+        assert!(r.abs() < 1e-15); // dummy returns 0.0
+    }
+
+    #[test]
+    fn jit_in_array_compiles() {
+        let r = exec(&[Op::PushNum(1.0), Op::InArray(0)]);
+        assert!(r.abs() < 1e-15);
+    }
+
+    #[test]
+    fn jit_compound_assign_index_compiles() {
+        let r = exec(&[
+            Op::PushNum(1.0),
+            Op::PushNum(5.0),
+            Op::CompoundAssignIndex(0, BinOp::Add),
+        ]);
+        assert!(r.abs() < 1e-15);
+    }
+
+    #[test]
+    fn jit_incdec_index_compiles() {
+        let r = exec(&[Op::PushNum(1.0), Op::IncDecIndex(0, IncDecOp::PreInc)]);
+        assert!(r.abs() < 1e-15);
+    }
+
+    // ── Array via test val_dispatch (functional) ──────────────────────────
+
+    thread_local! {
+        static TEST_ARRAY: RefCell<Vec<(String, f64)>> = const { RefCell::new(Vec::new()) };
+    }
+
+    fn setup_test_array(data: &[(&str, f64)]) {
+        TEST_ARRAY.with(|c| {
+            *c.borrow_mut() = data.iter().map(|(k, v)| (k.to_string(), *v)).collect();
+        });
+    }
+
+    fn array_val(key: &str) -> Option<f64> {
+        TEST_ARRAY.with(|c| {
+            c.borrow().iter().find(|(k, _)| k == key).map(|(_, v)| *v)
+        })
+    }
+
+    /// Test val_dispatch that uses TEST_ARRAY.
+    extern "C" fn test_val_dispatch(op: u32, a1: u32, a2: f64, a3: f64) -> f64 {
+        use crate::jit::{
+            JIT_VAL_ARRAY_COMPOUND_ADD, JIT_VAL_ARRAY_DELETE_ALL, JIT_VAL_ARRAY_DELETE_ELEM,
+            JIT_VAL_ARRAY_GET, JIT_VAL_ARRAY_IN, JIT_VAL_ARRAY_INCDEC_POST_DEC,
+            JIT_VAL_ARRAY_INCDEC_POST_INC, JIT_VAL_ARRAY_INCDEC_PRE_DEC,
+            JIT_VAL_ARRAY_INCDEC_PRE_INC, JIT_VAL_ARRAY_SET, JIT_VAL_MATCH_REGEXP,
+            JIT_VAL_SIGNAL_NEXT,
+        };
+        let _ = a1; // array index (unused — single test array)
+        let key = Value::Num(a2).as_str();
+        match op {
+            JIT_VAL_MATCH_REGEXP => 0.0,
+            JIT_VAL_SIGNAL_NEXT => 0.0,
+            JIT_VAL_ARRAY_GET => TEST_ARRAY.with(|c| {
+                c.borrow()
+                    .iter()
+                    .find(|(k, _)| k == &key)
+                    .map_or(0.0, |(_, v)| *v)
+            }),
+            JIT_VAL_ARRAY_SET => {
+                TEST_ARRAY.with(|c| {
+                    let mut arr = c.borrow_mut();
+                    if let Some(entry) = arr.iter_mut().find(|(k, _)| k == &key) {
+                        entry.1 = a3;
+                    } else {
+                        arr.push((key.to_string(), a3));
+                    }
+                });
+                a3
+            }
+            JIT_VAL_ARRAY_IN => TEST_ARRAY.with(|c| {
+                if c.borrow().iter().any(|(k, _)| k == &key) {
+                    1.0
+                } else {
+                    0.0
+                }
+            }),
+            JIT_VAL_ARRAY_DELETE_ELEM => {
+                TEST_ARRAY.with(|c| {
+                    c.borrow_mut().retain(|(k, _)| k != &key);
+                });
+                0.0
+            }
+            JIT_VAL_ARRAY_DELETE_ALL => {
+                TEST_ARRAY.with(|c| c.borrow_mut().clear());
+                0.0
+            }
+            JIT_VAL_ARRAY_COMPOUND_ADD => {
+                TEST_ARRAY.with(|c| {
+                    let mut arr = c.borrow_mut();
+                    let old = arr.iter().find(|(k, _)| k == &key).map_or(0.0, |(_, v)| *v);
+                    let n = old + a3;
+                    if let Some(entry) = arr.iter_mut().find(|(k, _)| k == &key) {
+                        entry.1 = n;
+                    } else {
+                        arr.push((key.to_string(), n));
+                    }
+                    n
+                })
+            }
+            JIT_VAL_ARRAY_INCDEC_PRE_INC => {
+                TEST_ARRAY.with(|c| {
+                    let mut arr = c.borrow_mut();
+                    let old = arr.iter().find(|(k, _)| k == &key).map_or(0.0, |(_, v)| *v);
+                    let n = old + 1.0;
+                    if let Some(entry) = arr.iter_mut().find(|(k, _)| k == &key) {
+                        entry.1 = n;
+                    } else {
+                        arr.push((key.to_string(), n));
+                    }
+                    n
+                })
+            }
+            JIT_VAL_ARRAY_INCDEC_POST_INC => {
+                TEST_ARRAY.with(|c| {
+                    let mut arr = c.borrow_mut();
+                    let old = arr.iter().find(|(k, _)| k == &key).map_or(0.0, |(_, v)| *v);
+                    let n = old + 1.0;
+                    if let Some(entry) = arr.iter_mut().find(|(k, _)| k == &key) {
+                        entry.1 = n;
+                    } else {
+                        arr.push((key.to_string(), n));
+                    }
+                    old
+                })
+            }
+            JIT_VAL_ARRAY_INCDEC_PRE_DEC => {
+                TEST_ARRAY.with(|c| {
+                    let mut arr = c.borrow_mut();
+                    let old = arr.iter().find(|(k, _)| k == &key).map_or(0.0, |(_, v)| *v);
+                    let n = old - 1.0;
+                    if let Some(entry) = arr.iter_mut().find(|(k, _)| k == &key) {
+                        entry.1 = n;
+                    } else {
+                        arr.push((key.to_string(), n));
+                    }
+                    n
+                })
+            }
+            JIT_VAL_ARRAY_INCDEC_POST_DEC => {
+                TEST_ARRAY.with(|c| {
+                    let mut arr = c.borrow_mut();
+                    let old = arr.iter().find(|(k, _)| k == &key).map_or(0.0, |(_, v)| *v);
+                    let n = old - 1.0;
+                    if let Some(entry) = arr.iter_mut().find(|(k, _)| k == &key) {
+                        entry.1 = n;
+                    } else {
+                        arr.push((key.to_string(), n));
+                    }
+                    old
+                })
+            }
+            _ => 0.0,
+        }
+    }
+
+    fn exec_with_test_val(ops: &[Op]) -> f64 {
+        let chunk = try_compile(ops).expect("compile failed");
+        let mut slots = [0.0f64; 0];
+        let mut state = JitRuntimeState::new(
+            &mut slots,
+            dummy_field,
+            dummy_array,
+            dummy_var,
+            dummy_field_dispatch,
+            dummy_io_dispatch,
+            test_val_dispatch,
+        );
+        chunk.execute(&mut state)
+    }
+
+    #[test]
+    fn jit_array_get_functional() {
+        setup_test_array(&[("1", 42.0)]);
+        let r = exec_with_test_val(&[Op::PushNum(1.0), Op::GetArrayElem(0)]);
+        assert!((r - 42.0).abs() < 1e-15);
+    }
+
+    #[test]
+    fn jit_array_set_functional() {
+        setup_test_array(&[]);
+        let r = exec_with_test_val(&[Op::PushNum(1.0), Op::PushNum(99.0), Op::SetArrayElem(0)]);
+        assert!((r - 99.0).abs() < 1e-15);
+        assert!((array_val("1").unwrap() - 99.0).abs() < 1e-15);
+    }
+
+    #[test]
+    fn jit_in_array_functional() {
+        setup_test_array(&[("1", 10.0)]);
+        let r = exec_with_test_val(&[Op::PushNum(1.0), Op::InArray(0)]);
+        assert!((r - 1.0).abs() < 1e-15);
+        let r2 = exec_with_test_val(&[Op::PushNum(99.0), Op::InArray(0)]);
+        assert!(r2.abs() < 1e-15);
+    }
+
+    #[test]
+    fn jit_delete_elem_functional() {
+        setup_test_array(&[("1", 10.0), ("2", 20.0)]);
+        exec_with_test_val(&[Op::PushNum(1.0), Op::DeleteElem(0), Op::PushNum(0.0)]);
+        assert!(array_val("1").is_none());
+        assert!(array_val("2").is_some());
+    }
+
+    #[test]
+    fn jit_delete_array_functional() {
+        setup_test_array(&[("1", 10.0), ("2", 20.0)]);
+        exec_with_test_val(&[Op::DeleteArray(0), Op::PushNum(0.0)]);
+        assert!(array_val("1").is_none());
+        assert!(array_val("2").is_none());
+    }
+
+    #[test]
+    fn jit_compound_assign_index_functional() {
+        setup_test_array(&[("1", 10.0)]);
+        let r = exec_with_test_val(&[
+            Op::PushNum(1.0),
+            Op::PushNum(5.0),
+            Op::CompoundAssignIndex(0, BinOp::Add),
+        ]);
+        assert!((r - 15.0).abs() < 1e-15);
+        assert!((array_val("1").unwrap() - 15.0).abs() < 1e-15);
+    }
+
+    #[test]
+    fn jit_incdec_index_pre_inc_functional() {
+        setup_test_array(&[("1", 10.0)]);
+        let r = exec_with_test_val(&[Op::PushNum(1.0), Op::IncDecIndex(0, IncDecOp::PreInc)]);
+        assert!((r - 11.0).abs() < 1e-15);
+        assert!((array_val("1").unwrap() - 11.0).abs() < 1e-15);
+    }
+
+    #[test]
+    fn jit_incdec_index_post_inc_functional() {
+        setup_test_array(&[("1", 10.0)]);
+        let r = exec_with_test_val(&[Op::PushNum(1.0), Op::IncDecIndex(0, IncDecOp::PostInc)]);
+        assert!((r - 10.0).abs() < 1e-15); // returns old
+        assert!((array_val("1").unwrap() - 11.0).abs() < 1e-15);
+    }
+
+    // ── Conditional Next ──────────────────────────────────────────────────
+
+    #[test]
+    fn jit_conditional_next() {
+        // if (1) next; else fall through
+        let ops = [
+            Op::PushNum(1.0),
+            Op::JumpIfFalsePop(3),
+            Op::Next,           // signal raised — JIT returns immediately
+            Op::PushNum(99.0),  // not reached
+        ];
+        // Compiles and runs without crash.
+        let r = exec(&ops);
+        assert!(r.abs() < 1e-15);
+    }
+
+    // ── Mixed: print + arithmetic in same chunk ───────────────────────────
+
+    #[test]
+    fn jit_print_then_arithmetic() {
+        // `{ print $1; sum += $2 }` — fused print followed by slot math.
+        extern "C" fn fields(i: i32) -> f64 {
+            match i { 1 => 10.0, 2 => 20.0, _ => 0.0 }
+        }
+        let ops = [
+            Op::PrintFieldStdout(1),              // side-effect (dummy)
+            Op::AddFieldToSlot { field: 2, slot: 0 }, // sum += $2
+            Op::GetSlot(0),                        // return sum
+        ];
+        let mut slots = [5.0];
+        let chunk = try_compile(&ops).expect("compile");
+        let mut state = JitRuntimeState::new(
+            &mut slots,
+            fields,
+            dummy_array,
+            dummy_var,
+            dummy_field_dispatch,
+            dummy_io_dispatch,
+            dummy_val_dispatch,
+        );
+        let r = chunk.execute(&mut state);
+        assert!((r - 25.0).abs() < 1e-15); // 5 + 20
     }
 }
