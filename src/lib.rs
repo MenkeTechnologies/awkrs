@@ -1220,12 +1220,7 @@ fn process_file_add_mul_fields_to_slot_raw(
 
 /// Parse two whitespace-delimited fields from raw bytes in a single scan pass.
 #[inline]
-fn parse_two_fields_number_ws(
-    line: &[u8],
-    f1: usize,
-    f2: usize,
-    max_field: usize,
-) -> (f64, f64) {
+fn parse_two_fields_number_ws(line: &[u8], f1: usize, f2: usize, max_field: usize) -> (f64, f64) {
     let llen = line.len();
     let mut i = 0;
     let mut v1 = 0.0f64;

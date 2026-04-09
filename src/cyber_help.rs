@@ -9,13 +9,33 @@ use crate::cli::Args;
 
 fn cyber_styles() -> Styles {
     Styles::styled()
-        .header(Style::new().fg_color(Some(AnsiColor::Cyan.into())).effects(Effects::BOLD | Effects::UNDERLINE))
-        .usage(Style::new().fg_color(Some(AnsiColor::Yellow.into())).effects(Effects::BOLD))
-        .literal(Style::new().fg_color(Some(AnsiColor::Green.into())).effects(Effects::BOLD))
+        .header(
+            Style::new()
+                .fg_color(Some(AnsiColor::Cyan.into()))
+                .effects(Effects::BOLD | Effects::UNDERLINE),
+        )
+        .usage(
+            Style::new()
+                .fg_color(Some(AnsiColor::Yellow.into()))
+                .effects(Effects::BOLD),
+        )
+        .literal(
+            Style::new()
+                .fg_color(Some(AnsiColor::Green.into()))
+                .effects(Effects::BOLD),
+        )
         .placeholder(Style::new().fg_color(Some(AnsiColor::Magenta.into())))
         .valid(Style::new().fg_color(Some(AnsiColor::Green.into())))
-        .invalid(Style::new().fg_color(Some(AnsiColor::Red.into())).effects(Effects::BOLD))
-        .error(Style::new().fg_color(Some(AnsiColor::Red.into())).effects(Effects::BOLD))
+        .invalid(
+            Style::new()
+                .fg_color(Some(AnsiColor::Red.into()))
+                .effects(Effects::BOLD),
+        )
+        .error(
+            Style::new()
+                .fg_color(Some(AnsiColor::Red.into()))
+                .effects(Effects::BOLD),
+        )
 }
 
 /// Inner width between `┌` and `┐` (matches `tp -h` layout).
