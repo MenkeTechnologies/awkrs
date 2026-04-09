@@ -390,6 +390,8 @@ pub struct Runtime {
     pub ors_bytes: Vec<u8>,
     /// Reusable VM stack — avoids malloc/free per VmCtx creation.
     pub vm_stack: Vec<Value>,
+    /// Scratch buffer for JIT numeric slot marshaling (reused across records).
+    pub jit_slot_buf: Vec<f64>,
     /// `-k` / `--csv` (gawk-style): use [`split_csv_gawk_fields`] instead of `FPAT` / `FS` for `$n`.
     pub csv_mode: bool,
 }
@@ -434,7 +436,18 @@ impl Runtime {
             ofs_bytes: b" ".to_vec(),
             ors_bytes: b"\n".to_vec(),
             vm_stack: Vec::with_capacity(64),
+            jit_slot_buf: Vec::new(),
             csv_mode: false,
+        }
+    }
+
+    /// Resize [`Self::jit_slot_buf`] for JIT (`n` elements; no shrink).
+    #[inline]
+    pub fn ensure_jit_slot_buf(&mut self, n: usize) {
+        if self.jit_slot_buf.len() < n {
+            self.jit_slot_buf.resize(n, 0.0);
+        } else if self.jit_slot_buf.len() > n {
+            self.jit_slot_buf.truncate(n);
         }
     }
 
@@ -493,6 +506,7 @@ impl Runtime {
             ofs_bytes: b" ".to_vec(),
             ors_bytes: b"\n".to_vec(),
             vm_stack: Vec::with_capacity(64),
+            jit_slot_buf: Vec::new(),
             csv_mode,
         }
     }
@@ -1263,6 +1277,7 @@ impl Clone for Runtime {
             ofs_bytes: self.ofs_bytes.clone(),
             ors_bytes: self.ors_bytes.clone(),
             vm_stack: Vec::with_capacity(64),
+            jit_slot_buf: Vec::new(),
             csv_mode: self.csv_mode,
         }
     }

@@ -50,20 +50,20 @@
 //! `typeof` (`TypeofVar` / `TypeofSlot` / `TypeofArrayElem` / `TypeofField` / `TypeofValue`)
 //! compiles to `MIXED_TYPEOF_*` and returns NaN-boxed pool/dynamic strings like other mixed ops.
 //!
-//! ## Performance roadmap (not implemented)
+//! ## Performance (implemented vs future)
 //!
-//! To be competitive with hand-tuned loops on hot numeric rules, future work would need to:
-//! - **Cache dispatch** — avoid re-scanning and re-hashing the `ops` slice on every record; keep a
-//!   stable chunk id → [`JitChunk`] association after the first eligibility check.
-//! - **Slot representation** — stop copying between the interpreter [`crate::runtime::Value`] slots
-//!   and the JIT `f64` buffer every invocation where full [`crate::runtime::Value`] semantics allow
-//!   storing scalars as `f64` (or using the JIT buffer as the source of truth for eligible chunks).
-//! - **Compile cache** — replace the global [`JIT_CACHE`] [`std::sync::Mutex`] with a thread-local
-//!   or sharded map to remove lock contention (at the cost of possible duplicate compiles across threads).
-//! - **Register promotion** — hoist loop-carried scalars into machine registers via Cranelift SSA /
-//!   lowering changes; not automatic from the current one-op-at-a-time lowering.
-//! - **Thinner BEGIN** — skip TLS and field-callback setup when a rule cannot touch fields or
-//!   mixed/runtime bridges (e.g. pure `BEGIN` with no record I/O).
+//! - **Chunk dispatch cache** — each [`crate::bytecode::Chunk`] holds a `jit_lock` with the first
+//!   eligibility/compile result so the VM does not re-run [`is_jit_eligible`] / [`try_compile`] every
+//!   record ([`crate::vm::try_jit_dispatch`]).
+//! - **Thread-local compile cache** — [`try_jit_execute`] (legacy callers without a [`Chunk`]) uses a
+//!   thread-local map keyed by [`ops_hash`] instead of a global mutex.
+//! - **Slot buffer reuse** — [`crate::runtime::Runtime::jit_slot_buf`] is resized once and reused
+//!   for marshaling instead of allocating a fresh `Vec<f64>` per JIT invocation. The VM clears
+//!   `JIT_DYN_STRINGS` *before* filling that buffer in mixed mode so NaN-boxed string slots (e.g.
+//!   `-v` values stored as strings) still match the dynamic-string pool during execution.
+//! - **Future** — keep interpreter [`crate::runtime::Value`] slots and the JIT `f64` buffer unified
+//!   where semantics allow; Cranelift SSA/register promotion for hot loops; optional TLS elision for
+//!   chunks that never call into Rust callbacks.
 
 use crate::ast::{BinOp, IncDecOp};
 use crate::bytecode::{CompiledProgram, GetlineSource, Op, SubTarget};
@@ -72,9 +72,10 @@ use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{default_libcall_names, Linkage, Module};
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::mem;
-use std::sync::Mutex;
+use std::sync::Arc;
 
 // ── `jit_var_dispatch` opcodes (must match `jit_var_dispatch` in vm.rs) ─────
 
@@ -516,10 +517,13 @@ fn jit_var_op_for_incdec(kind: IncDecOp) -> u32 {
     }
 }
 
-// ── JIT cache ──────────────────────────────────────────────────────────────
+// ── JIT compile cache (thread-local, keyed by ops hash) ─────────────────────
 
-/// Global cache of compiled JIT chunks keyed by ops hash.
-static JIT_CACHE: Mutex<Option<HashMap<u64, Option<JitChunk>>>> = Mutex::new(None);
+thread_local! {
+    /// `None` means compile failed last time for this hash.
+    static JIT_COMPILE_CACHE: RefCell<HashMap<u64, Option<Arc<JitChunk>>>> =
+        RefCell::new(HashMap::new());
+}
 
 fn ops_hash(ops: &[Op]) -> u64 {
     use std::hash::{Hash, Hasher};
@@ -3366,9 +3370,21 @@ pub(crate) fn jit_disabled_by_env() -> bool {
     })
 }
 
+/// Run a previously compiled chunk (no opcode hash or compile-cache lookup).
+pub(crate) fn try_jit_execute_cached(
+    chunk: &Arc<JitChunk>,
+    state: &mut JitRuntimeState<'_>,
+) -> Option<f64> {
+    if jit_disabled_by_env() {
+        return None;
+    }
+    Some(chunk.execute(state))
+}
+
 /// Try to JIT-compile and execute a chunk. Returns `Some(f64)` on success.
 ///
-/// The caller supplies [`JitRuntimeState`] (slots and the four `extern "C"` callbacks).
+/// The caller supplies [`JitRuntimeState`] (slots and the seven `extern "C"` callbacks).
+/// Uses a thread-local map keyed by [`ops_hash`] (legacy callers without a [`Chunk`] cache).
 pub fn try_jit_execute(
     ops: &[Op],
     state: &mut JitRuntimeState<'_>,
@@ -3379,26 +3395,16 @@ pub fn try_jit_execute(
     }
     let hash = ops_hash(ops);
 
-    // Check cache first
-    {
-        let cache = JIT_CACHE.lock().ok()?;
-        if let Some(ref map) = *cache {
-            if let Some(entry) = map.get(&hash) {
-                return entry.as_ref().map(|chunk| chunk.execute(state));
-            }
-        }
+    let cached = JIT_COMPILE_CACHE.with(|c| c.borrow().get(&hash).cloned());
+    if let Some(entry) = cached {
+        return entry.as_ref().map(|chunk| chunk.execute(state));
     }
 
-    // Compile and cache
-    let chunk = try_compile(ops, cp);
+    let chunk = try_compile(ops, cp).map(Arc::new);
     let result = chunk.as_ref().map(|c| c.execute(state));
-
-    {
-        let mut cache = JIT_CACHE.lock().ok()?;
-        let map = cache.get_or_insert_with(HashMap::new);
-        map.insert(hash, chunk);
-    }
-
+    JIT_COMPILE_CACHE.with(|c| {
+        c.borrow_mut().insert(hash, chunk);
+    });
     result
 }
 

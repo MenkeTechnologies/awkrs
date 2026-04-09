@@ -11,6 +11,7 @@ use crate::runtime::{Runtime, Value};
 use std::cmp::Ordering;
 use std::io::{self, Write};
 use std::mem;
+use std::sync::Arc;
 
 /// Max interned identifier length resolved via stack buffer (`with_short_pool_name_mut`).
 const POOL_NAME_STACK_MAX: usize = 128;
@@ -1922,18 +1923,45 @@ extern "C" fn jit_val_dispatch(op: u32, a1: u32, a2: f64, a3: f64) -> f64 {
 
 /// Try JIT dispatch for the full instruction set. Converts slots to/from f64[],
 /// sets up the field callback via thread-local, and executes.
-fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Result<Option<VmSignal>> {
+fn try_jit_dispatch(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<Option<VmSignal>> {
+    let ops = &chunk.ops;
     if crate::jit::jit_disabled_by_env() {
         return Ok(None);
     }
-    if !crate::jit::is_jit_eligible(ops) || !crate::jit::jit_call_builtins_ok(ops, ctx.cp) {
-        return Ok(None);
-    }
+
+    let arc = {
+        let mut guard = chunk
+            .jit_lock
+            .lock()
+            .map_err(|_| Error::Runtime("JIT chunk cache lock poisoned".into()))?;
+        match &*guard {
+            Some(Err(())) => return Ok(None),
+            Some(Ok(a)) => Arc::clone(a),
+            None => {
+                if !crate::jit::is_jit_eligible(ops)
+                    || !crate::jit::jit_call_builtins_ok(ops, ctx.cp)
+                {
+                    *guard = Some(Err(()));
+                    return Ok(None);
+                }
+                let Some(jc) = crate::jit::try_compile(ops, ctx.cp) else {
+                    *guard = Some(Err(()));
+                    return Ok(None);
+                };
+                let a = Arc::new(jc);
+                *guard = Some(Ok(Arc::clone(&a)));
+                a
+            }
+        }
+    };
 
     let mixed = crate::jit::needs_mixed_mode(ops);
 
-    // Build f64 slot array from runtime slots
     let slot_count = ctx.rt.slots.len();
+
+    // Clear TLS scratch pools **before** `value_to_jit_f64` — mixed-mode NaN-boxed
+    // string slots index into `JIT_DYN_STRINGS`; filling the buffer then clearing
+    // would leave stale indices (e.g. `-v a=1` string slots → printed `0`).
     JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = None);
     JIT_DYN_STRINGS.with(|c| c.borrow_mut().clear());
     MIXED_PRINT_SLOTS.with(|c| c.borrow_mut().clear());
@@ -1942,20 +1970,25 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Result<Option<VmSignal>>
     JIT_CALL_USER_ARGS.with(|c| c.borrow_mut().clear());
     SUB_FN_STASH_KEY.with(|c| *c.borrow_mut() = None);
     JIT_PATSPLIT_SEPS_STASH.with(|c| c.set(0));
-    let mut jit_slots: Vec<f64> = if mixed {
-        ctx.rt
-            .slots
-            .clone()
-            .into_iter()
-            .map(|v| value_to_jit_f64(ctx, v))
-            .collect()
+
+    ctx.rt.ensure_jit_slot_buf(slot_count);
+    if mixed {
+        let slots_copy: Vec<Value> = ctx.rt.slots[..slot_count].to_vec();
+        let mut tmp = vec![0.0; slot_count];
+        for (i, v) in slots_copy.into_iter().enumerate() {
+            tmp[i] = value_to_jit_f64(ctx, v);
+        }
+        ctx.rt.jit_slot_buf[..slot_count].copy_from_slice(&tmp);
     } else {
-        ctx.rt.slots.iter().map(|v| v.as_number()).collect()
-    };
+        let nums: Vec<f64> = ctx.rt.slots[..slot_count]
+            .iter()
+            .map(|v| v.as_number())
+            .collect();
+        ctx.rt.jit_slot_buf[..slot_count].copy_from_slice(&nums);
+    }
 
     let _nested_jit_tls = NestedJitTlsGuard::new();
 
-    // Set thread-local Runtime + program pointers for JIT callbacks
     let rt_ptr: *mut Runtime = ctx.rt;
     let cp_ptr: *const CompiledProgram = ctx.cp;
     JIT_RT_PTR.with(|cell| cell.set(rt_ptr));
@@ -1963,13 +1996,12 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Result<Option<VmSignal>>
     JIT_VMCTX_PTR.with(|cell| {
         cell.set(std::ptr::from_mut(ctx).cast::<VmCtx<'static>>());
     });
-    JIT_SLOTS_PTR.with(|cell| cell.set(jit_slots.as_mut_ptr()));
-    JIT_SLOTS_LEN.with(|cell| cell.set(jit_slots.len()));
-    // Clear any stale signal.
+    JIT_SLOTS_PTR.with(|cell| cell.set(ctx.rt.jit_slot_buf.as_mut_ptr()));
+    JIT_SLOTS_LEN.with(|cell| cell.set(slot_count));
     JIT_SIGNAL.with(|c| c.set(0));
 
     let mut jit_state = crate::jit::JitRuntimeState::new(
-        &mut jit_slots,
+        &mut ctx.rt.jit_slot_buf[..slot_count],
         jit_field_callback,
         jit_array_field_add_const,
         jit_var_dispatch,
@@ -1977,7 +2009,7 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Result<Option<VmSignal>>
         jit_io_dispatch,
         jit_val_dispatch,
     );
-    let result = crate::jit::try_jit_execute(ops, &mut jit_state, ctx.cp);
+    let result = crate::jit::try_jit_execute_cached(&arc, &mut jit_state);
 
     JIT_FORIN_ITERS.with(|c| c.borrow_mut().clear());
 
@@ -2006,11 +2038,13 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Result<Option<VmSignal>>
 
     // Write back modified slots
     if mixed {
-        for (i, &jit_val) in jit_slots.iter().enumerate().take(slot_count) {
+        for i in 0..slot_count {
+            let jit_val = ctx.rt.jit_slot_buf[i];
             ctx.rt.slots[i] = jit_f64_to_value(ctx, jit_val);
         }
     } else {
-        for (i, &jit_val) in jit_slots.iter().enumerate().take(slot_count) {
+        for i in 0..slot_count {
+            let jit_val = ctx.rt.jit_slot_buf[i];
             let old = ctx.rt.slots[i].as_number();
             if (jit_val - old).abs() > f64::EPSILON || (old == 0.0 && jit_val != 0.0) {
                 ctx.rt.slots[i] = Value::Num(jit_val);
@@ -2117,7 +2151,7 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Result<Option<VmSignal>>
 
 fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
     let ops = &chunk.ops;
-    match try_jit_dispatch(ops, ctx) {
+    match try_jit_dispatch(chunk, ctx) {
         Ok(Some(signal)) => return Ok(signal),
         Ok(None) => {}
         Err(e) => return Err(e),
@@ -3414,6 +3448,19 @@ mod tests {
         let mut rt = runtime_with_slots(&cp);
         vm_run_begin(&cp, &mut rt).unwrap();
         assert_eq!(String::from_utf8_lossy(&rt.print_buf), "14\n");
+    }
+
+    /// Mirrors CLI `-v a=1 -v b=2 -v c=3` (`apply_assigns` stores string values).
+    #[test]
+    fn vm_begin_print_sum_of_three_minus_v_style_vars() {
+        let cp = compile("BEGIN { print a+b+c }");
+        let mut rt = Runtime::new();
+        rt.vars.insert("a".into(), Value::Str("1".into()));
+        rt.vars.insert("b".into(), Value::Str("2".into()));
+        rt.vars.insert("c".into(), Value::Str("3".into()));
+        rt.slots = cp.init_slots(&rt.vars);
+        vm_run_begin(&cp, &mut rt).unwrap();
+        assert_eq!(String::from_utf8_lossy(&rt.print_buf), "6\n");
     }
 
     #[test]

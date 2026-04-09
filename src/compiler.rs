@@ -134,7 +134,7 @@ impl Compiler {
         let mut ops = Vec::new();
         self.compile_stmts(stmts, &mut ops);
         peephole_optimize(&mut ops);
-        Chunk { ops }
+        Chunk::from_ops(ops)
     }
 
     fn compile_pattern(&mut self, pat: &Pattern) -> CompiledPattern {
@@ -152,7 +152,7 @@ impl Compiler {
                 let mut ops = Vec::new();
                 self.compile_expr(e, &mut ops);
                 peephole_optimize(&mut ops);
-                CompiledPattern::Expr(Chunk { ops })
+                CompiledPattern::Expr(Chunk::from_ops(ops))
             }
             Pattern::Range(_, _) => CompiledPattern::Range,
             Pattern::Begin | Pattern::End | Pattern::BeginFile | Pattern::EndFile => {

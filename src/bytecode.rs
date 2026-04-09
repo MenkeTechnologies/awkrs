@@ -8,6 +8,8 @@
 use crate::ast::{BinOp, IncDecOp};
 use crate::runtime::{AwkMap, Value};
 use std::collections::HashMap;
+use std::fmt;
+use std::sync::{Arc, Mutex};
 
 // ── Instruction set ──────────────────────────────────────────────────────────
 
@@ -316,10 +318,43 @@ pub enum Op {
 
 // ── Compiled structures ─────────────────────────────────────────────────────
 
+type JitChunkCache = Mutex<Option<Result<Arc<crate::jit::JitChunk>, ()>>>;
+
 /// A flat sequence of bytecode instructions.
-#[derive(Debug, Clone, Default)]
+///
+/// [`Self::jit_lock`] caches the result of the first JIT attempt for this chunk:
+/// `None` = not yet tried, `Some(Err(()))` = use interpreter, `Some(Ok(arc))` = native code.
+#[derive(Clone)]
 pub struct Chunk {
     pub ops: Vec<Op>,
+    pub(crate) jit_lock: Arc<JitChunkCache>,
+}
+
+impl Default for Chunk {
+    fn default() -> Self {
+        Self {
+            ops: Vec::new(),
+            jit_lock: Arc::new(Mutex::new(None)),
+        }
+    }
+}
+
+impl fmt::Debug for Chunk {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Chunk")
+            .field("ops", &self.ops)
+            .field("jit_lock", &"<cached JIT>")
+            .finish()
+    }
+}
+
+impl Chunk {
+    pub fn from_ops(ops: Vec<Op>) -> Self {
+        Self {
+            ops,
+            jit_lock: Arc::new(Mutex::new(None)),
+        }
+    }
 }
 
 /// Interned string pool shared across the entire compiled program.
