@@ -1224,6 +1224,11 @@ mod value_tests {
     }
 
     #[test]
+    fn value_as_number_scientific_notation_string() {
+        assert_eq!(Value::Str("1e2".into()).as_number(), 100.0);
+    }
+
+    #[test]
     fn value_into_string_float_fraction() {
         let s = Value::Num(0.25).into_string();
         assert!(s.contains('2') && s.contains('5'), "{s}");

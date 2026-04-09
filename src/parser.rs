@@ -1530,4 +1530,60 @@ mod tests {
             s => panic!("expected $1++, got {s:?}"),
         }
     }
+
+    #[test]
+    fn parses_prefix_decrement_var() {
+        let p = parse_program("BEGIN { --y }").unwrap();
+        match first_begin_stmt(&p) {
+            Stmt::Expr(Expr::IncDec { op, target }) => {
+                assert_eq!(*op, IncDecOp::PreDec);
+                assert!(matches!(target, IncDecTarget::Var(ref s) if s == "y"));
+            }
+            s => panic!("expected --y, got {s:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_postfix_decrement_array_subscript() {
+        let p = parse_program("BEGIN { a[1]-- }").unwrap();
+        match first_begin_stmt(&p) {
+            Stmt::Expr(Expr::IncDec { op, target }) => {
+                assert_eq!(*op, IncDecOp::PostDec);
+                match target {
+                    IncDecTarget::Index { name, indices } => {
+                        assert_eq!(name, "a");
+                        assert_eq!(indices.len(), 1);
+                        assert!(matches!(&indices[0], Expr::Number(n) if *n == 1.0));
+                    }
+                    t => panic!("expected a[1]--, got {t:?}"),
+                }
+            }
+            s => panic!("expected a[1]--, got {s:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_do_while_loop() {
+        let p = parse_program("BEGIN { do { print 1 } while (0) }").unwrap();
+        match first_begin_stmt(&p) {
+            Stmt::DoWhile { body, cond } => {
+                assert!(matches!(cond, Expr::Number(n) if *n == 0.0));
+                assert_eq!(body.len(), 1);
+            }
+            s => panic!("expected do-while, got {s:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_for_in_loop() {
+        let p = parse_program("BEGIN { for (k in arr) print k }").unwrap();
+        match first_begin_stmt(&p) {
+            Stmt::ForIn { var, arr, body } => {
+                assert_eq!(var, "k");
+                assert_eq!(arr, "arr");
+                assert_eq!(body.len(), 1);
+            }
+            s => panic!("expected for-in, got {s:?}"),
+        }
+    }
 }

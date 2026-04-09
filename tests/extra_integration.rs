@@ -22,6 +22,20 @@ fn logical_or_short_circuit_skips_rhs_division_by_zero() {
 }
 
 #[test]
+fn substr_start_beyond_string_yields_empty() {
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { print substr("hi", 99) }"#, "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "\n");
+}
+
+#[test]
+fn index_miss_returns_zero() {
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { print index("abc", "z") }"#, "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "0\n");
+}
+
+#[test]
 fn compound_subtract_assign() {
     let (c, o, _) = run_awkrs_stdin("BEGIN { x = 5; x -= 2; print x }", "");
     assert_eq!(c, 0);

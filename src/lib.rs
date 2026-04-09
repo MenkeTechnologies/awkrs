@@ -1192,6 +1192,20 @@ mod lib_internal_tests {
     }
 
     #[test]
+    fn awk_float_eq_negative_and_symmetric() {
+        assert!(awk_float_eq(-3.0, -3.0));
+        assert!(!awk_float_eq(-1.0, 1.0));
+    }
+
+    #[test]
+    fn split_bytes_into_owned_lines_consecutive_newlines_yield_empty_records() {
+        assert_eq!(
+            split_bytes_into_owned_lines(b"\n\n"),
+            vec!["".to_string(), "".to_string()]
+        );
+    }
+
+    #[test]
     fn match_nr_mod_eq_pattern_matches_five_op_form() {
         let ops = vec![
             Op::GetNR,

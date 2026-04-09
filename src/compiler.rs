@@ -1657,4 +1657,18 @@ mod tests {
         assert!(cp.functions.contains_key("a"));
         assert!(cp.functions.contains_key("b"));
     }
+
+    #[test]
+    fn compile_do_while_loop() {
+        let prog = parse_program("BEGIN { do { x = 1 } while (0) }").unwrap();
+        let cp = Compiler::compile_program(&prog);
+        assert!(!cp.begin_chunks[0].ops.is_empty());
+    }
+
+    #[test]
+    fn compile_for_in_loop() {
+        let prog = parse_program("BEGIN { for (k in a) print k }").unwrap();
+        let cp = Compiler::compile_program(&prog);
+        assert!(!cp.begin_chunks[0].ops.is_empty());
+    }
 }
