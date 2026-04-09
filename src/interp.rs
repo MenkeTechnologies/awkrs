@@ -1,4 +1,4 @@
-use crate::ast::*;
+use crate::ast::{IncDecOp, IncDecTarget, *};
 use crate::builtins;
 use crate::error::{Error, Result};
 use crate::format;
@@ -290,6 +290,26 @@ fn exec_stmt(s: &Stmt, ctx: &mut ExecCtx<'_>) -> Result<Flow> {
                         Flow::Continue => continue 'outer,
                         f @ (Flow::Next | Flow::Return(_) | Flow::ExitPending) => return Ok(f),
                     }
+                }
+            }
+        }
+        Stmt::DoWhile { body, cond } => {
+            'outer: loop {
+                for t in body {
+                    match exec_stmt(t, ctx)? {
+                        Flow::Normal => {}
+                        Flow::Break => break 'outer,
+                        Flow::Continue => {
+                            if !truthy(&eval_expr(cond, ctx)?) {
+                                break 'outer;
+                            }
+                            continue 'outer;
+                        }
+                        f @ (Flow::Next | Flow::Return(_) | Flow::ExitPending) => return Ok(f),
+                    }
+                }
+                if !truthy(&eval_expr(cond, ctx)?) {
+                    break;
                 }
             }
         }
@@ -612,7 +632,40 @@ pub fn eval_expr(e: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {
             let k = eval_expr(key, ctx)?.as_str();
             Value::Num(if ctx.rt.array_has(arr, &k) { 1.0 } else { 0.0 })
         }
+        Expr::IncDec { op, target } => eval_inc_dec(*op, target, ctx)?,
     })
+}
+
+fn eval_inc_dec(op: IncDecOp, target: &IncDecTarget, ctx: &mut ExecCtx<'_>) -> Result<Value> {
+    let delta = match op {
+        IncDecOp::PreInc | IncDecOp::PostInc => 1.0,
+        IncDecOp::PreDec | IncDecOp::PostDec => -1.0,
+    };
+    let ret_old = matches!(op, IncDecOp::PostInc | IncDecOp::PostDec);
+    match target {
+        IncDecTarget::Var(name) => {
+            let old_n = ctx.get_var(name).as_number();
+            let new_n = old_n + delta;
+            ctx.set_var(name, Value::Num(new_n));
+            Ok(Value::Num(if ret_old { old_n } else { new_n }))
+        }
+        IncDecTarget::Field(field) => {
+            let idx = eval_expr(field, ctx)?.as_number() as i32;
+            let old_n = ctx.rt.field(idx).as_number();
+            let new_n = old_n + delta;
+            let s = Value::Num(new_n).as_str();
+            ctx.rt.set_field(idx, &s);
+            Ok(Value::Num(if ret_old { old_n } else { new_n }))
+        }
+        IncDecTarget::Index { name, indices } => {
+            let k = array_key(ctx, indices)?;
+            let old_n = ctx.rt.array_get(name, &k).as_number();
+            let new_n = old_n + delta;
+            let newv = Value::Num(new_n);
+            ctx.rt.array_set(name, k, newv);
+            Ok(Value::Num(if ret_old { old_n } else { new_n }))
+        }
+    }
 }
 
 fn eval_binary(op: BinOp, left: &Expr, right: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {

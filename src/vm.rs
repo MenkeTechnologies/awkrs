@@ -1,6 +1,6 @@
 //! Stack-based virtual machine that executes compiled bytecode.
 
-use crate::ast::BinOp;
+use crate::ast::{BinOp, IncDecOp};
 use crate::builtins;
 use crate::bytecode::*;
 use crate::error::{Error, Result};
@@ -378,6 +378,47 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 ctx.push(new_val);
             }
 
+            Op::IncDecVar(idx, kind) => {
+                let name = ctx.str_ref(idx).to_string();
+                let old = ctx.get_var(&name);
+                let old_n = old.as_number();
+                let delta = incdec_delta(kind);
+                let new_n = old_n + delta;
+                ctx.set_var(&name, Value::Num(new_n));
+                ctx.push(Value::Num(incdec_push(kind, old_n, new_n)));
+            }
+            Op::IncDecSlot(slot, kind) => {
+                let old = &ctx.rt.slots[slot as usize];
+                let old_n = old.as_number();
+                let delta = incdec_delta(kind);
+                let new_n = old_n + delta;
+                ctx.rt.slots[slot as usize] = Value::Num(new_n);
+                ctx.push(Value::Num(incdec_push(kind, old_n, new_n)));
+            }
+            Op::IncDecField(kind) => {
+                let idx = ctx.pop().as_number() as i32;
+                let old = ctx.rt.field(idx);
+                let old_n = old.as_number();
+                let delta = incdec_delta(kind);
+                let new_n = old_n + delta;
+                let newv = Value::Num(new_n);
+                let s = newv.as_str();
+                ctx.rt.set_field(idx, &s);
+                ctx.push(Value::Num(incdec_push(kind, old_n, new_n)));
+            }
+            Op::IncDecIndex(arr, kind) => {
+                let key = ctx.pop().as_str();
+                let name = ctx.str_ref(arr);
+                let old = ctx.rt.array_get(name, &key);
+                let old_n = old.as_number();
+                let delta = incdec_delta(kind);
+                let new_n = old_n + delta;
+                let new_val = Value::Num(new_n);
+                let name_owned = name.to_string();
+                ctx.rt.array_set(&name_owned, key, new_val);
+                ctx.push(Value::Num(incdec_push(kind, old_n, new_n)));
+            }
+
             // ── Arithmetic ──────────────────────────────────────────────
             Op::Add => {
                 let b = ctx.pop().as_number();
@@ -696,6 +737,11 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 let n = ctx.rt.slots[s].as_number();
                 ctx.rt.slots[s] = Value::Num(n + 1.0);
             }
+            Op::DecrSlot(slot) => {
+                let s = slot as usize;
+                let n = ctx.rt.slots[s].as_number();
+                ctx.rt.slots[s] = Value::Num(n - 1.0);
+            }
             Op::AddSlotToSlot { src, dst } => {
                 let sv = ctx.rt.slots[src as usize].as_number();
                 let dv = ctx.rt.slots[dst as usize].as_number();
@@ -786,6 +832,20 @@ pub fn flush_print_buf(buf: &mut Vec<u8>) -> Result<()> {
 
 fn truthy(v: &Value) -> bool {
     v.truthy()
+}
+
+fn incdec_delta(kind: IncDecOp) -> f64 {
+    match kind {
+        IncDecOp::PreInc | IncDecOp::PostInc => 1.0,
+        IncDecOp::PreDec | IncDecOp::PostDec => -1.0,
+    }
+}
+
+fn incdec_push(kind: IncDecOp, old_n: f64, new_n: f64) -> f64 {
+    match kind {
+        IncDecOp::PreInc | IncDecOp::PreDec => new_n,
+        IncDecOp::PostInc | IncDecOp::PostDec => old_n,
+    }
 }
 
 fn apply_binop(op: BinOp, old: &Value, rhs: &Value) -> Result<Value> {

@@ -816,3 +816,45 @@ fn regex_escaped_backslash_terminates_correctly() {
     assert_eq!(c, 0);
     assert_eq!(o, "yes\n");
 }
+
+// ── gawk-style ++/-- and do-while ──────────────────────────────────────────
+
+#[test]
+fn incdec_scalar_pre_post() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { i = 0; print i++, ++i, i; j = 5; print --j, j--, j }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "0 2 2\n4 4 3\n");
+}
+
+#[test]
+fn do_while_runs_at_least_once() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { k = 0; do { k++ } while (k < 3); print k }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "3\n");
+}
+
+#[test]
+fn incdec_field_and_array() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { $1 = 10; print $1++; a[1] = 7; print ++a[1] }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "10\n8\n");
+}
+
+#[test]
+fn do_while_continue_skips_to_condition() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { do { print "a"; continue; print "b" } while (0) }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "a\n");
+}

@@ -1,4 +1,4 @@
-use crate::ast::{GetlineRedir, *};
+use crate::ast::{GetlineRedir, IncDecOp, IncDecTarget, *};
 use crate::error::{Error, Result};
 use crate::lexer::{Lexer, Token};
 use std::collections::HashMap;
@@ -41,6 +41,14 @@ struct Parser<'a> {
     in_print_arg: bool,
 }
 
+struct ParserCheckpoint<'a> {
+    lexer: Lexer<'a>,
+    cur: Token,
+    line: usize,
+}
+
+const DOLLAR_FIELD_POSTFIX: &str = "__dollar_field_postfix__";
+
 impl<'a> Parser<'a> {
     fn new(src: &'a str) -> Self {
         let mut lexer = Lexer::new(src);
@@ -73,6 +81,20 @@ impl<'a> Parser<'a> {
             self.bump(true)?;
         }
         Ok(())
+    }
+
+    fn checkpoint(&self) -> ParserCheckpoint<'a> {
+        ParserCheckpoint {
+            lexer: self.lexer.clone(),
+            cur: self.cur.clone(),
+            line: self.line,
+        }
+    }
+
+    fn restore(&mut self, cp: ParserCheckpoint<'a>) {
+        self.lexer = cp.lexer;
+        self.cur = cp.cur;
+        self.line = cp.line;
     }
 
     fn parse_program(&mut self) -> Result<Program> {
@@ -280,6 +302,36 @@ impl<'a> Parser<'a> {
                 self.bump(false)?;
                 let body = self.parse_stmt_block()?;
                 Ok(Stmt::While { cond, body })
+            }
+            Token::Do => {
+                self.bump(false)?;
+                let body = self.parse_stmt_block()?;
+                if self.cur != Token::While {
+                    return Err(Error::Parse {
+                        line: self.line,
+                        msg: "expected `while` after `do` body".into(),
+                    });
+                }
+                self.bump(false)?;
+                if self.cur != Token::LParen {
+                    return Err(Error::Parse {
+                        line: self.line,
+                        msg: "expected `(` after `while`".into(),
+                    });
+                }
+                self.bump(false)?;
+                let cond = self.parse_expr(false)?;
+                if self.cur != Token::RParen {
+                    return Err(Error::Parse {
+                        line: self.line,
+                        msg: "expected `)`".into(),
+                    });
+                }
+                self.bump(false)?;
+                if self.cur == Token::Semi || self.cur == Token::Newline {
+                    self.bump(true)?;
+                }
+                Ok(Stmt::DoWhile { body, cond })
             }
             Token::For => {
                 self.bump(false)?;
@@ -867,7 +919,23 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_unary(&mut self, regex_mode: bool) -> Result<Expr> {
-        match &self.cur {
+        let e = self.parse_prefix_unary(regex_mode)?;
+        self.parse_postfix_on_expr(e)
+    }
+
+    /// Prefix unary operators; postfix `++`/`--` are handled by [`Self::parse_postfix_on_expr`].
+    fn parse_prefix_unary(&mut self, regex_mode: bool) -> Result<Expr> {
+        match &self.cur.clone() {
+            Token::PlusPlus => {
+                self.bump(false)?;
+                let inner = self.parse_unary(false)?;
+                Self::wrap_prefix_incdec(inner, IncDecOp::PreInc, self.line)
+            }
+            Token::MinusMinus => {
+                self.bump(false)?;
+                let inner = self.parse_unary(false)?;
+                Self::wrap_prefix_incdec(inner, IncDecOp::PreDec, self.line)
+            }
             Token::Bang => {
                 self.bump(false)?;
                 let e = self.parse_unary(false)?;
@@ -893,6 +961,63 @@ impl<'a> Parser<'a> {
                 })
             }
             _ => self.parse_primary(regex_mode),
+        }
+    }
+
+    /// After `$` (not `$(`…`)`), parse the field index: `$i++` binds `++` to `i` before `$`;
+    /// `$1++` binds `++` to the field as a whole.
+    fn parse_inner_for_dollar_field(&mut self) -> Result<Expr> {
+        let e = self.parse_prefix_unary(false)?;
+        if matches!(e, Expr::Number(_) | Expr::Str(_))
+            && matches!(self.cur, Token::PlusPlus | Token::MinusMinus)
+        {
+            return Err(Error::Parse {
+                line: self.line,
+                msg: DOLLAR_FIELD_POSTFIX.into(),
+            });
+        }
+        self.parse_postfix_on_expr(e)
+    }
+
+    fn parse_postfix_on_expr(&mut self, mut e: Expr) -> Result<Expr> {
+        loop {
+            match &self.cur.clone() {
+                Token::PlusPlus => {
+                    self.bump(false)?;
+                    let target = Self::expr_to_incdec_target(e, self.line)?;
+                    e = Expr::IncDec {
+                        op: IncDecOp::PostInc,
+                        target,
+                    };
+                }
+                Token::MinusMinus => {
+                    self.bump(false)?;
+                    let target = Self::expr_to_incdec_target(e, self.line)?;
+                    e = Expr::IncDec {
+                        op: IncDecOp::PostDec,
+                        target,
+                    };
+                }
+                _ => break,
+            }
+        }
+        Ok(e)
+    }
+
+    fn wrap_prefix_incdec(inner: Expr, op: IncDecOp, line: usize) -> Result<Expr> {
+        let target = Self::expr_to_incdec_target(inner, line)?;
+        Ok(Expr::IncDec { op, target })
+    }
+
+    fn expr_to_incdec_target(e: Expr, line: usize) -> Result<IncDecTarget> {
+        match e {
+            Expr::Var(name) => Ok(IncDecTarget::Var(name)),
+            Expr::Field(inner) => Ok(IncDecTarget::Field(inner)),
+            Expr::Index { name, indices } => Ok(IncDecTarget::Index { name, indices }),
+            _ => Err(Error::Parse {
+                line,
+                msg: "invalid `++`/`--` operand".into(),
+            }),
         }
     }
 
@@ -976,8 +1101,17 @@ impl<'a> Parser<'a> {
                     self.bump(false)?;
                     Ok(Expr::Field(Box::new(e)))
                 } else {
-                    let inner = self.parse_unary(false)?;
-                    Ok(Expr::Field(Box::new(inner)))
+                    let cp = self.checkpoint();
+                    match self.parse_inner_for_dollar_field() {
+                        Ok(inner) => Ok(Expr::Field(Box::new(inner))),
+                        Err(Error::Parse { msg, .. }) if msg == DOLLAR_FIELD_POSTFIX => {
+                            self.restore(cp);
+                            let inner = self.parse_prefix_unary(false)?;
+                            let e = Expr::Field(Box::new(inner));
+                            self.parse_postfix_on_expr(e)
+                        }
+                        Err(e) => Err(e),
+                    }
                 }
             }
             Token::LParen => {

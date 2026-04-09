@@ -28,7 +28,11 @@ pub enum Token {
     Regexp(String),
 
     Plus,
+    /// `++` (single token).
+    PlusPlus,
     Minus,
+    /// `--` (single token).
+    MinusMinus,
     Star,
     Slash,
     Percent,
@@ -295,7 +299,10 @@ impl<'a> Lexer<'a> {
             '?' => Token::Question,
             ':' => Token::Colon,
             '+' => {
-                if self.peek() == Some('=') {
+                if self.peek() == Some('+') {
+                    self.bump();
+                    Token::PlusPlus
+                } else if self.peek() == Some('=') {
                     self.bump();
                     Token::AddAssign
                 } else {
@@ -303,7 +310,10 @@ impl<'a> Lexer<'a> {
                 }
             }
             '-' => {
-                if self.peek() == Some('=') {
+                if self.peek() == Some('-') {
+                    self.bump();
+                    Token::MinusMinus
+                } else if self.peek() == Some('=') {
                     self.bump();
                     Token::SubAssign
                 } else {
@@ -676,7 +686,8 @@ mod tests {
     }
 
     #[test]
-    fn lex_increment_decrement_not_supported_as_tokens() {
-        assert_eq!(tokens_no_regex("++"), vec![Token::Plus, Token::Plus]);
+    fn lex_increment_decrement() {
+        assert_eq!(tokens_no_regex("++"), vec![Token::PlusPlus]);
+        assert_eq!(tokens_no_regex("--"), vec![Token::MinusMinus]);
     }
 }

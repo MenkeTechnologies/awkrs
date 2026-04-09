@@ -47,6 +47,11 @@ pub enum Stmt {
         cond: Expr,
         body: Vec<Stmt>,
     },
+    /// `do { … } while (cond)` — body runs at least once; `continue` jumps to the condition test.
+    DoWhile {
+        body: Vec<Stmt>,
+        cond: Expr,
+    },
     ForC {
         init: Option<Expr>,
         cond: Option<Expr>,
@@ -159,6 +164,31 @@ pub enum Expr {
     In {
         key: Box<Expr>,
         arr: String,
+    },
+    /// `++` / `--` on a scalar, field, or array element (gawk-style).
+    IncDec {
+        op: IncDecOp,
+        target: IncDecTarget,
+    },
+}
+
+/// Prefix or postfix `++` / `--`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IncDecOp {
+    PreInc,
+    PostInc,
+    PreDec,
+    PostDec,
+}
+
+/// Lvalue for `++` / `--` only.
+#[derive(Debug, Clone, PartialEq)]
+pub enum IncDecTarget {
+    Var(String),
+    Field(Box<Expr>),
+    Index {
+        name: String,
+        indices: Vec<Expr>,
     },
 }
 

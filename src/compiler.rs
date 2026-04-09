@@ -226,6 +226,30 @@ impl Compiler {
                 }
             }
 
+            Stmt::DoWhile { body, cond } => {
+                let body_start = ops.len();
+                self.loop_stack.push(LoopInfo {
+                    break_patches: Vec::new(),
+                    continue_patches: Vec::new(),
+                });
+
+                self.compile_stmts(body, ops);
+
+                let cond_start = ops.len();
+                self.compile_expr(cond, ops);
+                ops.push(Op::JumpIfTruePop(body_start));
+
+                let after_loop = ops.len();
+
+                let info = self.loop_stack.pop().unwrap();
+                for pos in info.break_patches {
+                    ops[pos] = Op::Jump(after_loop);
+                }
+                for pos in info.continue_patches {
+                    ops[pos] = Op::Jump(cond_start);
+                }
+            }
+
             Stmt::ForC {
                 init,
                 cond,
@@ -603,6 +627,26 @@ impl Compiler {
                 self.compile_expr(key, ops);
                 ops.push(Op::InArray(arr_idx));
             }
+
+            Expr::IncDec { op, target } => match target {
+                IncDecTarget::Var(name) => {
+                    if let Some(slot) = self.var_slot(name) {
+                        ops.push(Op::IncDecSlot(slot, *op));
+                    } else {
+                        let idx = self.strings.intern(name);
+                        ops.push(Op::IncDecVar(idx, *op));
+                    }
+                }
+                IncDecTarget::Field(inner) => {
+                    self.compile_expr(inner, ops);
+                    ops.push(Op::IncDecField(*op));
+                }
+                IncDecTarget::Index { name, indices } => {
+                    let arr_idx = self.strings.intern(name);
+                    self.compile_array_key(indices, ops);
+                    ops.push(Op::IncDecIndex(arr_idx, *op));
+                }
+            },
         }
     }
 
@@ -760,6 +804,12 @@ fn collect_array_names_stmt(s: &Stmt, names: &mut HashSet<String>) {
                 collect_array_names_stmt(t, names);
             }
         }
+        Stmt::DoWhile { cond, body } => {
+            collect_array_names_expr(cond, names);
+            for t in body {
+                collect_array_names_stmt(t, names);
+            }
+        }
         Stmt::ForC {
             init,
             cond,
@@ -863,6 +913,16 @@ fn collect_array_names_expr(e: &Expr, names: &mut HashSet<String>) {
             collect_array_names_expr(then_, names);
             collect_array_names_expr(else_, names);
         }
+        Expr::IncDec { target, .. } => match target {
+            IncDecTarget::Index { name, indices } => {
+                names.insert(name.clone());
+                for ix in indices {
+                    collect_array_names_expr(ix, names);
+                }
+            }
+            IncDecTarget::Field(e) => collect_array_names_expr(e, names),
+            IncDecTarget::Var(_) => {}
+        },
         Expr::Number(_) | Expr::Str(_) | Expr::Var(_) => {}
     }
 }
@@ -958,6 +1018,20 @@ fn peephole_optimize(ops: &mut Vec<Op>) {
             {
                 fusions.push((i, Op::AddSlotToSlot { src, dst }, 2));
                 i += 3;
+                continue;
+            }
+        }
+
+        // Pattern: IncDecSlot(slot, Pre/PostInc) + Pop → IncrSlot(slot)
+        // Pattern: IncDecSlot(slot, Pre/PostDec) + Pop → DecrSlot(slot)
+        if i + 2 <= ops.len() {
+            if let (Op::IncDecSlot(slot, kind), Op::Pop) = (ops[i], ops[i + 1]) {
+                let fused = match kind {
+                    IncDecOp::PreInc | IncDecOp::PostInc => Op::IncrSlot(slot),
+                    IncDecOp::PreDec | IncDecOp::PostDec => Op::DecrSlot(slot),
+                };
+                fusions.push((i, fused, 1));
+                i += 2;
                 continue;
             }
         }

@@ -48,6 +48,7 @@ fn stmt_blocks_parallel(s: &Stmt) -> bool {
             then_.iter().any(stmt_blocks_parallel) || else_.iter().any(stmt_blocks_parallel)
         }
         Stmt::While { body, .. } => body.iter().any(stmt_blocks_parallel),
+        Stmt::DoWhile { body, .. } => body.iter().any(stmt_blocks_parallel),
         Stmt::ForC { body, .. } => body.iter().any(stmt_blocks_parallel),
         Stmt::ForIn { body, .. } => body.iter().any(stmt_blocks_parallel),
         Stmt::Block(ss) => ss.iter().any(stmt_blocks_parallel),
@@ -61,7 +62,10 @@ fn stmt_blocks_parallel(s: &Stmt) -> bool {
 
 fn expr_blocks_parallel(e: &Expr) -> bool {
     match e {
-        Expr::Assign { .. } | Expr::AssignField { .. } | Expr::AssignIndex { .. } => true,
+        Expr::Assign { .. }
+        | Expr::AssignField { .. }
+        | Expr::AssignIndex { .. }
+        | Expr::IncDec { .. } => true,
         Expr::Binary { left, right, .. } => {
             expr_blocks_parallel(left) || expr_blocks_parallel(right)
         }

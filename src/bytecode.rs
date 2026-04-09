@@ -5,7 +5,7 @@
 //! [`StringPool`] that interns all string constants and variable names so the VM
 //! can refer to them by cheap `u32` index.
 
-use crate::ast::BinOp;
+use crate::ast::{BinOp, IncDecOp};
 use crate::runtime::{AwkMap, Value};
 use std::collections::HashMap;
 
@@ -83,6 +83,15 @@ pub enum Op {
     CompoundAssignField(BinOp),
     /// Pop rhs, pop key; compute `arr[key] op= rhs`; push result.
     CompoundAssignIndex(u32, BinOp),
+
+    /// `++`/`--` on a named variable (HashMap path).
+    IncDecVar(u32, IncDecOp),
+    /// `++`/`--` on a slotted scalar.
+    IncDecSlot(u16, IncDecOp),
+    /// Pop field index; `++`/`--` `$n`; push resulting numeric value.
+    IncDecField(IncDecOp),
+    /// Pop key; `++`/`--` on `arr[key]`; push resulting numeric value.
+    IncDecIndex(u32, IncDecOp),
 
     // ── Arithmetic (pop 2, push 1) ──────────────────────────────────────
     Add,
@@ -217,9 +226,12 @@ pub enum Op {
     /// `print $N` to stdout fused: write field N bytes directly to print_buf.
     /// Eliminates: PushNum + GetField + Print{1,Stdout} (3 ops → 1).
     PrintFieldStdout(u16),
-    /// `i = i + 1` fused: increment slot by 1.0 in-place.
-    /// Eliminates: GetSlot + PushNum(1) + Add + SetSlot + Pop (5 ops → 1).
+    /// `i = i + 1` or `i++` fused: increment slot by 1.0 in-place.
+    /// Eliminates: GetSlot + PushNum(1) + Add + SetSlot + Pop (5 ops → 1),
+    /// or IncDecSlot(PostInc/PreInc) + Pop (2 ops → 1).
     IncrSlot(u16),
+    /// `i--` / `--i` fused: decrement slot by 1.0 in-place (statement context, result discarded).
+    DecrSlot(u16),
     /// `s += i` fused: add src slot value to dst slot, discard result.
     /// Eliminates: GetSlot + CompoundAssignSlot(Add) + Pop (3 ops → 1).
     AddSlotToSlot {
