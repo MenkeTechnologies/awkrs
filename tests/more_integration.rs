@@ -745,6 +745,30 @@ fn file_input_slurped_fast_path_two_lines() {
     assert_eq!(o, "aa\ncc\n");
 }
 
+// ── FPAT / CSV (gawk-style) ───────────────────────────────────────────────
+
+#[test]
+fn fpat_field_by_content_regex() {
+    // Non-empty FPAT: each match is a field (gawk-style); whitespace-separated tokens here.
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { FPAT = "[^ ]+" } { print NF, $2 }"#, "a b c\n");
+    assert_eq!(c, 0);
+    assert_eq!(o, "3 b\n");
+}
+
+#[test]
+fn csv_flag_k_matches_gawk_quoted_comma() {
+    let (c, o, _) = run_awkrs_stdin_args(["-k"], r#"{ print NF, $2 }"#, "a,\"b,c\",d\n");
+    assert_eq!(c, 0);
+    assert_eq!(o, "3 b,c\n");
+}
+
+#[test]
+fn fpat_empty_falls_back_to_fs() {
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { FPAT = ""; FS = "," } { print $2 }"#, "a,b,c\n");
+    assert_eq!(c, 0);
+    assert_eq!(o, "b\n");
+}
+
 // ── Multi-char FS regex (bug fix) ──────────────────────────────────────────
 
 #[test]

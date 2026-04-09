@@ -1129,7 +1129,8 @@ fn exec_getline(ctx: &mut VmCtx<'_>, var: Option<u32>, source: GetlineSource) ->
                 .map(|v| v.as_str())
                 .unwrap_or_else(|| " ".into());
             ctx.rt.set_field_sep_split(&fs, &trimmed);
-            let nf = ctx.rt.field_ranges.len() as f64;
+            ctx.rt.ensure_fields_split();
+            let nf = ctx.rt.nf() as f64;
             ctx.rt.vars.insert("NF".into(), Value::Num(nf));
         }
         if matches!(source, GetlineSource::Primary) {

@@ -555,6 +555,9 @@ fn exec_stmt(s: &Stmt, ctx: &mut ExecCtx<'_>) -> Result<Flow> {
                         .map(|v| v.as_str())
                         .unwrap_or_else(|| " ".into());
                     ctx.rt.set_field_sep_split(&fs, &trimmed);
+                    ctx.rt.ensure_fields_split();
+                    let nf = ctx.rt.nf() as f64;
+                    ctx.rt.vars.insert("NF".into(), Value::Num(nf));
                 }
                 match &redir {
                     GetlineRedir::Primary => {
@@ -564,9 +567,6 @@ fn exec_stmt(s: &Stmt, ctx: &mut ExecCtx<'_>) -> Result<Flow> {
                     GetlineRedir::File(_) | GetlineRedir::Coproc(_) => {}
                 }
             }
-            ctx.rt
-                .vars
-                .insert("NF".into(), Value::Num(ctx.rt.fields.len() as f64));
         }
         Stmt::Delete { name, indices } => match indices {
             None => ctx.rt.array_delete(name, None),

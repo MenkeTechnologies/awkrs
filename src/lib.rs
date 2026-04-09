@@ -96,6 +96,13 @@ pub fn run(bin_name: &str) -> Result<()> {
         rt.vars
             .insert("FS".into(), Value::Str(String::from(fs.as_str())));
     }
+    if args.csv {
+        rt.csv_mode = true;
+        rt.vars.insert("FS".into(), Value::Str(",".into()));
+        // gawk reports this FPAT in CSV mode even though splitting is handled internally.
+        rt.vars
+            .insert("FPAT".into(), Value::Str("[^[:space:]]+".into()));
+    }
 
     rt.slots = cp.init_slots(&rt.vars);
 
@@ -140,7 +147,13 @@ pub fn run(bin_name: &str) -> Result<()> {
             let n = if use_parallel {
                 process_file_parallel(Some(p.as_path()), &prog, &cp, &mut rt, threads, nr_global)?
             } else {
-                process_file(Some(p.as_path()), &prog, cp.as_ref(), &mut range_state, &mut rt)?
+                process_file(
+                    Some(p.as_path()),
+                    &prog,
+                    cp.as_ref(),
+                    &mut range_state,
+                    &mut rt,
+                )?
             };
             nr_global += n as f64;
             vm_run_endfile(cp.as_ref(), &mut rt)?;
@@ -224,6 +237,7 @@ fn process_file_parallel(
                     fname.clone(),
                     seed_base ^ (i as u64).wrapping_mul(0x9e3779b97f4a7c15),
                     numeric_dec,
+                    rt.csv_mode,
                 );
                 local.slots = (*shared_slots).clone();
                 local.nr = nr_offset + i as f64 + 1.0;

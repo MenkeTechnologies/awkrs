@@ -57,6 +57,7 @@ pub struct Args {
     #[arg(short = 'I', long = "trace")]
     pub trace: bool,
 
+    /// CSV mode (gawk-style): set `FS` to comma and `FPAT` for quoted fields (`""` escape).
     #[arg(short = 'k', long = "csv")]
     pub csv: bool,
 
@@ -196,6 +197,12 @@ mod tests {
         let a = Args::try_parse_from(["awkrs", "-j", "4", "-F", ",", "{print $1}"]).unwrap();
         assert_eq!(a.threads, Some(4));
         assert_eq!(a.field_sep.as_deref(), Some(","));
+    }
+
+    #[test]
+    fn csv_flag_k_parses() {
+        let a = Args::try_parse_from(["awkrs", "-k", "{print $1}"]).unwrap();
+        assert!(a.csv);
     }
 
     #[test]

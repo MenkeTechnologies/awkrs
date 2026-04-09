@@ -194,6 +194,68 @@ fn parse_ascii_integer(s: &str) -> Option<i64> {
     Some(if neg { -acc } else { acc })
 }
 
+/// Split `record` using gawk-style **FPAT** (each regex match is one field).
+/// Returns `false` if `fpat` is not a valid regex (caller may fall back to FS).
+fn split_fields_fpat(record: &str, fpat: &str, field_ranges: &mut Vec<(u32, u32)>) -> bool {
+    field_ranges.clear();
+    match Regex::new(fpat) {
+        Ok(re) => {
+            for m in re.find_iter(record) {
+                field_ranges.push((m.start() as u32, m.end() as u32));
+            }
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// gawk `--csv` / `-k` field splitting: comma-separated, `"..."` for quoting, `""` for a literal `"`.
+/// Field ranges are **value** byte ranges (no surrounding quote characters), matching gawk’s `$n` text.
+fn split_csv_gawk_fields(record: &str, field_ranges: &mut Vec<(u32, u32)>) {
+    field_ranges.clear();
+    let bytes = record.as_bytes();
+    let n = bytes.len();
+    let mut i = 0usize;
+    while i < n {
+        if bytes[i] == b',' {
+            field_ranges.push((i as u32, i as u32));
+            i += 1;
+            continue;
+        }
+        if bytes[i] == b'"' {
+            i += 1;
+            let val_start = i;
+            while i < n {
+                if bytes[i] == b'"' {
+                    if i + 1 < n && bytes[i + 1] == b'"' {
+                        i += 2;
+                        continue;
+                    }
+                    break;
+                }
+                i += 1;
+            }
+            let val_end = i;
+            field_ranges.push((val_start as u32, val_end as u32));
+            if i < n && bytes[i] == b'"' {
+                i += 1;
+            }
+        } else {
+            let val_start = i;
+            while i < n && bytes[i] != b',' {
+                i += 1;
+            }
+            field_ranges.push((val_start as u32, i as u32));
+        }
+        if i < n && bytes[i] == b',' {
+            i += 1;
+            if i == n {
+                field_ranges.push((n as u32, n as u32));
+            }
+        }
+    }
+}
+
 /// Split `record` into `field_ranges` (replaces contents). Shared by lazy split and stdin path.
 fn split_fields_into(record: &str, fs: &str, field_ranges: &mut Vec<(u32, u32)>) {
     field_ranges.clear();
@@ -305,6 +367,8 @@ pub struct Runtime {
     pub ors_bytes: Vec<u8>,
     /// Reusable VM stack — avoids malloc/free per VmCtx creation.
     pub vm_stack: Vec<Value>,
+    /// `-k` / `--csv` (gawk-style): use [`split_csv_gawk_fields`] instead of `FPAT` / `FS` for `$n`.
+    pub csv_mode: bool,
 }
 
 impl Runtime {
@@ -315,6 +379,8 @@ impl Runtime {
         vars.insert("OFMT".into(), Value::Str("%.6g".into()));
         // POSIX octal \034 — multidimensional array subscript separator
         vars.insert("SUBSEP".into(), Value::Str("\x1c".into()));
+        // Empty FPAT means use FS for field splitting (gawk).
+        vars.insert("FPAT".into(), Value::Str(String::new()));
         Self {
             vars,
             global_readonly: None,
@@ -345,6 +411,7 @@ impl Runtime {
             ofs_bytes: b" ".to_vec(),
             ors_bytes: b"\n".to_vec(),
             vm_stack: Vec::with_capacity(64),
+            csv_mode: false,
         }
     }
 
@@ -371,6 +438,7 @@ impl Runtime {
         filename: String,
         rand_seed: u64,
         numeric_decimal: char,
+        csv_mode: bool,
     ) -> Self {
         Self {
             vars: AwkMap::default(),
@@ -402,6 +470,7 @@ impl Runtime {
             ofs_bytes: b" ".to_vec(),
             ors_bytes: b"\n".to_vec(),
             vm_stack: Vec::with_capacity(64),
+            csv_mode,
         }
     }
 
@@ -665,19 +734,49 @@ impl Runtime {
     }
 
     /// Ensure fields are split. Called lazily before any field access.
+    /// Uses **`FPAT`** when set to a non-empty pattern (gawk-style field-by-content); otherwise **`FS`**.
     #[inline]
     pub fn ensure_fields_split(&mut self) {
         if self.fields_pending_split {
             self.fields_pending_split = false;
-            let record = self.record.as_str();
-            let fs = self.cached_fs.as_str();
-            split_fields_into(record, fs, &mut self.field_ranges);
+            self.split_record_fields();
         }
     }
 
-    /// Split `self.record` into `field_ranges` using separator `fs`.
-    fn split_record_fields(&mut self, fs: &str) {
-        split_fields_into(self.record.as_str(), fs, &mut self.field_ranges);
+    /// Split `self.record` into `field_ranges` using current **`FPAT`** (if non-empty) or **`FS`**.
+    fn split_record_fields(&mut self) {
+        let record = self.record.as_str();
+        if self.csv_mode {
+            split_csv_gawk_fields(record, &mut self.field_ranges);
+            self.fields.clear();
+            for &(s, e) in &self.field_ranges {
+                let raw = &record[s as usize..e as usize];
+                // CSV doubled-quote escape: `""` → `"` inside a quoted field (gawk / RFC 4180).
+                self.fields.push(raw.replace("\"\"", "\""));
+            }
+            self.fields_dirty = true;
+            return;
+        }
+        let fp_raw = self
+            .get_global_var("FPAT")
+            .map(|v| v.as_str())
+            .unwrap_or_default();
+        let fp = fp_raw.trim();
+        if !fp.is_empty() {
+            if !split_fields_fpat(record, fp, &mut self.field_ranges) {
+                let fs_str = self
+                    .get_global_var("FS")
+                    .map(|v| v.as_str())
+                    .unwrap_or_else(|| " ".to_string());
+                split_fields_into(record, &fs_str, &mut self.field_ranges);
+            }
+        } else {
+            let fs_str = self
+                .get_global_var("FS")
+                .map(|v| v.as_str())
+                .unwrap_or_else(|| " ".to_string());
+            split_fields_into(record, &fs_str, &mut self.field_ranges);
+        }
     }
 
     pub fn field(&mut self, i: i32) -> Value {
@@ -856,11 +955,6 @@ impl Runtime {
         while end > 0 && (self.line_buf[end - 1] == b'\n' || self.line_buf[end - 1] == b'\r') {
             end -= 1;
         }
-        let fs = self
-            .vars
-            .get("FS")
-            .map(|v| v.as_str())
-            .unwrap_or_else(|| " ".into());
         // Copy the trimmed line into record (reuses allocation)
         self.record.clear();
         // Valid UTF-8 fast path (common for text data)
@@ -871,11 +965,11 @@ impl Runtime {
                 self.record.push_str(&lossy);
             }
         }
-        // Now split the record we just populated
+        // Split using current FPAT or FS
         self.fields_dirty = false;
         self.fields.clear();
         self.field_ranges.clear();
-        self.split_record_fields(&fs);
+        self.split_record_fields();
     }
 
     pub fn array_get(&self, name: &str, key: &str) -> Value {
@@ -1008,6 +1102,7 @@ impl Clone for Runtime {
             ofs_bytes: self.ofs_bytes.clone(),
             ors_bytes: self.ors_bytes.clone(),
             vm_stack: Vec::with_capacity(64),
+            csv_mode: self.csv_mode,
         }
     }
 }
@@ -1112,5 +1207,37 @@ mod value_tests {
     fn value_into_string_float_fraction() {
         let s = Value::Num(0.25).into_string();
         assert!(s.contains('2') && s.contains('5'), "{s}");
+    }
+
+    #[test]
+    fn csv_mode_quoted_comma_three_fields() {
+        let mut rt = super::Runtime::new();
+        rt.csv_mode = true;
+        rt.set_field_sep_split(",", r#"a,"b,c",d"#);
+        rt.ensure_fields_split();
+        assert_eq!(rt.nf(), 3);
+        assert_eq!(rt.field(1).as_str(), "a");
+        assert_eq!(rt.field(2).as_str(), "b,c");
+        assert_eq!(rt.field(3).as_str(), "d");
+    }
+
+    #[test]
+    fn csv_mode_escape_double_quote_in_field() {
+        let mut rt = super::Runtime::new();
+        rt.csv_mode = true;
+        rt.set_field_sep_split(",", "\"a\"\"b\"");
+        rt.ensure_fields_split();
+        assert_eq!(rt.field(1).as_str(), "a\"b");
+    }
+
+    #[test]
+    fn csv_mode_trailing_comma_empty_field() {
+        let mut rt = super::Runtime::new();
+        rt.csv_mode = true;
+        rt.set_field_sep_split(",", "a,");
+        rt.ensure_fields_split();
+        assert_eq!(rt.nf(), 2);
+        assert_eq!(rt.field(1).as_str(), "a");
+        assert_eq!(rt.field(2).as_str(), "");
     }
 }
