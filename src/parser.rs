@@ -1100,4 +1100,77 @@ mod tests {
             _ => panic!("expected print"),
         }
     }
+
+    #[test]
+    fn duplicate_function_name_errors() {
+        let e = parse_program("function f(){return 1} function f(){return 2}").unwrap_err();
+        match e {
+            crate::error::Error::Parse { msg, .. } => {
+                assert!(msg.contains("duplicate"), "{msg:?}");
+            }
+            e => panic!("unexpected err: {e:?}"),
+        }
+    }
+
+    #[test]
+    fn invalid_assignment_target_errors() {
+        let e = parse_program("BEGIN { 1 = 2 }").unwrap_err();
+        match e {
+            crate::error::Error::Parse { msg, .. } => {
+                assert!(msg.contains("assignment"), "{msg:?}");
+            }
+            e => panic!("unexpected err: {e:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_empty_pattern_rule() {
+        let p = parse_program("{ print 1 }").unwrap();
+        assert_eq!(p.rules.len(), 1);
+        assert!(matches!(p.rules[0].pattern, Pattern::Empty));
+    }
+
+    #[test]
+    fn parses_function_with_params() {
+        let p = parse_program("function sq(x){ return x*x } BEGIN { print sq(3) }").unwrap();
+        let f = p.funcs.get("sq").expect("sq");
+        assert_eq!(f.params, vec!["x".to_string()]);
+    }
+
+    #[test]
+    fn parses_array_subscript_assign() {
+        let p = parse_program("BEGIN { a[1] = 2 }").unwrap();
+        let rule = p
+            .rules
+            .iter()
+            .find(|r| matches!(r.pattern, Pattern::Begin))
+            .unwrap();
+        assert!(matches!(
+            rule.stmts.first(),
+            Some(Stmt::Expr(Expr::AssignIndex { .. }))
+        ));
+    }
+
+    #[test]
+    fn parses_print_redirect_file() {
+        let p = parse_program("BEGIN { print \"hi\" > \"out.txt\" }").unwrap();
+        match first_begin_stmt(&p) {
+            Stmt::Print { redir, .. } => {
+                assert!(matches!(redir, Some(PrintRedir::Overwrite(_))));
+            }
+            _ => panic!("expected Print"),
+        }
+    }
+
+    #[test]
+    fn parses_predefined_vars_in_expr() {
+        parse_program("BEGIN { print NR, FNR, NF, FILENAME }").unwrap();
+    }
+
+    #[test]
+    fn empty_source_yields_empty_program() {
+        let p = parse_program("").unwrap();
+        assert!(p.rules.is_empty());
+        assert!(p.funcs.is_empty());
+    }
 }

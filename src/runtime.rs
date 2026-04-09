@@ -943,3 +943,62 @@ impl Drop for Runtime {
         }
     }
 }
+
+#[cfg(test)]
+mod value_tests {
+    use super::Value;
+
+    #[test]
+    fn value_as_number_from_int_string() {
+        assert_eq!(Value::Str("42".into()).as_number(), 42.0);
+    }
+
+    #[test]
+    fn value_as_number_empty_string_zero() {
+        assert_eq!(Value::Str("".into()).as_number(), 0.0);
+    }
+
+    #[test]
+    fn value_truthy_numeric_string_zero() {
+        assert!(!Value::Str("0".into()).truthy());
+    }
+
+    #[test]
+    fn value_truthy_non_numeric_string() {
+        assert!(Value::Str("hello".into()).truthy());
+    }
+
+    #[test]
+    fn value_truthy_nonempty_array() {
+        let mut m = super::AwkMap::default();
+        m.insert("k".into(), Value::Num(1.0));
+        assert!(Value::Array(m).truthy());
+    }
+
+    #[test]
+    fn value_is_numeric_str_detects_decimal() {
+        assert!(Value::Str("3.14".into()).is_numeric_str());
+        assert!(!Value::Str("x".into()).is_numeric_str());
+    }
+
+    #[test]
+    fn value_append_to_string_concat() {
+        let mut buf = String::from("a");
+        Value::Str("b".into()).append_to_string(&mut buf);
+        Value::Num(7.0).append_to_string(&mut buf);
+        assert_eq!(buf, "ab7");
+    }
+
+    #[test]
+    fn value_into_string_from_num_integer_form() {
+        assert_eq!(Value::Num(12.0).into_string(), "12");
+    }
+
+    #[test]
+    fn value_write_to_buf_str_and_num() {
+        let mut v = Vec::new();
+        Value::Str("ok".into()).write_to(&mut v);
+        Value::Num(5.0).write_to(&mut v);
+        assert_eq!(v, b"ok5");
+    }
+}

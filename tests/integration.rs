@@ -1,6 +1,6 @@
 mod common;
 
-use common::{run_awkrs_stdin, run_awkrs_stdin_args_env};
+use common::{run_awkrs_stdin, run_awkrs_stdin_args, run_awkrs_stdin_args_env};
 use std::ffi::OsString;
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -390,6 +390,55 @@ fn stdin_parallel_safe_high_threads_no_parallel_unsafe_warning() {
         !stderr.contains("not parallel-safe"),
         "stdin should not hit parallel-unsafe path; stderr={stderr:?}"
     );
+}
+
+#[test]
+fn version_flag_prints_name_and_semver_line() {
+    let out = Command::new(env!("CARGO_BIN_EXE_awkrs"))
+        .args(["--version"])
+        .output()
+        .expect("spawn awkrs --version");
+    assert!(out.status.success());
+    let s = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        s.contains("awkrs") && s.lines().next().is_some_and(|l| l.contains('.')),
+        "unexpected version output: {s:?}"
+    );
+}
+
+#[test]
+fn short_version_flag_matches_long() {
+    let long = Command::new(env!("CARGO_BIN_EXE_awkrs"))
+        .arg("--version")
+        .output()
+        .expect("spawn");
+    let short = Command::new(env!("CARGO_BIN_EXE_awkrs"))
+        .arg("-V")
+        .output()
+        .expect("spawn");
+    assert_eq!(long.status, short.status);
+    assert_eq!(long.stdout, short.stdout);
+}
+
+#[test]
+fn copyright_flag_mentions_license() {
+    let out = Command::new(env!("CARGO_BIN_EXE_awkrs"))
+        .arg("-C")
+        .output()
+        .expect("spawn awkrs -C");
+    assert!(out.status.success());
+    let s = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        s.contains("Copyright") && s.contains("MIT"),
+        "unexpected -C output: {s:?}"
+    );
+}
+
+#[test]
+fn assign_flag_sets_variable_before_begin() {
+    let (code, stdout, _) = run_awkrs_stdin_args(["-v", "x=99"], "BEGIN { print x }", "");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "99\n");
 }
 
 #[test]

@@ -494,3 +494,111 @@ fn default_thread_count_silences_parallel_unsafe_warning() {
         "unexpected warning: {e:?}"
     );
 }
+
+#[test]
+fn expr_pattern_nr_equals_one() {
+    let (c, o, _) = run_awkrs_stdin("NR == 1 { print \"first\" }", "a\nb\n");
+    assert_eq!(c, 0);
+    assert_eq!(o, "first\n");
+}
+
+#[test]
+fn two_rules_same_record() {
+    let (c, o, _) = run_awkrs_stdin("{ print \"A\" } { print \"B\" }", "x\n");
+    assert_eq!(c, 0);
+    assert_eq!(o, "A\nB\n");
+}
+
+#[test]
+fn field_assignment_updates_dollar_zero() {
+    let (c, o, _) = run_awkrs_stdin("{$1 = \"new\"; print}", "old rest\n");
+    assert_eq!(c, 0);
+    assert_eq!(o, "new rest\n");
+}
+
+#[test]
+fn compound_assign_mul() {
+    let (c, o, _) = run_awkrs_stdin("BEGIN { x = 3; x *= 4; print x }", "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "12\n");
+}
+
+#[test]
+fn compound_assign_div() {
+    let (c, o, _) = run_awkrs_stdin("BEGIN { x = 10; x /= 4; print x }", "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "2.5\n");
+}
+
+#[test]
+fn length_with_string_arg() {
+    let (c, o, _) = run_awkrs_stdin("BEGIN { print length(\"abc\") }", "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "3\n");
+}
+
+#[test]
+fn return_from_function() {
+    let (c, o, _) = run_awkrs_stdin("function id(z){ return z } BEGIN { print id(\"ok\") }", "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "ok\n");
+}
+
+#[test]
+fn nested_function_calls() {
+    let (c, o, _) = run_awkrs_stdin(
+        "function a(x){return x+1} function b(y){return y*2} BEGIN { print b(a(3)) }",
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "8\n");
+}
+
+#[test]
+fn regexp_negated_match_operator() {
+    let (c, o, _) = run_awkrs_stdin("{ print ($0 !~ /[0-9]+/) }", "abc\n42\n");
+    assert_eq!(c, 0);
+    assert_eq!(o, "1\n0\n");
+}
+
+#[test]
+fn string_compare_gt() {
+    let (c, o, _) = run_awkrs_stdin("BEGIN { print (\"z\" > \"a\") }", "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "1\n");
+}
+
+#[test]
+fn concat_with_numeric_in_middle() {
+    let (c, o, _) = run_awkrs_stdin("BEGIN { print \"a\" 2 \"b\" }", "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "a2b\n");
+}
+
+#[test]
+fn empty_input_still_runs_begin_end() {
+    let (c, o, _) = run_awkrs_stdin("BEGIN { print \"B\" } END { print \"E\" }", "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "B\nE\n");
+}
+
+#[test]
+fn next_in_middle_rule_chain() {
+    let (c, o, _) = run_awkrs_stdin("{ if (NR == 1) next; print $1 }", "skip\nkeep\n");
+    assert_eq!(c, 0);
+    assert_eq!(o, "keep\n");
+}
+
+#[test]
+fn sprintf_percent_s_mixed_types() {
+    let (c, o, _) = run_awkrs_stdin("BEGIN { print sprintf(\"%s-%d\", \"x\", 7) }", "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "x-7\n");
+}
+
+#[test]
+fn rand_bounded_after_srand() {
+    let (c, o, _) = run_awkrs_stdin("BEGIN { srand(1); print (rand() < 1 && rand() >= 0) }", "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "1\n");
+}

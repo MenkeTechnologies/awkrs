@@ -1271,3 +1271,41 @@ fn is_literal_regex(pat: &str) -> bool {
         )
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::parse_program;
+
+    #[test]
+    fn compile_begin_print_constant() {
+        let prog = parse_program("BEGIN { print 42 }").unwrap();
+        let cp = Compiler::compile_program(&prog);
+        assert!(!cp.begin_chunks.is_empty());
+        assert!(!cp.begin_chunks[0].ops.is_empty());
+    }
+
+    #[test]
+    fn compile_record_rule_field_access() {
+        let prog = parse_program("{ print $1 + $2 }").unwrap();
+        let cp = Compiler::compile_program(&prog);
+        assert_eq!(cp.record_rules.len(), 1);
+        assert!(!cp.record_rules[0].body.ops.is_empty());
+    }
+
+    #[test]
+    fn compile_user_function_has_body() {
+        let prog = parse_program("function dbl(n){ return n*2 } { print dbl(3) }").unwrap();
+        let cp = Compiler::compile_program(&prog);
+        let f = cp.functions.get("dbl").expect("dbl");
+        assert_eq!(f.params, vec!["n".to_string()]);
+        assert!(!f.body.ops.is_empty());
+    }
+
+    #[test]
+    fn compile_empty_record_pattern_still_emits_rule() {
+        let prog = parse_program("{ }").unwrap();
+        let cp = Compiler::compile_program(&prog);
+        assert_eq!(cp.record_rules.len(), 1);
+    }
+}

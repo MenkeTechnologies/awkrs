@@ -76,3 +76,63 @@ fn expr_blocks_parallel(e: &Expr) -> bool {
         Expr::Number(_) | Expr::Str(_) | Expr::Var(_) => false,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::record_rules_parallel_safe;
+    use crate::parser::parse_program;
+
+    #[test]
+    fn parallel_safe_simple_print() {
+        let p = parse_program("{ print $1 }").unwrap();
+        assert!(record_rules_parallel_safe(&p));
+    }
+
+    #[test]
+    fn parallel_unsafe_range_pattern() {
+        let p = parse_program("/a/,/b/ { print }").unwrap();
+        assert!(!record_rules_parallel_safe(&p));
+    }
+
+    #[test]
+    fn parallel_unsafe_exit_in_rule() {
+        let p = parse_program("{ exit 0 }").unwrap();
+        assert!(!record_rules_parallel_safe(&p));
+    }
+
+    #[test]
+    fn parallel_unsafe_primary_getline() {
+        let p = parse_program("{ getline x }").unwrap();
+        assert!(!record_rules_parallel_safe(&p));
+    }
+
+    #[test]
+    fn parallel_unsafe_coproc_getline() {
+        let p = parse_program(r#"{ getline x <& "cat" }"#).unwrap();
+        assert!(!record_rules_parallel_safe(&p));
+    }
+
+    #[test]
+    fn parallel_safe_getline_from_file() {
+        let p = parse_program(r#"{ getline x < "f.txt" }"#).unwrap();
+        assert!(record_rules_parallel_safe(&p));
+    }
+
+    #[test]
+    fn parallel_unsafe_assignment_in_rule() {
+        let p = parse_program("{ x = 1 }").unwrap();
+        assert!(!record_rules_parallel_safe(&p));
+    }
+
+    #[test]
+    fn parallel_unsafe_delete() {
+        let p = parse_program("{ delete a[1] }").unwrap();
+        assert!(!record_rules_parallel_safe(&p));
+    }
+
+    #[test]
+    fn begin_only_still_checked_for_functions() {
+        let p = parse_program("function f() { exit 1 } BEGIN { }").unwrap();
+        assert!(!record_rules_parallel_safe(&p));
+    }
+}

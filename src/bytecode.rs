@@ -360,3 +360,42 @@ pub struct CompiledFunc {
     pub params: Vec<String>,
     pub body: Chunk,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::Value;
+
+    #[test]
+    fn string_pool_intern_dedupes() {
+        let mut p = StringPool::default();
+        let a = p.intern("hello");
+        let b = p.intern("hello");
+        let c = p.intern("world");
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        assert_eq!(p.get(a), "hello");
+        assert_eq!(p.get(c), "world");
+    }
+
+    #[test]
+    fn init_slots_seeds_from_vars_map() {
+        let mut vars = AwkMap::default();
+        vars.insert("x".into(), Value::Num(7.0));
+        let cp = CompiledProgram {
+            begin_chunks: vec![],
+            end_chunks: vec![],
+            beginfile_chunks: vec![],
+            endfile_chunks: vec![],
+            record_rules: vec![],
+            functions: HashMap::new(),
+            strings: StringPool::default(),
+            slot_count: 1,
+            slot_names: vec!["x".into()],
+            slot_map: HashMap::from([("x".into(), 0u16)]),
+        };
+        let slots = cp.init_slots(&vars);
+        assert_eq!(slots.len(), 1);
+        assert_eq!(slots[0].as_number(), 7.0);
+    }
+}
