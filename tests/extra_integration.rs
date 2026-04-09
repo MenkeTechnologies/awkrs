@@ -752,6 +752,19 @@ fn jit_sum_fields_loop() {
 }
 
 #[test]
+fn jit_mixed_string_slot_preinc() {
+    // Mixed chunk: string literal + `++` on slot must coerce "5" → 5 → 6 (not raw f64 add on NaN bits).
+    let (c, o, e) = run_awkrs_stdin_args_env(
+        std::iter::empty::<&str>(),
+        "BEGIN { s=\"5\"; s++; print s }",
+        "",
+        jit_env(),
+    );
+    assert_eq!(c, 0, "stderr: {e}");
+    assert_eq!(o.trim(), "6");
+}
+
+#[test]
 fn jit_return_from_function() {
     let (c, o, e) = run_awkrs_stdin_args_env(
         std::iter::empty::<&str>(),

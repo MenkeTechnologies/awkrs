@@ -9,8 +9,11 @@
 //!
 //! General array subscripts and string-producing ops compile in **mixed mode**:
 //! stack values may be NaN-boxed string handles, and `val_dispatch` opcodes ≥ 100
-//! (`MIXED_*`) preserve string keys and coercion semantics. The fused
-//! `ArrayFieldAddConst` remains a separate fast path (field index is numeric).
+//! (`MIXED_*`) preserve string keys and coercion semantics. Fused slot peepholes
+//! (`IncrSlot`, `IncDecSlot`, `AddFieldToSlot`, `JumpIfSlotGeNum`, …) in a mixed
+//! chunk also use `MIXED_*` so slot values are read/written with `Value` coercion,
+//! not raw `fadd` on NaN-boxed bits. The fused `ArrayFieldAddConst` remains a
+//! separate fast path (field index is numeric).
 //!
 //! Execution takes a [`JitRuntimeState`]: mutable `f64` slot storage and seven
 //! `extern "C"` callbacks — `field_fn`, `array_field_add`, `var_dispatch`,
@@ -246,6 +249,41 @@ pub const MIXED_ARRAY_DELETE_ALL: u32 = 154;
 pub const MIXED_ARRAY_COMPOUND: u32 = 155;
 /// `++arr[key]` etc.: a1 = arr | (kind_code << 16), a2 = key → result.
 pub const MIXED_ARRAY_INCDEC: u32 = 156;
+/// `++slot` / `slot++` (expression): a1 = slot | (kind_code << 16) → pushed value; slot ← numeric.
+pub const MIXED_INCDEC_SLOT: u32 = 157;
+/// Statement `slot++` fused — a1 = slot index.
+pub const MIXED_INCR_SLOT: u32 = 158;
+/// Statement `slot--` fused.
+pub const MIXED_DECR_SLOT: u32 = 159;
+/// `dst += src` fused: a1 = src | (dst << 16).
+pub const MIXED_ADD_SLOT_TO_SLOT: u32 = 160;
+/// `slot += $field` fused: a1 = field | (slot << 16).
+pub const MIXED_ADD_FIELD_TO_SLOT: u32 = 161;
+/// `slot += $f1 * $f2`: a1 = f1 | (f2 << 16), a2 = slot as f64.
+pub const MIXED_ADD_MUL_FIELDS_TO_SLOT: u32 = 162;
+/// Numeric value of slot (for `JumpIfSlotGeNum` in mixed mode): a1 = slot.
+pub const MIXED_SLOT_AS_NUMBER: u32 = 163;
+
+#[inline]
+pub fn mixed_encode_slot_incdec(slot: u16, kind: IncDecOp) -> u32 {
+    let k: u32 = match kind {
+        IncDecOp::PreInc => 0,
+        IncDecOp::PostInc => 1,
+        IncDecOp::PreDec => 2,
+        IncDecOp::PostDec => 3,
+    };
+    u32::from(slot) | (k << 16)
+}
+
+#[inline]
+pub fn mixed_encode_slot_pair(src: u16, dst: u16) -> u32 {
+    u32::from(src) | (u32::from(dst) << 16)
+}
+
+#[inline]
+pub fn mixed_encode_field_slot(field: u16, slot: u16) -> u32 {
+    u32::from(field) | (u32::from(slot) << 16)
+}
 
 #[inline]
 fn mixed_op_for_binop(bop: BinOp) -> u32 {
@@ -809,8 +847,11 @@ pub fn try_compile(ops: &[Op]) -> Option<JitChunk> {
         MIXED_ARRAY_GET, MIXED_ARRAY_IN, MIXED_ARRAY_INCDEC, MIXED_ARRAY_SET, MIXED_CONCAT,
         MIXED_CONCAT_POOL, MIXED_DIV, MIXED_GET_FIELD, MIXED_GET_SLOT, MIXED_GET_VAR, MIXED_MOD,
         MIXED_MUL, MIXED_NEG, MIXED_NOT, MIXED_POS, MIXED_PRINT_ARG, MIXED_PRINT_FLUSH,
-        MIXED_PUSH_STR, MIXED_REGEX_MATCH, MIXED_REGEX_NOT_MATCH, MIXED_SET_VAR, MIXED_SUB,
-        MIXED_TO_BOOL, MIXED_TRUTHINESS, mixed_encode_array_compound, mixed_encode_array_incdec,
+        MIXED_ADD_FIELD_TO_SLOT, MIXED_ADD_MUL_FIELDS_TO_SLOT, MIXED_ADD_SLOT_TO_SLOT,
+        MIXED_DECR_SLOT, MIXED_INCDEC_SLOT, MIXED_INCR_SLOT, MIXED_PUSH_STR, MIXED_REGEX_MATCH,
+        MIXED_REGEX_NOT_MATCH, MIXED_SET_VAR, MIXED_SLOT_AS_NUMBER, MIXED_SUB, MIXED_TO_BOOL,
+        MIXED_TRUTHINESS, mixed_encode_array_compound, mixed_encode_array_incdec,
+        mixed_encode_field_slot, mixed_encode_slot_incdec, mixed_encode_slot_pair,
     };
 
     let mut module = new_jit_module()?;
@@ -1516,68 +1557,114 @@ pub fn try_compile(ops: &[Op]) -> Option<JitChunk> {
 
                 // ── Inc/dec slot (expression context — pushes result) ──
                 Op::IncDecSlot(slot, kind) => {
-                    let offset = (slot as i32) * 8;
-                    let old =
+                    if mixed {
+                        let enc = mixed_encode_slot_incdec(slot, kind);
+                        let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_INCDEC_SLOT));
+                        let a1 = builder.ins().iconst(types::I32, i64::from(enc));
+                        let z = builder.ins().f64const(0.0);
+                        let call = builder
+                            .ins()
+                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
+                        stack.push(builder.inst_results(call)[0]);
+                    } else {
+                        let offset = (slot as i32) * 8;
+                        let old = builder.ins().load(
+                            types::F64,
+                            MemFlags::trusted(),
+                            slots_ptr,
+                            offset,
+                        );
+                        let delta = match kind {
+                            IncDecOp::PreInc | IncDecOp::PostInc => builder.ins().f64const(1.0),
+                            IncDecOp::PreDec | IncDecOp::PostDec => builder.ins().f64const(-1.0),
+                        };
+                        let new_val = builder.ins().fadd(old, delta);
                         builder
                             .ins()
-                            .load(types::F64, MemFlags::trusted(), slots_ptr, offset);
-                    let delta = match kind {
-                        IncDecOp::PreInc | IncDecOp::PostInc => builder.ins().f64const(1.0),
-                        IncDecOp::PreDec | IncDecOp::PostDec => builder.ins().f64const(-1.0),
-                    };
-                    let new_val = builder.ins().fadd(old, delta);
-                    builder
-                        .ins()
-                        .store(MemFlags::trusted(), new_val, slots_ptr, offset);
-                    let push_val = match kind {
-                        IncDecOp::PreInc | IncDecOp::PreDec => new_val,
-                        IncDecOp::PostInc | IncDecOp::PostDec => old,
-                    };
-                    stack.push(push_val);
+                            .store(MemFlags::trusted(), new_val, slots_ptr, offset);
+                        let push_val = match kind {
+                            IncDecOp::PreInc | IncDecOp::PreDec => new_val,
+                            IncDecOp::PostInc | IncDecOp::PostDec => old,
+                        };
+                        stack.push(push_val);
+                    }
                 }
 
                 // ── Fused slot ops (statement context) ─────────────────
                 Op::IncrSlot(slot) => {
-                    let offset = (slot as i32) * 8;
-                    let old =
+                    if mixed {
+                        let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_INCR_SLOT));
+                        let a1 = builder.ins().iconst(types::I32, i64::from(slot));
+                        let z = builder.ins().f64const(0.0);
                         builder
                             .ins()
-                            .load(types::F64, MemFlags::trusted(), slots_ptr, offset);
-                    let one = builder.ins().f64const(1.0);
-                    let new_val = builder.ins().fadd(old, one);
-                    builder
-                        .ins()
-                        .store(MemFlags::trusted(), new_val, slots_ptr, offset);
+                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
+                    } else {
+                        let offset = (slot as i32) * 8;
+                        let old = builder.ins().load(
+                            types::F64,
+                            MemFlags::trusted(),
+                            slots_ptr,
+                            offset,
+                        );
+                        let one = builder.ins().f64const(1.0);
+                        let new_val = builder.ins().fadd(old, one);
+                        builder
+                            .ins()
+                            .store(MemFlags::trusted(), new_val, slots_ptr, offset);
+                    }
                 }
                 Op::DecrSlot(slot) => {
-                    let offset = (slot as i32) * 8;
-                    let old =
+                    if mixed {
+                        let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_DECR_SLOT));
+                        let a1 = builder.ins().iconst(types::I32, i64::from(slot));
+                        let z = builder.ins().f64const(0.0);
                         builder
                             .ins()
-                            .load(types::F64, MemFlags::trusted(), slots_ptr, offset);
-                    let one = builder.ins().f64const(1.0);
-                    let new_val = builder.ins().fsub(old, one);
-                    builder
-                        .ins()
-                        .store(MemFlags::trusted(), new_val, slots_ptr, offset);
+                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
+                    } else {
+                        let offset = (slot as i32) * 8;
+                        let old = builder.ins().load(
+                            types::F64,
+                            MemFlags::trusted(),
+                            slots_ptr,
+                            offset,
+                        );
+                        let one = builder.ins().f64const(1.0);
+                        let new_val = builder.ins().fsub(old, one);
+                        builder
+                            .ins()
+                            .store(MemFlags::trusted(), new_val, slots_ptr, offset);
+                    }
                 }
                 Op::AddSlotToSlot { src, dst } => {
-                    let sv = builder.ins().load(
-                        types::F64,
-                        MemFlags::trusted(),
-                        slots_ptr,
-                        (src as i32) * 8,
-                    );
-                    let dv = builder.ins().load(
-                        types::F64,
-                        MemFlags::trusted(),
-                        slots_ptr,
-                        (dst as i32) * 8,
-                    );
-                    let sum = builder.ins().fadd(dv, sv);
-                    builder
-                        .ins()
-                        .store(MemFlags::trusted(), sum, slots_ptr, (dst as i32) * 8);
+                    if mixed {
+                        let enc = mixed_encode_slot_pair(src, dst);
+                        let op_c =
+                            builder.ins().iconst(types::I32, i64::from(MIXED_ADD_SLOT_TO_SLOT));
+                        let a1 = builder.ins().iconst(types::I32, i64::from(enc));
+                        let z = builder.ins().f64const(0.0);
+                        builder
+                            .ins()
+                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
+                    } else {
+                        let sv = builder.ins().load(
+                            types::F64,
+                            MemFlags::trusted(),
+                            slots_ptr,
+                            (src as i32) * 8,
+                        );
+                        let dv = builder.ins().load(
+                            types::F64,
+                            MemFlags::trusted(),
+                            slots_ptr,
+                            (dst as i32) * 8,
+                        );
+                        let sum = builder.ins().fadd(dv, sv);
+                        builder
+                            .ins()
+                            .store(MemFlags::trusted(), sum, slots_ptr, (dst as i32) * 8);
+                    }
                 }
 
                 // ── Field access via callback ──────────────────────────
@@ -1644,42 +1731,71 @@ pub fn try_compile(ops: &[Op]) -> Option<JitChunk> {
 
                 // ── Fused field+slot ops ───────────────────────────────
                 Op::AddFieldToSlot { field, slot } => {
-                    let arg = builder.ins().iconst(types::I32, field as i64);
-                    let call = builder
-                        .ins()
-                        .call_indirect(field_sig_ir, field_fn_ptr, &[arg]);
-                    let fv = builder.inst_results(call)[0];
-                    let offset = (slot as i32) * 8;
-                    let old =
+                    if mixed {
+                        let enc = mixed_encode_field_slot(field, slot);
+                        let op_c = builder
+                            .ins()
+                            .iconst(types::I32, i64::from(MIXED_ADD_FIELD_TO_SLOT));
+                        let a1 = builder.ins().iconst(types::I32, i64::from(enc));
+                        let z = builder.ins().f64const(0.0);
                         builder
                             .ins()
-                            .load(types::F64, MemFlags::trusted(), slots_ptr, offset);
-                    let sum = builder.ins().fadd(old, fv);
-                    builder
-                        .ins()
-                        .store(MemFlags::trusted(), sum, slots_ptr, offset);
+                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
+                    } else {
+                        let arg = builder.ins().iconst(types::I32, field as i64);
+                        let call = builder
+                            .ins()
+                            .call_indirect(field_sig_ir, field_fn_ptr, &[arg]);
+                        let fv = builder.inst_results(call)[0];
+                        let offset = (slot as i32) * 8;
+                        let old = builder.ins().load(
+                            types::F64,
+                            MemFlags::trusted(),
+                            slots_ptr,
+                            offset,
+                        );
+                        let sum = builder.ins().fadd(old, fv);
+                        builder
+                            .ins()
+                            .store(MemFlags::trusted(), sum, slots_ptr, offset);
+                    }
                 }
                 Op::AddMulFieldsToSlot { f1, f2, slot } => {
-                    let a1 = builder.ins().iconst(types::I32, f1 as i64);
-                    let c1 = builder
-                        .ins()
-                        .call_indirect(field_sig_ir, field_fn_ptr, &[a1]);
-                    let v1 = builder.inst_results(c1)[0];
-                    let a2 = builder.ins().iconst(types::I32, f2 as i64);
-                    let c2 = builder
-                        .ins()
-                        .call_indirect(field_sig_ir, field_fn_ptr, &[a2]);
-                    let v2 = builder.inst_results(c2)[0];
-                    let prod = builder.ins().fmul(v1, v2);
-                    let offset = (slot as i32) * 8;
-                    let old =
+                    if mixed {
+                        let enc = u32::from(f1) | (u32::from(f2) << 16);
+                        let op_c = builder
+                            .ins()
+                            .iconst(types::I32, i64::from(MIXED_ADD_MUL_FIELDS_TO_SLOT));
+                        let a1 = builder.ins().iconst(types::I32, i64::from(enc));
+                        let a2 = builder.ins().f64const(f64::from(slot));
+                        let z = builder.ins().f64const(0.0);
                         builder
                             .ins()
-                            .load(types::F64, MemFlags::trusted(), slots_ptr, offset);
-                    let sum = builder.ins().fadd(old, prod);
-                    builder
-                        .ins()
-                        .store(MemFlags::trusted(), sum, slots_ptr, offset);
+                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, a2, z]);
+                    } else {
+                        let a1 = builder.ins().iconst(types::I32, f1 as i64);
+                        let c1 = builder
+                            .ins()
+                            .call_indirect(field_sig_ir, field_fn_ptr, &[a1]);
+                        let v1 = builder.inst_results(c1)[0];
+                        let a2 = builder.ins().iconst(types::I32, f2 as i64);
+                        let c2 = builder
+                            .ins()
+                            .call_indirect(field_sig_ir, field_fn_ptr, &[a2]);
+                        let v2 = builder.inst_results(c2)[0];
+                        let prod = builder.ins().fmul(v1, v2);
+                        let offset = (slot as i32) * 8;
+                        let old = builder.ins().load(
+                            types::F64,
+                            MemFlags::trusted(),
+                            slots_ptr,
+                            offset,
+                        );
+                        let sum = builder.ins().fadd(old, prod);
+                        builder
+                            .ins()
+                            .store(MemFlags::trusted(), sum, slots_ptr, offset);
+                    }
                 }
 
                 Op::ArrayFieldAddConst { arr, field, delta } => {
@@ -1699,10 +1815,24 @@ pub fn try_compile(ops: &[Op]) -> Option<JitChunk> {
                     limit,
                     target,
                 } => {
-                    let offset = (slot as i32) * 8;
-                    let v = builder
-                        .ins()
-                        .load(types::F64, MemFlags::trusted(), slots_ptr, offset);
+                    let v = if mixed {
+                        let op_c =
+                            builder.ins().iconst(types::I32, i64::from(MIXED_SLOT_AS_NUMBER));
+                        let a1 = builder.ins().iconst(types::I32, i64::from(slot));
+                        let z = builder.ins().f64const(0.0);
+                        let call = builder
+                            .ins()
+                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
+                        builder.inst_results(call)[0]
+                    } else {
+                        let offset = (slot as i32) * 8;
+                        builder.ins().load(
+                            types::F64,
+                            MemFlags::trusted(),
+                            slots_ptr,
+                            offset,
+                        )
+                    };
                     let lim = builder.ins().f64const(limit);
                     let ge = builder.ins().fcmp(
                         cranelift_codegen::ir::condcodes::FloatCC::GreaterThanOrEqual,

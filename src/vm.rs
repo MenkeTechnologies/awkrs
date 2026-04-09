@@ -408,9 +408,31 @@ fn jit_mixed_op_dispatch(
         MIXED_CMP_GE, MIXED_CMP_GT, MIXED_CMP_LE, MIXED_CMP_LT, MIXED_CMP_NE, MIXED_CONCAT,
         MIXED_CONCAT_POOL, MIXED_DIV, MIXED_GET_FIELD, MIXED_GET_SLOT, MIXED_GET_VAR, MIXED_MOD,
         MIXED_MUL, MIXED_NEG, MIXED_NOT, MIXED_POS, MIXED_PRINT_ARG, MIXED_PRINT_FLUSH,
-        MIXED_PUSH_STR, MIXED_REGEX_MATCH, MIXED_REGEX_NOT_MATCH, MIXED_SET_VAR, MIXED_SUB,
-        MIXED_TO_BOOL, MIXED_TRUTHINESS,
+        MIXED_ADD_FIELD_TO_SLOT, MIXED_ADD_MUL_FIELDS_TO_SLOT, MIXED_ADD_SLOT_TO_SLOT,
+        MIXED_DECR_SLOT, MIXED_INCDEC_SLOT, MIXED_INCR_SLOT, MIXED_PUSH_STR, MIXED_REGEX_MATCH,
+        MIXED_REGEX_NOT_MATCH, MIXED_SET_VAR, MIXED_SLOT_AS_NUMBER, MIXED_SUB, MIXED_TO_BOOL,
+        MIXED_TRUTHINESS,
     };
+
+    fn mixed_jit_slot_load_raw(slot: usize) -> f64 {
+        let ptr = JIT_SLOTS_PTR.get();
+        let len = JIT_SLOTS_LEN.get();
+        if ptr.is_null() || slot >= len {
+            return 0.0;
+        }
+        unsafe { *ptr.add(slot) }
+    }
+
+    fn mixed_jit_slot_store_num(slot: usize, n: f64) {
+        let ptr = JIT_SLOTS_PTR.get();
+        let len = JIT_SLOTS_LEN.get();
+        if ptr.is_null() || slot >= len {
+            return;
+        }
+        unsafe {
+            ptr.add(slot).write(n);
+        }
+    }
 
     match op {
         MIXED_PUSH_STR => crate::jit::nan_str_pool(a1),
@@ -632,6 +654,66 @@ fn jit_mixed_op_dispatch(
             let new_n = old_n + delta;
             ctx.rt.array_set(name, key, Value::Num(new_n));
             incdec_push(kind, old_n, new_n)
+        }
+        MIXED_INCDEC_SLOT => {
+            let slot = (a1 & 0xffff) as usize;
+            let kcode = (a1 >> 16) & 0xffff;
+            let kind = match kcode {
+                0 => IncDecOp::PreInc,
+                1 => IncDecOp::PostInc,
+                2 => IncDecOp::PreDec,
+                3 => IncDecOp::PostDec,
+                _ => IncDecOp::PreInc,
+            };
+            let raw = mixed_jit_slot_load_raw(slot);
+            let old_n = jit_f64_to_value(ctx, raw).as_number();
+            let delta = incdec_delta(kind);
+            let new_n = old_n + delta;
+            mixed_jit_slot_store_num(slot, new_n);
+            incdec_push(kind, old_n, new_n)
+        }
+        MIXED_INCR_SLOT => {
+            let slot = a1 as usize;
+            let raw = mixed_jit_slot_load_raw(slot);
+            let n = jit_f64_to_value(ctx, raw).as_number();
+            mixed_jit_slot_store_num(slot, n + 1.0);
+            0.0
+        }
+        MIXED_DECR_SLOT => {
+            let slot = a1 as usize;
+            let raw = mixed_jit_slot_load_raw(slot);
+            let n = jit_f64_to_value(ctx, raw).as_number();
+            mixed_jit_slot_store_num(slot, n - 1.0);
+            0.0
+        }
+        MIXED_ADD_SLOT_TO_SLOT => {
+            let src = (a1 & 0xffff) as usize;
+            let dst = ((a1 >> 16) & 0xffff) as usize;
+            let sv = jit_f64_to_value(ctx, mixed_jit_slot_load_raw(src)).as_number();
+            let dv = jit_f64_to_value(ctx, mixed_jit_slot_load_raw(dst)).as_number();
+            mixed_jit_slot_store_num(dst, dv + sv);
+            0.0
+        }
+        MIXED_ADD_FIELD_TO_SLOT => {
+            let field = (a1 & 0xffff) as i32;
+            let slot = ((a1 >> 16) & 0xffff) as usize;
+            let field_val = ctx.rt.field_as_number(field);
+            let old = jit_f64_to_value(ctx, mixed_jit_slot_load_raw(slot)).as_number();
+            mixed_jit_slot_store_num(slot, old + field_val);
+            0.0
+        }
+        MIXED_ADD_MUL_FIELDS_TO_SLOT => {
+            let f1 = (a1 & 0xffff) as i32;
+            let f2 = ((a1 >> 16) & 0xffff) as i32;
+            let slot = a2 as usize;
+            let p = ctx.rt.field_as_number(f1) * ctx.rt.field_as_number(f2);
+            let old = jit_f64_to_value(ctx, mixed_jit_slot_load_raw(slot)).as_number();
+            mixed_jit_slot_store_num(slot, old + p);
+            0.0
+        }
+        MIXED_SLOT_AS_NUMBER => {
+            let slot = a1 as usize;
+            jit_f64_to_value(ctx, mixed_jit_slot_load_raw(slot)).as_number()
         }
         _ => 0.0,
     }
