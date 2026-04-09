@@ -12,7 +12,9 @@
 //! array map; uses the same thread-local `Runtime` + `CompiledProgram` as the VM).
 //!
 //! Enable with `AWKRS_JIT=1`. The VM tries [`try_jit_execute`] before falling
-//! back to the interpreter for eligible chunks.
+//! back to the interpreter for eligible chunks. A fifth callback,
+//! [`JitRuntimeState::field_dispatch`], handles **`$n`** compound assignment and
+//! **`++$n`** / **`$n++`** (same opcode constants as HashMap-path `var_dispatch`).
 
 use crate::ast::{BinOp, IncDecOp};
 use crate::bytecode::Op;
@@ -40,6 +42,9 @@ pub const JIT_VAR_OP_COMPOUND_MUL: u32 = 6;
 pub const JIT_VAR_OP_COMPOUND_DIV: u32 = 7;
 pub const JIT_VAR_OP_COMPOUND_MOD: u32 = 8;
 /// Expression `++name` / `--name` (prefix) on HashMap-path names — `arg` ignored.
+///
+/// **`field_dispatch`** uses the same opcode values for `$idx` **compound** and
+/// **inc/dec** (`CompoundAssignField`, `IncDecField`); it does not use `GET`/`SET`.
 pub const JIT_VAR_OP_INCDEC_PRE_INC: u32 = 9;
 pub const JIT_VAR_OP_INCDEC_POST_INC: u32 = 10;
 pub const JIT_VAR_OP_INCDEC_PRE_DEC: u32 = 11;
@@ -89,9 +94,8 @@ fn ops_hash(ops: &[Op]) -> u64 {
 /// slots, the field resolver, and the fused array update callback.
 ///
 /// The VM fills `slots` from the interpreter runtime and supplies callbacks
-/// that match the bytecode interpreter (`field_fn`, `array_field_add`, and
-/// `var_dispatch` for `GetVar` / `SetVar` / fused `IncrVar` / `CompoundAssignVar` /
-/// `IncDecVar`, etc.).
+/// that match the bytecode interpreter (`field_fn`, `array_field_add`,
+/// `var_dispatch`, and `field_dispatch` for `CompoundAssignField` / `IncDecField`).
 pub struct JitRuntimeState<'a> {
     pub slots: &'a mut [f64],
     pub field_fn: extern "C" fn(i32) -> f64,
@@ -100,6 +104,9 @@ pub struct JitRuntimeState<'a> {
     pub array_field_add: extern "C" fn(u32, i32, f64),
     /// Multiplexed HashMap-path variable ops — see `JIT_VAR_OP_GET` and friends.
     pub var_dispatch: extern "C" fn(u32, u32, f64) -> f64,
+    /// `$idx` compound assign / `++$idx` — same `JIT_VAR_OP_*` opcodes as
+    /// [`JitRuntimeState::var_dispatch`] for compound and inc/dec (not `GET`/`SET`).
+    pub field_dispatch: extern "C" fn(u32, i32, f64) -> f64,
 }
 
 impl<'a> JitRuntimeState<'a> {
@@ -109,12 +116,14 @@ impl<'a> JitRuntimeState<'a> {
         field_fn: extern "C" fn(i32) -> f64,
         array_field_add: extern "C" fn(u32, i32, f64),
         var_dispatch: extern "C" fn(u32, u32, f64) -> f64,
+        field_dispatch: extern "C" fn(u32, i32, f64) -> f64,
     ) -> Self {
         Self {
             slots,
             field_fn,
             array_field_add,
             var_dispatch,
+            field_dispatch,
         }
     }
 }
@@ -124,7 +133,7 @@ impl<'a> JitRuntimeState<'a> {
 /// Holds generated machine code. Keep alive while calling [`JitChunk::execute`].
 pub struct JitChunk {
     _module: JITModule,
-    /// `extern "C" fn(slots, field_fn, array_field_add, var_dispatch) -> f64`
+    /// `extern "C" fn(slots, field_fn, array_field_add, var_dispatch, field_dispatch) -> f64`
     fn_ptr: *const u8,
     /// Number of f64 values the function expects in the slots pointer (diagnostic).
     #[allow(dead_code)]
@@ -141,12 +150,14 @@ unsafe impl Sync for JitChunk {}
 
 /// Machine ABI: `array_field_add` is for fused `a[$field] += delta`; `var_dispatch`
 /// multiplexes `GetVar` / `SetVar` / `IncrVar` / `DecrVar` / `CompoundAssignVar` /
-/// `IncDecVar` (see `JIT_VAR_OP_*`).
+/// `IncDecVar`; `field_dispatch` multiplexes `CompoundAssignField` / `IncDecField`
+/// (reuses `JIT_VAR_OP_*` for compound and inc/dec only).
 type JitFn = extern "C" fn(
     *mut f64,
     extern "C" fn(i32) -> f64,
     extern "C" fn(u32, i32, f64),
     extern "C" fn(u32, u32, f64) -> f64,
+    extern "C" fn(u32, i32, f64) -> f64,
 ) -> f64;
 
 impl JitChunk {
@@ -158,6 +169,7 @@ impl JitChunk {
             state.field_fn,
             state.array_field_add,
             state.var_dispatch,
+            state.field_dispatch,
         )
     }
 }
@@ -282,6 +294,23 @@ pub fn is_jit_eligible(ops: &[Op]) -> bool {
             // Fused `a[$field] += delta` — mutates runtime array, no stack effect.
             Op::ArrayFieldAddConst { .. } => {}
 
+            // `$n` compound / inc-dec (pop field index as number; push result)
+            Op::CompoundAssignField(bop) => {
+                if depth < 2 {
+                    return false;
+                }
+                match bop {
+                    BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {}
+                    _ => return false,
+                }
+                depth -= 1;
+            }
+            Op::IncDecField(_) => {
+                if depth < 1 {
+                    return false;
+                }
+            }
+
             _ => return false,
         }
     }
@@ -335,6 +364,8 @@ fn needs_field_callback(ops: &[Op]) -> bool {
                 | Op::GetFNR
                 | Op::GetNF
                 | Op::ArrayFieldAddConst { .. }
+                | Op::CompoundAssignField(_)
+                | Op::IncDecField(_)
         )
     })
 }
@@ -367,13 +398,14 @@ pub fn try_compile(ops: &[Op]) -> Option<JitChunk> {
     let mut ctx = module.make_context();
     let mut func_ctx = FunctionBuilderContext::new();
 
-    // Function signature: (slots, field_fn, array_field_add, var_dispatch) -> f64
+    // Function signature: (slots, field_fn, array_field_add, var_dispatch, field_dispatch) -> f64
     let ptr_type = module.target_config().pointer_type();
     let mut sig = module.make_signature();
     sig.params.push(AbiParam::new(ptr_type)); // slots pointer
     sig.params.push(AbiParam::new(ptr_type)); // field callback fn pointer
     sig.params.push(AbiParam::new(ptr_type)); // array_field_add fn pointer
     sig.params.push(AbiParam::new(ptr_type)); // var_dispatch fn pointer
+    sig.params.push(AbiParam::new(ptr_type)); // field_dispatch ($n compound / incdec)
     sig.returns.push(AbiParam::new(types::F64));
 
     // Declare the field callback signature for indirect calls
@@ -395,6 +427,14 @@ pub fn try_compile(ops: &[Op]) -> Option<JitChunk> {
     var_sig.params.push(AbiParam::new(types::F64));
     var_sig.returns.push(AbiParam::new(types::F64));
     let _var_sig_ref = module.declare_anonymous_function(&var_sig).ok()?;
+
+    // `field_dispatch(op, field_idx, arg)` — `$n` compound assign / inc-dec (reuses `JIT_VAR_OP_*`)
+    let mut field_mut_sig = module.make_signature();
+    field_mut_sig.params.push(AbiParam::new(types::I32));
+    field_mut_sig.params.push(AbiParam::new(types::I32));
+    field_mut_sig.params.push(AbiParam::new(types::F64));
+    field_mut_sig.returns.push(AbiParam::new(types::F64));
+    let _field_mut_sig_ref = module.declare_anonymous_function(&field_mut_sig).ok()?;
 
     let func_id = module
         .declare_function("awkrs_jit_chunk", Linkage::Export, &sig)
@@ -432,12 +472,14 @@ pub fn try_compile(ops: &[Op]) -> Option<JitChunk> {
         let field_sig_ir = builder.import_signature(field_sig);
         let array_sig_ir = builder.import_signature(array_sig);
         let var_sig_ir = builder.import_signature(var_sig);
+        let field_mut_sig_ir = builder.import_signature(field_mut_sig);
 
         // ── Cranelift Variables for function params (survive across blocks) ──
         let var_slots_ptr = builder.declare_var(ptr_type);
         let var_field_fn = builder.declare_var(ptr_type);
         let var_array_fn = builder.declare_var(ptr_type);
         let var_var_fn = builder.declare_var(ptr_type);
+        let var_field_mut_fn = builder.declare_var(ptr_type);
 
         // Entry block with function params
         let entry_block = builder.create_block();
@@ -465,10 +507,12 @@ pub fn try_compile(ops: &[Op]) -> Option<JitChunk> {
         let field_fn_val = builder.block_params(entry_block)[1];
         let array_fn_val = builder.block_params(entry_block)[2];
         let var_dispatch_val = builder.block_params(entry_block)[3];
+        let field_mut_dispatch_val = builder.block_params(entry_block)[4];
         builder.def_var(var_slots_ptr, slots_ptr_val);
         builder.def_var(var_field_fn, field_fn_val);
         builder.def_var(var_array_fn, array_fn_val);
         builder.def_var(var_var_fn, var_dispatch_val);
+        builder.def_var(var_field_mut_fn, field_mut_dispatch_val);
 
         // Seal entry block — its only predecessor is the function entry
         builder.seal_block(entry_block);
@@ -507,6 +551,7 @@ pub fn try_compile(ops: &[Op]) -> Option<JitChunk> {
             let field_fn_ptr = builder.use_var(var_field_fn);
             let array_fn_ptr = builder.use_var(var_array_fn);
             let var_fn_ptr = builder.use_var(var_var_fn);
+            let field_mut_fn_ptr = builder.use_var(var_field_mut_fn);
 
             match ops[pc] {
                 // ── Constants ───────────────────────────────────────────
@@ -581,6 +626,32 @@ pub fn try_compile(ops: &[Op]) -> Option<JitChunk> {
                     let call = builder
                         .ins()
                         .call_indirect(var_sig_ir, var_fn_ptr, &[opv, ni, z]);
+                    stack.push(builder.inst_results(call)[0]);
+                }
+                Op::CompoundAssignField(bop) => {
+                    let rhs = stack.pop().expect("CompoundAssignField");
+                    let idx_f = stack.pop().expect("CompoundAssignField idx");
+                    let idx_i32 = builder.ins().fcvt_to_sint_sat(types::I32, idx_f);
+                    let cop = jit_var_op_for_compound(bop);
+                    let opv = builder.ins().iconst(types::I32, i64::from(cop));
+                    let call = builder.ins().call_indirect(
+                        field_mut_sig_ir,
+                        field_mut_fn_ptr,
+                        &[opv, idx_i32, rhs],
+                    );
+                    stack.push(builder.inst_results(call)[0]);
+                }
+                Op::IncDecField(kind) => {
+                    let idx_f = stack.pop().expect("IncDecField");
+                    let idx_i32 = builder.ins().fcvt_to_sint_sat(types::I32, idx_f);
+                    let cop = jit_var_op_for_incdec(kind);
+                    let opv = builder.ins().iconst(types::I32, i64::from(cop));
+                    let z = builder.ins().f64const(0.0);
+                    let call = builder.ins().call_indirect(
+                        field_mut_sig_ir,
+                        field_mut_fn_ptr,
+                        &[opv, idx_i32, z],
+                    );
                     stack.push(builder.inst_results(call)[0]);
                 }
 
@@ -1022,7 +1093,7 @@ pub fn jit_enabled() -> bool {
 
 /// Try to JIT-compile and execute a chunk. Returns `Some(f64)` on success.
 ///
-/// The caller supplies [`JitRuntimeState`] (slots, field callback, array fused-op callback).
+/// The caller supplies [`JitRuntimeState`] (slots and the four `extern "C"` callbacks).
 pub fn try_jit_execute(ops: &[Op], state: &mut JitRuntimeState<'_>) -> Option<f64> {
     if !jit_enabled() {
         return None;
@@ -1110,8 +1181,17 @@ impl JitNumericChunk {
         extern "C" fn dummy_var(_: u32, _: u32, _: f64) -> f64 {
             0.0
         }
+        extern "C" fn dummy_field_dispatch(_: u32, _: i32, _: f64) -> f64 {
+            0.0
+        }
         let mut empty_slots: [f64; 0] = [];
-        let mut state = JitRuntimeState::new(&mut empty_slots, dummy_field, dummy_array, dummy_var);
+        let mut state = JitRuntimeState::new(
+            &mut empty_slots,
+            dummy_field,
+            dummy_array,
+            dummy_var,
+            dummy_field_dispatch,
+        );
         self.inner.execute(&mut state)
     }
 }
@@ -1134,6 +1214,10 @@ mod tests {
 
     thread_local! {
         static TEST_JIT_VARS: RefCell<Vec<f64>> = const { RefCell::new(Vec::new()) };
+    }
+
+    thread_local! {
+        static TEST_JIT_FIELDS: RefCell<Vec<f64>> = const { RefCell::new(Vec::new()) };
     }
 
     /// Minimal in-process `var_dispatch` for unit tests (mirrors `jit_var_dispatch` numerics).
@@ -1219,6 +1303,75 @@ mod tests {
         })
     }
 
+    /// Test double for `field_dispatch` — field index `i` stored at `Vec` index `max(0,i)`.
+    extern "C" fn test_field_dispatch(op: u32, field_idx: i32, arg: f64) -> f64 {
+        use crate::ast::BinOp;
+        use crate::jit::{
+            JIT_VAR_OP_COMPOUND_ADD, JIT_VAR_OP_COMPOUND_DIV, JIT_VAR_OP_COMPOUND_MOD,
+            JIT_VAR_OP_COMPOUND_MUL, JIT_VAR_OP_COMPOUND_SUB, JIT_VAR_OP_INCDEC_POST_DEC,
+            JIT_VAR_OP_INCDEC_POST_INC, JIT_VAR_OP_INCDEC_PRE_DEC, JIT_VAR_OP_INCDEC_PRE_INC,
+        };
+        let i = field_idx.max(0) as usize;
+        TEST_JIT_FIELDS.with(|cell| {
+            let mut v = cell.borrow_mut();
+            if v.len() <= i {
+                v.resize(i + 1, 0.0);
+            }
+            match op {
+                JIT_VAR_OP_COMPOUND_ADD
+                | JIT_VAR_OP_COMPOUND_SUB
+                | JIT_VAR_OP_COMPOUND_MUL
+                | JIT_VAR_OP_COMPOUND_DIV
+                | JIT_VAR_OP_COMPOUND_MOD => {
+                    let bop = match op {
+                        JIT_VAR_OP_COMPOUND_ADD => BinOp::Add,
+                        JIT_VAR_OP_COMPOUND_SUB => BinOp::Sub,
+                        JIT_VAR_OP_COMPOUND_MUL => BinOp::Mul,
+                        JIT_VAR_OP_COMPOUND_DIV => BinOp::Div,
+                        JIT_VAR_OP_COMPOUND_MOD => BinOp::Mod,
+                        _ => unreachable!(),
+                    };
+                    let a = v[i];
+                    let b = arg;
+                    let n = match bop {
+                        BinOp::Add => a + b,
+                        BinOp::Sub => a - b,
+                        BinOp::Mul => a * b,
+                        BinOp::Div => a / b,
+                        BinOp::Mod => a % b,
+                        _ => 0.0,
+                    };
+                    v[i] = n;
+                    n
+                }
+                JIT_VAR_OP_INCDEC_PRE_INC
+                | JIT_VAR_OP_INCDEC_POST_INC
+                | JIT_VAR_OP_INCDEC_PRE_DEC
+                | JIT_VAR_OP_INCDEC_POST_DEC => {
+                    let kind = match op {
+                        JIT_VAR_OP_INCDEC_PRE_INC => IncDecOp::PreInc,
+                        JIT_VAR_OP_INCDEC_POST_INC => IncDecOp::PostInc,
+                        JIT_VAR_OP_INCDEC_PRE_DEC => IncDecOp::PreDec,
+                        JIT_VAR_OP_INCDEC_POST_DEC => IncDecOp::PostDec,
+                        _ => unreachable!(),
+                    };
+                    let old_n = v[i];
+                    let delta = match kind {
+                        IncDecOp::PreInc | IncDecOp::PostInc => 1.0,
+                        IncDecOp::PreDec | IncDecOp::PostDec => -1.0,
+                    };
+                    let new_n = old_n + delta;
+                    v[i] = new_n;
+                    match kind {
+                        IncDecOp::PreInc | IncDecOp::PreDec => new_n,
+                        IncDecOp::PostInc | IncDecOp::PostDec => old_n,
+                    }
+                }
+                _ => 0.0,
+            }
+        })
+    }
+
     fn setup_test_vars(initial: &[f64]) {
         TEST_JIT_VARS.with(|c| {
             *c.borrow_mut() = initial.to_vec();
@@ -1229,10 +1382,51 @@ mod tests {
         TEST_JIT_VARS.with(|c| c.borrow().clone())
     }
 
+    fn setup_test_fields(initial: &[(i32, f64)]) {
+        TEST_JIT_FIELDS.with(|c| {
+            let mut v = c.borrow_mut();
+            v.clear();
+            for &(idx, val) in initial {
+                let i = idx.max(0) as usize;
+                if v.len() <= i {
+                    v.resize(i + 1, 0.0);
+                }
+                v[i] = val;
+            }
+        });
+    }
+
+    fn field_at(idx: i32) -> f64 {
+        let i = idx.max(0) as usize;
+        TEST_JIT_FIELDS.with(|c| {
+            let v = c.borrow();
+            v.get(i).copied().unwrap_or(0.0)
+        })
+    }
+
     fn exec_with_test_var(ops: &[Op]) -> f64 {
         let chunk = try_compile(ops).expect("compile failed");
         let mut slots = [0.0f64; 0];
-        let mut state = JitRuntimeState::new(&mut slots, dummy_field, dummy_array, test_var_dispatch);
+        let mut state = JitRuntimeState::new(
+            &mut slots,
+            dummy_field,
+            dummy_array,
+            test_var_dispatch,
+            dummy_field_dispatch,
+        );
+        chunk.execute(&mut state)
+    }
+
+    fn exec_with_test_field(ops: &[Op]) -> f64 {
+        let chunk = try_compile(ops).expect("compile failed");
+        let mut slots = [0.0f64; 0];
+        let mut state = JitRuntimeState::new(
+            &mut slots,
+            dummy_field,
+            dummy_array,
+            dummy_var,
+            test_field_dispatch,
+        );
         chunk.execute(&mut state)
     }
 
@@ -1246,22 +1440,44 @@ mod tests {
         0.0
     }
 
+    extern "C" fn dummy_field_dispatch(_: u32, _: i32, _: f64) -> f64 {
+        0.0
+    }
+
     fn exec(ops: &[Op]) -> f64 {
         let chunk = try_compile(ops).expect("compile failed");
         let mut slots = [0.0f64; 0];
-        let mut state = JitRuntimeState::new(&mut slots, dummy_field, dummy_array, dummy_var);
+        let mut state = JitRuntimeState::new(
+            &mut slots,
+            dummy_field,
+            dummy_array,
+            dummy_var,
+            dummy_field_dispatch,
+        );
         chunk.execute(&mut state)
     }
 
     fn exec_with_slots(ops: &[Op], slots: &mut [f64]) -> f64 {
         let chunk = try_compile(ops).expect("compile failed");
-        let mut state = JitRuntimeState::new(slots, dummy_field, dummy_array, dummy_var);
+        let mut state = JitRuntimeState::new(
+            slots,
+            dummy_field,
+            dummy_array,
+            dummy_var,
+            dummy_field_dispatch,
+        );
         chunk.execute(&mut state)
     }
 
     fn exec_with_fields(ops: &[Op], slots: &mut [f64], field_fn: extern "C" fn(i32) -> f64) -> f64 {
         let chunk = try_compile(ops).expect("compile failed");
-        let mut state = JitRuntimeState::new(slots, field_fn, dummy_array, dummy_var);
+        let mut state = JitRuntimeState::new(
+            slots,
+            field_fn,
+            dummy_array,
+            dummy_var,
+            dummy_field_dispatch,
+        );
         chunk.execute(&mut state)
     }
 
@@ -1746,6 +1962,36 @@ mod tests {
         let r = exec_with_test_var(&[Op::IncDecVar(0, IncDecOp::PreDec)]);
         assert!((r - 9.0).abs() < 1e-15);
         assert!((snapshot_test_vars()[0] - 9.0).abs() < 1e-15);
+    }
+
+    #[test]
+    fn jit_eligible_compound_assign_field() {
+        assert!(is_jit_eligible(&[
+            Op::PushNum(1.0),
+            Op::PushNum(5.0),
+            Op::CompoundAssignField(BinOp::Add),
+            Op::PushNum(0.0),
+        ]));
+    }
+
+    #[test]
+    fn jit_compound_assign_field_add() {
+        setup_test_fields(&[(1, 100.0)]);
+        let r = exec_with_test_field(&[
+            Op::PushNum(1.0),
+            Op::PushNum(5.0),
+            Op::CompoundAssignField(BinOp::Add),
+        ]);
+        assert!((r - 105.0).abs() < 1e-15);
+        assert!((field_at(1) - 105.0).abs() < 1e-15);
+    }
+
+    #[test]
+    fn jit_incdec_field_post_inc() {
+        setup_test_fields(&[(1, 10.0)]);
+        let r = exec_with_test_field(&[Op::PushNum(1.0), Op::IncDecField(IncDecOp::PostInc)]);
+        assert!((r - 10.0).abs() < 1e-15);
+        assert!((field_at(1) - 11.0).abs() < 1e-15);
     }
 
     #[test]

@@ -479,6 +479,66 @@ extern "C" fn jit_var_dispatch(op: u32, name_idx: u32, arg: f64) -> f64 {
     })
 }
 
+/// `$n` compound assign / `++$n` / `$n++` — reuses `JIT_VAR_OP_*` for compound and inc/dec
+/// (same numeric opcodes as [`jit_var_dispatch`], different first-class args).
+extern "C" fn jit_field_dispatch(op: u32, field_idx: i32, arg: f64) -> f64 {
+    JIT_VMCTX_PTR.with(|cell| {
+        let p = cell.get();
+        if p.is_null() {
+            return 0.0;
+        }
+        let ctx = unsafe { &mut *p };
+        use crate::jit::{
+            JIT_VAR_OP_COMPOUND_ADD, JIT_VAR_OP_COMPOUND_DIV, JIT_VAR_OP_COMPOUND_MOD,
+            JIT_VAR_OP_COMPOUND_MUL, JIT_VAR_OP_COMPOUND_SUB, JIT_VAR_OP_INCDEC_POST_DEC,
+            JIT_VAR_OP_INCDEC_POST_INC, JIT_VAR_OP_INCDEC_PRE_DEC, JIT_VAR_OP_INCDEC_PRE_INC,
+        };
+        match op {
+            JIT_VAR_OP_COMPOUND_ADD
+            | JIT_VAR_OP_COMPOUND_SUB
+            | JIT_VAR_OP_COMPOUND_MUL
+            | JIT_VAR_OP_COMPOUND_DIV
+            | JIT_VAR_OP_COMPOUND_MOD => {
+                let bop = match op {
+                    JIT_VAR_OP_COMPOUND_ADD => BinOp::Add,
+                    JIT_VAR_OP_COMPOUND_SUB => BinOp::Sub,
+                    JIT_VAR_OP_COMPOUND_MUL => BinOp::Mul,
+                    JIT_VAR_OP_COMPOUND_DIV => BinOp::Div,
+                    JIT_VAR_OP_COMPOUND_MOD => BinOp::Mod,
+                    _ => unreachable!(),
+                };
+                let old = ctx.rt.field(field_idx);
+                let new_val = match apply_binop(bop, &old, &Value::Num(arg)) {
+                    Ok(v) => v,
+                    Err(_) => return 0.0,
+                };
+                let s = new_val.as_str();
+                ctx.rt.set_field(field_idx, &s);
+                new_val.as_number()
+            }
+            JIT_VAR_OP_INCDEC_PRE_INC
+            | JIT_VAR_OP_INCDEC_POST_INC
+            | JIT_VAR_OP_INCDEC_PRE_DEC
+            | JIT_VAR_OP_INCDEC_POST_DEC => {
+                let kind = match op {
+                    JIT_VAR_OP_INCDEC_PRE_INC => IncDecOp::PreInc,
+                    JIT_VAR_OP_INCDEC_POST_INC => IncDecOp::PostInc,
+                    JIT_VAR_OP_INCDEC_PRE_DEC => IncDecOp::PreDec,
+                    JIT_VAR_OP_INCDEC_POST_DEC => IncDecOp::PostDec,
+                    _ => unreachable!(),
+                };
+                let old = ctx.rt.field(field_idx);
+                let old_n = old.as_number();
+                let delta = incdec_delta(kind);
+                let new_n = old_n + delta;
+                ctx.rt.set_field_num(field_idx, new_n);
+                incdec_push(kind, old_n, new_n)
+            }
+            _ => 0.0,
+        }
+    })
+}
+
 /// Try JIT dispatch for the full instruction set. Converts slots to/from f64[],
 /// sets up the field callback via thread-local, and executes.
 fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Option<f64> {
@@ -506,6 +566,7 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Option<f64> {
         jit_field_callback,
         jit_array_field_add_const,
         jit_var_dispatch,
+        jit_field_dispatch,
     );
     let result = crate::jit::try_jit_execute(ops, &mut jit_state);
 
