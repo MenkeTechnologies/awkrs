@@ -455,7 +455,8 @@ fn jit_mixed_op_dispatch(
         MIXED_TYPEOF_SLOT, MIXED_TYPEOF_VALUE, MIXED_TYPEOF_VAR, MIXED_BUILTIN_ARG,
         MIXED_BUILTIN_CALL, MIXED_PRINTF_FLUSH, MIXED_SPLIT, MIXED_SPLIT_WITH_FS,
         MIXED_PATSPLIT, MIXED_PATSPLIT_SEP, MIXED_PATSPLIT_FP, MIXED_PATSPLIT_FP_SEP,
-        MIXED_MATCH_BUILTIN, MIXED_MATCH_BUILTIN_ARR,
+        MIXED_MATCH_BUILTIN, MIXED_MATCH_BUILTIN_ARR, MIXED_PRINT_FLUSH_REDIR,
+        MIXED_PRINTF_FLUSH_REDIR,
     };
 
     fn mixed_jit_slot_load_raw(slot: usize) -> f64 {
@@ -651,6 +652,77 @@ fn jit_mixed_op_dispatch(
                     } else {
                         ctx.rt.print_buf.extend_from_slice(s.as_bytes());
                     }
+                }
+            });
+            0.0
+        }
+        MIXED_PRINT_FLUSH_REDIR => {
+            use crate::bytecode::RedirKind;
+            let argc = (a1 & 0xFFFF) as usize;
+            let rk = (a1 >> 16) & 0xF;
+            let redir = match rk {
+                1 => RedirKind::Overwrite,
+                2 => RedirKind::Append,
+                3 => RedirKind::Pipe,
+                4 => RedirKind::Coproc,
+                _ => return 0.0,
+            };
+            let path_owned = jit_f64_to_value(ctx, a2).into_string();
+            let path = path_owned.as_str();
+            let ofs = String::from_utf8_lossy(&ctx.rt.ofs_bytes).into_owned();
+            let ors = String::from_utf8_lossy(&ctx.rt.ors_bytes).into_owned();
+            MIXED_PRINT_SLOTS.with(|c| {
+                let mut slots = c.borrow_mut();
+                let line = if argc == 0 {
+                    ctx.rt.record.clone()
+                } else {
+                    let parts: Vec<String> = (0..argc)
+                        .map(|i| {
+                            let f = slots.get(i).and_then(|x| *x).unwrap_or(0.0);
+                            jit_f64_to_value(ctx, f).as_str()
+                        })
+                        .collect();
+                    parts.join(&ofs)
+                };
+                slots.clear();
+                let chunk = format!("{line}{ors}");
+                let _ = emit_with_redir(ctx, &chunk, redir, Some(path));
+            });
+            0.0
+        }
+        MIXED_PRINTF_FLUSH_REDIR => {
+            use crate::bytecode::RedirKind;
+            let argc = (a1 & 0xFFFF) as usize;
+            let rk = (a1 >> 16) & 0xF;
+            let redir = match rk {
+                1 => RedirKind::Overwrite,
+                2 => RedirKind::Append,
+                3 => RedirKind::Pipe,
+                4 => RedirKind::Coproc,
+                _ => return 0.0,
+            };
+            let path_owned = jit_f64_to_value(ctx, a2).into_string();
+            let path = path_owned.as_str();
+            if argc == 0 {
+                return 0.0;
+            }
+            MIXED_PRINT_SLOTS.with(|c| {
+                let mut slots = c.borrow_mut();
+                let values: Vec<Value> = (0..argc)
+                    .map(|i| {
+                        let f = slots.get(i).and_then(|x| *x).unwrap_or(0.0);
+                        jit_f64_to_value(ctx, f)
+                    })
+                    .collect();
+                slots.clear();
+                if values.is_empty() {
+                    return;
+                }
+                let fmt = values[0].as_str_cow();
+                let vals = &values[1..];
+                if let Ok(v) = sprintf_simple(fmt.as_ref(), vals, ctx.rt.numeric_decimal) {
+                    let s = v.as_str();
+                    let _ = emit_with_redir(ctx, s.as_str(), redir, Some(path));
                 }
             });
             0.0

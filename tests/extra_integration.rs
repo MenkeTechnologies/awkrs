@@ -787,6 +787,21 @@ fn jit_match_builtin_rstart() {
 }
 
 #[test]
+fn jit_print_redirect_overwrite() {
+    let dir = std::env::temp_dir();
+    let path = dir.join(format!("awkrs_jit_redir_{}.txt", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let p = path.to_string_lossy().replace('\\', "/");
+    let prog = format!(r#"BEGIN {{ print "hello" > "{p}" }}"#);
+    let (c, o, e) = run_awkrs_stdin_args_env(std::iter::empty::<&str>(), &prog, "", jit_env());
+    assert_eq!(c, 0, "stderr: {e}");
+    assert!(o.is_empty());
+    let contents = std::fs::read_to_string(&path).expect("read redirected output");
+    assert_eq!(contents, "hello\n");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn jit_sum_fields_loop() {
     // for (i=1; i<=NF; i++) sum += $i
     let (c, o, e) = run_awkrs_stdin_args_env(

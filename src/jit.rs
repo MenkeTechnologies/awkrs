@@ -31,6 +31,8 @@
 //! [`Op::Patsplit`] and [`Op::MatchBuiltin`] use additional [`MIXED_*`] opcodes; `patsplit` with both a
 //! custom field pattern and a `seps` array packs `arr` and `seps` pool indices in `a1` (16-bit each)
 //! when both are `< 65536`, otherwise the chunk is not JIT-eligible.
+//! Non-stdout `print` / `printf` use [`MIXED_PRINT_FLUSH_REDIR`] / [`MIXED_PRINTF_FLUSH_REDIR`] with
+//! [`pack_print_redir`] (same stack order as the VM: redirect path is TOS).
 //! Whitelisted [`Op::CallBuiltin`] (see [`jit_call_builtins_ok`]) uses `MIXED_BUILTIN_*`
 //! including `sprintf`/`printf` and I/O helpers when arity and [`jit_call_builtins_ok`] allow.
 //! The **`printf`** *statement* opcode ([`Op::Printf`] to stdout) uses `MIXED_PRINT_ARG` +
@@ -317,6 +319,23 @@ pub const MIXED_PATSPLIT_FP_SEP: u32 = 182;
 pub const MIXED_MATCH_BUILTIN: u32 = 183;
 /// [`Op::MatchBuiltin`] with capture array — `a1` = array name pool index, `a2` = s, `a3` = pattern.
 pub const MIXED_MATCH_BUILTIN_ARR: u32 = 184;
+/// `print` with non-stdout redirect — `a1` = [`pack_print_redir`], `a2` = NaN-boxed path string.
+pub const MIXED_PRINT_FLUSH_REDIR: u32 = 185;
+/// `printf` with redirect — same packing as [`MIXED_PRINT_FLUSH_REDIR`].
+pub const MIXED_PRINTF_FLUSH_REDIR: u32 = 186;
+
+/// Pack `argc` (low 16 bits) and redirect kind (high 16 bits: 1=overwrite, 2=append, 3=pipe, 4=coproc).
+#[inline]
+pub fn pack_print_redir(argc: u16, redir: crate::bytecode::RedirKind) -> u32 {
+    let rk: u32 = match redir {
+        crate::bytecode::RedirKind::Stdout => 0,
+        crate::bytecode::RedirKind::Overwrite => 1,
+        crate::bytecode::RedirKind::Append => 2,
+        crate::bytecode::RedirKind::Pipe => 3,
+        crate::bytecode::RedirKind::Coproc => 4,
+    };
+    u32::from(argc) | (rk << 16)
+}
 
 #[inline]
 fn mixed_encode_field_compound_binop(bop: BinOp) -> u32 {
@@ -585,6 +604,12 @@ pub fn needs_mixed_mode(ops: &[Op]) -> bool {
                 argc,
                 redir: crate::bytecode::RedirKind::Stdout,
             } if *argc > 0
+        ) || matches!(
+            op,
+            Op::Print { redir, .. } if *redir != crate::bytecode::RedirKind::Stdout
+        ) || matches!(
+            op,
+            Op::Printf { redir, .. } if *redir != crate::bytecode::RedirKind::Stdout
         )
     })
 }
@@ -912,6 +937,36 @@ pub fn is_jit_eligible(ops: &[Op]) -> bool {
                 }
                 depth -= n;
             }
+            Op::Print {
+                argc,
+                redir,
+            } if *redir != crate::bytecode::RedirKind::Stdout => {
+                let n = *argc as i32;
+                if *argc == 0 {
+                    if depth < 1 {
+                        return false;
+                    }
+                    depth -= 1;
+                } else {
+                    if depth < n + 1 {
+                        return false;
+                    }
+                    depth -= n + 1;
+                }
+            }
+            Op::Printf {
+                argc,
+                redir,
+            } if *redir != crate::bytecode::RedirKind::Stdout => {
+                if *argc == 0 {
+                    return false;
+                }
+                let n = *argc as i32;
+                if depth < n + 1 {
+                    return false;
+                }
+                depth -= n + 1;
+            }
 
             // ── Return signals ─────────────────────────────────────────
             Op::ReturnVal => {
@@ -1082,6 +1137,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
         MIXED_TYPEOF_SLOT, MIXED_TYPEOF_VALUE, MIXED_TYPEOF_VAR, MIXED_PRINTF_FLUSH,
         MIXED_SPLIT, MIXED_SPLIT_WITH_FS, MIXED_PATSPLIT, MIXED_PATSPLIT_SEP, MIXED_PATSPLIT_FP,
         MIXED_PATSPLIT_FP_SEP, MIXED_MATCH_BUILTIN, MIXED_MATCH_BUILTIN_ARR,
+        MIXED_PRINT_FLUSH_REDIR, MIXED_PRINTF_FLUSH_REDIR, pack_print_redir,
         mixed_encode_array_compound,
         mixed_encode_array_incdec,
         mixed_encode_field_slot, mixed_encode_slot_incdec, mixed_encode_slot_pair,
@@ -2355,6 +2411,62 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                     builder
                         .ins()
                         .call_indirect(val_sig_ir, val_fn_ptr, &[op_pf, a1, z, z]);
+                }
+                Op::Printf {
+                    argc,
+                    redir,
+                } if argc > 0 && redir != crate::bytecode::RedirKind::Stdout => {
+                    let n = argc as usize;
+                    let path = stack.pop().expect("Printf redir path");
+                    let mut vals: Vec<_> =
+                        (0..n).map(|_| stack.pop().expect("Printf arg")).collect();
+                    vals.reverse();
+                    let zf = builder.ins().f64const(0.0);
+                    for (i, v) in vals.iter().enumerate() {
+                        let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_PRINT_ARG));
+                        let a1 = builder.ins().iconst(types::I32, i64::try_from(i).unwrap());
+                        builder
+                            .ins()
+                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, *v, zf]);
+                    }
+                    let op_pf = builder
+                        .ins()
+                        .iconst(types::I32, i64::from(MIXED_PRINTF_FLUSH_REDIR));
+                    let a1 = builder
+                        .ins()
+                        .iconst(types::I32, i64::from(pack_print_redir(argc, redir)));
+                    builder
+                        .ins()
+                        .call_indirect(val_sig_ir, val_fn_ptr, &[op_pf, a1, path, zf]);
+                }
+                Op::Print {
+                    argc,
+                    redir,
+                } if redir != crate::bytecode::RedirKind::Stdout => {
+                    let n = argc as usize;
+                    let path = stack.pop().expect("Print redir path");
+                    let zf = builder.ins().f64const(0.0);
+                    if n > 0 {
+                        let mut vals: Vec<_> =
+                            (0..n).map(|_| stack.pop().expect("Print arg")).collect();
+                        vals.reverse();
+                        for (i, v) in vals.iter().enumerate() {
+                            let op_c =
+                                builder.ins().iconst(types::I32, i64::from(MIXED_PRINT_ARG));
+                            let a1 = builder.ins().iconst(types::I32, i64::try_from(i).unwrap());
+                            builder
+                                .ins()
+                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, *v, zf]);
+                        }
+                    }
+                    let op_fr =
+                        builder.ins().iconst(types::I32, i64::from(MIXED_PRINT_FLUSH_REDIR));
+                    let a1 = builder
+                        .ins()
+                        .iconst(types::I32, i64::from(pack_print_redir(argc, redir)));
+                    builder
+                        .ins()
+                        .call_indirect(val_sig_ir, val_fn_ptr, &[op_fr, a1, path, zf]);
                 }
 
                 // ── MatchRegexp (push 0/1) ────────────────────────────────
@@ -3994,6 +4106,22 @@ mod tests {
         ];
         assert!(is_jit_eligible(&ops_arr));
         assert!(needs_mixed_mode(&ops_arr));
+    }
+
+    #[test]
+    fn jit_mixed_print_redir_eligible() {
+        use crate::bytecode::RedirKind;
+        let ops = [
+            Op::PushStr(0),
+            Op::PushStr(0),
+            Op::Print {
+                argc: 1,
+                redir: RedirKind::Overwrite,
+            },
+            Op::PushNum(0.0),
+        ];
+        assert!(is_jit_eligible(&ops));
+        assert!(needs_mixed_mode(&ops));
     }
 
     // ── Conditional Next ──────────────────────────────────────────────────
