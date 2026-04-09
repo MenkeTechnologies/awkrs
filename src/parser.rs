@@ -416,6 +416,86 @@ impl<'a> Parser<'a> {
                     body,
                 })
             }
+            Token::Switch => {
+                self.bump(false)?;
+                if self.cur != Token::LParen {
+                    return Err(Error::Parse {
+                        line: self.line,
+                        msg: "expected `(` after `switch`".into(),
+                    });
+                }
+                self.bump(false)?;
+                let expr = self.parse_expr(false)?;
+                if self.cur != Token::RParen {
+                    return Err(Error::Parse {
+                        line: self.line,
+                        msg: "expected `)` after switch expression".into(),
+                    });
+                }
+                self.bump(false)?;
+                self.skip_newlines()?;
+                if self.cur != Token::LBrace {
+                    return Err(Error::Parse {
+                        line: self.line,
+                        msg: "expected `{` after `switch (...)`".into(),
+                    });
+                }
+                self.bump(false)?;
+                let mut arms = Vec::new();
+                loop {
+                    self.skip_newlines()?;
+                    if self.cur == Token::RBrace {
+                        self.bump(false)?;
+                        break;
+                    }
+                    match &self.cur {
+                        Token::Case => {
+                            // Regex mode so `case /pat/` yields `Token::Regexp`, not division `/`.
+                            self.bump(true)?;
+                            self.skip_newlines()?;
+                            let label = match &self.cur {
+                                Token::Regexp(s) => {
+                                    let t = s.clone();
+                                    self.bump(false)?;
+                                    SwitchLabel::Regexp(t)
+                                }
+                                _ => {
+                                    let e = self.parse_expr(false)?;
+                                    SwitchLabel::Expr(e)
+                                }
+                            };
+                            if self.cur != Token::Colon {
+                                return Err(Error::Parse {
+                                    line: self.line,
+                                    msg: "expected `:` after `case` label".into(),
+                                });
+                            }
+                            self.bump(false)?;
+                            let stmts = self.parse_switch_case_stmts()?;
+                            arms.push(SwitchArm::Case { label, stmts });
+                        }
+                        Token::Default => {
+                            self.bump(false)?;
+                            if self.cur != Token::Colon {
+                                return Err(Error::Parse {
+                                    line: self.line,
+                                    msg: "expected `:` after `default`".into(),
+                                });
+                            }
+                            self.bump(false)?;
+                            let stmts = self.parse_switch_case_stmts()?;
+                            arms.push(SwitchArm::Default { stmts });
+                        }
+                        _ => {
+                            return Err(Error::Parse {
+                                line: self.line,
+                                msg: "expected `case`, `default`, or `}` in switch body".into(),
+                            });
+                        }
+                    }
+                }
+                Ok(Stmt::Switch { expr, arms })
+            }
             Token::Break => {
                 self.bump(false)?;
                 self.consume_stmt_end()?;
@@ -609,6 +689,19 @@ impl<'a> Parser<'a> {
         } else {
             Ok(vec![self.parse_stmt()?])
         }
+    }
+
+    /// Statements inside a `switch` arm until the next `case` / `default` / `}`.
+    fn parse_switch_case_stmts(&mut self) -> Result<Vec<Stmt>> {
+        let mut stmts = Vec::new();
+        loop {
+            self.skip_newlines()?;
+            if matches!(self.cur, Token::Case | Token::Default | Token::RBrace) {
+                break;
+            }
+            stmts.push(self.parse_stmt()?);
+        }
+        Ok(stmts)
     }
 
     fn consume_stmt_end(&mut self) -> Result<()> {
@@ -1142,7 +1235,7 @@ impl<'a> Parser<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::{Expr, GetlineRedir, Pattern, PrintRedir, Stmt};
+    use crate::ast::{Expr, GetlineRedir, Pattern, PrintRedir, Stmt, SwitchArm, SwitchLabel};
 
     fn first_begin_stmt(prog: &crate::ast::Program) -> &Stmt {
         let rule = prog
@@ -1151,6 +1244,36 @@ mod tests {
             .find(|r| matches!(r.pattern, Pattern::Begin))
             .expect("BEGIN rule");
         rule.stmts.first().expect("stmt")
+    }
+
+    #[test]
+    fn parses_switch_numeric_and_regex_case_labels() {
+        let p = parse_program(
+            "BEGIN { switch (2) { case 1: break; case /foo/: break; default: break } }",
+        )
+        .unwrap();
+        match first_begin_stmt(&p) {
+            Stmt::Switch { expr, arms } => {
+                assert!(matches!(expr, Expr::Number(n) if *n == 2.0));
+                assert_eq!(arms.len(), 3);
+                assert!(matches!(
+                    &arms[0],
+                    SwitchArm::Case {
+                        label: SwitchLabel::Expr(Expr::Number(n)),
+                        ..
+                    } if *n == 1.0
+                ));
+                assert!(matches!(
+                    &arms[1],
+                    SwitchArm::Case {
+                        label: SwitchLabel::Regexp(s),
+                        ..
+                    } if s == "foo"
+                ));
+                assert!(matches!(&arms[2], SwitchArm::Default { .. }));
+            }
+            _ => panic!("expected Switch"),
+        }
     }
 
     #[test]

@@ -1,9 +1,10 @@
-//! awk builtins: gsub, sub, match, string helpers, math, and time (gawk-style).
+//! awk builtins: gsub, sub, match, string helpers, math, time (gawk-style), bitwise, sort.
 
 use crate::error::{Error, Result};
 use crate::runtime::{Runtime, Value};
 use chrono::{Local, LocalResult, NaiveDate, TimeZone, Utc};
 use regex::Regex;
+use std::cmp::Ordering;
 
 /// Check if a regex pattern is a plain literal (no metacharacters).
 pub(crate) fn is_literal_pattern(pat: &str) -> bool {
@@ -396,6 +397,152 @@ pub fn awk_mktime(s: &str) -> f64 {
         LocalResult::Single(dt) => dt.timestamp() as f64,
         LocalResult::Ambiguous(_, _) | LocalResult::None => -1.0,
     }
+}
+
+#[inline]
+fn num_to_u64(n: f64) -> u64 {
+    n.trunc() as i64 as u64
+}
+
+/// gawk bitwise `and(a, b)`; operands are truncated to integers.
+pub fn awk_and(a: f64, b: f64) -> f64 {
+    (num_to_u64(a) & num_to_u64(b)) as i64 as f64
+}
+
+pub fn awk_or(a: f64, b: f64) -> f64 {
+    (num_to_u64(a) | num_to_u64(b)) as i64 as f64
+}
+
+pub fn awk_xor(a: f64, b: f64) -> f64 {
+    (num_to_u64(a) ^ num_to_u64(b)) as i64 as f64
+}
+
+pub fn awk_lshift(a: f64, b: f64) -> f64 {
+    let x = num_to_u64(a);
+    let n = (num_to_u64(b) & 0x3f) as u32;
+    (x << n) as i64 as f64
+}
+
+pub fn awk_rshift(a: f64, b: f64) -> f64 {
+    let x = num_to_u64(a);
+    let n = (num_to_u64(b) & 0x3f) as u32;
+    (x >> n) as i64 as f64
+}
+
+pub fn awk_compl(a: f64) -> f64 {
+    (!num_to_u64(a)) as i64 as f64
+}
+
+/// gawk `strtonum` — hex `0x…`, octal `0…`, else decimal float parse.
+pub fn awk_strtonum(s: &str) -> f64 {
+    let t = s.trim();
+    if t.is_empty() {
+        return 0.0;
+    }
+    if t.starts_with("0x") || t.starts_with("0X") {
+        return u64::from_str_radix(&t[2..], 16)
+            .map(|v| v as f64)
+            .unwrap_or(0.0);
+    }
+    if t.len() > 1 && t.starts_with('0') && !t.contains('.') && !t.contains('e') && !t.contains('E')
+    {
+        return i64::from_str_radix(t, 8).map(|v| v as f64).unwrap_or(0.0);
+    }
+    t.parse::<f64>().unwrap_or(0.0)
+}
+
+fn locale_str_cmp_sort(a: &str, b: &str) -> Ordering {
+    #[cfg(unix)]
+    {
+        use std::ffi::CString;
+        match (CString::new(a), CString::new(b)) {
+            (Ok(ca), Ok(cb)) => unsafe {
+                let r = libc::strcoll(ca.as_ptr(), cb.as_ptr());
+                r.cmp(&0)
+            },
+            _ => a.cmp(b),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        a.cmp(b)
+    }
+}
+
+/// Total order for `asort` (gawk-style: numeric if both numeric strings, else `strcoll`).
+pub fn awk_value_sort_cmp(a: &Value, b: &Value) -> Ordering {
+    if let (Value::Num(x), Value::Num(y)) = (a, b) {
+        return x.partial_cmp(y).unwrap_or(Ordering::Equal);
+    }
+    if a.is_numeric_str() && b.is_numeric_str() {
+        return a
+            .as_number()
+            .partial_cmp(&b.as_number())
+            .unwrap_or(Ordering::Equal);
+    }
+    locale_str_cmp_sort(&a.as_str(), &b.as_str())
+}
+
+/// gawk `asort` — sort by value; new indices `"1"`…`"n"`.
+pub fn asort(rt: &mut Runtime, src: &str, dest: Option<&str>) -> Result<f64> {
+    let mut pairs: Vec<(String, Value)> = match rt.get_global_var(src) {
+        Some(Value::Array(a)) => a.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+        _ => return Err(Error::Runtime(format!("asort: `{src}` is not an array"))),
+    };
+    pairs.sort_by(|(_, va), (_, vb)| awk_value_sort_cmp(va, vb));
+    let n = pairs.len();
+    match dest {
+        None => {
+            rt.array_delete(src, None);
+            for (i, (_, v)) in pairs.iter().enumerate() {
+                rt.array_set(src, format!("{}", i + 1), v.clone());
+            }
+        }
+        Some(d) if d == src => {
+            rt.array_delete(src, None);
+            for (i, (_, v)) in pairs.iter().enumerate() {
+                rt.array_set(src, format!("{}", i + 1), v.clone());
+            }
+        }
+        Some(d) => {
+            rt.array_delete(d, None);
+            for (i, (_, v)) in pairs.iter().enumerate() {
+                rt.array_set(d, format!("{}", i + 1), v.clone());
+            }
+        }
+    }
+    Ok(n as f64)
+}
+
+/// gawk `asorti` — sort array indices (keys); values are the sorted keys.
+pub fn asorti(rt: &mut Runtime, src: &str, dest: Option<&str>) -> Result<f64> {
+    let mut keys: Vec<String> = match rt.get_global_var(src) {
+        Some(Value::Array(a)) => a.keys().cloned().collect(),
+        _ => return Err(Error::Runtime(format!("asorti: `{src}` is not an array"))),
+    };
+    keys.sort_by(|a, b| locale_str_cmp_sort(a, b));
+    let n = keys.len();
+    match dest {
+        None => {
+            rt.array_delete(src, None);
+            for (i, k) in keys.iter().enumerate() {
+                rt.array_set(src, format!("{}", i + 1), Value::Str(k.clone()));
+            }
+        }
+        Some(d) if d == src => {
+            rt.array_delete(src, None);
+            for (i, k) in keys.iter().enumerate() {
+                rt.array_set(src, format!("{}", i + 1), Value::Str(k.clone()));
+            }
+        }
+        Some(d) => {
+            rt.array_delete(d, None);
+            for (i, k) in keys.iter().enumerate() {
+                rt.array_set(d, format!("{}", i + 1), Value::Str(k.clone()));
+            }
+        }
+    }
+    Ok(n as f64)
 }
 
 #[cfg(test)]

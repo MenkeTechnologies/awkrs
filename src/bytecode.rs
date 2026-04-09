@@ -217,6 +217,20 @@ pub enum Op {
 
     // ── Stack manipulation ──────────────────────────────────────────────
     Pop,
+    /// Duplicate top of stack (for `switch` / multi-branch compare).
+    Dup,
+
+    // ── gawk array sort ───────────────────────────────────────────────────
+    /// `asort(src [, dest])` — sort by value; string pool indices for array names.
+    Asort {
+        src: u32,
+        dest: Option<u32>,
+    },
+    /// `asorti(src [, dest])` — sort indices lexicographically.
+    Asorti {
+        src: u32,
+        dest: Option<u32>,
+    },
 
     // ── Pattern helpers ─────────────────────────────────────────────────
     /// Test regex (by pool index) against `$0`, push `Num(0/1)`.

@@ -716,6 +716,22 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             Op::Pop => {
                 ctx.pop();
             }
+            Op::Dup => {
+                let v = ctx.peek().clone();
+                ctx.push(v);
+            }
+            Op::Asort { src, dest } => {
+                let s = ctx.cp.strings.get(src);
+                let d = dest.map(|i| ctx.cp.strings.get(i));
+                let n = builtins::asort(ctx.rt, s, d)?;
+                ctx.push(Value::Num(n));
+            }
+            Op::Asorti { src, dest } => {
+                let s = ctx.cp.strings.get(src);
+                let d = dest.map(|i| ctx.cp.strings.get(i));
+                let n = builtins::asorti(ctx.rt, s, d)?;
+                ctx.push(Value::Num(n));
+            }
 
             // ── Pattern helpers ─────────────────────────────────────────
             Op::MatchRegexp(idx) => {
@@ -1340,6 +1356,54 @@ fn exec_call_builtin(ctx: &mut VmCtx<'_>, name: &str, argc: u16) -> Result<()> {
             let s = sprintf_simple(&fmt, &args[1..], ctx.rt.numeric_decimal)?.as_str();
             ctx.emit_print(&s);
             Value::Num(0.0)
+        }
+        "and" => {
+            if argc != 2 {
+                return Err(Error::Runtime("`and` expects two arguments".into()));
+            }
+            Value::Num(builtins::awk_and(args[0].as_number(), args[1].as_number()))
+        }
+        "or" => {
+            if argc != 2 {
+                return Err(Error::Runtime("`or` expects two arguments".into()));
+            }
+            Value::Num(builtins::awk_or(args[0].as_number(), args[1].as_number()))
+        }
+        "xor" => {
+            if argc != 2 {
+                return Err(Error::Runtime("`xor` expects two arguments".into()));
+            }
+            Value::Num(builtins::awk_xor(args[0].as_number(), args[1].as_number()))
+        }
+        "lshift" => {
+            if argc != 2 {
+                return Err(Error::Runtime("`lshift` expects two arguments".into()));
+            }
+            Value::Num(builtins::awk_lshift(
+                args[0].as_number(),
+                args[1].as_number(),
+            ))
+        }
+        "rshift" => {
+            if argc != 2 {
+                return Err(Error::Runtime("`rshift` expects two arguments".into()));
+            }
+            Value::Num(builtins::awk_rshift(
+                args[0].as_number(),
+                args[1].as_number(),
+            ))
+        }
+        "compl" => {
+            if argc != 1 {
+                return Err(Error::Runtime("`compl` expects one argument".into()));
+            }
+            Value::Num(builtins::awk_compl(args[0].as_number()))
+        }
+        "strtonum" => {
+            if argc != 1 {
+                return Err(Error::Runtime("`strtonum` expects one argument".into()));
+            }
+            Value::Num(builtins::awk_strtonum(&args[0].as_str()))
         }
         _ => return Err(Error::Runtime(format!("unknown function `{name}`"))),
     };

@@ -11,15 +11,20 @@ const SPECIAL_VARS: &[&str] = &[
     "RLENGTH", "ENVIRON", "ARGC", "ARGV",
 ];
 
-/// Tracks break/continue jump patches for loops.
-struct LoopInfo {
-    break_patches: Vec<usize>,
-    continue_patches: Vec<usize>,
+/// Loop or `switch` — both support `break`; only loops support `continue`.
+enum StructuralKind {
+    Loop {
+        break_patches: Vec<usize>,
+        continue_patches: Vec<usize>,
+    },
+    Switch {
+        break_patches: Vec<usize>,
+    },
 }
 
 pub struct Compiler {
     pub strings: StringPool,
-    loop_stack: Vec<LoopInfo>,
+    structural_stack: Vec<StructuralKind>,
     /// Variable name → slot index (only non-special, non-array scalars).
     var_slots: HashMap<String, u16>,
     next_slot: u16,
@@ -36,7 +41,7 @@ impl Compiler {
 
         let mut c = Compiler {
             strings: StringPool::default(),
-            loop_stack: Vec::new(),
+            structural_stack: Vec::new(),
             var_slots: HashMap::new(),
             next_slot: 0,
             array_names,
@@ -202,7 +207,7 @@ impl Compiler {
 
             Stmt::While { cond, body } => {
                 let loop_start = ops.len();
-                self.loop_stack.push(LoopInfo {
+                self.structural_stack.push(StructuralKind::Loop {
                     break_patches: Vec::new(),
                     continue_patches: Vec::new(),
                 });
@@ -217,18 +222,24 @@ impl Compiler {
                 let after_loop = ops.len();
                 ops[cond_jump] = Op::JumpIfFalsePop(after_loop);
 
-                let info = self.loop_stack.pop().unwrap();
-                for pos in info.break_patches {
+                let info = match self.structural_stack.pop().unwrap() {
+                    StructuralKind::Loop {
+                        break_patches,
+                        continue_patches,
+                    } => (break_patches, continue_patches),
+                    StructuralKind::Switch { .. } => unreachable!(),
+                };
+                for pos in info.0 {
                     ops[pos] = Op::Jump(after_loop);
                 }
-                for pos in info.continue_patches {
+                for pos in info.1 {
                     ops[pos] = Op::Jump(loop_start);
                 }
             }
 
             Stmt::DoWhile { body, cond } => {
                 let body_start = ops.len();
-                self.loop_stack.push(LoopInfo {
+                self.structural_stack.push(StructuralKind::Loop {
                     break_patches: Vec::new(),
                     continue_patches: Vec::new(),
                 });
@@ -241,11 +252,17 @@ impl Compiler {
 
                 let after_loop = ops.len();
 
-                let info = self.loop_stack.pop().unwrap();
-                for pos in info.break_patches {
+                let info = match self.structural_stack.pop().unwrap() {
+                    StructuralKind::Loop {
+                        break_patches,
+                        continue_patches,
+                    } => (break_patches, continue_patches),
+                    StructuralKind::Switch { .. } => unreachable!(),
+                };
+                for pos in info.0 {
                     ops[pos] = Op::Jump(after_loop);
                 }
-                for pos in info.continue_patches {
+                for pos in info.1 {
                     ops[pos] = Op::Jump(cond_start);
                 }
             }
@@ -262,7 +279,7 @@ impl Compiler {
                 }
 
                 let loop_start = ops.len();
-                self.loop_stack.push(LoopInfo {
+                self.structural_stack.push(StructuralKind::Loop {
                     break_patches: Vec::new(),
                     continue_patches: Vec::new(),
                 });
@@ -288,11 +305,17 @@ impl Compiler {
                     ops[cj] = Op::JumpIfFalsePop(after_loop);
                 }
 
-                let info = self.loop_stack.pop().unwrap();
-                for pos in info.break_patches {
+                let info = match self.structural_stack.pop().unwrap() {
+                    StructuralKind::Loop {
+                        break_patches,
+                        continue_patches,
+                    } => (break_patches, continue_patches),
+                    StructuralKind::Switch { .. } => unreachable!(),
+                };
+                for pos in info.0 {
                     ops[pos] = Op::Jump(after_loop);
                 }
-                for pos in info.continue_patches {
+                for pos in info.1 {
                     ops[pos] = Op::Jump(continue_target);
                 }
             }
@@ -304,7 +327,7 @@ impl Compiler {
                 ops.push(Op::ForInStart(arr_idx));
 
                 let loop_top = ops.len();
-                self.loop_stack.push(LoopInfo {
+                self.structural_stack.push(StructuralKind::Loop {
                     break_patches: Vec::new(),
                     continue_patches: Vec::new(),
                 });
@@ -327,11 +350,17 @@ impl Compiler {
                     end_jump: after_loop,
                 };
 
-                let info = self.loop_stack.pop().unwrap();
-                for pos in info.break_patches {
+                let info = match self.structural_stack.pop().unwrap() {
+                    StructuralKind::Loop {
+                        break_patches,
+                        continue_patches,
+                    } => (break_patches, continue_patches),
+                    StructuralKind::Switch { .. } => unreachable!(),
+                };
+                for pos in info.0 {
                     ops[pos] = Op::Jump(after_loop);
                 }
-                for pos in info.continue_patches {
+                for pos in info.1 {
                     ops[pos] = Op::Jump(loop_top);
                 }
                 let _ = cleanup_done;
@@ -344,16 +373,24 @@ impl Compiler {
             Stmt::Break => {
                 let pos = ops.len();
                 ops.push(Op::Jump(0));
-                if let Some(info) = self.loop_stack.last_mut() {
-                    info.break_patches.push(pos);
+                match self.structural_stack.last_mut() {
+                    Some(StructuralKind::Loop { break_patches, .. }) => break_patches.push(pos),
+                    Some(StructuralKind::Switch { break_patches }) => break_patches.push(pos),
+                    None => {}
                 }
             }
 
             Stmt::Continue => {
                 let pos = ops.len();
                 ops.push(Op::Jump(0));
-                if let Some(info) = self.loop_stack.last_mut() {
-                    info.continue_patches.push(pos);
+                for ctx in self.structural_stack.iter_mut().rev() {
+                    if let StructuralKind::Loop {
+                        continue_patches, ..
+                    } = ctx
+                    {
+                        continue_patches.push(pos);
+                        break;
+                    }
                 }
             }
 
@@ -392,6 +429,10 @@ impl Compiler {
                         ops.push(Op::DeleteElem(arr_idx));
                     }
                 }
+            }
+
+            Stmt::Switch { expr, arms } => {
+                self.compile_switch(expr, arms, ops);
             }
 
             Stmt::GetLine { var, redir } => {
@@ -661,6 +702,8 @@ impl Compiler {
             "split" => self.compile_split(args, ops),
             "patsplit" => self.compile_patsplit(args, ops),
             "match" => self.compile_match(args, ops),
+            "asort" => self.compile_asort(args, ops),
+            "asorti" => self.compile_asorti(args, ops),
             _ => {
                 for a in args {
                     self.compile_expr(a, ops);
@@ -762,6 +805,103 @@ impl Compiler {
             None
         };
         ops.push(Op::MatchBuiltin { arr });
+    }
+
+    fn compile_asort(&mut self, args: &[Expr], ops: &mut Vec<Op>) {
+        let src = match args.first() {
+            Some(Expr::Var(n)) => self.strings.intern(n),
+            _ => self.strings.intern(""),
+        };
+        let dest = if args.len() >= 2 {
+            match &args[1] {
+                Expr::Var(n) => Some(self.strings.intern(n)),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        ops.push(Op::Asort { src, dest });
+    }
+
+    fn compile_asorti(&mut self, args: &[Expr], ops: &mut Vec<Op>) {
+        let src = match args.first() {
+            Some(Expr::Var(n)) => self.strings.intern(n),
+            _ => self.strings.intern(""),
+        };
+        let dest = if args.len() >= 2 {
+            match &args[1] {
+                Expr::Var(n) => Some(self.strings.intern(n)),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        ops.push(Op::Asorti { src, dest });
+    }
+
+    fn compile_switch(&mut self, expr: &Expr, arms: &[SwitchArm], ops: &mut Vec<Op>) {
+        self.structural_stack.push(StructuralKind::Switch {
+            break_patches: Vec::new(),
+        });
+        self.compile_expr(expr, ops);
+        if arms.is_empty() {
+            ops.push(Op::Pop);
+            let _ = self.structural_stack.pop();
+            return;
+        }
+        let mut pending_jfail: Option<usize> = None;
+        let mut end_jumps: Vec<usize> = Vec::new();
+        for arm in arms {
+            match arm {
+                SwitchArm::Case { label, stmts } => {
+                    if let Some(p) = pending_jfail.take() {
+                        ops[p] = Op::JumpIfFalsePop(ops.len());
+                    }
+                    ops.push(Op::Dup);
+                    match label {
+                        SwitchLabel::Expr(e) => {
+                            self.compile_expr(e, ops);
+                            ops.push(Op::CmpEq);
+                        }
+                        SwitchLabel::Regexp(re) => {
+                            let idx = self.strings.intern(re);
+                            ops.push(Op::PushStr(idx));
+                            ops.push(Op::RegexMatch);
+                        }
+                    }
+                    let jfail = ops.len();
+                    ops.push(Op::JumpIfFalsePop(0));
+                    pending_jfail = Some(jfail);
+                    ops.push(Op::Pop);
+                    ops.push(Op::Pop);
+                    self.compile_stmts(stmts, ops);
+                    let jend = ops.len();
+                    ops.push(Op::Jump(0));
+                    end_jumps.push(jend);
+                }
+                SwitchArm::Default { stmts } => {
+                    if let Some(p) = pending_jfail.take() {
+                        ops[p] = Op::JumpIfFalsePop(ops.len());
+                    }
+                    ops.push(Op::Pop);
+                    self.compile_stmts(stmts, ops);
+                }
+            }
+        }
+        if let Some(p) = pending_jfail {
+            let pop_pos = ops.len();
+            ops.push(Op::Pop);
+            ops[p] = Op::JumpIfFalsePop(pop_pos);
+        }
+        let end = ops.len();
+        for j in end_jumps {
+            ops[j] = Op::Jump(end);
+        }
+        if let StructuralKind::Switch { break_patches } = self.structural_stack.pop().unwrap() {
+            for bp in break_patches {
+                ops[bp] = Op::Jump(end);
+            }
+        }
     }
 
     fn compile_array_key(&mut self, indices: &[Expr], ops: &mut Vec<Op>) {
@@ -871,6 +1011,26 @@ fn collect_array_names_stmt(s: &Stmt, names: &mut HashSet<String>) {
             GetlineRedir::File(e) | GetlineRedir::Coproc(e) => collect_array_names_expr(e, names),
             GetlineRedir::Primary => {}
         },
+        Stmt::Switch { expr, arms } => {
+            collect_array_names_expr(expr, names);
+            for arm in arms {
+                match arm {
+                    SwitchArm::Case { label, stmts } => {
+                        if let SwitchLabel::Expr(e) = label {
+                            collect_array_names_expr(e, names);
+                        }
+                        for t in stmts {
+                            collect_array_names_stmt(t, names);
+                        }
+                    }
+                    SwitchArm::Default { stmts } => {
+                        for t in stmts {
+                            collect_array_names_stmt(t, names);
+                        }
+                    }
+                }
+            }
+        }
         Stmt::Break
         | Stmt::Continue
         | Stmt::Next

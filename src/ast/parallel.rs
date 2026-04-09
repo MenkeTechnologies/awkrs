@@ -1,6 +1,6 @@
 //! Static checks for whether record processing can run in parallel (rayon).
 
-use super::{Expr, GetlineRedir, Pattern, Program, Stmt};
+use super::{Expr, GetlineRedir, Pattern, Program, Stmt, SwitchArm, SwitchLabel};
 
 /// True when record rules can run in parallel: no range patterns, no `exit`, no primary `getline`,
 /// no `getline <&` coprocess, no cross-record mutations (assignments / `delete`), and no constructs
@@ -58,6 +58,19 @@ fn stmt_blocks_parallel(s: &Stmt) -> bool {
         Stmt::NextFile => true,
         Stmt::Break | Stmt::Continue | Stmt::Next | Stmt::Return(_) => false,
         Stmt::Delete { .. } => true,
+        Stmt::Switch { expr, arms } => {
+            expr_blocks_parallel(expr)
+                || arms.iter().any(|a| match a {
+                    SwitchArm::Case { label, stmts } => {
+                        let label_bad = match label {
+                            SwitchLabel::Expr(e) => expr_blocks_parallel(e),
+                            SwitchLabel::Regexp(_) => false,
+                        };
+                        label_bad || stmts.iter().any(stmt_blocks_parallel)
+                    }
+                    SwitchArm::Default { stmts } => stmts.iter().any(stmt_blocks_parallel),
+                })
+        }
     }
 }
 
@@ -71,7 +84,12 @@ fn expr_blocks_parallel(e: &Expr) -> bool {
             expr_blocks_parallel(left) || expr_blocks_parallel(right)
         }
         Expr::Unary { expr, .. } => expr_blocks_parallel(expr),
-        Expr::Call { args, .. } => args.iter().any(expr_blocks_parallel),
+        Expr::Call { name, args } => {
+            if matches!(name.as_str(), "asort" | "asorti") {
+                return true;
+            }
+            args.iter().any(expr_blocks_parallel)
+        }
         Expr::Index { indices, .. } => indices.iter().any(expr_blocks_parallel),
         Expr::Field(inner) => expr_blocks_parallel(inner),
         Expr::Ternary { cond, then_, else_ } => {

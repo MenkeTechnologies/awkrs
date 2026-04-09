@@ -480,6 +480,47 @@ fn exec_stmt(s: &Stmt, ctx: &mut ExecCtx<'_>) -> Result<Flow> {
             }
             return Ok(Flow::NextFile);
         }
+        Stmt::Switch { expr, arms } => {
+            let v = eval_expr(expr, ctx)?;
+            for arm in arms {
+                match arm {
+                    SwitchArm::Case { label, stmts } => {
+                        let matched = match label {
+                            SwitchLabel::Expr(e) => {
+                                let ev = eval_expr(e, ctx)?;
+                                switch_value_eq(&v, &ev)
+                            }
+                            SwitchLabel::Regexp(re) => {
+                                let r =
+                                    Regex::new(re).map_err(|e| Error::Runtime(e.to_string()))?;
+                                r.is_match(&v.as_str())
+                            }
+                        };
+                        if matched {
+                            for s in stmts {
+                                match exec_stmt(s, ctx)? {
+                                    Flow::Normal => {}
+                                    // `break` exits the switch only (not an enclosing loop).
+                                    Flow::Break => return Ok(Flow::Normal),
+                                    f => return Ok(f),
+                                }
+                            }
+                            return Ok(Flow::Normal);
+                        }
+                    }
+                    SwitchArm::Default { stmts } => {
+                        for s in stmts {
+                            match exec_stmt(s, ctx)? {
+                                Flow::Normal => {}
+                                Flow::Break => return Ok(Flow::Normal),
+                                f => return Ok(f),
+                            }
+                        }
+                        return Ok(Flow::Normal);
+                    }
+                }
+            }
+        }
         Stmt::Exit(e) => {
             let code = if let Some(x) = e {
                 eval_expr(x, ctx)?.as_number() as i32
@@ -781,6 +822,16 @@ fn awk_eq(left: &Expr, right: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {
             0.0
         },
     ))
+}
+
+#[inline]
+fn switch_value_eq(lv: &Value, rv: &Value) -> bool {
+    if lv.is_numeric_str() && rv.is_numeric_str() {
+        let a = lv.as_number();
+        let b = rv.as_number();
+        return (a - b).abs() < f64::EPSILON;
+    }
+    locale_str_cmp(&lv.as_str(), &rv.as_str()) == Ordering::Equal
 }
 
 fn awk_ne(left: &Expr, right: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {
@@ -1135,6 +1186,87 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
                 .map(|e| eval_expr(e, ctx))
                 .collect::<Result<_>>()?;
             sprintf_simple(&fmt, &vals, ctx.rt.numeric_decimal)
+        }
+        "and" if args.len() == 2 => {
+            let a = eval_expr(&args[0], ctx)?.as_number();
+            let b = eval_expr(&args[1], ctx)?.as_number();
+            Ok(Value::Num(builtins::awk_and(a, b)))
+        }
+        "or" if args.len() == 2 => {
+            let a = eval_expr(&args[0], ctx)?.as_number();
+            let b = eval_expr(&args[1], ctx)?.as_number();
+            Ok(Value::Num(builtins::awk_or(a, b)))
+        }
+        "xor" if args.len() == 2 => {
+            let a = eval_expr(&args[0], ctx)?.as_number();
+            let b = eval_expr(&args[1], ctx)?.as_number();
+            Ok(Value::Num(builtins::awk_xor(a, b)))
+        }
+        "lshift" if args.len() == 2 => {
+            let a = eval_expr(&args[0], ctx)?.as_number();
+            let b = eval_expr(&args[1], ctx)?.as_number();
+            Ok(Value::Num(builtins::awk_lshift(a, b)))
+        }
+        "rshift" if args.len() == 2 => {
+            let a = eval_expr(&args[0], ctx)?.as_number();
+            let b = eval_expr(&args[1], ctx)?.as_number();
+            Ok(Value::Num(builtins::awk_rshift(a, b)))
+        }
+        "compl" if args.len() == 1 => {
+            let a = eval_expr(&args[0], ctx)?.as_number();
+            Ok(Value::Num(builtins::awk_compl(a)))
+        }
+        "strtonum" if args.len() == 1 => {
+            let s = eval_expr(&args[0], ctx)?.as_str();
+            Ok(Value::Num(builtins::awk_strtonum(&s)))
+        }
+        "asort" => {
+            let src = match args.first() {
+                Some(Expr::Var(n)) => n.as_str(),
+                _ => {
+                    return Err(Error::Runtime(
+                        "asort: first argument must be array name".into(),
+                    ));
+                }
+            };
+            let dest = if let Some(e) = args.get(1) {
+                match e {
+                    Expr::Var(n) => Some(n.as_str()),
+                    _ => {
+                        return Err(Error::Runtime(
+                            "asort: second argument must be array name".into(),
+                        ));
+                    }
+                }
+            } else {
+                None
+            };
+            let n = builtins::asort(ctx.rt, src, dest)?;
+            Ok(Value::Num(n))
+        }
+        "asorti" => {
+            let src = match args.first() {
+                Some(Expr::Var(n)) => n.as_str(),
+                _ => {
+                    return Err(Error::Runtime(
+                        "asorti: first argument must be array name".into(),
+                    ));
+                }
+            };
+            let dest = if let Some(e) = args.get(1) {
+                match e {
+                    Expr::Var(n) => Some(n.as_str()),
+                    _ => {
+                        return Err(Error::Runtime(
+                            "asorti: second argument must be array name".into(),
+                        ));
+                    }
+                }
+            } else {
+                None
+            };
+            let n = builtins::asorti(ctx.rt, src, dest)?;
+            Ok(Value::Num(n))
         }
         "printf" => {
             if args.is_empty() {

@@ -92,6 +92,30 @@ pub enum Stmt {
         var: Option<String>,
         redir: GetlineRedir,
     },
+    /// gawk-style `switch (expr) { case … default … }` (cases do not fall through).
+    Switch {
+        expr: Expr,
+        arms: Vec<SwitchArm>,
+    },
+}
+
+/// One arm of a `switch` statement.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SwitchArm {
+    Case {
+        label: SwitchLabel,
+        stmts: Vec<Stmt>,
+    },
+    Default {
+        stmts: Vec<Stmt>,
+    },
+}
+
+/// `case` label: expression equality or regex match (`case /re/`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum SwitchLabel {
+    Expr(Expr),
+    Regexp(String),
 }
 
 /// Output redirection on `print` / `printf` statements.

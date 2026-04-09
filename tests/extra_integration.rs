@@ -269,10 +269,80 @@ fn and_operator_both_true() {
 }
 
 #[test]
-fn xor_via_mod_not_in_language_skip() {
+fn xor_builtin_bitwise() {
     let (c, o, _) = run_awkrs_stdin("BEGIN { print xor(1,2) }", "");
-    assert_ne!(c, 0);
-    let _ = o;
+    assert_eq!(c, 0);
+    assert_eq!(o, "3\n");
+}
+
+#[test]
+fn strtonum_hex_octal_decimal() {
+    let (c, o, _) = run_awkrs_stdin(
+        "BEGIN { print strtonum(\"0x1F\"), strtonum(\"017\"), strtonum(\"42\") }",
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "31 15 42\n");
+}
+
+#[test]
+fn bitwise_shift_and_compl_zero() {
+    let (c, o, _) = run_awkrs_stdin(
+        "BEGIN { print and(3,1), or(2,1), lshift(1,4), rshift(16,2) }",
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "1 3 16 4\n");
+}
+
+#[test]
+fn asort_by_value_reindexes() {
+    let (c, o, _) = run_awkrs_stdin(
+        "BEGIN { a[\"x\"]=3; a[\"y\"]=1; n=asort(a); print n, a[\"1\"], a[\"2\"] }",
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "2 1 3\n");
+}
+
+#[test]
+fn asorti_sorts_keys() {
+    let (c, o, _) = run_awkrs_stdin(
+        "BEGIN { a[\"b\"]=1; a[\"a\"]=2; asorti(a); print a[\"1\"], a[\"2\"] }",
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "a b\n");
+}
+
+#[test]
+fn switch_case_first_match() {
+    let (c, o, _) = run_awkrs_stdin(
+        "BEGIN { switch (2) { case 1: print \"a\"; break; case 2: print \"b\"; break; default: print \"c\" } }",
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "b\n");
+}
+
+#[test]
+fn switch_case_regex_label() {
+    let (c, o, _) = run_awkrs_stdin(
+        "BEGIN { x = \"foo\"; switch (x) { case /foo/: print \"ok\"; break } }",
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "ok\n");
+}
+
+#[test]
+fn switch_break_does_not_break_enclosing_while() {
+    let (c, o, _) = run_awkrs_stdin(
+        "BEGIN { i = 0; while (i < 1) { i++; switch (1) { case 1: break } print \"after\" } }",
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "after\n");
 }
 
 #[test]

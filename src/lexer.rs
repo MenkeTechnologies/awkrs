@@ -23,6 +23,9 @@ pub enum Token {
     Return,
     Delete,
     Getline,
+    Switch,
+    Case,
+    Default,
     Ident(String),
     Number(f64),
     String(String),
@@ -282,6 +285,9 @@ impl<'a> Lexer<'a> {
                 "return" => Token::Return,
                 "delete" => Token::Delete,
                 "getline" => Token::Getline,
+                "switch" => Token::Switch,
+                "case" => Token::Case,
+                "default" => Token::Default,
                 _ => Token::Ident(name),
             };
             return Ok(tok);
