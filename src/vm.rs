@@ -355,6 +355,8 @@ thread_local! {
     static MIXED_PRINT_SLOTS: RefCell<Vec<Option<f64>>> = RefCell::new(Vec::new());
     /// Components for multidimensional array keys (`MIXED_JOIN_KEY_ARG` / `MIXED_JOIN_ARRAY_KEY`).
     static JIT_JOIN_KEY_PARTS: RefCell<Vec<f64>> = RefCell::new(Vec::new());
+    /// Buffered arguments for JIT `CallBuiltin` (`MIXED_BUILTIN_ARG` / `MIXED_BUILTIN_CALL`).
+    static JIT_BUILTIN_ARGS: RefCell<Vec<Option<f64>>> = RefCell::new(Vec::new());
 }
 
 fn jit_f64_to_value(ctx: &VmCtx<'_>, x: f64) -> Value {
@@ -449,8 +451,9 @@ fn jit_mixed_op_dispatch(
         MIXED_COMPOUND_ASSIGN_FIELD, MIXED_DECR_SLOT, MIXED_INCDEC_SLOT, MIXED_INCR_SLOT,
         MIXED_JOIN_ARRAY_KEY, MIXED_JOIN_KEY_ARG, MIXED_PUSH_STR, MIXED_REGEX_MATCH,
         MIXED_REGEX_NOT_MATCH, MIXED_SET_FIELD, MIXED_SET_VAR, MIXED_SLOT_AS_NUMBER, MIXED_SUB,
-        MIXED_TO_BOOL, MIXED_TRUTHINESS, MIXED_TYPEOF_ARRAY_ELEM, MIXED_TYPEOF_FIELD,
-        MIXED_TYPEOF_SLOT, MIXED_TYPEOF_VALUE, MIXED_TYPEOF_VAR,
+        MIXED_TO_BOOL, MIXED_TRUTHINESS,         MIXED_TYPEOF_ARRAY_ELEM, MIXED_TYPEOF_FIELD,
+        MIXED_TYPEOF_SLOT, MIXED_TYPEOF_VALUE, MIXED_TYPEOF_VAR, MIXED_BUILTIN_ARG,
+        MIXED_BUILTIN_CALL,
     };
 
     fn mixed_jit_slot_load_raw(slot: usize) -> f64 {
@@ -847,6 +850,34 @@ fn jit_mixed_op_dispatch(
             let v = jit_f64_to_value(ctx, a2);
             let t = builtins::awk_typeof_value(&v);
             value_to_jit_f64(ctx, Value::Str(t.into()))
+        }
+        MIXED_BUILTIN_ARG => {
+            let pos = a1 as usize;
+            JIT_BUILTIN_ARGS.with(|c| {
+                let mut v = c.borrow_mut();
+                if v.len() <= pos {
+                    v.resize(pos + 1, None);
+                }
+                v[pos] = Some(a2);
+            });
+            0.0
+        }
+        MIXED_BUILTIN_CALL => {
+            let name = ctx.str_ref(a1).to_string();
+            let argc = a2 as usize;
+            let args: Vec<Value> = JIT_BUILTIN_ARGS.with(|c| {
+                let slots = c.borrow();
+                (0..argc)
+                    .map(|i| {
+                        let f = slots.get(i).and_then(|x| *x).unwrap_or(0.0);
+                        jit_f64_to_value(ctx, f)
+                    })
+                    .collect()
+            });
+            JIT_BUILTIN_ARGS.with(|c| c.borrow_mut().clear());
+            let v = exec_builtin_dispatch(ctx, name.as_str(), args)
+                .expect("JIT should only compile whitelisted builtins");
+            value_to_jit_f64(ctx, v)
         }
         _ => 0.0,
     }
@@ -1339,7 +1370,10 @@ extern "C" fn jit_val_dispatch(op: u32, a1: u32, a2: f64, a3: f64) -> f64 {
 /// Try JIT dispatch for the full instruction set. Converts slots to/from f64[],
 /// sets up the field callback via thread-local, and executes.
 fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Option<VmSignal> {
-    if !crate::jit::jit_enabled() || !crate::jit::is_jit_eligible(ops) {
+    if !crate::jit::jit_enabled()
+        || !crate::jit::is_jit_eligible(ops)
+        || !crate::jit::jit_call_builtins_ok(ops, ctx.cp)
+    {
         return None;
     }
 
@@ -1350,6 +1384,7 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Option<VmSignal> {
     JIT_DYN_STRINGS.with(|c| c.borrow_mut().clear());
     MIXED_PRINT_SLOTS.with(|c| c.borrow_mut().clear());
     JIT_JOIN_KEY_PARTS.with(|c| c.borrow_mut().clear());
+    JIT_BUILTIN_ARGS.with(|c| c.borrow_mut().clear());
     let mut jit_slots: Vec<f64> = if mixed {
         ctx.rt
             .slots
@@ -1383,7 +1418,7 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Option<VmSignal> {
         jit_io_dispatch,
         jit_val_dispatch,
     );
-    let result = crate::jit::try_jit_execute(ops, &mut jit_state);
+    let result = crate::jit::try_jit_execute(ops, &mut jit_state, ctx.cp);
 
     // Clear pointers
     JIT_RT_PTR.with(|cell| cell.set(std::ptr::null_mut()));
@@ -1398,6 +1433,7 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Option<VmSignal> {
         JIT_DYN_STRINGS.with(|c| c.borrow_mut().clear());
         MIXED_PRINT_SLOTS.with(|c| c.borrow_mut().clear());
         JIT_JOIN_KEY_PARTS.with(|c| c.borrow_mut().clear());
+        JIT_BUILTIN_ARGS.with(|c| c.borrow_mut().clear());
         return None;
     };
 
@@ -1426,12 +1462,14 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Option<VmSignal> {
             JIT_DYN_STRINGS.with(|c| c.borrow_mut().clear());
             MIXED_PRINT_SLOTS.with(|c| c.borrow_mut().clear());
             JIT_JOIN_KEY_PARTS.with(|c| c.borrow_mut().clear());
+            JIT_BUILTIN_ARGS.with(|c| c.borrow_mut().clear());
             return Some(VmSignal::Next);
         }
         JIT_VAL_SIGNAL_NEXT_FILE => {
             JIT_DYN_STRINGS.with(|c| c.borrow_mut().clear());
             MIXED_PRINT_SLOTS.with(|c| c.borrow_mut().clear());
             JIT_JOIN_KEY_PARTS.with(|c| c.borrow_mut().clear());
+            JIT_BUILTIN_ARGS.with(|c| c.borrow_mut().clear());
             return Some(VmSignal::NextFile);
         }
         JIT_VAL_SIGNAL_EXIT_DEFAULT => {
@@ -1440,6 +1478,7 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Option<VmSignal> {
             JIT_DYN_STRINGS.with(|c| c.borrow_mut().clear());
             MIXED_PRINT_SLOTS.with(|c| c.borrow_mut().clear());
             JIT_JOIN_KEY_PARTS.with(|c| c.borrow_mut().clear());
+            JIT_BUILTIN_ARGS.with(|c| c.borrow_mut().clear());
             return Some(VmSignal::ExitPending);
         }
         JIT_VAL_SIGNAL_EXIT_CODE => {
@@ -1449,6 +1488,7 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Option<VmSignal> {
             JIT_DYN_STRINGS.with(|c| c.borrow_mut().clear());
             MIXED_PRINT_SLOTS.with(|c| c.borrow_mut().clear());
             JIT_JOIN_KEY_PARTS.with(|c| c.borrow_mut().clear());
+            JIT_BUILTIN_ARGS.with(|c| c.borrow_mut().clear());
             return Some(VmSignal::ExitPending);
         }
         crate::jit::JIT_VAL_SIGNAL_RETURN_VAL => {
@@ -1456,12 +1496,14 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Option<VmSignal> {
             JIT_DYN_STRINGS.with(|c| c.borrow_mut().clear());
             MIXED_PRINT_SLOTS.with(|c| c.borrow_mut().clear());
             JIT_JOIN_KEY_PARTS.with(|c| c.borrow_mut().clear());
+            JIT_BUILTIN_ARGS.with(|c| c.borrow_mut().clear());
             return Some(VmSignal::Return(Value::Num(val)));
         }
         crate::jit::JIT_VAL_SIGNAL_RETURN_EMPTY => {
             JIT_DYN_STRINGS.with(|c| c.borrow_mut().clear());
             MIXED_PRINT_SLOTS.with(|c| c.borrow_mut().clear());
             JIT_JOIN_KEY_PARTS.with(|c| c.borrow_mut().clear());
+            JIT_BUILTIN_ARGS.with(|c| c.borrow_mut().clear());
             return Some(VmSignal::Return(Value::Str(String::new())));
         }
         _ => {}
@@ -1476,6 +1518,7 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Option<VmSignal> {
     JIT_DYN_STRINGS.with(|c| c.borrow_mut().clear());
     MIXED_PRINT_SLOTS.with(|c| c.borrow_mut().clear());
     JIT_JOIN_KEY_PARTS.with(|c| c.borrow_mut().clear());
+    JIT_BUILTIN_ARGS.with(|c| c.borrow_mut().clear());
     Some(VmSignal::Normal)
 }
 
@@ -2440,6 +2483,18 @@ fn exec_call_builtin(ctx: &mut VmCtx<'_>, name: &str, argc: u16) -> Result<()> {
     let start = ctx.stack.len() - argc;
     let args: Vec<Value> = ctx.stack.drain(start..).collect();
 
+    let result = exec_builtin_dispatch(ctx, name, args)?;
+    ctx.push(result);
+    Ok(())
+}
+
+/// Core builtin implementation (also used by JIT `MIXED_BUILTIN_CALL`).
+pub(crate) fn exec_builtin_dispatch(
+    ctx: &mut VmCtx<'_>,
+    name: &str,
+    args: Vec<Value>,
+) -> Result<Value> {
+    let argc = args.len();
     let result = match name {
         "length" => {
             let s = if args.is_empty() {
@@ -2625,8 +2680,7 @@ fn exec_call_builtin(ctx: &mut VmCtx<'_>, name: &str, argc: u16) -> Result<()> {
         }
         _ => return Err(Error::Runtime(format!("unknown function `{name}`"))),
     };
-    ctx.push(result);
-    Ok(())
+    Ok(result)
 }
 
 fn exec_call_user(ctx: &mut VmCtx<'_>, name: &str, argc: u16) -> Result<()> {

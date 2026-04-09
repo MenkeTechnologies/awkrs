@@ -27,11 +27,12 @@
 //! regex `~`, general array ops, `print` with arguments, etc.) compile those
 //! ops through `val_dispatch` (`MIXED_*`). Chunks with `printf`, user/builtin
 //! calls, getline, or other unsupported opcodes still use the bytecode loop.
+//! Whitelisted [`Op::CallBuiltin`] (see [`jit_call_builtins_ok`]) uses `MIXED_BUILTIN_*`.
 //! `typeof` (`TypeofVar` / `TypeofSlot` / `TypeofArrayElem` / `TypeofField` / `TypeofValue`)
 //! compiles to `MIXED_TYPEOF_*` and returns NaN-boxed pool/dynamic strings like other mixed ops.
 
 use crate::ast::{BinOp, IncDecOp};
-use crate::bytecode::Op;
+use crate::bytecode::{CompiledProgram, Op};
 use cranelift_codegen::ir::{types, AbiParam, Block, InstBuilder, MemFlags, UserFuncName};
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
@@ -286,6 +287,10 @@ pub const MIXED_TYPEOF_ARRAY_ELEM: u32 = 171;
 pub const MIXED_TYPEOF_FIELD: u32 = 172;
 /// `typeof(expr)` — `a2` = NaN-boxed value (see [`Op::TypeofValue`]).
 pub const MIXED_TYPEOF_VALUE: u32 = 173;
+/// Buffered argument for [`Op::CallBuiltin`] (see [`MIXED_BUILTIN_CALL`]).
+pub const MIXED_BUILTIN_ARG: u32 = 174;
+/// Whitelisted `CallBuiltin` — `a1` = function name pool index, `a2` = argc as `f64`.
+pub const MIXED_BUILTIN_CALL: u32 = 175;
 
 #[inline]
 fn mixed_encode_field_compound_binop(bop: BinOp) -> u32 {
@@ -538,6 +543,7 @@ pub fn needs_mixed_mode(ops: &[Op]) -> bool {
                 | Op::TypeofArrayElem(_)
                 | Op::TypeofField
                 | Op::TypeofValue
+                | Op::CallBuiltin(_, _)
         ) || matches!(
             op,
             Op::Print {
@@ -546,6 +552,57 @@ pub fn needs_mixed_mode(ops: &[Op]) -> bool {
             } if *argc > 0
         )
     })
+}
+
+/// Returns `true` when every [`Op::CallBuiltin`] is JIT-supported and not a user-defined function.
+pub fn jit_call_builtins_ok(ops: &[Op], cp: &CompiledProgram) -> bool {
+    for op in ops {
+        let Op::CallBuiltin(name_idx, argc) = op else {
+            continue;
+        };
+        let name = cp.strings.get(*name_idx);
+        if cp.functions.contains_key(name) {
+            return false;
+        }
+        if !builtin_supported_for_jit(name, *argc) {
+            return false;
+        }
+    }
+    true
+}
+
+fn builtin_supported_for_jit(name: &str, argc: u16) -> bool {
+    match name {
+        "length" => argc <= 1,
+        "index" => argc == 2,
+        "substr" => argc == 2 || argc == 3,
+        "tolower" | "toupper" => argc == 1,
+        "int" | "sqrt" | "strtonum" => argc == 1,
+        "sin" | "cos" | "exp" | "log" | "compl" => argc == 1,
+        "atan2" => argc == 2,
+        "and" | "or" | "xor" | "lshift" | "rshift" => argc == 2,
+        "systime" => argc == 0,
+        "mktime" => argc == 1,
+        "rand" => argc == 0,
+        "srand" => argc <= 1,
+        _ => false,
+    }
+}
+
+fn empty_compiled_program() -> CompiledProgram {
+    use crate::bytecode::StringPool;
+    CompiledProgram {
+        begin_chunks: vec![],
+        end_chunks: vec![],
+        beginfile_chunks: vec![],
+        endfile_chunks: vec![],
+        record_rules: vec![],
+        functions: HashMap::new(),
+        strings: StringPool::default(),
+        slot_count: 0,
+        slot_names: vec![],
+        slot_map: HashMap::new(),
+    }
 }
 
 pub fn is_jit_eligible(ops: &[Op]) -> bool {
@@ -819,6 +876,15 @@ pub fn is_jit_eligible(ops: &[Op]) -> bool {
             // ── Array sorting (push count) ─────────────────────────────
             Op::Asort { .. } | Op::Asorti { .. } => depth += 1,
 
+            // ── Whitelisted builtins (pop argc, push result) ───────────
+            Op::CallBuiltin(_, argc) => {
+                let n = *argc as i32;
+                if depth < n {
+                    return false;
+                }
+                depth -= n - 1;
+            }
+
             _ => return false,
         }
     }
@@ -901,15 +967,16 @@ fn max_slot(ops: &[Op]) -> u16 {
 }
 
 /// Compile a JIT-eligible chunk to native code.
-pub fn try_compile(ops: &[Op]) -> Option<JitChunk> {
-    if !is_jit_eligible(ops) {
+pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
+    if !is_jit_eligible(ops) || !jit_call_builtins_ok(ops, cp) {
         return None;
     }
 
     let mixed = needs_mixed_mode(ops);
     use crate::jit::{
         MIXED_ADD, MIXED_ARRAY_COMPOUND, MIXED_ARRAY_DELETE_ALL, MIXED_ARRAY_DELETE_ELEM,
-        MIXED_ARRAY_GET, MIXED_ARRAY_IN, MIXED_ARRAY_INCDEC, MIXED_ARRAY_SET, MIXED_CONCAT,
+        MIXED_ARRAY_GET, MIXED_ARRAY_IN, MIXED_ARRAY_INCDEC, MIXED_ARRAY_SET, MIXED_BUILTIN_ARG,
+        MIXED_BUILTIN_CALL, MIXED_CONCAT,
         MIXED_CONCAT_POOL, MIXED_DIV, MIXED_GET_FIELD, MIXED_GET_SLOT, MIXED_GET_VAR, MIXED_MOD,
         MIXED_MUL, MIXED_NEG, MIXED_NOT, MIXED_POS, MIXED_PRINT_ARG, MIXED_PRINT_FLUSH,
         MIXED_ADD_FIELD_TO_SLOT, MIXED_ADD_MUL_FIELDS_TO_SLOT, MIXED_ADD_SLOT_TO_SLOT,
@@ -1207,6 +1274,28 @@ pub fn try_compile(ops: &[Op]) -> Option<JitChunk> {
                     let call = builder
                         .ins()
                         .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z32, v, z]);
+                    stack.push(builder.inst_results(call)[0]);
+                }
+                Op::CallBuiltin(name_idx, argc_u) => {
+                    let argc = argc_u as usize;
+                    let mut arg_vals: Vec<_> = (0..argc)
+                        .map(|_| stack.pop().expect("CallBuiltin"))
+                        .collect();
+                    arg_vals.reverse();
+                    let zf = builder.ins().f64const(0.0);
+                    for (i, v) in arg_vals.iter().enumerate() {
+                        let op_arg =
+                            builder.ins().iconst(types::I32, i64::from(MIXED_BUILTIN_ARG));
+                        let a1 = builder.ins().iconst(types::I32, i64::from(i as u32));
+                        builder.ins().call_indirect(val_sig_ir, val_fn_ptr, &[op_arg, a1, *v, zf]);
+                    }
+                    let op_c =
+                        builder.ins().iconst(types::I32, i64::from(MIXED_BUILTIN_CALL));
+                    let a1 = builder.ins().iconst(types::I32, i64::from(name_idx));
+                    let a2 = builder.ins().f64const(argc as f64);
+                    let call = builder
+                        .ins()
+                        .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, a2, zf]);
                     stack.push(builder.inst_results(call)[0]);
                 }
 
@@ -2378,7 +2467,11 @@ pub fn jit_enabled() -> bool {
 /// Try to JIT-compile and execute a chunk. Returns `Some(f64)` on success.
 ///
 /// The caller supplies [`JitRuntimeState`] (slots and the four `extern "C"` callbacks).
-pub fn try_jit_execute(ops: &[Op], state: &mut JitRuntimeState<'_>) -> Option<f64> {
+pub fn try_jit_execute(
+    ops: &[Op],
+    state: &mut JitRuntimeState<'_>,
+    cp: &CompiledProgram,
+) -> Option<f64> {
     if !jit_enabled() {
         return None;
     }
@@ -2396,7 +2489,7 @@ pub fn try_jit_execute(ops: &[Op], state: &mut JitRuntimeState<'_>) -> Option<f6
     }
 
     // Compile and cache
-    let chunk = try_compile(ops);
+    let chunk = try_compile(ops, cp);
     let result = chunk.as_ref().map(|c| c.execute(state));
 
     {
@@ -2446,7 +2539,7 @@ pub fn try_compile_numeric_expr(ops: &[Op]) -> Option<JitNumericChunk> {
         return None;
     }
     // Use the new compiler but wrap in legacy struct
-    let chunk = try_compile(ops)?;
+    let chunk = try_compile(ops, &empty_compiled_program())?;
     Some(JitNumericChunk { inner: chunk })
 }
 
@@ -2706,7 +2799,7 @@ mod tests {
     }
 
     fn exec_with_test_var(ops: &[Op]) -> f64 {
-        let chunk = try_compile(ops).expect("compile failed");
+        let chunk = try_compile(ops, &super::empty_compiled_program()).expect("compile failed");
         let mut slots = [0.0f64; 0];
         let mut state = JitRuntimeState::new(
             &mut slots,
@@ -2721,7 +2814,7 @@ mod tests {
     }
 
     fn exec_with_test_field(ops: &[Op]) -> f64 {
-        let chunk = try_compile(ops).expect("compile failed");
+        let chunk = try_compile(ops, &super::empty_compiled_program()).expect("compile failed");
         let mut slots = [0.0f64; 0];
         let mut state = JitRuntimeState::new(
             &mut slots,
@@ -2756,7 +2849,7 @@ mod tests {
     }
 
     fn exec(ops: &[Op]) -> f64 {
-        let chunk = try_compile(ops).expect("compile failed");
+        let chunk = try_compile(ops, &super::empty_compiled_program()).expect("compile failed");
         let mut slots = [0.0f64; 0];
         let mut state = JitRuntimeState::new(
             &mut slots,
@@ -2771,7 +2864,7 @@ mod tests {
     }
 
     fn exec_with_slots(ops: &[Op], slots: &mut [f64]) -> f64 {
-        let chunk = try_compile(ops).expect("compile failed");
+        let chunk = try_compile(ops, &super::empty_compiled_program()).expect("compile failed");
         let mut state = JitRuntimeState::new(
             slots,
             dummy_field,
@@ -2785,7 +2878,7 @@ mod tests {
     }
 
     fn exec_with_fields(ops: &[Op], slots: &mut [f64], field_fn: extern "C" fn(i32) -> f64) -> f64 {
-        let chunk = try_compile(ops).expect("compile failed");
+        let chunk = try_compile(ops, &super::empty_compiled_program()).expect("compile failed");
         let mut state = JitRuntimeState::new(
             slots,
             field_fn,
@@ -3602,7 +3695,7 @@ mod tests {
             Op::GetSlot(0),                        // return sum
         ];
         let mut slots = [5.0];
-        let chunk = try_compile(&ops).expect("compile");
+        let chunk = try_compile(&ops, &super::empty_compiled_program()).expect("compile");
         let mut state = JitRuntimeState::new(
             &mut slots,
             fields,
