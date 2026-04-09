@@ -24,9 +24,11 @@
 //!
 //! Enable with `AWKRS_JIT=1`. The VM tries [`try_jit_execute`] before falling
 //! back to the interpreter for eligible chunks. Mixed-mode chunks (strings,
-//! regex `~`, general array ops, `print` with arguments, etc.) compile those
-//! ops through `val_dispatch` (`MIXED_*`). Chunks with `printf`, user/builtin
-//! calls, or other unsupported opcodes still use the bytecode loop.
+//! regex `~`, general array ops, `print`/`printf` with arguments, whitelisted
+//! [`Op::CallBuiltin`], [`Op::CallUser`], [`Op::SubFn`]/[`Op::GsubFn`], etc.)
+//! compile through `val_dispatch` (`MIXED_*`). Chunks that fail [`is_jit_eligible`]
+//! or [`jit_call_builtins_ok`] (unsupported builtin, shadowed name, bad arity) use
+//! the bytecode loop.
 //! [`Op::Split`] compiles to [`MIXED_SPLIT`] / [`MIXED_SPLIT_WITH_FS`] (same split rules as the VM).
 //! [`Op::Patsplit`] and [`Op::MatchBuiltin`] use additional [`MIXED_*`] opcodes; `patsplit` with both a
 //! custom field pattern and a `seps` array packs `arr` and `seps` pool indices in `a1` (16-bit each)
