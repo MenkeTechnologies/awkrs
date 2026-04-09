@@ -63,12 +63,12 @@ if [[ -n "$GAWK_BIN" ]]; then
   append_hf_markdown \
     -n "BSD awk" "$AWK_BIN '{ print \$1 }' '$TMP_LINES'" \
     -n "gawk" "$GAWK_BIN '{ print \$1 }' '$TMP_LINES'" \
-    -n "awkrs -j1" "$AWKRS -j1 '{ print \$1 }' '$TMP_LINES'" \
+    -n "awkrs" "$AWKRS '{ print \$1 }' '$TMP_LINES'" \
     -n "awkrs (parallel)" "$AWKRS -j8 '{ print \$1 }' '$TMP_LINES'"
 else
   append_hf_markdown \
     -n "awk" "$AWK_BIN '{ print \$1 }' '$TMP_LINES'" \
-    -n "awkrs -j1" "$AWKRS -j1 '{ print \$1 }' '$TMP_LINES'" \
+    -n "awkrs" "$AWKRS '{ print \$1 }' '$TMP_LINES'" \
     -n "awkrs (parallel)" "$AWKRS -j8 '{ print \$1 }' '$TMP_LINES'"
 fi
 
@@ -95,7 +95,7 @@ fi
   echo ""
   echo "## 3. Sum first column (single-threaded)"
   echo ""
-  echo 'Same input as §1. Program: `{ s += $1 } END { print s }`. (Cross-record state is not parallel-safe in awkrs, so **awkrs** is shown with `-j1` only.)'
+  echo 'Same input as §1. Program: `{ s += $1 } END { print s }`. (Cross-record state is not parallel-safe in awkrs, so **awkrs** is single-threaded by default here.)'
   echo ""
 } >>"$OUT"
 
@@ -103,11 +103,11 @@ if [[ -n "$GAWK_BIN" ]]; then
   append_hf_markdown \
     -n "BSD awk" "$AWK_BIN '{ s += \$1 } END { print s }' '$TMP_LINES'" \
     -n "gawk" "$GAWK_BIN '{ s += \$1 } END { print s }' '$TMP_LINES'" \
-    -n "awkrs -j1" "$AWKRS -j1 '{ s += \$1 } END { print s }' '$TMP_LINES'"
+    -n "awkrs" "$AWKRS '{ s += \$1 } END { print s }' '$TMP_LINES'"
 else
   append_hf_markdown \
     -n "awk" "$AWK_BIN '{ s += \$1 } END { print s }' '$TMP_LINES'" \
-    -n "awkrs -j1" "$AWKRS -j1 '{ s += \$1 } END { print s }' '$TMP_LINES'"
+    -n "awkrs" "$AWKRS '{ s += \$1 } END { print s }' '$TMP_LINES'"
 fi
 
 {

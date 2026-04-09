@@ -103,7 +103,7 @@ pub struct Args {
     #[arg(short = 'W', value_name = "OPT", action = ArgAction::Append)]
     pub mawk_w: Vec<String>,
 
-    /// Threads for internal pools (default: CPU count).
+    /// Threads for internal pools (default: 1).
     #[arg(short = 'j', long = "threads", value_name = "N")]
     pub threads: Option<usize>,
 

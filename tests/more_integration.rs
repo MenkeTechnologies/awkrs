@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{run_awkrs_stdin, run_awkrs_stdin_args};
+use common::run_awkrs_stdin;
 use std::process::{Command, Stdio};
 
 #[test]
@@ -486,8 +486,8 @@ fn and_short_circuit() {
 }
 
 #[test]
-fn j1_silences_parallel_warning() {
-    let (c, _, e) = run_awkrs_stdin_args(["-j", "1"], "{ print $1 }", "a\nb\n");
+fn default_thread_count_silences_parallel_unsafe_warning() {
+    let (c, _, e) = run_awkrs_stdin(r#"{ print $1 |& "cat" }"#, "a\n");
     assert_eq!(c, 0);
     assert!(
         !e.contains("not parallel-safe"),

@@ -74,7 +74,7 @@ pub fn run(bin_name: &str) -> Result<()> {
     if args.debug.is_some() {
         eprintln!("{bin_name}: warning: --debug is not fully implemented");
     }
-    let threads = args.threads.unwrap_or_else(num_cpus::get).max(1);
+    let threads = args.threads.unwrap_or(1).max(1);
 
     let (program_text, files) = resolve_program_and_files(&args)?;
     let prog = parse_program(&program_text)?;
@@ -109,7 +109,7 @@ pub fn run(bin_name: &str) -> Result<()> {
     // Parallel record mode only reads regular files fully; stdin is always streamed line-by-line.
     let use_parallel = threads > 1 && parallel_ok && !files.is_empty();
     if threads > 1 && !parallel_ok {
-        eprintln!("{bin_name}: warning: program is not parallel-safe (range patterns, exit, getline without file, getline coprocess, cross-record assignments, …); running sequentially (use -j 1 to silence)");
+        eprintln!("{bin_name}: warning: program is not parallel-safe (range patterns, exit, getline without file, getline coprocess, cross-record assignments, …); running sequentially (use a single thread to silence this warning)");
     }
 
     let mut nr_global = 0.0f64;

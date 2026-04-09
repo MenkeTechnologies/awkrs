@@ -18,9 +18,9 @@ Implemented end-to-end:
 
 ## Multithreading
 
-By default **`-j`** / **`--threads`** is set to the CPU count (`num_cpus`). When the program is **parallel-safe** (static check: no range patterns, no `exit`, no primary `getline`, no **`getline <&`** coprocess, no `delete`, no **`print`/`printf` redirection** to files, pipes, or coprocesses, no cross-record assignments or other mutating expressions in record rules or user functions) **and** input comes from **files** (not stdin-only), **records are processed in parallel** with **rayon**; `print` / `printf` output is **reordered to input order** so pipelines stay deterministic. **Stdin** is always read **line-by-line** (streaming); parallel record mode does not buffer all of stdin.
+By default **`-j`** / **`--threads`** is **1**. Pass a higher value when the program is **parallel-safe** (static check: no range patterns, no `exit`, no primary `getline`, no **`getline <&`** coprocess, no `delete`, no **`print`/`printf` redirection** to files, pipes, or coprocesses, no cross-record assignments or other mutating expressions in record rules or user functions) **and** input comes from **files** (not stdin-only); then **records are processed in parallel** with **rayon** and `print` / `printf` output is **reordered to input order** so pipelines stay deterministic. **Stdin** is always read **line-by-line** (streaming); parallel record mode does not buffer all of stdin.
 
-If the program is not parallel-safe, the engine **falls back to sequential** processing and prints a **warning** (use **`-j 1`** to force a single thread and silence the warning). **`END`** still sees only **post-`BEGIN`** global state (record-rule mutations from parallel workers are not merged into the main runtime). Flags **`--read-ahead`** are accepted for CLI compatibility; the prefetch reader thread is not used.
+If the program is not parallel-safe, the engine **falls back to sequential** processing and prints a **warning** when **`-j`** is greater than **1** (use a **single thread** to silence the warning). **`END`** still sees only **post-`BEGIN`** global state (record-rule mutations from parallel workers are not merged into the main runtime). Flags **`--read-ahead`** are accepted for CLI compatibility; the prefetch reader thread is not used.
 
 **Tradeoff:** Parallel mode loads each **input file** fully into memory before executing rules (not stdin).
 
@@ -66,7 +66,7 @@ Measured with [hyperfine](https://github.com/sharkdp/hyperfine) on **Apple M5 Ma
 | BSD awk | 77.9 ms | 70.9 ms | 89.9 ms | 15.07× |
 | gawk | 26.6 ms | 24.9 ms | 31.8 ms | 5.14× |
 | mawk | 18.7 ms | 17.1 ms | 22.8 ms | 3.62× |
-| awkrs `-j1` | 5.2 ms | 4.8 ms | 6.1 ms | **1.00×** |
+| awkrs | 5.2 ms | 4.8 ms | 6.1 ms | **1.00×** |
 
 ### 2. CPU-bound BEGIN (no input)
 
@@ -81,14 +81,14 @@ Measured with [hyperfine](https://github.com/sharkdp/hyperfine) on **Apple M5 Ma
 
 ### 3. Sum first column (`{ s += $1 } END { print s }`, 200 K lines)
 
-Cross-record state is not parallel-safe, so awkrs is `-j1` only.
+Cross-record state is not parallel-safe, so awkrs stays **single-threaded** (default) here.
 
 | Command | Mean | Min | Max | Relative |
 |:---|---:|---:|---:|---:|
 | BSD awk | 68.4 ms | 64.0 ms | 87.4 ms | 6.74× |
 | gawk | 18.4 ms | 17.4 ms | 20.4 ms | 1.82× |
 | mawk | 12.3 ms | 11.3 ms | 13.6 ms | 1.21× |
-| awkrs `-j1` | 10.1 ms | 9.2 ms | 11.0 ms | **1.00×** |
+| awkrs | 10.1 ms | 9.2 ms | 11.0 ms | **1.00×** |
 
 ### 4. Multi-field print (`{ print $1, $3, $5 }`, 200 K lines, 5 fields/line)
 
@@ -97,7 +97,7 @@ Cross-record state is not parallel-safe, so awkrs is `-j1` only.
 | BSD awk | 116.1 ms | 107.9 ms | 136.4 ms | 3.96× |
 | gawk | 59.5 ms | 55.4 ms | 65.9 ms | 2.03× |
 | mawk | 35.1 ms | 32.1 ms | 45.6 ms | 1.20× |
-| awkrs `-j1` | 29.3 ms | 26.7 ms | 30.4 ms | **1.00×** |
+| awkrs | 29.3 ms | 26.7 ms | 30.4 ms | **1.00×** |
 
 ### 5. Regex filter (`/alpha/ { c += 1 } END { print c }`, 200 K lines)
 
@@ -105,7 +105,7 @@ Cross-record state is not parallel-safe, so awkrs is `-j1` only.
 |:---|---:|---:|---:|---:|
 | BSD awk | 137.7 ms | 125.2 ms | 183.5 ms | 19.80× |
 | gawk | 97.2 ms | 85.0 ms | 113.6 ms | 13.97× |
-| awkrs `-j1` | 14.0 ms | 13.2 ms | 15.5 ms | 2.01× |
+| awkrs | 14.0 ms | 13.2 ms | 15.5 ms | 2.01× |
 | mawk | 7.0 ms | 6.8 ms | 7.3 ms | **1.00×** |
 
 ### 6. Associative array (`{ a[$5] += 1 } END { for (k in a) print k, a[k] }`, 200 K lines)
@@ -113,7 +113,7 @@ Cross-record state is not parallel-safe, so awkrs is `-j1` only.
 | Command | Mean | Min | Max | Relative |
 |:---|---:|---:|---:|---:|
 | BSD awk | 101.8 ms | 89.4 ms | 126.1 ms | 6.46× |
-| awkrs `-j1` | 34.8 ms | 34.3 ms | 35.3 ms | 2.21× |
+| awkrs | 34.8 ms | 34.3 ms | 35.3 ms | 2.21× |
 | gawk | 23.1 ms | 21.5 ms | 24.8 ms | 1.46× |
 | mawk | 15.8 ms | 15.3 ms | 16.4 ms | **1.00×** |
 
@@ -123,7 +123,7 @@ Cross-record state is not parallel-safe, so awkrs is `-j1` only.
 |:---|---:|---:|---:|---:|
 | BSD awk | 94.9 ms | 88.9 ms | 106.9 ms | 4.87× |
 | gawk | 28.6 ms | 27.2 ms | 30.5 ms | 1.47× |
-| awkrs `-j1` | 24.5 ms | 23.8 ms | 26.1 ms | 1.26× |
+| awkrs | 24.5 ms | 23.8 ms | 26.1 ms | 1.26× |
 | mawk | 19.5 ms | 18.0 ms | 21.4 ms | **1.00×** |
 
 ### 8. Field computation (`{ sum += $1 * $2 } END { print sum }`, 200 K lines)
@@ -132,7 +132,7 @@ Cross-record state is not parallel-safe, so awkrs is `-j1` only.
 |:---|---:|---:|---:|---:|
 | BSD awk | 93.6 ms | 85.7 ms | 109.3 ms | 4.85× |
 | gawk | 26.6 ms | 25.4 ms | 27.7 ms | 1.38× |
-| awkrs `-j1` | 24.8 ms | 23.8 ms | 27.3 ms | 1.29× |
+| awkrs | 24.8 ms | 23.8 ms | 27.3 ms | 1.29× |
 | mawk | 19.3 ms | 18.7 ms | 20.1 ms | **1.00×** |
 
 ### 9. String concat print (`{ print $3 "-" $5 }`, 200 K lines)
@@ -141,7 +141,7 @@ Cross-record state is not parallel-safe, so awkrs is `-j1` only.
 |:---|---:|---:|---:|---:|
 | BSD awk | 115.2 ms | 105.7 ms | 133.9 ms | 4.33× |
 | gawk | 40.8 ms | 38.9 ms | 42.9 ms | 1.54× |
-| awkrs `-j1` | 33.4 ms | 31.9 ms | 35.0 ms | 1.26× |
+| awkrs | 33.4 ms | 31.9 ms | 35.0 ms | 1.26× |
 | mawk | 26.6 ms | 25.1 ms | 30.7 ms | **1.00×** |
 
 ### 10. gsub (`{ gsub("alpha", "ALPHA"); print }`, 200 K lines)
@@ -149,7 +149,7 @@ Cross-record state is not parallel-safe, so awkrs is `-j1` only.
 | Command | Mean | Min | Max | Relative |
 |:---|---:|---:|---:|---:|
 | mawk | 18.7 ms | 17.5 ms | 23.4 ms | **1.00×** |
-| awkrs `-j1` | 42.3 ms | 35.9 ms | 47.5 ms | 2.26× |
+| awkrs | 42.3 ms | 35.9 ms | 47.5 ms | 2.26× |
 | gawk | 149.1 ms | 146.6 ms | 153.0 ms | 7.97× |
 | BSD awk | 151.8 ms | 144.3 ms | 167.1 ms | 8.12× |
 
