@@ -9,7 +9,7 @@ This file is **generated** by `./scripts/benchmark-vs-awk.sh`. Do not edit by ha
 - **CPU (macOS sysctl):** Apple M5 Max
 - **awk:** `/usr/bin/awk`
 - **gawk:** `/opt/homebrew/bin/gawk` (`GNU Awk 5.4.0, API 4.1, PMA Avon 8-g1, (GNU MPFR 4.2.2, GNU MP 6.3.0)`)
-- **awkrs:** `/Users/wizard/RustroverProjects/awkrs/target/release/awkrs` (`awkrs 0.1.13`)
+- **awkrs:** `/Users/wizard/RustroverProjects/awkrs/target/release/awkrs` (`awkrs 0.1.14`)
 
 ## 1. Throughput: print first field
 

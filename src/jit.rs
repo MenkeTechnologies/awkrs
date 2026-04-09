@@ -23,9 +23,9 @@
 //! / `MIXED_JOIN_ARRAY_KEY` with `SUBSEP` like the VM. The fused `ArrayFieldAddConst`
 //! remains a separate fast path (field index is numeric).
 //!
-//! Execution takes a [`JitRuntimeState`]: mutable `f64` slot storage and seven
-//! `extern "C"` callbacks — `field_fn`, `array_field_add`, `var_dispatch`,
-//! `field_dispatch`, `io_dispatch`, and `val_dispatch`.
+//! Execution takes a [`JitRuntimeState`]: opaque `vmctx`, mutable `f64` slot storage, and seven
+//! `extern "C"` callbacks (`field_fn`, `array_field_add`, `var_dispatch`,
+//! `field_dispatch`, `io_dispatch`, `val_dispatch`) — each callback receives `vmctx` first.
 //!
 //! The VM tries [`try_jit_execute`] before falling back to the interpreter for
 //! eligible chunks. Set **`AWKRS_JIT=0`** to force the bytecode interpreter
@@ -67,8 +67,7 @@
 //!   flushed to `slots_ptr` once before each normal `return` (including synthetic exits for jump
 //!   targets past the last opcode).
 //! - **Future** — keep interpreter [`crate::runtime::Value`] slots and the JIT `f64` buffer unified
-//!   where semantics allow. TLS for `BEGIN`/chunks is already skipped when [`jit_chunk_needs_vm_tls`]
-//!   is `false`.
+//!   where semantics allow.
 
 use crate::ast::{BinOp, IncDecOp};
 use crate::bytecode::{CompiledProgram, GetlineSource, Op, SubTarget};
@@ -79,6 +78,7 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{default_libcall_names, Linkage, Module};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::ffi::c_void;
 use std::mem;
 use std::sync::Arc;
 
@@ -549,37 +549,47 @@ fn ops_hash(ops: &[Op]) -> u64 {
 /// The VM fills `slots` from the interpreter runtime and supplies callbacks
 /// that match the bytecode interpreter (`field_fn`, `array_field_add`,
 /// `var_dispatch`, and `field_dispatch` for `SetField` / `CompoundAssignField` / `IncDecField`).
+///
+/// `vmctx` is an opaque pointer to the active [`crate::vm::VmCtx`] (cast to [`c_void`]); every
+/// callback receives it as the first argument so the runtime does not rely on thread-local
+/// storage to find the interpreter context.
 pub struct JitRuntimeState<'a> {
+    /// Opaque `*mut VmCtx` for JIT callbacks (null for unit tests that use stub callbacks only).
+    pub vmctx: *mut c_void,
     pub slots: &'a mut [f64],
-    pub field_fn: extern "C" fn(i32) -> f64,
+    pub field_fn: extern "C" fn(*mut c_void, i32) -> f64,
     /// Fused `a[$field] += delta` — interned array name index, constant field
     /// number, delta (see VM).
-    pub array_field_add: extern "C" fn(u32, i32, f64),
+    pub array_field_add: extern "C" fn(*mut c_void, u32, i32, f64),
     /// Multiplexed HashMap-path variable ops — see `JIT_VAR_OP_GET` and friends.
-    pub var_dispatch: extern "C" fn(u32, u32, f64) -> f64,
+    pub var_dispatch: extern "C" fn(*mut c_void, u32, u32, f64) -> f64,
     /// `$idx = val`, compound assign, `++$idx` — [`JIT_FIELD_OP_SET_NUM`] for assignment;
     /// same `JIT_VAR_OP_*` as [`JitRuntimeState::var_dispatch`] for compound and inc/dec.
-    pub field_dispatch: extern "C" fn(u32, i32, f64) -> f64,
+    pub field_dispatch: extern "C" fn(*mut c_void, u32, i32, f64) -> f64,
     /// Print side-effects: `PrintFieldStdout`, `PrintFieldSepField`, `PrintThreeFieldsStdout`,
     /// bare `print` (argc=0).  `(op, a1, a2, a3)` — void.
-    pub io_dispatch: extern "C" fn(u32, i32, i32, i32),
+    pub io_dispatch: extern "C" fn(*mut c_void, u32, i32, i32, i32),
     /// Array ops, `MatchRegexp`, flow signals (Next/Exit).
     /// `(op, a1, a2, a3) -> f64`.
-    pub val_dispatch: extern "C" fn(u32, u32, f64, f64) -> f64,
+    pub val_dispatch: extern "C" fn(*mut c_void, u32, u32, f64, f64) -> f64,
 }
 
 impl<'a> JitRuntimeState<'a> {
+    /// VM context pointer plus slot buffer and seven dispatcher fn pointers (ABI matches generated code).
+    #[allow(clippy::too_many_arguments)]
     #[inline]
     pub fn new(
+        vmctx: *mut c_void,
         slots: &'a mut [f64],
-        field_fn: extern "C" fn(i32) -> f64,
-        array_field_add: extern "C" fn(u32, i32, f64),
-        var_dispatch: extern "C" fn(u32, u32, f64) -> f64,
-        field_dispatch: extern "C" fn(u32, i32, f64) -> f64,
-        io_dispatch: extern "C" fn(u32, i32, i32, i32),
-        val_dispatch: extern "C" fn(u32, u32, f64, f64) -> f64,
+        field_fn: extern "C" fn(*mut c_void, i32) -> f64,
+        array_field_add: extern "C" fn(*mut c_void, u32, i32, f64),
+        var_dispatch: extern "C" fn(*mut c_void, u32, u32, f64) -> f64,
+        field_dispatch: extern "C" fn(*mut c_void, u32, i32, f64) -> f64,
+        io_dispatch: extern "C" fn(*mut c_void, u32, i32, i32, i32),
+        val_dispatch: extern "C" fn(*mut c_void, u32, u32, f64, f64) -> f64,
     ) -> Self {
         Self {
+            vmctx,
             slots,
             field_fn,
             array_field_add,
@@ -596,7 +606,7 @@ impl<'a> JitRuntimeState<'a> {
 /// Holds generated machine code. Keep alive while calling [`JitChunk::execute`].
 pub struct JitChunk {
     _module: JITModule,
-    /// `extern "C" fn(slots, field_fn, array_field_add, var_dispatch, field_dispatch) -> f64`
+    /// `extern "C" fn(vmctx, slots, field_fn, array_field_add, var_dispatch, field_dispatch, ...) -> f64`
     fn_ptr: *const u8,
     /// Number of f64 values the function expects in the slots pointer (diagnostic).
     #[allow(dead_code)]
@@ -618,13 +628,14 @@ unsafe impl Sync for JitChunk {}
 /// `io_dispatch` handles print side-effects; `val_dispatch` handles array ops,
 /// `MatchRegexp`, and flow signals.
 type JitFn = extern "C" fn(
+    *mut c_void,
     *mut f64,
-    extern "C" fn(i32) -> f64,
-    extern "C" fn(u32, i32, f64),
-    extern "C" fn(u32, u32, f64) -> f64,
-    extern "C" fn(u32, i32, f64) -> f64,
-    extern "C" fn(u32, i32, i32, i32),
-    extern "C" fn(u32, u32, f64, f64) -> f64,
+    extern "C" fn(*mut c_void, i32) -> f64,
+    extern "C" fn(*mut c_void, u32, i32, f64),
+    extern "C" fn(*mut c_void, u32, u32, f64) -> f64,
+    extern "C" fn(*mut c_void, u32, i32, f64) -> f64,
+    extern "C" fn(*mut c_void, u32, i32, i32, i32),
+    extern "C" fn(*mut c_void, u32, u32, f64, f64) -> f64,
 ) -> f64;
 
 impl JitChunk {
@@ -632,6 +643,7 @@ impl JitChunk {
     pub fn execute(&self, state: &mut JitRuntimeState<'_>) -> f64 {
         let f: JitFn = unsafe { mem::transmute(self.fn_ptr) };
         f(
+            state.vmctx,
             state.slots.as_mut_ptr(),
             state.field_fn,
             state.array_field_add,
@@ -1216,29 +1228,6 @@ fn ops_have_early_return_or_signal(ops: &[Op]) -> bool {
     })
 }
 
-/// When `false`, the JIT never calls Rust callbacks that read thread-local `VmCtx` / `Runtime`
-/// pointers (`jit_io_dispatch`, `jit_var_dispatch`, mixed `val_dispatch`, etc.) — [`try_jit_dispatch`]
-/// may skip installing those TLS slots.
-pub(crate) fn jit_chunk_needs_vm_tls(ops: &[Op]) -> bool {
-    if needs_mixed_mode(ops) {
-        return true;
-    }
-    for op in ops {
-        match op {
-            Op::PushNum(_) => {}
-            Op::GetSlot(_) | Op::SetSlot(_) => {}
-            Op::CompoundAssignSlot(_, _) | Op::IncDecSlot(_, _) => {}
-            Op::IncrSlot(_) | Op::DecrSlot(_) | Op::AddSlotToSlot { .. } => {}
-            Op::Add | Op::Sub | Op::Mul | Op::Div | Op::Mod => {}
-            Op::CmpEq | Op::CmpNe | Op::CmpLt | Op::CmpLe | Op::CmpGt | Op::CmpGe => {}
-            Op::Neg | Op::Pos | Op::Not | Op::ToBool => {}
-            Op::Dup | Op::Pop => {}
-            _ => return true,
-        }
-    }
-    false
-}
-
 fn emit_slot_ssa_flush_to_mem(
     builder: &mut FunctionBuilder,
     use_slot_ssa: bool,
@@ -1328,10 +1317,11 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
     let mut ctx = module.make_context();
     let mut func_ctx = FunctionBuilderContext::new();
 
-    // Function signature: (slots, field_fn, array_field_add, var_dispatch, field_dispatch,
+    // Function signature: (vmctx, slots, field_fn, array_field_add, var_dispatch, field_dispatch,
     //                      io_dispatch, val_dispatch) -> f64
     let ptr_type = module.target_config().pointer_type();
     let mut sig = module.make_signature();
+    sig.params.push(AbiParam::new(ptr_type)); // opaque VmCtx* (avoids TLS in callbacks)
     sig.params.push(AbiParam::new(ptr_type)); // slots pointer
     sig.params.push(AbiParam::new(ptr_type)); // field callback fn pointer
     sig.params.push(AbiParam::new(ptr_type)); // array_field_add fn pointer
@@ -1343,18 +1333,21 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
 
     // Declare the field callback signature for indirect calls
     let mut field_sig = module.make_signature();
+    field_sig.params.push(AbiParam::new(ptr_type)); // vmctx
     field_sig.params.push(AbiParam::new(types::I32));
     field_sig.returns.push(AbiParam::new(types::F64));
     let _field_sig_ref = module.declare_anonymous_function(&field_sig).ok()?;
 
     // `array_field_add(arr_pool_idx, field, delta)` — void
     let mut array_sig = module.make_signature();
+    array_sig.params.push(AbiParam::new(ptr_type)); // vmctx
     array_sig.params.push(AbiParam::new(types::I32));
     array_sig.params.push(AbiParam::new(types::I32));
     array_sig.params.push(AbiParam::new(types::F64));
     let _array_sig_ref = module.declare_anonymous_function(&array_sig).ok()?;
 
     let mut var_sig = module.make_signature();
+    var_sig.params.push(AbiParam::new(ptr_type)); // vmctx
     var_sig.params.push(AbiParam::new(types::I32));
     var_sig.params.push(AbiParam::new(types::I32));
     var_sig.params.push(AbiParam::new(types::F64));
@@ -1363,6 +1356,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
 
     // `field_dispatch(op, field_idx, arg)` — `$n` compound assign / inc-dec (reuses `JIT_VAR_OP_*`)
     let mut field_mut_sig = module.make_signature();
+    field_mut_sig.params.push(AbiParam::new(ptr_type)); // vmctx
     field_mut_sig.params.push(AbiParam::new(types::I32));
     field_mut_sig.params.push(AbiParam::new(types::I32));
     field_mut_sig.params.push(AbiParam::new(types::F64));
@@ -1371,6 +1365,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
 
     // `io_dispatch(op, a1, a2, a3)` — void (print side-effects)
     let mut io_sig = module.make_signature();
+    io_sig.params.push(AbiParam::new(ptr_type)); // vmctx
     io_sig.params.push(AbiParam::new(types::I32));
     io_sig.params.push(AbiParam::new(types::I32));
     io_sig.params.push(AbiParam::new(types::I32));
@@ -1379,6 +1374,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
 
     // `val_dispatch(op, a1, a2, a3) -> f64` (array, match, signals)
     let mut val_sig = module.make_signature();
+    val_sig.params.push(AbiParam::new(ptr_type)); // vmctx
     val_sig.params.push(AbiParam::new(types::I32));
     val_sig.params.push(AbiParam::new(types::I32));
     val_sig.params.push(AbiParam::new(types::F64));
@@ -1429,6 +1425,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
         let val_sig_ir = builder.import_signature(val_sig);
 
         // ── Cranelift Variables for function params (survive across blocks) ──
+        let var_vmctx = builder.declare_var(ptr_type);
         let var_slots_ptr = builder.declare_var(ptr_type);
         let var_field_fn = builder.declare_var(ptr_type);
         let var_array_fn = builder.declare_var(ptr_type);
@@ -1457,13 +1454,15 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
         builder.switch_to_block(entry_block);
 
         // Store params into variables so they're accessible from any block
-        let slots_ptr_val = builder.block_params(entry_block)[0];
-        let field_fn_val = builder.block_params(entry_block)[1];
-        let array_fn_val = builder.block_params(entry_block)[2];
-        let var_dispatch_val = builder.block_params(entry_block)[3];
-        let field_mut_dispatch_val = builder.block_params(entry_block)[4];
-        let io_dispatch_val = builder.block_params(entry_block)[5];
-        let val_dispatch_val = builder.block_params(entry_block)[6];
+        let vmctx_val = builder.block_params(entry_block)[0];
+        let slots_ptr_val = builder.block_params(entry_block)[1];
+        let field_fn_val = builder.block_params(entry_block)[2];
+        let array_fn_val = builder.block_params(entry_block)[3];
+        let var_dispatch_val = builder.block_params(entry_block)[4];
+        let field_mut_dispatch_val = builder.block_params(entry_block)[5];
+        let io_dispatch_val = builder.block_params(entry_block)[6];
+        let val_dispatch_val = builder.block_params(entry_block)[7];
+        builder.def_var(var_vmctx, vmctx_val);
         builder.def_var(var_slots_ptr, slots_ptr_val);
         builder.def_var(var_field_fn, field_fn_val);
         builder.def_var(var_array_fn, array_fn_val);
@@ -1527,6 +1526,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
             }
 
             // Read function params from variables (valid in any block)
+            let vmctx = builder.use_var(var_vmctx);
             let slots_ptr = builder.use_var(var_slots_ptr);
             let field_fn_ptr = builder.use_var(var_field_fn);
             let array_fn_ptr = builder.use_var(var_array_fn);
@@ -1544,10 +1544,11 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                     let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_PUSH_STR));
                     let a1 = builder.ins().iconst(types::I32, i64::from(idx));
                     let z = builder.ins().f64const(0.0);
-                    let call =
-                        builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
+                    let call = builder.ins().call_indirect(
+                        val_sig_ir,
+                        val_fn_ptr,
+                        &[vmctx, op_c, a1, z, z],
+                    );
                     stack.push(builder.inst_results(call)[0]);
                 }
                 Op::Concat => {
@@ -1555,10 +1556,11 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                     let a = stack.pop().expect("Concat");
                     let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_CONCAT));
                     let z = builder.ins().iconst(types::I32, 0);
-                    let call =
-                        builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, a, b]);
+                    let call = builder.ins().call_indirect(
+                        val_sig_ir,
+                        val_fn_ptr,
+                        &[vmctx, op_c, z, a, b],
+                    );
                     stack.push(builder.inst_results(call)[0]);
                 }
                 Op::ConcatPoolStr(idx) => {
@@ -1568,10 +1570,11 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         .iconst(types::I32, i64::from(MIXED_CONCAT_POOL));
                     let a1 = builder.ins().iconst(types::I32, i64::from(idx));
                     let z = builder.ins().f64const(0.0);
-                    let call =
-                        builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, a, z]);
+                    let call = builder.ins().call_indirect(
+                        val_sig_ir,
+                        val_fn_ptr,
+                        &[vmctx, op_c, a1, a, z],
+                    );
                     stack.push(builder.inst_results(call)[0]);
                 }
                 Op::RegexMatch => {
@@ -1581,10 +1584,11 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         .ins()
                         .iconst(types::I32, i64::from(MIXED_REGEX_MATCH));
                     let z = builder.ins().iconst(types::I32, 0);
-                    let call =
-                        builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, s, pat]);
+                    let call = builder.ins().call_indirect(
+                        val_sig_ir,
+                        val_fn_ptr,
+                        &[vmctx, op_c, z, s, pat],
+                    );
                     stack.push(builder.inst_results(call)[0]);
                 }
                 Op::RegexNotMatch => {
@@ -1594,10 +1598,11 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         .ins()
                         .iconst(types::I32, i64::from(MIXED_REGEX_NOT_MATCH));
                     let z = builder.ins().iconst(types::I32, 0);
-                    let call =
-                        builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, s, pat]);
+                    let call = builder.ins().call_indirect(
+                        val_sig_ir,
+                        val_fn_ptr,
+                        &[vmctx, op_c, z, s, pat],
+                    );
                     stack.push(builder.inst_results(call)[0]);
                 }
 
@@ -1608,10 +1613,11 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         .iconst(types::I32, i64::from(MIXED_TYPEOF_VAR));
                     let a1 = builder.ins().iconst(types::I32, i64::from(idx));
                     let z = builder.ins().f64const(0.0);
-                    let call =
-                        builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
+                    let call = builder.ins().call_indirect(
+                        val_sig_ir,
+                        val_fn_ptr,
+                        &[vmctx, op_c, a1, z, z],
+                    );
                     stack.push(builder.inst_results(call)[0]);
                 }
                 Op::TypeofSlot(slot) => {
@@ -1620,10 +1626,11 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         .iconst(types::I32, i64::from(MIXED_TYPEOF_SLOT));
                     let a1 = builder.ins().iconst(types::I32, i64::from(slot));
                     let z = builder.ins().f64const(0.0);
-                    let call =
-                        builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
+                    let call = builder.ins().call_indirect(
+                        val_sig_ir,
+                        val_fn_ptr,
+                        &[vmctx, op_c, a1, z, z],
+                    );
                     stack.push(builder.inst_results(call)[0]);
                 }
                 Op::TypeofArrayElem(arr) => {
@@ -1633,10 +1640,11 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         .iconst(types::I32, i64::from(MIXED_TYPEOF_ARRAY_ELEM));
                     let a1 = builder.ins().iconst(types::I32, i64::from(arr));
                     let z = builder.ins().f64const(0.0);
-                    let call =
-                        builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, key, z]);
+                    let call = builder.ins().call_indirect(
+                        val_sig_ir,
+                        val_fn_ptr,
+                        &[vmctx, op_c, a1, key, z],
+                    );
                     stack.push(builder.inst_results(call)[0]);
                 }
                 Op::TypeofField => {
@@ -1646,10 +1654,11 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         .iconst(types::I32, i64::from(MIXED_TYPEOF_FIELD));
                     let z32 = builder.ins().iconst(types::I32, 0);
                     let z = builder.ins().f64const(0.0);
-                    let call =
-                        builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z32, idx, z]);
+                    let call = builder.ins().call_indirect(
+                        val_sig_ir,
+                        val_fn_ptr,
+                        &[vmctx, op_c, z32, idx, z],
+                    );
                     stack.push(builder.inst_results(call)[0]);
                 }
                 Op::TypeofValue => {
@@ -1659,10 +1668,11 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         .iconst(types::I32, i64::from(MIXED_TYPEOF_VALUE));
                     let z32 = builder.ins().iconst(types::I32, 0);
                     let z = builder.ins().f64const(0.0);
-                    let call =
-                        builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z32, v, z]);
+                    let call = builder.ins().call_indirect(
+                        val_sig_ir,
+                        val_fn_ptr,
+                        &[vmctx, op_c, z32, v, z],
+                    );
                     stack.push(builder.inst_results(call)[0]);
                 }
                 Op::Split { arr, has_fs } => {
@@ -1674,18 +1684,20 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         let op_c = builder
                             .ins()
                             .iconst(types::I32, i64::from(MIXED_SPLIT_WITH_FS));
-                        let call =
-                            builder
-                                .ins()
-                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, s, fs]);
+                        let call = builder.ins().call_indirect(
+                            val_sig_ir,
+                            val_fn_ptr,
+                            &[vmctx, op_c, a1, s, fs],
+                        );
                         stack.push(builder.inst_results(call)[0]);
                     } else {
                         let s = stack.pop().expect("Split s");
                         let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_SPLIT));
-                        let call =
-                            builder
-                                .ins()
-                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, s, zf]);
+                        let call = builder.ins().call_indirect(
+                            val_sig_ir,
+                            val_fn_ptr,
+                            &[vmctx, op_c, a1, s, zf],
+                        );
                         stack.push(builder.inst_results(call)[0]);
                     }
                 }
@@ -1706,7 +1718,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                             builder.ins().call_indirect(
                                 val_sig_ir,
                                 val_fn_ptr,
-                                &[op_c, a1_enc, zf, zf],
+                                &[vmctx, op_c, a1_enc, zf, zf],
                             );
                         }
                         GetlineSource::File => {
@@ -1717,7 +1729,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                             builder.ins().call_indirect(
                                 val_sig_ir,
                                 val_fn_ptr,
-                                &[op_c, a1_enc, path, zf],
+                                &[vmctx, op_c, a1_enc, path, zf],
                             );
                         }
                         GetlineSource::Coproc => {
@@ -1728,7 +1740,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                             builder.ins().call_indirect(
                                 val_sig_ir,
                                 val_fn_ptr,
-                                &[op_c, a1_enc, path, zf],
+                                &[vmctx, op_c, a1_enc, path, zf],
                             );
                         }
                     }
@@ -1743,7 +1755,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                             let call = builder.ins().call_indirect(
                                 val_sig_ir,
                                 val_fn_ptr,
-                                &[op_c, a1, s, zf],
+                                &[vmctx, op_c, a1, s, zf],
                             );
                             stack.push(builder.inst_results(call)[0]);
                         }
@@ -1754,7 +1766,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                             let seps_box = builder.ins().call_indirect(
                                 val_sig_ir,
                                 val_fn_ptr,
-                                &[op_ps, a1s, zf, zf],
+                                &[vmctx, op_ps, a1s, zf, zf],
                             );
                             let seps_val = builder.inst_results(seps_box)[0];
                             let op_c = builder
@@ -1764,7 +1776,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                             let call = builder.ins().call_indirect(
                                 val_sig_ir,
                                 val_fn_ptr,
-                                &[op_c, a1, s, seps_val],
+                                &[vmctx, op_c, a1, s, seps_val],
                             );
                             stack.push(builder.inst_results(call)[0]);
                         }
@@ -1778,7 +1790,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                             let call = builder.ins().call_indirect(
                                 val_sig_ir,
                                 val_fn_ptr,
-                                &[op_c, a1, s, fp],
+                                &[vmctx, op_c, a1, s, fp],
                             );
                             stack.push(builder.inst_results(call)[0]);
                         }
@@ -1794,7 +1806,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                                 let call = builder.ins().call_indirect(
                                     val_sig_ir,
                                     val_fn_ptr,
-                                    &[op_c, a1, s, fp],
+                                    &[vmctx, op_c, a1, s, fp],
                                 );
                                 stack.push(builder.inst_results(call)[0]);
                             } else {
@@ -1805,7 +1817,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                                 builder.ins().call_indirect(
                                     val_sig_ir,
                                     val_fn_ptr,
-                                    &[op_stash, a1_seps, zf, zf],
+                                    &[vmctx, op_stash, a1_seps, zf, zf],
                                 );
                                 let op_c = builder
                                     .ins()
@@ -1814,7 +1826,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                                 let call = builder.ins().call_indirect(
                                     val_sig_ir,
                                     val_fn_ptr,
-                                    &[op_c, a1_arr, s, fp],
+                                    &[vmctx, op_c, a1_arr, s, fp],
                                 );
                                 stack.push(builder.inst_results(call)[0]);
                             }
@@ -1840,10 +1852,11 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                             z,
                         )
                     };
-                    let call =
-                        builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, s, re]);
+                    let call = builder.ins().call_indirect(
+                        val_sig_ir,
+                        val_fn_ptr,
+                        &[vmctx, op_c, a1, s, re],
+                    );
                     stack.push(builder.inst_results(call)[0]);
                 }
                 Op::CallBuiltin(name_idx, argc_u) => {
@@ -1858,19 +1871,22 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                             .ins()
                             .iconst(types::I32, i64::from(MIXED_BUILTIN_ARG));
                         let a1 = builder.ins().iconst(types::I32, i64::from(i as u32));
-                        builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_arg, a1, *v, zf]);
+                        builder.ins().call_indirect(
+                            val_sig_ir,
+                            val_fn_ptr,
+                            &[vmctx, op_arg, a1, *v, zf],
+                        );
                     }
                     let op_c = builder
                         .ins()
                         .iconst(types::I32, i64::from(MIXED_BUILTIN_CALL));
                     let a1 = builder.ins().iconst(types::I32, i64::from(name_idx));
                     let a2 = builder.ins().f64const(argc as f64);
-                    let call =
-                        builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, a2, zf]);
+                    let call = builder.ins().call_indirect(
+                        val_sig_ir,
+                        val_fn_ptr,
+                        &[vmctx, op_c, a1, a2, zf],
+                    );
                     stack.push(builder.inst_results(call)[0]);
                 }
                 Op::CallUser(name_idx, argc_u) => {
@@ -1884,19 +1900,22 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                             .ins()
                             .iconst(types::I32, i64::from(MIXED_CALL_USER_ARG));
                         let a1 = builder.ins().iconst(types::I32, i64::from(i as u32));
-                        builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_arg, a1, *v, zf]);
+                        builder.ins().call_indirect(
+                            val_sig_ir,
+                            val_fn_ptr,
+                            &[vmctx, op_arg, a1, *v, zf],
+                        );
                     }
                     let op_c = builder
                         .ins()
                         .iconst(types::I32, i64::from(MIXED_CALL_USER_CALL));
                     let a1 = builder.ins().iconst(types::I32, i64::from(name_idx));
                     let a2 = builder.ins().f64const(argc as f64);
-                    let call =
-                        builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, a2, zf]);
+                    let call = builder.ins().call_indirect(
+                        val_sig_ir,
+                        val_fn_ptr,
+                        &[vmctx, op_c, a1, a2, zf],
+                    );
                     stack.push(builder.inst_results(call)[0]);
                 }
                 Op::SubFn(target) => {
@@ -1912,7 +1931,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                             let call = builder.ins().call_indirect(
                                 val_sig_ir,
                                 val_fn_ptr,
-                                &[op_c, z, re, repl],
+                                &[vmctx, op_c, z, re, repl],
                             );
                             stack.push(builder.inst_results(call)[0]);
                         }
@@ -1924,7 +1943,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                             let call = builder.ins().call_indirect(
                                 val_sig_ir,
                                 val_fn_ptr,
-                                &[op_c, a1, re, repl],
+                                &[vmctx, op_c, a1, re, repl],
                             );
                             stack.push(builder.inst_results(call)[0]);
                         }
@@ -1936,7 +1955,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                             let call = builder.ins().call_indirect(
                                 val_sig_ir,
                                 val_fn_ptr,
-                                &[op_c, a1, re, repl],
+                                &[vmctx, op_c, a1, re, repl],
                             );
                             stack.push(builder.inst_results(call)[0]);
                         }
@@ -1949,7 +1968,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                             let call = builder.ins().call_indirect(
                                 val_sig_ir,
                                 val_fn_ptr,
-                                &[op_c, fi_i, re, repl],
+                                &[vmctx, op_c, fi_i, re, repl],
                             );
                             stack.push(builder.inst_results(call)[0]);
                         }
@@ -1963,14 +1982,14 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                             builder.ins().call_indirect(
                                 val_sig_ir,
                                 val_fn_ptr,
-                                &[st_op, z, key, zf],
+                                &[vmctx, st_op, z, key, zf],
                             );
                             let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_SUB_INDEX));
                             let a1 = builder.ins().iconst(types::I32, i64::from(arr_idx));
                             let call = builder.ins().call_indirect(
                                 val_sig_ir,
                                 val_fn_ptr,
-                                &[op_c, a1, re, repl],
+                                &[vmctx, op_c, a1, re, repl],
                             );
                             stack.push(builder.inst_results(call)[0]);
                         }
@@ -1989,7 +2008,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                             let call = builder.ins().call_indirect(
                                 val_sig_ir,
                                 val_fn_ptr,
-                                &[op_c, z, re, repl],
+                                &[vmctx, op_c, z, re, repl],
                             );
                             stack.push(builder.inst_results(call)[0]);
                         }
@@ -2001,7 +2020,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                             let call = builder.ins().call_indirect(
                                 val_sig_ir,
                                 val_fn_ptr,
-                                &[op_c, a1, re, repl],
+                                &[vmctx, op_c, a1, re, repl],
                             );
                             stack.push(builder.inst_results(call)[0]);
                         }
@@ -2013,7 +2032,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                             let call = builder.ins().call_indirect(
                                 val_sig_ir,
                                 val_fn_ptr,
-                                &[op_c, a1, re, repl],
+                                &[vmctx, op_c, a1, re, repl],
                             );
                             stack.push(builder.inst_results(call)[0]);
                         }
@@ -2028,7 +2047,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                             let call = builder.ins().call_indirect(
                                 val_sig_ir,
                                 val_fn_ptr,
-                                &[op_c, fi_i, re, repl],
+                                &[vmctx, op_c, fi_i, re, repl],
                             );
                             stack.push(builder.inst_results(call)[0]);
                         }
@@ -2042,7 +2061,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                             builder.ins().call_indirect(
                                 val_sig_ir,
                                 val_fn_ptr,
-                                &[st_op, z, key, zf],
+                                &[vmctx, st_op, z, key, zf],
                             );
                             let op_c = builder
                                 .ins()
@@ -2051,7 +2070,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                             let call = builder.ins().call_indirect(
                                 val_sig_ir,
                                 val_fn_ptr,
-                                &[op_c, a1, re, repl],
+                                &[vmctx, op_c, a1, re, repl],
                             );
                             stack.push(builder.inst_results(call)[0]);
                         }
@@ -2064,10 +2083,11 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_GET_SLOT));
                         let a1 = builder.ins().iconst(types::I32, i64::from(slot));
                         let z = builder.ins().f64const(0.0);
-                        let call =
-                            builder
-                                .ins()
-                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
+                        let call = builder.ins().call_indirect(
+                            val_sig_ir,
+                            val_fn_ptr,
+                            &[vmctx, op_c, a1, z, z],
+                        );
                         stack.push(builder.inst_results(call)[0]);
                     } else if use_slot_ssa {
                         stack.push(builder.use_var(slot_vars[slot as usize]));
@@ -2097,19 +2117,21 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_GET_VAR));
                         let a1 = builder.ins().iconst(types::I32, i64::from(idx));
                         let z = builder.ins().f64const(0.0);
-                        let call =
-                            builder
-                                .ins()
-                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
+                        let call = builder.ins().call_indirect(
+                            val_sig_ir,
+                            val_fn_ptr,
+                            &[vmctx, op_c, a1, z, z],
+                        );
                         stack.push(builder.inst_results(call)[0]);
                     } else {
                         let opv = builder.ins().iconst(types::I32, i64::from(JIT_VAR_OP_GET));
                         let ni = builder.ins().iconst(types::I32, idx as i64);
                         let z = builder.ins().f64const(0.0);
-                        let call =
-                            builder
-                                .ins()
-                                .call_indirect(var_sig_ir, var_fn_ptr, &[opv, ni, z]);
+                        let call = builder.ins().call_indirect(
+                            var_sig_ir,
+                            var_fn_ptr,
+                            &[vmctx, opv, ni, z],
+                        );
                         stack.push(builder.inst_results(call)[0]);
                     }
                 }
@@ -2119,15 +2141,17 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_SET_VAR));
                         let a1 = builder.ins().iconst(types::I32, i64::from(idx));
                         let z = builder.ins().f64const(0.0);
-                        builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, v, z]);
+                        builder.ins().call_indirect(
+                            val_sig_ir,
+                            val_fn_ptr,
+                            &[vmctx, op_c, a1, v, z],
+                        );
                     } else {
                         let opv = builder.ins().iconst(types::I32, i64::from(JIT_VAR_OP_SET));
                         let ni = builder.ins().iconst(types::I32, idx as i64);
                         builder
                             .ins()
-                            .call_indirect(var_sig_ir, var_fn_ptr, &[opv, ni, v]);
+                            .call_indirect(var_sig_ir, var_fn_ptr, &[vmctx, opv, ni, v]);
                     }
                 }
                 Op::IncrVar(idx) => {
@@ -2136,7 +2160,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                     let z = builder.ins().f64const(0.0);
                     builder
                         .ins()
-                        .call_indirect(var_sig_ir, var_fn_ptr, &[opv, ni, z]);
+                        .call_indirect(var_sig_ir, var_fn_ptr, &[vmctx, opv, ni, z]);
                 }
                 Op::DecrVar(idx) => {
                     let opv = builder.ins().iconst(types::I32, i64::from(JIT_VAR_OP_DECR));
@@ -2144,7 +2168,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                     let z = builder.ins().f64const(0.0);
                     builder
                         .ins()
-                        .call_indirect(var_sig_ir, var_fn_ptr, &[opv, ni, z]);
+                        .call_indirect(var_sig_ir, var_fn_ptr, &[vmctx, opv, ni, z]);
                 }
                 Op::CompoundAssignVar(idx, bop) => {
                     let rhs = stack.pop().expect("CompoundAssignVar");
@@ -2155,7 +2179,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         let call_old = builder.ins().call_indirect(
                             val_sig_ir,
                             val_fn_ptr,
-                            &[op_get, ni, z, z],
+                            &[vmctx, op_get, ni, z, z],
                         );
                         let old = builder.inst_results(call_old)[0];
                         let mop = mixed_op_for_binop(bop);
@@ -2164,23 +2188,24 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         let call_op = builder.ins().call_indirect(
                             val_sig_ir,
                             val_fn_ptr,
-                            &[op_b, z32, old, rhs],
+                            &[vmctx, op_b, z32, old, rhs],
                         );
                         let computed = builder.inst_results(call_op)[0];
                         let op_set = builder.ins().iconst(types::I32, i64::from(MIXED_SET_VAR));
                         builder.ins().call_indirect(
                             val_sig_ir,
                             val_fn_ptr,
-                            &[op_set, ni, computed, z],
+                            &[vmctx, op_set, ni, computed, z],
                         );
                         computed
                     } else {
                         let cop = jit_var_op_for_compound(bop);
                         let opv = builder.ins().iconst(types::I32, i64::from(cop));
-                        let call =
-                            builder
-                                .ins()
-                                .call_indirect(var_sig_ir, var_fn_ptr, &[opv, ni, rhs]);
+                        let call = builder.ins().call_indirect(
+                            var_sig_ir,
+                            var_fn_ptr,
+                            &[vmctx, opv, ni, rhs],
+                        );
                         builder.inst_results(call)[0]
                     };
                     stack.push(new_val);
@@ -2190,9 +2215,10 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                     let opv = builder.ins().iconst(types::I32, i64::from(cop));
                     let ni = builder.ins().iconst(types::I32, idx as i64);
                     let z = builder.ins().f64const(0.0);
-                    let call = builder
-                        .ins()
-                        .call_indirect(var_sig_ir, var_fn_ptr, &[opv, ni, z]);
+                    let call =
+                        builder
+                            .ins()
+                            .call_indirect(var_sig_ir, var_fn_ptr, &[vmctx, opv, ni, z]);
                     stack.push(builder.inst_results(call)[0]);
                 }
                 Op::CompoundAssignField(bop) => {
@@ -2207,7 +2233,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         let call = builder.ins().call_indirect(
                             val_sig_ir,
                             val_fn_ptr,
-                            &[op_c, a1, idx_f, rhs],
+                            &[vmctx, op_c, a1, idx_f, rhs],
                         );
                         stack.push(builder.inst_results(call)[0]);
                     } else {
@@ -2217,7 +2243,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         let call = builder.ins().call_indirect(
                             field_mut_sig_ir,
                             field_mut_fn_ptr,
-                            &[opv, idx_i32, rhs],
+                            &[vmctx, opv, idx_i32, rhs],
                         );
                         stack.push(builder.inst_results(call)[0]);
                     }
@@ -2231,7 +2257,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                     let call = builder.ins().call_indirect(
                         field_mut_sig_ir,
                         field_mut_fn_ptr,
-                        &[opv, idx_i32, z],
+                        &[vmctx, opv, idx_i32, z],
                     );
                     stack.push(builder.inst_results(call)[0]);
                 }
@@ -2245,7 +2271,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         let call = builder.ins().call_indirect(
                             val_sig_ir,
                             val_fn_ptr,
-                            &[op_c, idx_i32, val, z],
+                            &[vmctx, op_c, idx_i32, val, z],
                         );
                         stack.push(builder.inst_results(call)[0]);
                     } else {
@@ -2256,7 +2282,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         let call = builder.ins().call_indirect(
                             field_mut_sig_ir,
                             field_mut_fn_ptr,
-                            &[opv, idx_i32, val],
+                            &[vmctx, opv, idx_i32, val],
                         );
                         stack.push(builder.inst_results(call)[0]);
                     }
@@ -2269,10 +2295,11 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                     if mixed {
                         let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_ADD));
                         let z = builder.ins().iconst(types::I32, 0);
-                        let call =
-                            builder
-                                .ins()
-                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, a, b]);
+                        let call = builder.ins().call_indirect(
+                            val_sig_ir,
+                            val_fn_ptr,
+                            &[vmctx, op_c, z, a, b],
+                        );
                         stack.push(builder.inst_results(call)[0]);
                     } else {
                         stack.push(builder.ins().fadd(a, b));
@@ -2284,10 +2311,11 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                     if mixed {
                         let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_SUB));
                         let z = builder.ins().iconst(types::I32, 0);
-                        let call =
-                            builder
-                                .ins()
-                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, a, b]);
+                        let call = builder.ins().call_indirect(
+                            val_sig_ir,
+                            val_fn_ptr,
+                            &[vmctx, op_c, z, a, b],
+                        );
                         stack.push(builder.inst_results(call)[0]);
                     } else {
                         stack.push(builder.ins().fsub(a, b));
@@ -2299,10 +2327,11 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                     if mixed {
                         let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_MUL));
                         let z = builder.ins().iconst(types::I32, 0);
-                        let call =
-                            builder
-                                .ins()
-                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, a, b]);
+                        let call = builder.ins().call_indirect(
+                            val_sig_ir,
+                            val_fn_ptr,
+                            &[vmctx, op_c, z, a, b],
+                        );
                         stack.push(builder.inst_results(call)[0]);
                     } else {
                         stack.push(builder.ins().fmul(a, b));
@@ -2314,10 +2343,11 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                     if mixed {
                         let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_DIV));
                         let z = builder.ins().iconst(types::I32, 0);
-                        let call =
-                            builder
-                                .ins()
-                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, a, b]);
+                        let call = builder.ins().call_indirect(
+                            val_sig_ir,
+                            val_fn_ptr,
+                            &[vmctx, op_c, z, a, b],
+                        );
                         stack.push(builder.inst_results(call)[0]);
                     } else {
                         stack.push(builder.ins().fdiv(a, b));
@@ -2329,10 +2359,11 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                     if mixed {
                         let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_MOD));
                         let z = builder.ins().iconst(types::I32, 0);
-                        let call =
-                            builder
-                                .ins()
-                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, a, b]);
+                        let call = builder.ins().call_indirect(
+                            val_sig_ir,
+                            val_fn_ptr,
+                            &[vmctx, op_c, z, a, b],
+                        );
                         stack.push(builder.inst_results(call)[0]);
                     } else {
                         let div = builder.ins().fdiv(a, b);
@@ -2351,10 +2382,11 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                             .ins()
                             .iconst(types::I32, i64::from(mixed_op_for_cmp(&ops[pc])));
                         let z = builder.ins().iconst(types::I32, 0);
-                        let call =
-                            builder
-                                .ins()
-                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, a, b]);
+                        let call = builder.ins().call_indirect(
+                            val_sig_ir,
+                            val_fn_ptr,
+                            &[vmctx, op_c, z, a, b],
+                        );
                         stack.push(builder.inst_results(call)[0]);
                     } else {
                         use cranelift_codegen::ir::condcodes::FloatCC;
@@ -2380,10 +2412,11 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_NEG));
                         let z = builder.ins().iconst(types::I32, 0);
                         let zf = builder.ins().f64const(0.0);
-                        let call =
-                            builder
-                                .ins()
-                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, a, zf]);
+                        let call = builder.ins().call_indirect(
+                            val_sig_ir,
+                            val_fn_ptr,
+                            &[vmctx, op_c, z, a, zf],
+                        );
                         stack.push(builder.inst_results(call)[0]);
                     } else {
                         stack.push(builder.ins().fneg(a));
@@ -2395,10 +2428,11 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_POS));
                         let z = builder.ins().iconst(types::I32, 0);
                         let zf = builder.ins().f64const(0.0);
-                        let call =
-                            builder
-                                .ins()
-                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, a, zf]);
+                        let call = builder.ins().call_indirect(
+                            val_sig_ir,
+                            val_fn_ptr,
+                            &[vmctx, op_c, z, a, zf],
+                        );
                         stack.push(builder.inst_results(call)[0]);
                     }
                     // Non-mixed: identity, no stack effect (matches VM numeric fast path).
@@ -2409,10 +2443,11 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_NOT));
                         let z = builder.ins().iconst(types::I32, 0);
                         let zf = builder.ins().f64const(0.0);
-                        let call =
-                            builder
-                                .ins()
-                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, a, zf]);
+                        let call = builder.ins().call_indirect(
+                            val_sig_ir,
+                            val_fn_ptr,
+                            &[vmctx, op_c, z, a, zf],
+                        );
                         stack.push(builder.inst_results(call)[0]);
                     } else {
                         let zero = builder.ins().f64const(0.0);
@@ -2431,10 +2466,11 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_TO_BOOL));
                         let z = builder.ins().iconst(types::I32, 0);
                         let zf = builder.ins().f64const(0.0);
-                        let call =
-                            builder
-                                .ins()
-                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, a, zf]);
+                        let call = builder.ins().call_indirect(
+                            val_sig_ir,
+                            val_fn_ptr,
+                            &[vmctx, op_c, z, a, zf],
+                        );
                         stack.push(builder.inst_results(call)[0]);
                     } else {
                         let zero = builder.ins().f64const(0.0);
@@ -2462,10 +2498,11 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                             .iconst(types::I32, i64::from(MIXED_TRUTHINESS));
                         let z = builder.ins().iconst(types::I32, 0);
                         let zf = builder.ins().f64const(0.0);
-                        let call =
-                            builder
-                                .ins()
-                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, v, zf]);
+                        let call = builder.ins().call_indirect(
+                            val_sig_ir,
+                            val_fn_ptr,
+                            &[vmctx, op_c, z, v, zf],
+                        );
                         let truth = builder.inst_results(call)[0];
                         let zero = builder.ins().f64const(0.0);
                         builder.ins().fcmp(
@@ -2497,10 +2534,11 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                             .iconst(types::I32, i64::from(MIXED_TRUTHINESS));
                         let z = builder.ins().iconst(types::I32, 0);
                         let zf = builder.ins().f64const(0.0);
-                        let call =
-                            builder
-                                .ins()
-                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, v, zf]);
+                        let call = builder.ins().call_indirect(
+                            val_sig_ir,
+                            val_fn_ptr,
+                            &[vmctx, op_c, z, v, zf],
+                        );
                         let truth = builder.inst_results(call)[0];
                         let zero = builder.ins().f64const(0.0);
                         builder.ins().fcmp(
@@ -2552,7 +2590,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         let call = builder.ins().call_indirect(
                             val_sig_ir,
                             val_fn_ptr,
-                            &[op_c, z, old, rhs],
+                            &[vmctx, op_c, z, old, rhs],
                         );
                         builder.inst_results(call)[0]
                     } else {
@@ -2589,10 +2627,11 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                             .iconst(types::I32, i64::from(MIXED_INCDEC_SLOT));
                         let a1 = builder.ins().iconst(types::I32, i64::from(enc));
                         let z = builder.ins().f64const(0.0);
-                        let call =
-                            builder
-                                .ins()
-                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
+                        let call = builder.ins().call_indirect(
+                            val_sig_ir,
+                            val_fn_ptr,
+                            &[vmctx, op_c, a1, z, z],
+                        );
                         stack.push(builder.inst_results(call)[0]);
                     } else if use_slot_ssa {
                         let old = builder.use_var(slot_vars[slot as usize]);
@@ -2635,9 +2674,11 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_INCR_SLOT));
                         let a1 = builder.ins().iconst(types::I32, i64::from(slot));
                         let z = builder.ins().f64const(0.0);
-                        builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
+                        builder.ins().call_indirect(
+                            val_sig_ir,
+                            val_fn_ptr,
+                            &[vmctx, op_c, a1, z, z],
+                        );
                     } else if use_slot_ssa {
                         let old = builder.use_var(slot_vars[slot as usize]);
                         let one = builder.ins().f64const(1.0);
@@ -2661,9 +2702,11 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_DECR_SLOT));
                         let a1 = builder.ins().iconst(types::I32, i64::from(slot));
                         let z = builder.ins().f64const(0.0);
-                        builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
+                        builder.ins().call_indirect(
+                            val_sig_ir,
+                            val_fn_ptr,
+                            &[vmctx, op_c, a1, z, z],
+                        );
                     } else if use_slot_ssa {
                         let old = builder.use_var(slot_vars[slot as usize]);
                         let one = builder.ins().f64const(1.0);
@@ -2690,9 +2733,11 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                             .iconst(types::I32, i64::from(MIXED_ADD_SLOT_TO_SLOT));
                         let a1 = builder.ins().iconst(types::I32, i64::from(enc));
                         let z = builder.ins().f64const(0.0);
-                        builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
+                        builder.ins().call_indirect(
+                            val_sig_ir,
+                            val_fn_ptr,
+                            &[vmctx, op_c, a1, z, z],
+                        );
                     } else if use_slot_ssa {
                         let sv = builder.use_var(slot_vars[src as usize]);
                         let dv = builder.use_var(slot_vars[dst as usize]);
@@ -2725,16 +2770,18 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         let z = builder.ins().iconst(types::I32, 0);
                         let fv = builder.ins().f64const(field as f64);
                         let zf = builder.ins().f64const(0.0);
-                        let call =
-                            builder
-                                .ins()
-                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, fv, zf]);
+                        let call = builder.ins().call_indirect(
+                            val_sig_ir,
+                            val_fn_ptr,
+                            &[vmctx, op_c, z, fv, zf],
+                        );
                         stack.push(builder.inst_results(call)[0]);
                     } else {
                         let arg = builder.ins().iconst(types::I32, field as i64);
-                        let call = builder
-                            .ins()
-                            .call_indirect(field_sig_ir, field_fn_ptr, &[arg]);
+                        let call =
+                            builder
+                                .ins()
+                                .call_indirect(field_sig_ir, field_fn_ptr, &[vmctx, arg]);
                         let result = builder.inst_results(call)[0];
                         stack.push(result);
                     }
@@ -2745,41 +2792,46 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_GET_FIELD));
                         let z = builder.ins().iconst(types::I32, 0);
                         let zf = builder.ins().f64const(0.0);
-                        let call =
-                            builder
-                                .ins()
-                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z, fv, zf]);
+                        let call = builder.ins().call_indirect(
+                            val_sig_ir,
+                            val_fn_ptr,
+                            &[vmctx, op_c, z, fv, zf],
+                        );
                         stack.push(builder.inst_results(call)[0]);
                     } else {
                         // Match VM: `ctx.pop().as_number() as i32` — use saturating float→int
                         // (same family of semantics as Rust’s `f64 as i32` on recent editions).
                         let idx_i32 = builder.ins().fcvt_to_sint_sat(types::I32, fv);
-                        let call =
-                            builder
-                                .ins()
-                                .call_indirect(field_sig_ir, field_fn_ptr, &[idx_i32]);
+                        let call = builder.ins().call_indirect(
+                            field_sig_ir,
+                            field_fn_ptr,
+                            &[vmctx, idx_i32],
+                        );
                         stack.push(builder.inst_results(call)[0]);
                     }
                 }
                 Op::GetNR => {
                     let arg = builder.ins().iconst(types::I32, -1i64);
-                    let call = builder
-                        .ins()
-                        .call_indirect(field_sig_ir, field_fn_ptr, &[arg]);
+                    let call =
+                        builder
+                            .ins()
+                            .call_indirect(field_sig_ir, field_fn_ptr, &[vmctx, arg]);
                     stack.push(builder.inst_results(call)[0]);
                 }
                 Op::GetFNR => {
                     let arg = builder.ins().iconst(types::I32, -2i64);
-                    let call = builder
-                        .ins()
-                        .call_indirect(field_sig_ir, field_fn_ptr, &[arg]);
+                    let call =
+                        builder
+                            .ins()
+                            .call_indirect(field_sig_ir, field_fn_ptr, &[vmctx, arg]);
                     stack.push(builder.inst_results(call)[0]);
                 }
                 Op::GetNF => {
                     let arg = builder.ins().iconst(types::I32, -3i64);
-                    let call = builder
-                        .ins()
-                        .call_indirect(field_sig_ir, field_fn_ptr, &[arg]);
+                    let call =
+                        builder
+                            .ins()
+                            .call_indirect(field_sig_ir, field_fn_ptr, &[vmctx, arg]);
                     stack.push(builder.inst_results(call)[0]);
                 }
 
@@ -2792,23 +2844,27 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                             .iconst(types::I32, i64::from(MIXED_ADD_FIELD_TO_SLOT));
                         let a1 = builder.ins().iconst(types::I32, i64::from(enc));
                         let z = builder.ins().f64const(0.0);
-                        builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
+                        builder.ins().call_indirect(
+                            val_sig_ir,
+                            val_fn_ptr,
+                            &[vmctx, op_c, a1, z, z],
+                        );
                     } else if use_slot_ssa {
                         let arg = builder.ins().iconst(types::I32, field as i64);
-                        let call = builder
-                            .ins()
-                            .call_indirect(field_sig_ir, field_fn_ptr, &[arg]);
+                        let call =
+                            builder
+                                .ins()
+                                .call_indirect(field_sig_ir, field_fn_ptr, &[vmctx, arg]);
                         let fv = builder.inst_results(call)[0];
                         let old = builder.use_var(slot_vars[slot as usize]);
                         let sum = builder.ins().fadd(old, fv);
                         builder.def_var(slot_vars[slot as usize], sum);
                     } else {
                         let arg = builder.ins().iconst(types::I32, field as i64);
-                        let call = builder
-                            .ins()
-                            .call_indirect(field_sig_ir, field_fn_ptr, &[arg]);
+                        let call =
+                            builder
+                                .ins()
+                                .call_indirect(field_sig_ir, field_fn_ptr, &[vmctx, arg]);
                         let fv = builder.inst_results(call)[0];
                         let offset = (slot as i32) * 8;
                         let old =
@@ -2830,19 +2886,23 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         let a1 = builder.ins().iconst(types::I32, i64::from(enc));
                         let a2 = builder.ins().f64const(f64::from(slot));
                         let z = builder.ins().f64const(0.0);
-                        builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, a2, z]);
+                        builder.ins().call_indirect(
+                            val_sig_ir,
+                            val_fn_ptr,
+                            &[vmctx, op_c, a1, a2, z],
+                        );
                     } else if use_slot_ssa {
                         let a1 = builder.ins().iconst(types::I32, f1 as i64);
-                        let c1 = builder
-                            .ins()
-                            .call_indirect(field_sig_ir, field_fn_ptr, &[a1]);
+                        let c1 =
+                            builder
+                                .ins()
+                                .call_indirect(field_sig_ir, field_fn_ptr, &[vmctx, a1]);
                         let v1 = builder.inst_results(c1)[0];
                         let a2 = builder.ins().iconst(types::I32, f2 as i64);
-                        let c2 = builder
-                            .ins()
-                            .call_indirect(field_sig_ir, field_fn_ptr, &[a2]);
+                        let c2 =
+                            builder
+                                .ins()
+                                .call_indirect(field_sig_ir, field_fn_ptr, &[vmctx, a2]);
                         let v2 = builder.inst_results(c2)[0];
                         let prod = builder.ins().fmul(v1, v2);
                         let old = builder.use_var(slot_vars[slot as usize]);
@@ -2850,14 +2910,16 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         builder.def_var(slot_vars[slot as usize], sum);
                     } else {
                         let a1 = builder.ins().iconst(types::I32, f1 as i64);
-                        let c1 = builder
-                            .ins()
-                            .call_indirect(field_sig_ir, field_fn_ptr, &[a1]);
+                        let c1 =
+                            builder
+                                .ins()
+                                .call_indirect(field_sig_ir, field_fn_ptr, &[vmctx, a1]);
                         let v1 = builder.inst_results(c1)[0];
                         let a2 = builder.ins().iconst(types::I32, f2 as i64);
-                        let c2 = builder
-                            .ins()
-                            .call_indirect(field_sig_ir, field_fn_ptr, &[a2]);
+                        let c2 =
+                            builder
+                                .ins()
+                                .call_indirect(field_sig_ir, field_fn_ptr, &[vmctx, a2]);
                         let v2 = builder.inst_results(c2)[0];
                         let prod = builder.ins().fmul(v1, v2);
                         let offset = (slot as i32) * 8;
@@ -2879,7 +2941,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                     builder.ins().call_indirect(
                         array_sig_ir,
                         array_fn_ptr,
-                        &[arr_idx, field_idx, d],
+                        &[vmctx, arr_idx, field_idx, d],
                     );
                 }
 
@@ -2895,10 +2957,11 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                             .iconst(types::I32, i64::from(MIXED_SLOT_AS_NUMBER));
                         let a1 = builder.ins().iconst(types::I32, i64::from(slot));
                         let z = builder.ins().f64const(0.0);
-                        let call =
-                            builder
-                                .ins()
-                                .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
+                        let call = builder.ins().call_indirect(
+                            val_sig_ir,
+                            val_fn_ptr,
+                            &[vmctx, op_c, a1, z, z],
+                        );
                         builder.inst_results(call)[0]
                     } else if use_slot_ssa {
                         builder.use_var(slot_vars[slot as usize])
@@ -2930,7 +2993,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                     let z = builder.ins().iconst(types::I32, 0);
                     builder
                         .ins()
-                        .call_indirect(io_sig_ir, io_fn_ptr, &[op_c, a1, z, z]);
+                        .call_indirect(io_sig_ir, io_fn_ptr, &[vmctx, op_c, a1, z, z]);
                 }
                 Op::PrintFieldSepField { f1, sep, f2 } => {
                     let op_c = builder
@@ -2941,7 +3004,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                     let a3 = builder.ins().iconst(types::I32, f2 as i64);
                     builder
                         .ins()
-                        .call_indirect(io_sig_ir, io_fn_ptr, &[op_c, a1, a2, a3]);
+                        .call_indirect(io_sig_ir, io_fn_ptr, &[vmctx, op_c, a1, a2, a3]);
                 }
                 Op::PrintThreeFieldsStdout { f1, f2, f3 } => {
                     let op_c = builder
@@ -2952,7 +3015,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                     let a3 = builder.ins().iconst(types::I32, f3 as i64);
                     builder
                         .ins()
-                        .call_indirect(io_sig_ir, io_fn_ptr, &[op_c, a1, a2, a3]);
+                        .call_indirect(io_sig_ir, io_fn_ptr, &[vmctx, op_c, a1, a2, a3]);
                 }
                 Op::Print {
                     argc: 0,
@@ -2964,7 +3027,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                     let z = builder.ins().iconst(types::I32, 0);
                     builder
                         .ins()
-                        .call_indirect(io_sig_ir, io_fn_ptr, &[op_c, z, z, z]);
+                        .call_indirect(io_sig_ir, io_fn_ptr, &[vmctx, op_c, z, z, z]);
                 }
                 Op::Print {
                     argc,
@@ -2983,9 +3046,11 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_PRINT_ARG));
                         let a1 = builder.ins().iconst(types::I32, i64::try_from(i).unwrap());
                         let z = builder.ins().f64const(0.0);
-                        builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, *v, z]);
+                        builder.ins().call_indirect(
+                            val_sig_ir,
+                            val_fn_ptr,
+                            &[vmctx, op_c, a1, *v, z],
+                        );
                     }
                     let op_f = builder
                         .ins()
@@ -2994,7 +3059,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                     let z = builder.ins().f64const(0.0);
                     builder
                         .ins()
-                        .call_indirect(val_sig_ir, val_fn_ptr, &[op_f, a1, z, z]);
+                        .call_indirect(val_sig_ir, val_fn_ptr, &[vmctx, op_f, a1, z, z]);
                 }
                 Op::Printf {
                     argc,
@@ -3013,9 +3078,11 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_PRINT_ARG));
                         let a1 = builder.ins().iconst(types::I32, i64::try_from(i).unwrap());
                         let z = builder.ins().f64const(0.0);
-                        builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, *v, z]);
+                        builder.ins().call_indirect(
+                            val_sig_ir,
+                            val_fn_ptr,
+                            &[vmctx, op_c, a1, *v, z],
+                        );
                     }
                     let op_pf = builder
                         .ins()
@@ -3024,7 +3091,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                     let z = builder.ins().f64const(0.0);
                     builder
                         .ins()
-                        .call_indirect(val_sig_ir, val_fn_ptr, &[op_pf, a1, z, z]);
+                        .call_indirect(val_sig_ir, val_fn_ptr, &[vmctx, op_pf, a1, z, z]);
                 }
                 Op::Printf { argc, redir }
                     if argc > 0 && redir != crate::bytecode::RedirKind::Stdout =>
@@ -3041,9 +3108,11 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                     for (i, v) in vals.iter().enumerate() {
                         let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_PRINT_ARG));
                         let a1 = builder.ins().iconst(types::I32, i64::try_from(i).unwrap());
-                        builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, *v, zf]);
+                        builder.ins().call_indirect(
+                            val_sig_ir,
+                            val_fn_ptr,
+                            &[vmctx, op_c, a1, *v, zf],
+                        );
                     }
                     let op_pf = builder
                         .ins()
@@ -3051,9 +3120,11 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                     let a1 = builder
                         .ins()
                         .iconst(types::I32, i64::from(pack_print_redir(argc, redir)));
-                    builder
-                        .ins()
-                        .call_indirect(val_sig_ir, val_fn_ptr, &[op_pf, a1, path, zf]);
+                    builder.ins().call_indirect(
+                        val_sig_ir,
+                        val_fn_ptr,
+                        &[vmctx, op_pf, a1, path, zf],
+                    );
                 }
                 Op::Print { argc, redir } if redir != crate::bytecode::RedirKind::Stdout => {
                     let n = argc as usize;
@@ -3072,7 +3143,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                             builder.ins().call_indirect(
                                 val_sig_ir,
                                 val_fn_ptr,
-                                &[op_c, a1, *v, zf],
+                                &[vmctx, op_c, a1, *v, zf],
                             );
                         }
                     }
@@ -3082,9 +3153,11 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                     let a1 = builder
                         .ins()
                         .iconst(types::I32, i64::from(pack_print_redir(argc, redir)));
-                    builder
-                        .ins()
-                        .call_indirect(val_sig_ir, val_fn_ptr, &[op_fr, a1, path, zf]);
+                    builder.ins().call_indirect(
+                        val_sig_ir,
+                        val_fn_ptr,
+                        &[vmctx, op_fr, a1, path, zf],
+                    );
                 }
 
                 // ── MatchRegexp (push 0/1) ────────────────────────────────
@@ -3094,10 +3167,11 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         .iconst(types::I32, i64::from(JIT_VAL_MATCH_REGEXP));
                     let a1 = builder.ins().iconst(types::I32, idx as i64);
                     let z = builder.ins().f64const(0.0);
-                    let call =
-                        builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
+                    let call = builder.ins().call_indirect(
+                        val_sig_ir,
+                        val_fn_ptr,
+                        &[vmctx, op_c, a1, z, z],
+                    );
                     stack.push(builder.inst_results(call)[0]);
                 }
 
@@ -3110,7 +3184,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                     let z = builder.ins().f64const(0.0);
                     builder
                         .ins()
-                        .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z32, z, z]);
+                        .call_indirect(val_sig_ir, val_fn_ptr, &[vmctx, op_c, z32, z, z]);
                     builder.ins().return_(&[z]);
                     block_terminated = true;
                 }
@@ -3122,7 +3196,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                     let z = builder.ins().f64const(0.0);
                     builder
                         .ins()
-                        .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z32, z, z]);
+                        .call_indirect(val_sig_ir, val_fn_ptr, &[vmctx, op_c, z32, z, z]);
                     builder.ins().return_(&[z]);
                     block_terminated = true;
                 }
@@ -3134,7 +3208,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                     let z = builder.ins().f64const(0.0);
                     builder
                         .ins()
-                        .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z32, z, z]);
+                        .call_indirect(val_sig_ir, val_fn_ptr, &[vmctx, op_c, z32, z, z]);
                     builder.ins().return_(&[z]);
                     block_terminated = true;
                 }
@@ -3145,9 +3219,11 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         .iconst(types::I32, i64::from(JIT_VAL_SIGNAL_EXIT_CODE));
                     let z32 = builder.ins().iconst(types::I32, 0);
                     let z = builder.ins().f64const(0.0);
-                    builder
-                        .ins()
-                        .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z32, code, z]);
+                    builder.ins().call_indirect(
+                        val_sig_ir,
+                        val_fn_ptr,
+                        &[vmctx, op_c, z32, code, z],
+                    );
                     builder.ins().return_(&[z]);
                     block_terminated = true;
                 }
@@ -3162,7 +3238,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         let call = builder.ins().call_indirect(
                             val_sig_ir,
                             val_fn_ptr,
-                            &[op_c, a1, key, z],
+                            &[vmctx, op_c, a1, key, z],
                         );
                         stack.push(builder.inst_results(call)[0]);
                     } else {
@@ -3174,7 +3250,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         let call = builder.ins().call_indirect(
                             val_sig_ir,
                             val_fn_ptr,
-                            &[op_c, a1, key, z],
+                            &[vmctx, op_c, a1, key, z],
                         );
                         stack.push(builder.inst_results(call)[0]);
                     }
@@ -3188,7 +3264,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         let call = builder.ins().call_indirect(
                             val_sig_ir,
                             val_fn_ptr,
-                            &[op_c, a1, key, val],
+                            &[vmctx, op_c, a1, key, val],
                         );
                         stack.push(builder.inst_results(call)[0]);
                     } else {
@@ -3199,7 +3275,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         let call = builder.ins().call_indirect(
                             val_sig_ir,
                             val_fn_ptr,
-                            &[op_c, a1, key, val],
+                            &[vmctx, op_c, a1, key, val],
                         );
                         stack.push(builder.inst_results(call)[0]);
                     }
@@ -3213,7 +3289,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         let call = builder.ins().call_indirect(
                             val_sig_ir,
                             val_fn_ptr,
-                            &[op_c, a1, key, z],
+                            &[vmctx, op_c, a1, key, z],
                         );
                         stack.push(builder.inst_results(call)[0]);
                     } else {
@@ -3225,7 +3301,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         let call = builder.ins().call_indirect(
                             val_sig_ir,
                             val_fn_ptr,
-                            &[op_c, a1, key, z],
+                            &[vmctx, op_c, a1, key, z],
                         );
                         stack.push(builder.inst_results(call)[0]);
                     }
@@ -3238,18 +3314,22 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                             .iconst(types::I32, i64::from(MIXED_ARRAY_DELETE_ELEM));
                         let a1 = builder.ins().iconst(types::I32, i64::from(arr));
                         let z = builder.ins().f64const(0.0);
-                        builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, key, z]);
+                        builder.ins().call_indirect(
+                            val_sig_ir,
+                            val_fn_ptr,
+                            &[vmctx, op_c, a1, key, z],
+                        );
                     } else {
                         let op_c = builder
                             .ins()
                             .iconst(types::I32, i64::from(JIT_VAL_ARRAY_DELETE_ELEM));
                         let a1 = builder.ins().iconst(types::I32, arr as i64);
                         let z = builder.ins().f64const(0.0);
-                        builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, key, z]);
+                        builder.ins().call_indirect(
+                            val_sig_ir,
+                            val_fn_ptr,
+                            &[vmctx, op_c, a1, key, z],
+                        );
                     }
                 }
                 Op::DeleteArray(arr) => {
@@ -3259,18 +3339,22 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                             .iconst(types::I32, i64::from(MIXED_ARRAY_DELETE_ALL));
                         let a1 = builder.ins().iconst(types::I32, i64::from(arr));
                         let z = builder.ins().f64const(0.0);
-                        builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
+                        builder.ins().call_indirect(
+                            val_sig_ir,
+                            val_fn_ptr,
+                            &[vmctx, op_c, a1, z, z],
+                        );
                     } else {
                         let op_c = builder
                             .ins()
                             .iconst(types::I32, i64::from(JIT_VAL_ARRAY_DELETE_ALL));
                         let a1 = builder.ins().iconst(types::I32, arr as i64);
                         let z = builder.ins().f64const(0.0);
-                        builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
+                        builder.ins().call_indirect(
+                            val_sig_ir,
+                            val_fn_ptr,
+                            &[vmctx, op_c, a1, z, z],
+                        );
                     }
                 }
                 Op::CompoundAssignIndex(arr, bop) => {
@@ -3285,7 +3369,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         let call = builder.ins().call_indirect(
                             val_sig_ir,
                             val_fn_ptr,
-                            &[op_c, a1, key, rhs],
+                            &[vmctx, op_c, a1, key, rhs],
                         );
                         stack.push(builder.inst_results(call)[0]);
                     } else {
@@ -3295,7 +3379,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         let call = builder.ins().call_indirect(
                             val_sig_ir,
                             val_fn_ptr,
-                            &[op_c, a1, key, rhs],
+                            &[vmctx, op_c, a1, key, rhs],
                         );
                         stack.push(builder.inst_results(call)[0]);
                     }
@@ -3312,7 +3396,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         let call = builder.ins().call_indirect(
                             val_sig_ir,
                             val_fn_ptr,
-                            &[op_c, a1, key, z],
+                            &[vmctx, op_c, a1, key, z],
                         );
                         stack.push(builder.inst_results(call)[0]);
                     } else {
@@ -3323,7 +3407,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         let call = builder.ins().call_indirect(
                             val_sig_ir,
                             val_fn_ptr,
-                            &[op_c, a1, key, z],
+                            &[vmctx, op_c, a1, key, z],
                         );
                         stack.push(builder.inst_results(call)[0]);
                     }
@@ -3341,9 +3425,11 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         .ins()
                         .iconst(types::I32, i64::from(MIXED_JOIN_KEY_ARG));
                     for v in vals {
-                        builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_arg, z0, v, zf]);
+                        builder.ins().call_indirect(
+                            val_sig_ir,
+                            val_fn_ptr,
+                            &[vmctx, op_arg, z0, v, zf],
+                        );
                     }
                     let op_join = builder
                         .ins()
@@ -3352,7 +3438,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                     let call = builder.ins().call_indirect(
                         val_sig_ir,
                         val_fn_ptr,
-                        &[op_join, a1n, zf, zf],
+                        &[vmctx, op_join, a1n, zf, zf],
                     );
                     stack.push(builder.inst_results(call)[0]);
                 }
@@ -3365,9 +3451,11 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         .iconst(types::I32, i64::from(JIT_VAL_SIGNAL_RETURN_VAL));
                     let z32 = builder.ins().iconst(types::I32, 0);
                     let z = builder.ins().f64const(0.0);
-                    builder
-                        .ins()
-                        .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z32, val, z]);
+                    builder.ins().call_indirect(
+                        val_sig_ir,
+                        val_fn_ptr,
+                        &[vmctx, op_c, z32, val, z],
+                    );
                     builder.ins().return_(&[z]);
                     block_terminated = true;
                 }
@@ -3379,7 +3467,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                     let z = builder.ins().f64const(0.0);
                     builder
                         .ins()
-                        .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z32, z, z]);
+                        .call_indirect(val_sig_ir, val_fn_ptr, &[vmctx, op_c, z32, z, z]);
                     builder.ins().return_(&[z]);
                     block_terminated = true;
                 }
@@ -3393,7 +3481,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                     let z = builder.ins().f64const(0.0);
                     builder
                         .ins()
-                        .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
+                        .call_indirect(val_sig_ir, val_fn_ptr, &[vmctx, op_c, a1, z, z]);
                 }
                 Op::ForInNext { var, end_jump } => {
                     let op_c = builder
@@ -3401,10 +3489,11 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         .iconst(types::I32, i64::from(JIT_VAL_FORIN_NEXT));
                     let a1 = builder.ins().iconst(types::I32, var as i64);
                     let z = builder.ins().f64const(0.0);
-                    let call =
-                        builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
+                    let call = builder.ins().call_indirect(
+                        val_sig_ir,
+                        val_fn_ptr,
+                        &[vmctx, op_c, a1, z, z],
+                    );
                     let result = builder.inst_results(call)[0];
                     // 0.0 = exhausted → jump to end_jump; 1.0 = has next → continue
                     let zero = builder.ins().f64const(0.0);
@@ -3429,7 +3518,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                     let z = builder.ins().f64const(0.0);
                     builder
                         .ins()
-                        .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, z32, z, z]);
+                        .call_indirect(val_sig_ir, val_fn_ptr, &[vmctx, op_c, z32, z, z]);
                 }
 
                 // ── Array sorting ─────────────────────────────────────────
@@ -3442,10 +3531,11 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         None => builder.ins().f64const(-1.0),
                     };
                     let z = builder.ins().f64const(0.0);
-                    let call =
-                        builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, d, z]);
+                    let call = builder.ins().call_indirect(
+                        val_sig_ir,
+                        val_fn_ptr,
+                        &[vmctx, op_c, a1, d, z],
+                    );
                     stack.push(builder.inst_results(call)[0]);
                 }
                 Op::Asorti { src, dest } => {
@@ -3456,10 +3546,11 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                         None => builder.ins().f64const(-1.0),
                     };
                     let z = builder.ins().f64const(0.0);
-                    let call =
-                        builder
-                            .ins()
-                            .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, d, z]);
+                    let call = builder.ins().call_indirect(
+                        val_sig_ir,
+                        val_fn_ptr,
+                        &[vmctx, op_c, a1, d, z],
+                    );
                     stack.push(builder.inst_results(call)[0]);
                 }
 
@@ -3688,18 +3779,18 @@ pub struct JitNumericChunk {
 impl JitNumericChunk {
     /// Run the compiled expression; returns the single `f64` left on the conceptual stack.
     pub fn call_f64(&self) -> f64 {
-        extern "C" fn dummy_field(_: i32) -> f64 {
+        extern "C" fn dummy_field(_: *mut c_void, _: i32) -> f64 {
             0.0
         }
-        extern "C" fn dummy_array(_: u32, _: i32, _: f64) {}
-        extern "C" fn dummy_var(_: u32, _: u32, _: f64) -> f64 {
+        extern "C" fn dummy_array(_: *mut c_void, _: u32, _: i32, _: f64) {}
+        extern "C" fn dummy_var(_: *mut c_void, _: u32, _: u32, _: f64) -> f64 {
             0.0
         }
-        extern "C" fn dummy_field_dispatch(_: u32, _: i32, _: f64) -> f64 {
+        extern "C" fn dummy_field_dispatch(_: *mut c_void, _: u32, _: i32, _: f64) -> f64 {
             0.0
         }
-        extern "C" fn dummy_io_dispatch(_: u32, _: i32, _: i32, _: i32) {}
-        extern "C" fn dummy_val_dispatch(_: u32, _: u32, _: f64, _: f64) -> f64 {
+        extern "C" fn dummy_io_dispatch(_: *mut c_void, _: u32, _: i32, _: i32, _: i32) {}
+        extern "C" fn dummy_val_dispatch(_: *mut c_void, _: u32, _: u32, _: f64, _: f64) -> f64 {
             0.0
         }
         let mut slots: Vec<f64> = if self.slot_words == 0 {
@@ -3708,6 +3799,7 @@ impl JitNumericChunk {
             vec![0.0; self.slot_words]
         };
         let mut state = JitRuntimeState::new(
+            std::ptr::null_mut(),
             &mut slots,
             dummy_field,
             dummy_array,
@@ -3760,7 +3852,7 @@ mod tests {
     }
 
     /// Minimal in-process `var_dispatch` for unit tests (mirrors `jit_var_dispatch` numerics).
-    extern "C" fn test_var_dispatch(op: u32, name_idx: u32, arg: f64) -> f64 {
+    extern "C" fn test_var_dispatch(_: *mut c_void, op: u32, name_idx: u32, arg: f64) -> f64 {
         use crate::ast::BinOp;
         use crate::jit::{
             JIT_VAR_OP_COMPOUND_ADD, JIT_VAR_OP_COMPOUND_DIV, JIT_VAR_OP_COMPOUND_MOD,
@@ -3843,7 +3935,7 @@ mod tests {
     }
 
     /// Test double for `field_dispatch` — field index `i` stored at `Vec` index `max(0,i)`.
-    extern "C" fn test_field_dispatch(op: u32, field_idx: i32, arg: f64) -> f64 {
+    extern "C" fn test_field_dispatch(_: *mut c_void, op: u32, field_idx: i32, arg: f64) -> f64 {
         use crate::ast::BinOp;
         use crate::jit::{
             JIT_FIELD_OP_SET_NUM, JIT_VAR_OP_COMPOUND_ADD, JIT_VAR_OP_COMPOUND_DIV,
@@ -3952,6 +4044,7 @@ mod tests {
         let chunk = try_compile(ops, &super::empty_compiled_program()).expect("compile failed");
         let mut slots = [0.0f64; 0];
         let mut state = JitRuntimeState::new(
+            std::ptr::null_mut(),
             &mut slots,
             dummy_field,
             dummy_array,
@@ -3967,6 +4060,7 @@ mod tests {
         let chunk = try_compile(ops, &super::empty_compiled_program()).expect("compile failed");
         let mut slots = [0.0f64; 0];
         let mut state = JitRuntimeState::new(
+            std::ptr::null_mut(),
             &mut slots,
             dummy_field,
             dummy_array,
@@ -3978,28 +4072,34 @@ mod tests {
         chunk.execute(&mut state)
     }
 
-    extern "C" fn dummy_field(_: i32) -> f64 {
+    extern "C" fn dummy_field(_: *mut c_void, _: i32) -> f64 {
         0.0
     }
 
-    extern "C" fn dummy_array(_: u32, _: i32, _: f64) {}
+    extern "C" fn dummy_array(_: *mut c_void, _: u32, _: i32, _: f64) {}
 
-    extern "C" fn dummy_var(_: u32, _: u32, _: f64) -> f64 {
+    extern "C" fn dummy_var(_: *mut c_void, _: u32, _: u32, _: f64) -> f64 {
         0.0
     }
 
-    extern "C" fn dummy_field_dispatch(_: u32, _: i32, _: f64) -> f64 {
+    extern "C" fn dummy_field_dispatch(_: *mut c_void, _: u32, _: i32, _: f64) -> f64 {
         0.0
     }
 
-    extern "C" fn dummy_io_dispatch(_: u32, _: i32, _: i32, _: i32) {}
+    extern "C" fn dummy_io_dispatch(_: *mut c_void, _: u32, _: i32, _: i32, _: i32) {}
 
-    extern "C" fn dummy_val_dispatch(_: u32, _: u32, _: f64, _: f64) -> f64 {
+    extern "C" fn dummy_val_dispatch(_: *mut c_void, _: u32, _: u32, _: f64, _: f64) -> f64 {
         0.0
     }
 
     /// Mixed `SetField` lowers to [`MIXED_SET_FIELD`] on `val_dispatch`; wire it for field tests.
-    extern "C" fn test_field_mixed_val_dispatch(op: u32, a1: u32, a2: f64, a3: f64) -> f64 {
+    extern "C" fn test_field_mixed_val_dispatch(
+        vmctx: *mut c_void,
+        op: u32,
+        a1: u32,
+        a2: f64,
+        a3: f64,
+    ) -> f64 {
         if op == MIXED_SET_FIELD {
             let field_idx = a1 as i32;
             let i = field_idx.max(0) as usize;
@@ -4012,7 +4112,7 @@ mod tests {
                 a2
             })
         } else {
-            dummy_val_dispatch(op, a1, a2, a3)
+            dummy_val_dispatch(vmctx, op, a1, a2, a3)
         }
     }
 
@@ -4020,6 +4120,7 @@ mod tests {
         let chunk = try_compile(ops, &super::empty_compiled_program()).expect("compile failed");
         let mut slots = [0.0f64; 0];
         let mut state = JitRuntimeState::new(
+            std::ptr::null_mut(),
             &mut slots,
             dummy_field,
             dummy_array,
@@ -4034,6 +4135,7 @@ mod tests {
     fn exec_with_slots(ops: &[Op], slots: &mut [f64]) -> f64 {
         let chunk = try_compile(ops, &super::empty_compiled_program()).expect("compile failed");
         let mut state = JitRuntimeState::new(
+            std::ptr::null_mut(),
             slots,
             dummy_field,
             dummy_array,
@@ -4045,9 +4147,14 @@ mod tests {
         chunk.execute(&mut state)
     }
 
-    fn exec_with_fields(ops: &[Op], slots: &mut [f64], field_fn: extern "C" fn(i32) -> f64) -> f64 {
+    fn exec_with_fields(
+        ops: &[Op],
+        slots: &mut [f64],
+        field_fn: extern "C" fn(*mut c_void, i32) -> f64,
+    ) -> f64 {
         let chunk = try_compile(ops, &super::empty_compiled_program()).expect("compile failed");
         let mut state = JitRuntimeState::new(
+            std::ptr::null_mut(),
             slots,
             field_fn,
             dummy_array,
@@ -4411,7 +4518,7 @@ mod tests {
 
     // ── Field access ───────────────────────────────────────────────────
 
-    extern "C" fn test_field_fn(i: i32) -> f64 {
+    extern "C" fn test_field_fn(_: *mut c_void, i: i32) -> f64 {
         match i {
             1 => 10.0,
             2 => 20.0,
@@ -4444,7 +4551,7 @@ mod tests {
     #[test]
     fn jit_loop_sum_fields_dynamic() {
         // while (i < 4) { sum += $i; i++ } with NF=3 via callback — same shape as summing `$i` for i in 1..=NF when NF=3.
-        extern "C" fn fields(i: i32) -> f64 {
+        extern "C" fn fields(_: *mut c_void, i: i32) -> f64 {
             match i {
                 1 => 100.0,
                 2 => 200.0,
@@ -4762,7 +4869,7 @@ mod tests {
         // sum = 0 (slot 0), i = 1 (slot 1)
         // while i <= NF: sum += $i; i++
         // Simulates: { for (i=1; i<=NF; i++) sum += $i }
-        extern "C" fn fields(i: i32) -> f64 {
+        extern "C" fn fields(_: *mut c_void, i: i32) -> f64 {
             match i {
                 1 => 100.0,
                 2 => 200.0,
@@ -5124,7 +5231,7 @@ mod tests {
     #[test]
     fn jit_print_then_arithmetic() {
         // `{ print $1; sum += $2 }` — fused print followed by slot math.
-        extern "C" fn fields(i: i32) -> f64 {
+        extern "C" fn fields(_: *mut c_void, i: i32) -> f64 {
             match i {
                 1 => 10.0,
                 2 => 20.0,
@@ -5139,6 +5246,7 @@ mod tests {
         let mut slots = [5.0];
         let chunk = try_compile(&ops, &super::empty_compiled_program()).expect("compile");
         let mut state = JitRuntimeState::new(
+            std::ptr::null_mut(),
             &mut slots,
             fields,
             dummy_array,

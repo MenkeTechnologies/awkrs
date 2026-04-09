@@ -9,6 +9,7 @@ use crate::interp::Flow;
 use crate::runtime::AwkMap;
 use crate::runtime::{Runtime, Value};
 use std::cmp::Ordering;
+use std::ffi::c_void;
 use std::io::{self, Write};
 use std::mem;
 use std::sync::Arc;
@@ -369,18 +370,6 @@ pub fn vm_run_rule(
 use std::cell::Cell;
 
 thread_local! {
-    /// Raw pointer to the current Runtime, set before JIT execution so the
-    /// field callback can access `field_as_number`, `nr`, `fnr`, `nf`.
-    static JIT_RT_PTR: Cell<*mut Runtime> = const { Cell::new(std::ptr::null_mut()) };
-    /// Raw pointer to the current compiled program (string pool), set before JIT
-    /// so fused `ArrayFieldAddConst` can resolve interned array names.
-    static JIT_CP_PTR: Cell<*const CompiledProgram> = const { Cell::new(std::ptr::null()) };
-    /// Current VM context — used by `jit_var_dispatch` for `GetVar` / `SetVar` /
-    /// `IncrVar` / `CompoundAssignVar` (full `get_var` / `set_var` semantics).
-    static JIT_VMCTX_PTR: Cell<*mut VmCtx<'static>> = const { Cell::new(std::ptr::null_mut()) };
-    /// Pointer to the `jit_slots` buffer — updated when a slotted name is written via `var_dispatch`.
-    static JIT_SLOTS_PTR: Cell<*mut f64> = const { Cell::new(std::ptr::null_mut()) };
-    static JIT_SLOTS_LEN: Cell<usize> = const { Cell::new(0) };
     /// Signal raised by JIT (0 = none, >0 = signal type from `JIT_VAL_SIGNAL_*`).
     static JIT_SIGNAL: Cell<u32> = const { Cell::new(0) };
     /// Argument for signal (e.g. exit code for `ExitWithCode`, return value for `ReturnVal`).
@@ -410,41 +399,6 @@ thread_local! {
     static SUB_FN_STASH_KEY: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
-/// Save JIT thread-locals so nested `try_jit_dispatch` / `execute` from a JIT callback
-/// restores the outer native code's pointers (otherwise the outer chunk reads null `JIT_SLOTS_PTR`).
-struct NestedJitTlsGuard {
-    rt: *mut Runtime,
-    cp: *const CompiledProgram,
-    vmctx: *mut VmCtx<'static>,
-    slots: *mut f64,
-    len: usize,
-    patsplit_seps_stash: u32,
-}
-
-impl NestedJitTlsGuard {
-    fn new() -> Self {
-        Self {
-            rt: JIT_RT_PTR.with(|c| c.get()),
-            cp: JIT_CP_PTR.with(|c| c.get()),
-            vmctx: JIT_VMCTX_PTR.with(|c| c.get()),
-            slots: JIT_SLOTS_PTR.with(|c| c.get()),
-            len: JIT_SLOTS_LEN.with(|c| c.get()),
-            patsplit_seps_stash: JIT_PATSPLIT_SEPS_STASH.with(|c| c.get()),
-        }
-    }
-}
-
-impl Drop for NestedJitTlsGuard {
-    fn drop(&mut self) {
-        JIT_RT_PTR.with(|c| c.set(self.rt));
-        JIT_CP_PTR.with(|c| c.set(self.cp));
-        JIT_VMCTX_PTR.with(|c| c.set(self.vmctx));
-        JIT_SLOTS_PTR.with(|c| c.set(self.slots));
-        JIT_SLOTS_LEN.with(|c| c.set(self.len));
-        JIT_PATSPLIT_SEPS_STASH.with(|c| c.set(self.patsplit_seps_stash));
-    }
-}
-
 fn jit_f64_to_value(ctx: &VmCtx<'_>, x: f64) -> Value {
     use crate::jit::{decode_nan_str_bits, is_nan_str, is_nan_uninit};
     let bits = x.to_bits();
@@ -466,7 +420,7 @@ fn jit_f64_to_value(ctx: &VmCtx<'_>, x: f64) -> Value {
 }
 
 /// `typeof(name)` for a simple identifier while JIT may hold fresh slot values only in
-/// `JIT_SLOTS_PTR` (mirrors `VmCtx::typeof_scalar_name` but reads slotted scalars from the scratch buffer).
+/// [`Runtime::jit_slot_buf`] (mirrors `VmCtx::typeof_scalar_name` but reads slotted scalars from the scratch buffer).
 fn typeof_scalar_name_for_jit(ctx: &mut VmCtx<'_>, name: &str) -> Value {
     match name {
         "NR" | "FNR" | "NF" => return Value::Str("number".into()),
@@ -480,10 +434,9 @@ fn typeof_scalar_name_for_jit(ctx: &mut VmCtx<'_>, name: &str) -> Value {
     }
     if let Some(&slot) = ctx.cp.slot_map.get(name) {
         let slot = slot as usize;
-        let ptr = JIT_SLOTS_PTR.get();
-        let len = JIT_SLOTS_LEN.get();
-        let v = if !ptr.is_null() && slot < len {
-            let raw = unsafe { *ptr.add(slot) };
+        let buf = &ctx.rt.jit_slot_buf;
+        let v = if slot < buf.len() {
+            let raw = buf[slot];
             jit_f64_to_value(ctx, raw)
         } else {
             ctx.rt.slots.get(slot).cloned().unwrap_or(Value::Uninit)
@@ -514,6 +467,24 @@ fn value_to_jit_f64(_ctx: &mut VmCtx<'_>, v: Value) -> f64 {
     }
 }
 
+#[inline]
+fn jit_scratch_slot_raw(ctx: &VmCtx<'_>, slot: usize) -> f64 {
+    let buf = &ctx.rt.jit_slot_buf;
+    if slot >= buf.len() {
+        return 0.0;
+    }
+    buf[slot]
+}
+
+#[inline]
+fn jit_scratch_slot_store_num(ctx: &mut VmCtx<'_>, slot: usize, n: f64) {
+    let buf = &mut ctx.rt.jit_slot_buf;
+    if slot >= buf.len() {
+        return;
+    }
+    buf[slot] = n;
+}
+
 fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64) -> f64 {
     use crate::ast::BinOp;
     use crate::jit::{
@@ -537,26 +508,6 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
         MIXED_TO_BOOL, MIXED_TRUTHINESS, MIXED_TYPEOF_ARRAY_ELEM, MIXED_TYPEOF_FIELD,
         MIXED_TYPEOF_SLOT, MIXED_TYPEOF_VALUE, MIXED_TYPEOF_VAR,
     };
-
-    fn mixed_jit_slot_load_raw(slot: usize) -> f64 {
-        let ptr = JIT_SLOTS_PTR.get();
-        let len = JIT_SLOTS_LEN.get();
-        if ptr.is_null() || slot >= len {
-            return 0.0;
-        }
-        unsafe { *ptr.add(slot) }
-    }
-
-    fn mixed_jit_slot_store_num(slot: usize, n: f64) {
-        let ptr = JIT_SLOTS_PTR.get();
-        let len = JIT_SLOTS_LEN.get();
-        if ptr.is_null() || slot >= len {
-            return;
-        }
-        unsafe {
-            ptr.add(slot).write(n);
-        }
-    }
 
     match op {
         MIXED_PUSH_STR => crate::jit::nan_str_pool(a1),
@@ -638,13 +589,8 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
             0.0
         }
         MIXED_GET_SLOT => {
-            let ptr = JIT_SLOTS_PTR.get();
-            let len = JIT_SLOTS_LEN.get();
             let slot = a1 as usize;
-            if ptr.is_null() || slot >= len {
-                return 0.0;
-            }
-            unsafe { *ptr.add(slot) }
+            jit_scratch_slot_raw(ctx, slot)
         }
         MIXED_REGEX_MATCH | MIXED_REGEX_NOT_MATCH => {
             let s = jit_f64_to_value(ctx, a2).as_str();
@@ -910,41 +856,41 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
                 3 => IncDecOp::PostDec,
                 _ => IncDecOp::PreInc,
             };
-            let raw = mixed_jit_slot_load_raw(slot);
+            let raw = jit_scratch_slot_raw(ctx, slot);
             let old_n = jit_f64_to_value(ctx, raw).as_number();
             let delta = incdec_delta(kind);
             let new_n = old_n + delta;
-            mixed_jit_slot_store_num(slot, new_n);
+            jit_scratch_slot_store_num(ctx, slot, new_n);
             incdec_push(kind, old_n, new_n)
         }
         MIXED_INCR_SLOT => {
             let slot = a1 as usize;
-            let raw = mixed_jit_slot_load_raw(slot);
+            let raw = jit_scratch_slot_raw(ctx, slot);
             let n = jit_f64_to_value(ctx, raw).as_number();
-            mixed_jit_slot_store_num(slot, n + 1.0);
+            jit_scratch_slot_store_num(ctx, slot, n + 1.0);
             0.0
         }
         MIXED_DECR_SLOT => {
             let slot = a1 as usize;
-            let raw = mixed_jit_slot_load_raw(slot);
+            let raw = jit_scratch_slot_raw(ctx, slot);
             let n = jit_f64_to_value(ctx, raw).as_number();
-            mixed_jit_slot_store_num(slot, n - 1.0);
+            jit_scratch_slot_store_num(ctx, slot, n - 1.0);
             0.0
         }
         MIXED_ADD_SLOT_TO_SLOT => {
             let src = (a1 & 0xffff) as usize;
             let dst = ((a1 >> 16) & 0xffff) as usize;
-            let sv = jit_f64_to_value(ctx, mixed_jit_slot_load_raw(src)).as_number();
-            let dv = jit_f64_to_value(ctx, mixed_jit_slot_load_raw(dst)).as_number();
-            mixed_jit_slot_store_num(dst, dv + sv);
+            let sv = jit_f64_to_value(ctx, jit_scratch_slot_raw(ctx, src)).as_number();
+            let dv = jit_f64_to_value(ctx, jit_scratch_slot_raw(ctx, dst)).as_number();
+            jit_scratch_slot_store_num(ctx, dst, dv + sv);
             0.0
         }
         MIXED_ADD_FIELD_TO_SLOT => {
             let field = (a1 & 0xffff) as i32;
             let slot = ((a1 >> 16) & 0xffff) as usize;
             let field_val = ctx.rt.field_as_number(field);
-            let old = jit_f64_to_value(ctx, mixed_jit_slot_load_raw(slot)).as_number();
-            mixed_jit_slot_store_num(slot, old + field_val);
+            let old = jit_f64_to_value(ctx, jit_scratch_slot_raw(ctx, slot)).as_number();
+            jit_scratch_slot_store_num(ctx, slot, old + field_val);
             0.0
         }
         MIXED_ADD_MUL_FIELDS_TO_SLOT => {
@@ -952,13 +898,13 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
             let f2 = ((a1 >> 16) & 0xffff) as i32;
             let slot = a2 as usize;
             let p = ctx.rt.field_as_number(f1) * ctx.rt.field_as_number(f2);
-            let old = jit_f64_to_value(ctx, mixed_jit_slot_load_raw(slot)).as_number();
-            mixed_jit_slot_store_num(slot, old + p);
+            let old = jit_f64_to_value(ctx, jit_scratch_slot_raw(ctx, slot)).as_number();
+            jit_scratch_slot_store_num(ctx, slot, old + p);
             0.0
         }
         MIXED_SLOT_AS_NUMBER => {
             let slot = a1 as usize;
-            jit_f64_to_value(ctx, mixed_jit_slot_load_raw(slot)).as_number()
+            jit_f64_to_value(ctx, jit_scratch_slot_raw(ctx, slot)).as_number()
         }
         MIXED_SET_FIELD => {
             let field_idx = a1 as i32;
@@ -1019,10 +965,9 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
         }
         MIXED_TYPEOF_SLOT => {
             let slot = a1 as usize;
-            let ptr = JIT_SLOTS_PTR.get();
-            let len = JIT_SLOTS_LEN.get();
-            let v = if !ptr.is_null() && slot < len {
-                let raw = unsafe { *ptr.add(slot) };
+            let buf = &ctx.rt.jit_slot_buf;
+            let v = if slot < buf.len() {
+                let raw = buf[slot];
                 jit_f64_to_value(ctx, raw)
             } else {
                 ctx.rt.slots.get(slot).cloned().unwrap_or(Value::Uninit)
@@ -1414,29 +1359,26 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
     }
 }
 
-fn sync_jit_slot_if_scalar(ctx: &VmCtx<'_>, name: &str) {
+fn sync_jit_slot_if_scalar(ctx: &mut VmCtx<'_>, name: &str) {
     let Some(&slot) = ctx.cp.slot_map.get(name) else {
         return;
     };
-    let ptr = JIT_SLOTS_PTR.get();
-    let len = JIT_SLOTS_LEN.get();
-    if ptr.is_null() || (slot as usize) >= len {
+    let us = slot as usize;
+    let buf = &mut ctx.rt.jit_slot_buf;
+    if us >= buf.len() {
         return;
     }
-    let v = ctx.rt.slots[slot as usize].as_number();
-    unsafe {
-        ptr.add(slot as usize).write(v);
-    }
+    let v = ctx.rt.slots[us].as_number();
+    buf[us] = v;
 }
 
 /// During mixed JIT, `SetSlot` writes only the scratch buffer; `rt.slots` is refreshed at chunk end.
 /// Callbacks that read a slotted scalar before mutating must use this instead of `rt.slots` alone.
 fn slot_value_live_for_jit(ctx: &VmCtx<'_>, slot: u16) -> Value {
-    let ptr = JIT_SLOTS_PTR.get();
-    let len = JIT_SLOTS_LEN.get();
     let us = slot as usize;
-    if !ptr.is_null() && us < len {
-        let raw = unsafe { *ptr.add(us) };
+    let buf = &ctx.rt.jit_slot_buf;
+    if us < buf.len() {
+        let raw = buf[us];
         jit_f64_to_value(ctx, raw)
     } else {
         ctx.rt.slots[us].clone()
@@ -1446,16 +1388,13 @@ fn slot_value_live_for_jit(ctx: &VmCtx<'_>, slot: u16) -> Value {
 /// After interpreter/callback code mutates `rt.slots[slot]` (e.g. string loop vars),
 /// mirror `Value` into the JIT scratch buffer so `GetSlot` / `MIXED_GET_SLOT` see it.
 fn sync_jit_slot_value(ctx: &mut VmCtx<'_>, slot: u16) {
-    let ptr = JIT_SLOTS_PTR.get();
-    let len = JIT_SLOTS_LEN.get();
-    if ptr.is_null() || (slot as usize) >= len {
+    let us = slot as usize;
+    if us >= ctx.rt.jit_slot_buf.len() {
         return;
     }
-    let v = ctx.rt.slots[slot as usize].clone();
+    let v = ctx.rt.slots[us].clone();
     let f = value_to_jit_f64(ctx, v);
-    unsafe {
-        ptr.add(slot as usize).write(f);
-    }
+    ctx.rt.jit_slot_buf[us] = f;
 }
 
 #[inline]
@@ -1468,47 +1407,37 @@ fn sync_jit_slot_for_scalar_name(ctx: &mut VmCtx<'_>, name: &str) {
 /// Field callback passed to JIT-compiled code.
 /// Positive i → field $i as f64.
 /// Negative i → special: -1=NR, -2=FNR, -3=NF.
-extern "C" fn jit_field_callback(i: i32) -> f64 {
-    JIT_RT_PTR.with(|cell| {
-        let ptr = cell.get();
-        if ptr.is_null() {
-            return 0.0;
-        }
-        let rt = unsafe { &mut *ptr };
-        match i {
-            -1 => rt.nr,
-            -2 => rt.fnr,
-            -3 => rt.nf() as f64,
-            _ => rt.field_as_number(i),
-        }
-    })
+extern "C" fn jit_field_callback(vmctx: *mut c_void, i: i32) -> f64 {
+    if vmctx.is_null() {
+        return 0.0;
+    }
+    let ctx = unsafe { &mut *vmctx.cast::<VmCtx<'static>>() };
+    let rt = &mut *ctx.rt;
+    match i {
+        -1 => rt.nr,
+        -2 => rt.fnr,
+        -3 => rt.nf() as f64,
+        _ => rt.field_as_number(i),
+    }
 }
 
 /// Fused `a[$field] += delta` — matches `Op::ArrayFieldAddConst` in the VM loop.
-extern "C" fn jit_array_field_add_const(arr_idx: u32, field: i32, delta: f64) {
-    JIT_RT_PTR.with(|rt_cell| {
-        JIT_CP_PTR.with(|cp_cell| {
-            let rt_ptr = rt_cell.get();
-            let cp_ptr = cp_cell.get();
-            if rt_ptr.is_null() || cp_ptr.is_null() {
-                return;
-            }
-            let rt = unsafe { &mut *rt_ptr };
-            let cp = unsafe { &*cp_ptr };
-            let name = cp.strings.get(arr_idx);
-            rt.array_field_add_delta(name, field, delta);
-        })
-    })
+extern "C" fn jit_array_field_add_const(vmctx: *mut c_void, arr_idx: u32, field: i32, delta: f64) {
+    if vmctx.is_null() {
+        return;
+    }
+    let ctx = unsafe { &mut *vmctx.cast::<VmCtx<'static>>() };
+    let name = ctx.cp.strings.get(arr_idx);
+    ctx.rt.array_field_add_delta(name, field, delta);
 }
 
 /// Multiplexed HashMap-path variable ops — must match `JIT_VAR_OP_*` in `jit.rs`.
-extern "C" fn jit_var_dispatch(op: u32, name_idx: u32, arg: f64) -> f64 {
-    JIT_VMCTX_PTR.with(|cell| {
-        let p = cell.get();
-        if p.is_null() {
-            return 0.0;
-        }
-        let ctx = unsafe { &mut *p };
+extern "C" fn jit_var_dispatch(vmctx: *mut c_void, op: u32, name_idx: u32, arg: f64) -> f64 {
+    if vmctx.is_null() {
+        return 0.0;
+    }
+    {
+        let ctx = unsafe { &mut *vmctx.cast::<VmCtx<'static>>() };
         let name_owned = ctx.str_ref(name_idx).to_string();
         use crate::jit::{
             JIT_VAR_OP_COMPOUND_ADD, JIT_VAR_OP_COMPOUND_DIV, JIT_VAR_OP_COMPOUND_MOD,
@@ -1587,18 +1516,17 @@ extern "C" fn jit_var_dispatch(op: u32, name_idx: u32, arg: f64) -> f64 {
             }
             _ => 0.0,
         }
-    })
+    }
 }
 
 /// `$n` compound assign / `++$n` / `$n++` — reuses `JIT_VAR_OP_*` for compound and inc/dec
 /// (same numeric opcodes as [`jit_var_dispatch`], different first-class args).
-extern "C" fn jit_field_dispatch(op: u32, field_idx: i32, arg: f64) -> f64 {
-    JIT_VMCTX_PTR.with(|cell| {
-        let p = cell.get();
-        if p.is_null() {
-            return 0.0;
-        }
-        let ctx = unsafe { &mut *p };
+extern "C" fn jit_field_dispatch(vmctx: *mut c_void, op: u32, field_idx: i32, arg: f64) -> f64 {
+    if vmctx.is_null() {
+        return 0.0;
+    }
+    {
+        let ctx = unsafe { &mut *vmctx.cast::<VmCtx<'static>>() };
         use crate::jit::{
             JIT_FIELD_OP_SET_NUM, JIT_VAR_OP_COMPOUND_ADD, JIT_VAR_OP_COMPOUND_DIV,
             JIT_VAR_OP_COMPOUND_MOD, JIT_VAR_OP_COMPOUND_MUL, JIT_VAR_OP_COMPOUND_SUB,
@@ -1653,22 +1581,21 @@ extern "C" fn jit_field_dispatch(op: u32, field_idx: i32, arg: f64) -> f64 {
             }
             _ => 0.0,
         }
-    })
+    }
 }
 
 /// Print side-effects from JIT: `PrintFieldStdout`, `PrintFieldSepField`,
 /// `PrintThreeFieldsStdout`, bare `print` (argc=0).
-extern "C" fn jit_io_dispatch(op: u32, a1: i32, a2: i32, a3: i32) {
+extern "C" fn jit_io_dispatch(vmctx: *mut c_void, op: u32, a1: i32, a2: i32, a3: i32) {
     use crate::jit::{
         JIT_IO_PRINT_FIELD, JIT_IO_PRINT_FIELD_SEP_FIELD, JIT_IO_PRINT_RECORD,
         JIT_IO_PRINT_THREE_FIELDS,
     };
-    JIT_VMCTX_PTR.with(|cell| {
-        let p = cell.get();
-        if p.is_null() {
-            return;
-        }
-        let ctx = unsafe { &mut *p };
+    if vmctx.is_null() {
+        return;
+    }
+    {
+        let ctx = unsafe { &mut *vmctx.cast::<VmCtx<'static>>() };
         match op {
             JIT_IO_PRINT_FIELD => {
                 let field = a1 as u16;
@@ -1734,11 +1661,11 @@ extern "C" fn jit_io_dispatch(op: u32, a1: i32, a2: i32, a3: i32) {
             }
             _ => {}
         }
-    })
+    }
 }
 
 /// Array ops, `MatchRegexp`, flow signals from JIT.
-extern "C" fn jit_val_dispatch(op: u32, a1: u32, a2: f64, a3: f64) -> f64 {
+extern "C" fn jit_val_dispatch(vmctx: *mut c_void, op: u32, a1: u32, a2: f64, a3: f64) -> f64 {
     use crate::jit::{
         JIT_VAL_ARRAY_COMPOUND_ADD, JIT_VAL_ARRAY_COMPOUND_DIV, JIT_VAL_ARRAY_COMPOUND_MOD,
         JIT_VAL_ARRAY_COMPOUND_MUL, JIT_VAL_ARRAY_COMPOUND_SUB, JIT_VAL_ARRAY_DELETE_ALL,
@@ -1768,22 +1695,18 @@ extern "C" fn jit_val_dispatch(op: u32, a1: u32, a2: f64, a3: f64) -> f64 {
     }
 
     if op >= 100 {
-        return JIT_VMCTX_PTR.with(|cell| {
-            let p = cell.get();
-            if p.is_null() {
-                return 0.0;
-            }
-            let ctx = unsafe { &mut *p };
-            jit_mixed_op_dispatch(ctx, op, a1, a2, a3)
-        });
-    }
-
-    JIT_VMCTX_PTR.with(|cell| {
-        let p = cell.get();
-        if p.is_null() {
+        if vmctx.is_null() {
             return 0.0;
         }
-        let ctx = unsafe { &mut *p };
+        let ctx = unsafe { &mut *vmctx.cast::<VmCtx<'static>>() };
+        return jit_mixed_op_dispatch(ctx, op, a1, a2, a3);
+    }
+
+    if vmctx.is_null() {
+        return 0.0;
+    }
+    {
+        let ctx = unsafe { &mut *vmctx.cast::<VmCtx<'static>>() };
         match op {
             JIT_VAL_MATCH_REGEXP => {
                 let idx = a1;
@@ -1918,11 +1841,10 @@ extern "C" fn jit_val_dispatch(op: u32, a1: u32, a2: f64, a3: f64) -> f64 {
             }
             _ => 0.0,
         }
-    })
+    }
 }
 
-/// Try JIT dispatch for the full instruction set. Converts slots to/from f64[],
-/// sets up the field callback via thread-local, and executes.
+/// Try JIT dispatch for the full instruction set. Converts slots to/from f64[] and executes.
 fn try_jit_dispatch(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<Option<VmSignal>> {
     let ops = &chunk.ops;
     if crate::jit::jit_disabled_by_env() {
@@ -1956,7 +1878,6 @@ fn try_jit_dispatch(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<Option<VmSigna
     };
 
     let mixed = crate::jit::needs_mixed_mode(ops);
-    let needs_vm_tls = crate::jit::jit_chunk_needs_vm_tls(ops);
 
     let slot_count = ctx.rt.slots.len();
 
@@ -1988,22 +1909,11 @@ fn try_jit_dispatch(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<Option<VmSigna
         ctx.rt.jit_slot_buf[..slot_count].copy_from_slice(&nums);
     }
 
-    let _nested_jit_tls = needs_vm_tls.then(NestedJitTlsGuard::new);
-
-    if needs_vm_tls {
-        let rt_ptr: *mut Runtime = ctx.rt;
-        let cp_ptr: *const CompiledProgram = ctx.cp;
-        JIT_RT_PTR.with(|cell| cell.set(rt_ptr));
-        JIT_CP_PTR.with(|cell| cell.set(cp_ptr));
-        JIT_VMCTX_PTR.with(|cell| {
-            cell.set(std::ptr::from_mut(ctx).cast::<VmCtx<'static>>());
-        });
-        JIT_SLOTS_PTR.with(|cell| cell.set(ctx.rt.jit_slot_buf.as_mut_ptr()));
-        JIT_SLOTS_LEN.with(|cell| cell.set(slot_count));
-    }
     JIT_SIGNAL.with(|c| c.set(0));
 
+    let vmctx = std::ptr::from_mut(ctx).cast::<c_void>();
     let mut jit_state = crate::jit::JitRuntimeState::new(
+        vmctx,
         &mut ctx.rt.jit_slot_buf[..slot_count],
         jit_field_callback,
         jit_array_field_add_const,

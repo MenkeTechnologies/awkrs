@@ -9,7 +9,7 @@ Workloads match [README.md](../README.md) **[0x06] BENCHMARKS** sections **1–1
 - **Generated at (UTC):** 2026-04-09 20:17:48
 - **uname:** `Darwin 25.4.0 arm64`
 - **CPU (macOS sysctl):** Apple M5 Max
-- **awkrs:** `/Users/wizard/RustroverProjects/awkrs/target/release/awkrs` (`awkrs 0.1.13`)
+- **awkrs:** `/Users/wizard/RustroverProjects/awkrs/target/release/awkrs` (`awkrs 0.1.14`)
 
 **JIT on:** `env -u AWKRS_JIT …` — **JIT off:** `AWKRS_JIT=0 …`
 
