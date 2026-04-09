@@ -67,6 +67,7 @@ version = "0.1.3"
 dependencies = [
  "clap",
  "libc",
+ "memchr",
  "rayon",
  "regex",
  "rustc-hash",

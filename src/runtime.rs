@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 /// Fast hash map for awk variables and arrays. Uses FxHash (no DoS resistance,
@@ -34,6 +35,16 @@ impl Value {
             Value::Str(s) => s.clone(),
             Value::Num(n) => format_number(*n),
             Value::Array(_) => String::new(),
+        }
+    }
+
+    /// For `&str` APIs (e.g. `gsub`) without allocating when the value is already `Str`.
+    #[inline]
+    pub fn as_str_cow(&self) -> Cow<'_, str> {
+        match self {
+            Value::Str(s) => Cow::Borrowed(s.as_str()),
+            Value::Num(n) => Cow::Owned(format_number(*n)),
+            Value::Array(_) => Cow::Borrowed(""),
         }
     }
 
@@ -134,15 +145,99 @@ fn format_number(n: f64) -> String {
     }
 }
 
-/// Parse a string to f64, returning 0.0 for non-numeric. Handles leading whitespace.
+/// Parse a string to f64, returning 0.0 for non-numeric. Handles leading/trailing whitespace.
 #[inline]
 fn parse_number(s: &str) -> f64 {
-    // Fast path: empty string
     if s.is_empty() {
         return 0.0;
     }
-    // awk semantics: parse leading numeric prefix
-    s.trim().parse().unwrap_or(0.0)
+    let s = s.trim();
+    if s.is_empty() {
+        return 0.0;
+    }
+    // Hot path: decimal integers (e.g. `seq`, many data columns) without float parsing.
+    if let Some(n) = parse_ascii_integer(s) {
+        return n as f64;
+    }
+    s.parse().unwrap_or(0.0)
+}
+
+/// Returns `Some(n)` only for strings that are exactly an optional sign + ASCII digits (awk-style int).
+#[inline]
+fn parse_ascii_integer(s: &str) -> Option<i64> {
+    let b = s.as_bytes();
+    let mut i = 0usize;
+    let neg = match b.first().copied() {
+        Some(b'-') => {
+            i = 1;
+            true
+        }
+        Some(b'+') => {
+            i = 1;
+            false
+        }
+        _ => false,
+    };
+    if i >= b.len() {
+        return None;
+    }
+    let mut acc: i64 = 0;
+    while i < b.len() {
+        let d = b[i];
+        if !d.is_ascii_digit() {
+            return None;
+        }
+        acc = acc
+            .checked_mul(10)?
+            .checked_add((d - b'0') as i64)?;
+        i += 1;
+    }
+    Some(if neg { -acc } else { acc })
+}
+
+/// Split `record` into `field_ranges` (replaces contents). Shared by lazy split and stdin path.
+fn split_fields_into(record: &str, fs: &str, field_ranges: &mut Vec<(u32, u32)>) {
+    field_ranges.clear();
+    if fs.is_empty() {
+        for (i, c) in record.char_indices() {
+            field_ranges.push((i as u32, (i + c.len_utf8()) as u32));
+        }
+    } else if fs == " " {
+        let bytes = record.as_bytes();
+        let len = bytes.len();
+        let mut i = 0;
+        while i < len && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        while i < len {
+            let start = i;
+            while i < len && !bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            field_ranges.push((start as u32, i as u32));
+            while i < len && bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
+        }
+    } else if fs.len() == 1 {
+        let sep = fs.as_bytes()[0];
+        let bytes = record.as_bytes();
+        let mut start = 0;
+        for (i, &b) in bytes.iter().enumerate() {
+            if b == sep {
+                field_ranges.push((start as u32, i as u32));
+                start = i + 1;
+            }
+        }
+        field_ranges.push((start as u32, bytes.len() as u32));
+    } else {
+        let mut pos = 0;
+        for part in record.split(fs) {
+            let end = pos + part.len();
+            field_ranges.push((pos as u32, end as u32));
+            pos = end + fs.len();
+        }
+    }
 }
 
 pub struct Runtime {
@@ -513,61 +608,32 @@ impl Runtime {
         self.field_ranges.clear();
     }
 
+    /// Like [`set_field_sep_split`](Self::set_field_sep_split) but takes an owned line (avoids extra
+    /// copies when the caller already has a `String`, e.g. `gsub` replacing `$0`).
+    pub fn set_field_sep_split_owned(&mut self, fs: &str, line: String) {
+        self.record = line;
+        self.fields_dirty = false;
+        self.fields_pending_split = true;
+        self.cached_fs.clear();
+        self.cached_fs.push_str(fs);
+        self.fields.clear();
+        self.field_ranges.clear();
+    }
+
     /// Ensure fields are split. Called lazily before any field access.
     #[inline]
     pub fn ensure_fields_split(&mut self) {
         if self.fields_pending_split {
             self.fields_pending_split = false;
-            let fs = self.cached_fs.clone();
-            self.split_record_fields(&fs);
+            let record = self.record.as_str();
+            let fs = self.cached_fs.as_str();
+            split_fields_into(record, fs, &mut self.field_ranges);
         }
     }
 
     /// Split `self.record` into `field_ranges` using separator `fs`.
-    /// Caller must clear `field_ranges` and set `fields_dirty = false` before calling.
     fn split_record_fields(&mut self, fs: &str) {
-        let record = self.record.as_str();
-        if fs.is_empty() {
-            for (i, c) in record.char_indices() {
-                self.field_ranges
-                    .push((i as u32, (i + c.len_utf8()) as u32));
-            }
-        } else if fs == " " {
-            let bytes = record.as_bytes();
-            let len = bytes.len();
-            let mut i = 0;
-            while i < len && bytes[i].is_ascii_whitespace() {
-                i += 1;
-            }
-            while i < len {
-                let start = i;
-                while i < len && !bytes[i].is_ascii_whitespace() {
-                    i += 1;
-                }
-                self.field_ranges.push((start as u32, i as u32));
-                while i < len && bytes[i].is_ascii_whitespace() {
-                    i += 1;
-                }
-            }
-        } else if fs.len() == 1 {
-            let sep = fs.as_bytes()[0];
-            let bytes = record.as_bytes();
-            let mut start = 0;
-            for (i, &b) in bytes.iter().enumerate() {
-                if b == sep {
-                    self.field_ranges.push((start as u32, i as u32));
-                    start = i + 1;
-                }
-            }
-            self.field_ranges.push((start as u32, bytes.len() as u32));
-        } else {
-            let mut pos = 0;
-            for part in record.split(fs) {
-                let end = pos + part.len();
-                self.field_ranges.push((pos as u32, end as u32));
-                pos = end + fs.len();
-            }
-        }
+        split_fields_into(self.record.as_str(), fs, &mut self.field_ranges);
     }
 
     pub fn field(&mut self, i: i32) -> Value {

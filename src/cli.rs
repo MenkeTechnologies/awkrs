@@ -1,6 +1,6 @@
 //! Command-line surface compatible with POSIX awk, GNU gawk, and mawk-style `-W` options.
 //!
-//! Extension flags are accepted for script compatibility; some only affect diagnostics or future behavior.
+//! Extension flags are accepted for script compatibility; some only affect diagnostics.
 
 use clap::{ArgAction, Parser, ValueHint};
 use std::path::PathBuf;
@@ -32,7 +32,7 @@ pub struct Args {
     #[arg(short = 'i', long = "include", value_name = "FILE", action = ArgAction::Append, value_hint = ValueHint::FilePath)]
     pub include: Vec<PathBuf>,
 
-    // --- gawk extensions (accepted; partial implementation) ---
+    // --- gawk extensions ---
     #[arg(short = 'b', long = "characters-as-bytes")]
     pub characters_as_bytes: bool,
 

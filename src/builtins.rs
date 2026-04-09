@@ -58,27 +58,49 @@ pub fn gsub(
 
     let n = if let Some(t) = target {
         if use_literal {
-            let (new_s, c) = literal_replace_all(t.as_str(), re_pat, repl);
-            *t = new_s;
-            c
+            if !t.contains(re_pat) {
+                0
+            } else {
+                let (new_s, c) = literal_replace_all(t.as_str(), re_pat, repl);
+                *t = new_s;
+                c
+            }
         } else {
             rt.ensure_regex(re_pat).map_err(Error::Runtime)?;
-            let (new_s, c) =
-                replace_all_awk(rt.regex_ref(re_pat), t.as_str(), repl, repl_has_special);
-            *t = new_s;
-            c
+            let re = rt.regex_ref(re_pat);
+            if !re.is_match(t.as_str()) {
+                0
+            } else {
+                let (new_s, c) = replace_all_awk(re, t.as_str(), repl, repl_has_special);
+                *t = new_s;
+                c
+            }
         }
     } else {
-        // Swap record out to avoid clone — take ownership, replace back after.
+        // Replace `$0` in one step — do not restore the old record only to overwrite it again.
         let cur = std::mem::take(&mut rt.record);
         let (new_s, c) = if use_literal {
+            if !cur.contains(re_pat) {
+                rt.record = cur;
+                return Ok(0.0);
+            }
             literal_replace_all(&cur, re_pat, repl)
         } else {
             rt.ensure_regex(re_pat).map_err(Error::Runtime)?;
-            replace_all_awk(rt.regex_ref(re_pat), &cur, repl, repl_has_special)
+            let re = rt.regex_ref(re_pat);
+            if !re.is_match(&cur) {
+                rt.record = cur;
+                return Ok(0.0);
+            }
+            replace_all_awk(re, &cur, repl, repl_has_special)
         };
-        rt.record = cur; // restore original in case apply_record_string needs FS split
-        apply_record_string(rt, &new_s);
+        drop(cur);
+        let fs = rt
+            .vars
+            .get("FS")
+            .map(|v| v.as_str())
+            .unwrap_or_else(|| " ".into());
+        rt.set_field_sep_split_owned(&fs, new_s);
         c
     };
     Ok(n as f64)
@@ -110,7 +132,7 @@ pub fn sub_fn(
             0.0
         }
     } else {
-        let cur = rt.record.clone();
+        let cur = std::mem::take(&mut rt.record);
         if let Some(m) = rt.regex_ref(re_pat).find(&cur) {
             let piece = if repl_has_special {
                 expand_repl(repl, m.as_str())
@@ -121,9 +143,16 @@ pub fn sub_fn(
             out.push_str(&cur[..m.start()]);
             out.push_str(&piece);
             out.push_str(&cur[m.end()..]);
-            apply_record_string(rt, &out);
+            drop(cur);
+            let fs = rt
+                .vars
+                .get("FS")
+                .map(|v| v.as_str())
+                .unwrap_or_else(|| " ".into());
+            rt.set_field_sep_split_owned(&fs, out);
             1.0
         } else {
+            rt.record = cur;
             0.0
         }
     };
@@ -258,13 +287,4 @@ pub fn patsplit(
     }
 
     Ok(n as f64)
-}
-
-fn apply_record_string(rt: &mut Runtime, s: &str) {
-    let fs = rt
-        .vars
-        .get("FS")
-        .map(|v| v.as_str())
-        .unwrap_or_else(|| " ".into());
-    rt.set_field_sep_split(&fs, s);
 }

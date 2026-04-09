@@ -26,6 +26,7 @@ use crate::compiler::Compiler;
 use crate::interp::{range_step, Flow};
 use crate::parser::parse_program;
 use crate::runtime::{Runtime, Value};
+use memchr::memchr;
 use crate::vm::{
     flush_print_buf, vm_pattern_matches, vm_run_begin, vm_run_beginfile, vm_run_end,
     vm_run_endfile, vm_run_rule,
@@ -473,10 +474,7 @@ fn process_file_slurp(
     let len = data.len();
 
     while pos < len {
-        // Find end of line
-        let eol = data[pos..]
-            .iter()
-            .position(|&b| b == b'\n')
+        let eol = memchr(b'\n', &data[pos..len])
             .map(|i| pos + i)
             .unwrap_or(len);
 
@@ -537,9 +535,7 @@ fn process_file_slurp_inline(
     ors_local[..ors_len].copy_from_slice(&rt.ors_bytes[..ors_len]);
 
     while pos < len {
-        let eol = data[pos..]
-            .iter()
-            .position(|&b| b == b'\n')
+        let eol = memchr(b'\n', &data[pos..len])
             .map(|i| pos + i)
             .unwrap_or(len);
 
@@ -613,10 +609,7 @@ fn process_file_print_field_raw(data: &[u8], field_idx: usize, rt: &mut Runtime)
     let ors = b"\n"; // ORS default — fast path only fires when FS is default too
 
     while pos < len {
-        // Find end of line
-        let eol = data[pos..]
-            .iter()
-            .position(|&b| b == b'\n')
+        let eol = memchr(b'\n', &data[pos..len])
             .map(|i| pos + i)
             .unwrap_or(len);
 

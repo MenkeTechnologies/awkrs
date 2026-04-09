@@ -943,24 +943,26 @@ fn exec_sub(ctx: &mut VmCtx<'_>, target: SubTarget, is_global: bool) -> Result<(
         SubTarget::Field => (None, Some(ctx.pop().as_number() as i32)),
         _ => (None, None),
     };
-    let repl = ctx.pop().as_str();
-    let re = ctx.pop().as_str();
+    let repl_v = ctx.pop();
+    let re_v = ctx.pop();
+    let repl = repl_v.as_str_cow();
+    let re = re_v.as_str_cow();
 
     let count = match target {
         SubTarget::Record => {
             if is_global {
-                builtins::gsub(ctx.rt, &re, &repl, None)?
+                builtins::gsub(ctx.rt, re.as_ref(), repl.as_ref(), None)?
             } else {
-                builtins::sub_fn(ctx.rt, &re, &repl, None)?
+                builtins::sub_fn(ctx.rt, re.as_ref(), repl.as_ref(), None)?
             }
         }
         SubTarget::Var(name_idx) => {
             let name = ctx.str_ref(name_idx).to_string();
             let mut s = ctx.get_var(&name).as_str();
             let n = if is_global {
-                builtins::gsub(ctx.rt, &re, &repl, Some(&mut s))?
+                builtins::gsub(ctx.rt, re.as_ref(), repl.as_ref(), Some(&mut s))?
             } else {
-                builtins::sub_fn(ctx.rt, &re, &repl, Some(&mut s))?
+                builtins::sub_fn(ctx.rt, re.as_ref(), repl.as_ref(), Some(&mut s))?
             };
             ctx.set_var(&name, Value::Str(s));
             n
@@ -968,9 +970,9 @@ fn exec_sub(ctx: &mut VmCtx<'_>, target: SubTarget, is_global: bool) -> Result<(
         SubTarget::SlotVar(slot) => {
             let mut s = ctx.rt.slots[slot as usize].as_str();
             let n = if is_global {
-                builtins::gsub(ctx.rt, &re, &repl, Some(&mut s))?
+                builtins::gsub(ctx.rt, re.as_ref(), repl.as_ref(), Some(&mut s))?
             } else {
-                builtins::sub_fn(ctx.rt, &re, &repl, Some(&mut s))?
+                builtins::sub_fn(ctx.rt, re.as_ref(), repl.as_ref(), Some(&mut s))?
             };
             ctx.rt.slots[slot as usize] = Value::Str(s);
             n
@@ -979,9 +981,9 @@ fn exec_sub(ctx: &mut VmCtx<'_>, target: SubTarget, is_global: bool) -> Result<(
             let i = extra_field_idx.unwrap();
             let mut s = ctx.rt.field(i).as_str();
             let n = if is_global {
-                builtins::gsub(ctx.rt, &re, &repl, Some(&mut s))?
+                builtins::gsub(ctx.rt, re.as_ref(), repl.as_ref(), Some(&mut s))?
             } else {
-                builtins::sub_fn(ctx.rt, &re, &repl, Some(&mut s))?
+                builtins::sub_fn(ctx.rt, re.as_ref(), repl.as_ref(), Some(&mut s))?
             };
             ctx.rt.set_field(i, &s);
             n
@@ -991,9 +993,9 @@ fn exec_sub(ctx: &mut VmCtx<'_>, target: SubTarget, is_global: bool) -> Result<(
             let arr_name = ctx.str_ref(arr_idx).to_string();
             let mut s = ctx.rt.array_get(&arr_name, &key).as_str();
             let n = if is_global {
-                builtins::gsub(ctx.rt, &re, &repl, Some(&mut s))?
+                builtins::gsub(ctx.rt, re.as_ref(), repl.as_ref(), Some(&mut s))?
             } else {
-                builtins::sub_fn(ctx.rt, &re, &repl, Some(&mut s))?
+                builtins::sub_fn(ctx.rt, re.as_ref(), repl.as_ref(), Some(&mut s))?
             };
             ctx.rt.array_set(&arr_name, key, Value::Str(s));
             n

@@ -25,7 +25,7 @@
 
 ## [0x00] SYSTEM SCAN
 
-`awkrs` runs **pattern → action** programs over input records (lines by default), similar to POSIX `awk`, GNU `gawk`, and `mawk`. The CLI accepts a **union** of common options from those implementations so scripts can pass flags through; not every extension flag changes behavior yet—see `--help`.
+`awkrs` runs **pattern → action** programs over input records (lines by default), similar to POSIX `awk`, GNU `gawk`, and `mawk`. The CLI accepts a **union** of common options from those implementations so scripts can pass flags through; see `--help` for which options affect behavior.
 
 #### HELP // SYSTEM INTERFACE
 ![`awkrs -h` cyberpunk help (termshot)](assets/awkrs-help.png)
@@ -77,6 +77,7 @@ Implemented end-to-end:
 - **Data:** fields (`$n`, `$NF`), scalars, **associative arrays** (`a[k]`, **`a[i,j]`** with **`SUBSEP`**), **`expr in array`** (membership: right-hand side is the array name), `split`, **`patsplit`** (2–4 args; optional fourth array **`seps`** holds text between successive fields), string/number values.
 - **Functions:** builtins (`length`, `index`, `substr`, **`split`**, **`sprintf`** / **`printf`** (flags; **`*`** and **`%n$`** for width/precision/value, including forms like **`%*2$d`**; common conversions `%s` `%d` `%i` `%u` `%o` `%x` `%X` `%f` `%e` `%E` `%g` `%G` `%c` `%%`), **`gsub`** / **`sub`** / **`match`**, `tolower` / `toupper`, `int`, `sqrt`, `rand` / `srand`, `system`, `close`, **`fflush`** (stdout, empty string, open **`>`/`>>`** files, open **`|`** pipes, or open **`|&`** coprocesses)), and **user-defined `function`** with parameters and locals (parameters are local; other names assign to globals, matching classic awk).
 - **I/O model:** The main record loop and **`getline` with no redirection** share one **`BufReader`** on stdin or the current input file so line order matches POSIX expectations. **`exit`** sets the process status; **`END` rules still run** after `exit` from `BEGIN` or a pattern action (POSIX-style), then the process exits with the requested code.
+- **Locale & pipes:** On Unix, string **`==`**, **`!=`**, and relational ordering use **`strcoll`** (honors **`LC_COLLATE`** / **`LC_ALL`**). **`|&`** / **`getline … <&`** run the command under **`sh -c`** with stdin and stdout connected; mixing **`|`** and **`|&`** on the same command string is an error. **`system(cmd)`** runs **`cmd`** via **`sh -c`**. With **`-N`** / **`--use-lc-numeric`**, **`LC_NUMERIC`** is applied and **`sprintf`** / **`printf`** use the locale decimal radix for float conversions (**`%f`** / **`%e`** / **`%g`** / **`%E`** / **`%F`** / **`%G`**); without **`-N`**, those conversions use **`.`**.
 
 ---
 
@@ -93,7 +94,7 @@ Implemented end-to-end:
 
 By default **`-j`** / **`--threads`** is **1**. Pass a higher value when the program is **parallel-safe** (static check: no range patterns, no `exit`, no primary `getline`, no **`getline <&`** coprocess, no `delete`, no **`print`/`printf` redirection** to files, pipes, or coprocesses, no cross-record assignments or other mutating expressions in record rules or user functions) **and** input comes from **files** (not stdin-only); then **records are processed in parallel** with **rayon** and `print` / `printf` output is **reordered to input order** so pipelines stay deterministic. **Stdin** is always read **line-by-line** (streaming); parallel record mode does not buffer all of stdin.
 
-If the program is not parallel-safe, the engine **falls back to sequential** processing and prints a **warning** when **`-j`** is greater than **1** (use a **single thread** to silence the warning). **`END`** still sees only **post-`BEGIN`** global state (record-rule mutations from parallel workers are not merged into the main runtime). Flags **`--read-ahead`** are accepted for CLI compatibility; the prefetch reader thread is not used.
+If the program is not parallel-safe, the engine **falls back to sequential** processing and prints a **warning** when **`-j`** is greater than **1** (use a **single thread** to silence the warning). **`END`** still sees only **post-`BEGIN`** global state (record-rule mutations from parallel workers are not merged into the main runtime).
 
 **Tradeoff:** Parallel mode loads each **input file** fully into memory before executing rules (not stdin).
 
@@ -259,12 +260,6 @@ cargo test
 On pushes and pull requests to `main`, [GitHub Actions](.github/workflows/ci.yml) runs `cargo fmt --check`, `cargo clippy` (deny warnings), `cargo test` on Ubuntu and macOS, and `cargo doc` with `RUSTDOCFLAGS=-D warnings`.
 
 Library unit tests cover `format` (including locale decimal radix for float conversions), lexer, and parser; integration tests live in `tests/integration.rs` and `tests/more_integration.rs` with shared helpers in `tests/common.rs`. End-to-end coverage includes the **`in`** operator, **`-N` / `--use-lc-numeric`** with `LC_NUMERIC`, and **stdin vs. file** parallel record behavior.
-
----
-
-## [0x09] STILL MISSING OR PARTIAL
-
-**Two-way pipe** (**`|&`** / **`getline … <&`**): **`sh -c`** with stdin and stdout connected (same command string for both directions). Mixing **`|`** and **`|&`** on the same command string is an error. On **Unix**, string **`==`**, **`!=`**, and relational ordering use **`strcoll`** (honors **`LC_COLLATE`** / **`LC_ALL`** from the environment). With **`-N`** / **`--use-lc-numeric`**, **`LC_NUMERIC`** is applied (`setlocale(LC_NUMERIC, "")`) and **`sprintf`** / **`printf`** (statement and function) use the locale **decimal radix** for **`%f`** / **`%e`** / **`%g`** / **`%E`** / **`%F`** / **`%G`** output; **`print`** still uses the existing numeric-to-string rules (not full POSIX **`OFMT`** on every `print` yet). Without **`-N`**, numeric formatting in **`sprintf`** uses **`.`**. Exotic **`printf`** combinations not covered above may differ from **gawk**. Many gawk-only extensions are absent. `system()` runs commands via `sh -c` (same caveat as other awks). Prefer validating critical scripts against reference `awk`/`gawk`.
 
 ---
 
