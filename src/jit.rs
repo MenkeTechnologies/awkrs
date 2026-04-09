@@ -3985,6 +3985,9 @@ mod tests {
     use super::*;
     use crate::ast::BinOp;
     use crate::bytecode::GetlineSource;
+    use crate::test_sync::ENV_LOCK;
+    use cranelift_codegen::settings::OptLevel;
+    use cranelift_module::Module;
     use std::cell::RefCell;
 
     thread_local! {
@@ -4006,6 +4009,22 @@ mod tests {
         let u = nan_uninit();
         assert!(is_nan_uninit(u.to_bits()));
         assert!(!is_nan_str(u.to_bits()));
+    }
+
+    #[test]
+    fn new_jit_module_uses_speed_opt_level() {
+        let m = new_jit_module(&JitCompileOptions::default()).expect("jit module");
+        assert_eq!(m.isa().flags().opt_level(), OptLevel::Speed);
+    }
+
+    #[test]
+    fn jit_min_invocations_before_compile_defaults_and_env() {
+        let _g = ENV_LOCK.lock().expect("env test lock");
+        std::env::remove_var("AWKRS_JIT_MIN_INVOCATIONS");
+        assert_eq!(jit_min_invocations_before_compile(), 3);
+        std::env::set_var("AWKRS_JIT_MIN_INVOCATIONS", "11");
+        assert_eq!(jit_min_invocations_before_compile(), 11);
+        std::env::remove_var("AWKRS_JIT_MIN_INVOCATIONS");
     }
 
     /// Minimal in-process `var_dispatch` for unit tests (mirrors `jit_var_dispatch` numerics).

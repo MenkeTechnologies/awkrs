@@ -1502,3 +1502,9 @@ mod lib_internal_tests {
         assert!(has_primary);
     }
 }
+
+#[cfg(test)]
+pub(crate) mod test_sync {
+    /// Serialize tests that mutate process environment (`AWKRS_JIT_*`, etc.).
+    pub static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+}

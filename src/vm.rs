@@ -3369,8 +3369,14 @@ mod tests {
     use super::*;
     use crate::compiler::Compiler;
     use crate::interp::Flow;
+    use crate::jit::{
+        mixed_encode_field_slot, MIXED_ADD_FIELDNUM_TO_SLOT, MIXED_ADD_FIELD_TO_SLOT,
+        MIXED_ADD_MUL_FIELDNUMS_TO_SLOT, MIXED_ADD_MUL_FIELDS_TO_SLOT,
+    };
     use crate::parser::parse_program;
     use crate::runtime::Runtime;
+    use crate::test_sync::ENV_LOCK;
+    use std::sync::atomic::Ordering as AtomicOrdering;
 
     fn compile(prog_text: &str) -> CompiledProgram {
         let prog = parse_program(prog_text).expect("parse");
@@ -3542,6 +3548,98 @@ mod tests {
         let mut rt = runtime_with_slots(&cp);
         vm_run_begin(&cp, &mut rt).unwrap();
         assert_eq!(String::from_utf8_lossy(&rt.print_buf), "1\n");
+    }
+
+    #[test]
+    fn tiered_jit_defers_compile_until_min_invocations() {
+        let _g = ENV_LOCK.lock().expect("env test lock");
+        std::env::remove_var("AWKRS_JIT");
+        std::env::set_var("AWKRS_JIT_MIN_INVOCATIONS", "2");
+
+        let cp = compile("{ print $1 }");
+        let rule = &cp.record_rules[0];
+        let chunk = &rule.body;
+        let mut rt = runtime_with_slots(&cp);
+
+        rt.set_record_from_line("42");
+        vm_run_rule(rule, &cp, &mut rt, None).unwrap();
+        assert!(
+            chunk.jit_lock.lock().expect("jit_lock").is_none(),
+            "first record: tiered gate should skip compile; cache untouched"
+        );
+        assert_eq!(chunk.jit_invocation_count.load(AtomicOrdering::Relaxed), 1);
+
+        rt.set_record_from_line("42");
+        vm_run_rule(rule, &cp, &mut rt, None).unwrap();
+        assert!(
+            chunk.jit_lock.lock().expect("jit_lock").is_some(),
+            "second record: min invocations met; JIT cache entry should exist"
+        );
+        assert_eq!(chunk.jit_invocation_count.load(AtomicOrdering::Relaxed), 2);
+
+        std::env::remove_var("AWKRS_JIT_MIN_INVOCATIONS");
+    }
+
+    #[test]
+    fn mixed_add_fieldnum_to_slot_matches_field_to_slot() {
+        let cp = compile("{ x += $1 }");
+        let slot_x = *cp.slot_map.get("x").expect("x slotted") as usize;
+        let mut rt = runtime_with_slots(&cp);
+        rt.set_record_from_line("17");
+        rt.ensure_jit_slot_buf(rt.slots.len().max(slot_x + 1));
+        rt.jit_slot_buf[slot_x] = 0.0;
+
+        let mut ctx = VmCtx::new(&cp, &mut rt);
+        let enc = mixed_encode_field_slot(1, slot_x as u16);
+        jit_mixed_op_dispatch(&mut ctx, MIXED_ADD_FIELD_TO_SLOT, enc, 0.0, 0.0);
+        let from_legacy = ctx.rt.jit_slot_buf[slot_x];
+
+        ctx.rt.jit_slot_buf[slot_x] = 0.0;
+        jit_mixed_op_dispatch(
+            &mut ctx,
+            MIXED_ADD_FIELDNUM_TO_SLOT,
+            slot_x as u32,
+            17.0,
+            0.0,
+        );
+        let from_precomputed = ctx.rt.jit_slot_buf[slot_x];
+
+        assert_eq!(from_legacy, from_precomputed);
+        assert_eq!(from_legacy, 17.0);
+    }
+
+    #[test]
+    fn mixed_add_mul_fieldnums_matches_mul_fields_to_slot() {
+        let cp = compile("{ x += $1 * $2 }");
+        let slot_x = *cp.slot_map.get("x").expect("x slotted") as usize;
+        let mut rt = runtime_with_slots(&cp);
+        rt.set_record_from_line("2 3");
+        rt.ensure_jit_slot_buf(rt.slots.len().max(slot_x + 1));
+        rt.jit_slot_buf[slot_x] = 0.0;
+
+        let mut ctx = VmCtx::new(&cp, &mut rt);
+        let enc = u32::from(1u16) | (u32::from(2u16) << 16);
+        jit_mixed_op_dispatch(
+            &mut ctx,
+            MIXED_ADD_MUL_FIELDS_TO_SLOT,
+            enc,
+            slot_x as f64,
+            0.0,
+        );
+        let from_legacy = ctx.rt.jit_slot_buf[slot_x];
+
+        ctx.rt.jit_slot_buf[slot_x] = 0.0;
+        jit_mixed_op_dispatch(
+            &mut ctx,
+            MIXED_ADD_MUL_FIELDNUMS_TO_SLOT,
+            slot_x as u32,
+            2.0,
+            3.0,
+        );
+        let from_precomputed = ctx.rt.jit_slot_buf[slot_x];
+
+        assert_eq!(from_legacy, from_precomputed);
+        assert_eq!(from_legacy, 6.0);
     }
 
     #[test]
