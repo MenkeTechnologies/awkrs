@@ -3348,7 +3348,8 @@ pub fn try_jit_execute(
 /// (Legacy check — superseded by [`is_jit_eligible`] but kept for the public API.)
 ///
 /// Supports the same straight-line stack discipline as [`is_jit_eligible`] for pure
-/// arithmetic: constants, `+ - * / %`, unary `+`/`-`, [`Op::Dup`], and [`Op::Pop`].
+/// numeric stack ops: constants, `+ - * / %`, comparisons, unary `+`/`-`, logical
+/// [`Op::Not`] / [`Op::ToBool`], [`Op::Dup`], and [`Op::Pop`].
 pub fn is_numeric_stack_eligible(ops: &[Op]) -> bool {
     let mut depth: i32 = 0;
     for op in ops {
@@ -3360,7 +3361,13 @@ pub fn is_numeric_stack_eligible(ops: &[Op]) -> bool {
                 }
                 depth -= 1;
             }
-            Op::Neg | Op::Pos => {
+            Op::CmpEq | Op::CmpNe | Op::CmpLt | Op::CmpLe | Op::CmpGt | Op::CmpGe => {
+                if depth < 2 {
+                    return false;
+                }
+                depth -= 1;
+            }
+            Op::Neg | Op::Pos | Op::Not | Op::ToBool => {
                 if depth < 1 {
                     return false;
                 }
@@ -3781,6 +3788,21 @@ mod tests {
         let ops_dup = [Op::PushNum(5.0), Op::Dup, Op::Mul];
         let j = try_compile_numeric_expr(&ops_dup).expect("compile dup mul");
         assert!((j.call_f64() - 25.0).abs() < 1e-15);
+    }
+
+    #[test]
+    fn jit_numeric_expr_cmp_not_to_bool() {
+        let ops_lt = [Op::PushNum(1.0), Op::PushNum(2.0), Op::CmpLt];
+        let j = try_compile_numeric_expr(&ops_lt).expect("compile CmpLt");
+        assert!((j.call_f64() - 1.0).abs() < 1e-15);
+
+        let ops_not = [Op::PushNum(0.0), Op::Not];
+        let j = try_compile_numeric_expr(&ops_not).expect("compile Not");
+        assert!((j.call_f64() - 1.0).abs() < 1e-15);
+
+        let ops_tb = [Op::PushNum(0.0), Op::ToBool];
+        let j = try_compile_numeric_expr(&ops_tb).expect("compile ToBool");
+        assert!(j.call_f64().abs() < 1e-15);
     }
 
     #[test]
