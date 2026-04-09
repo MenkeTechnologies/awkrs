@@ -82,8 +82,8 @@ pub fn run(bin_name: &str) -> Result<()> {
     let prog = parse_program(&program_text)?;
     let parallel_ok = parallel::record_rules_parallel_safe(&prog);
 
-    // Compile AST into bytecode for faster execution.
-    let cp = Compiler::compile_program(&prog);
+    // Compile once; `Arc` is shared with parallel workers (cheap refcount) instead of cloning [`CompiledProgram`].
+    let cp: Arc<CompiledProgram> = Arc::new(Compiler::compile_program(&prog));
 
     let mut rt = Runtime::new();
     if args.use_lc_numeric {
@@ -99,10 +99,10 @@ pub fn run(bin_name: &str) -> Result<()> {
 
     rt.slots = cp.init_slots(&rt.vars);
 
-    vm_run_begin(&cp, &mut rt)?;
+    vm_run_begin(cp.as_ref(), &mut rt)?;
     flush_print_buf(&mut rt.print_buf)?;
     if rt.exit_pending {
-        vm_run_end(&cp, &mut rt)?;
+        vm_run_end(cp.as_ref(), &mut rt)?;
         flush_print_buf(&mut rt.print_buf)?;
         std::process::exit(rt.exit_code);
     }
@@ -119,31 +119,31 @@ pub fn run(bin_name: &str) -> Result<()> {
 
     if files.is_empty() {
         rt.filename = "-".into();
-        vm_run_beginfile(&cp, &mut rt)?;
+        vm_run_beginfile(cp.as_ref(), &mut rt)?;
         if rt.exit_pending {
-            vm_run_endfile(&cp, &mut rt)?;
-            vm_run_end(&cp, &mut rt)?;
+            vm_run_endfile(cp.as_ref(), &mut rt)?;
+            vm_run_end(cp.as_ref(), &mut rt)?;
             std::process::exit(rt.exit_code);
         }
-        process_file(None, &prog, &cp, &mut range_state, &mut rt)?;
-        vm_run_endfile(&cp, &mut rt)?;
+        process_file(None, &prog, cp.as_ref(), &mut range_state, &mut rt)?;
+        vm_run_endfile(cp.as_ref(), &mut rt)?;
     } else {
         for p in &files {
             rt.filename = p.to_string_lossy().into_owned();
             rt.fnr = 0.0;
-            vm_run_beginfile(&cp, &mut rt)?;
+            vm_run_beginfile(cp.as_ref(), &mut rt)?;
             if rt.exit_pending {
-                vm_run_endfile(&cp, &mut rt)?;
-                vm_run_end(&cp, &mut rt)?;
+                vm_run_endfile(cp.as_ref(), &mut rt)?;
+                vm_run_end(cp.as_ref(), &mut rt)?;
                 std::process::exit(rt.exit_code);
             }
             let n = if use_parallel {
                 process_file_parallel(Some(p.as_path()), &prog, &cp, &mut rt, threads, nr_global)?
             } else {
-                process_file(Some(p.as_path()), &prog, &cp, &mut range_state, &mut rt)?
+                process_file(Some(p.as_path()), &prog, cp.as_ref(), &mut range_state, &mut rt)?
             };
             nr_global += n as f64;
-            vm_run_endfile(&cp, &mut rt)?;
+            vm_run_endfile(cp.as_ref(), &mut rt)?;
             if rt.exit_pending {
                 break;
             }
@@ -151,7 +151,7 @@ pub fn run(bin_name: &str) -> Result<()> {
     }
 
     flush_print_buf(&mut rt.print_buf)?;
-    vm_run_end(&cp, &mut rt)?;
+    vm_run_end(cp.as_ref(), &mut rt)?;
     flush_print_buf(&mut rt.print_buf)?;
     if rt.exit_pending {
         std::process::exit(rt.exit_code);
@@ -180,10 +180,12 @@ fn read_all_lines<R: Read>(mut r: R) -> Result<Vec<String>> {
     Ok(lines)
 }
 
+/// Per-record workers run the bytecode VM (`vm_pattern_matches` / `vm_run_rule`), same as sequential mode.
+/// Each worker gets `Arc::clone` of the shared program (O(1)) and a fresh `Runtime` (slots, VM stack, fields, print capture).
 fn process_file_parallel(
     path: Option<&Path>,
     _prog: &Program,
-    cp: &CompiledProgram,
+    cp: &Arc<CompiledProgram>,
     rt: &mut Runtime,
     threads: usize,
     nr_offset: f64,
@@ -199,7 +201,7 @@ fn process_file_parallel(
         return Ok(0);
     }
 
-    let cp_arc = Arc::new(cp.clone());
+    let shared_cp = Arc::clone(cp);
     let shared_globals = Arc::new(rt.vars.clone());
     let shared_slots = Arc::new(rt.slots.clone());
     let fname = rt.filename.clone();
@@ -216,7 +218,7 @@ fn process_file_parallel(
             .into_par_iter()
             .enumerate()
             .map(|(i, line)| {
-                let cp = Arc::clone(&cp_arc);
+                let cp = Arc::clone(&shared_cp);
                 let mut local = Runtime::for_parallel_worker(
                     Arc::clone(&shared_globals),
                     fname.clone(),
@@ -235,9 +237,9 @@ fn process_file_parallel(
                             "internal: range pattern in parallel path".into(),
                         ));
                     }
-                    let run = vm_pattern_matches(rule, &cp, &mut local)?;
+                    let run = vm_pattern_matches(rule, cp.as_ref(), &mut local)?;
                     if run {
-                        match vm_run_rule(rule, &cp, &mut local, Some(&mut buf)) {
+                        match vm_run_rule(rule, cp.as_ref(), &mut local, Some(&mut buf)) {
                             Ok(Flow::Next) => break,
                             Ok(Flow::NextFile) => {
                                 return Err(Error::Runtime(
