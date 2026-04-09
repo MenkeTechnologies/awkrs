@@ -325,6 +325,10 @@ pub fn vm_run_rule(
 
 fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
     let ops = &chunk.ops;
+    if let Some(v) = crate::jit::try_jit_dispatch_numeric_chunk(ops) {
+        ctx.push(Value::Num(v));
+        return Ok(VmSignal::Normal);
+    }
     let len = ops.len();
     let mut pc: usize = 0;
 
@@ -1353,7 +1357,7 @@ fn exec_call_builtin(ctx: &mut VmCtx<'_>, name: &str, argc: u16) -> Result<()> {
             }
             Value::Num(builtins::awk_systime())
         }
-        "strftime" => builtins::awk_strftime(&args).map_err(|s| Error::Runtime(s))?,
+        "strftime" => builtins::awk_strftime(&args).map_err(Error::Runtime)?,
         "mktime" => {
             if argc != 1 {
                 return Err(Error::Runtime("`mktime` expects one argument".into()));

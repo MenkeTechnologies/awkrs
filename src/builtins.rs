@@ -338,7 +338,7 @@ pub fn awk_strftime(args: &[Value]) -> std::result::Result<Value, String> {
         _ => return Err("strftime: expected 0 to 3 arguments".into()),
     };
     let secs = ts.floor() as i64;
-    let nsec = ((ts - secs as f64) * 1e9).round().max(0.0).min(1e9 - 1.0) as u32;
+    let nsec = ((ts - secs as f64) * 1e9).round().clamp(0.0, 1e9 - 1.0) as u32;
     let out = if utc {
         Utc.timestamp_opt(secs, nsec)
             .single()

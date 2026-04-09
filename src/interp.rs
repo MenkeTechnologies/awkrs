@@ -1079,7 +1079,7 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
                 .iter()
                 .map(|e| eval_expr(e, ctx))
                 .collect::<Result<_>>()?;
-            builtins::awk_strftime(&vals).map_err(|s| Error::Runtime(s))
+            builtins::awk_strftime(&vals).map_err(Error::Runtime)
         }
         "mktime" if args.len() == 1 => {
             let s = eval_expr(&args[0], ctx)?.as_str();

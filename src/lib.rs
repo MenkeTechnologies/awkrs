@@ -8,6 +8,11 @@ mod compiler;
 mod cyber_help;
 mod error;
 mod format;
+pub mod jit;
+pub use jit::{
+    is_numeric_stack_eligible, try_compile_numeric_expr, try_jit_dispatch_numeric_chunk,
+    JitNumericChunk,
+};
 #[allow(dead_code)]
 mod interp;
 mod lexer;
@@ -196,6 +201,7 @@ fn parallel_pool(threads: usize) -> Result<ThreadPool> {
 
 /// Run record rules for `lines` in parallel; `line_base` is the 0-based index of `lines[0]` within
 /// the current input file, and `nr_offset` is global `NR` before the first line of that file.
+#[allow(clippy::too_many_arguments)]
 fn process_lines_parallel_chunk(
     pool: &ThreadPool,
     lines: Vec<String>,
