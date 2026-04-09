@@ -1457,4 +1457,13 @@ mod tests {
         let p = Pattern::Expr(Expr::Number(0.0));
         assert!(!pattern_matches(&p, &mut rt, &prog).unwrap());
     }
+
+    #[test]
+    fn match_pattern_accepts_truthy_expr() {
+        let prog = parse_program("").unwrap();
+        let mut rt = Runtime::new();
+        rt.set_record_from_line("z");
+        let p = Pattern::Expr(Expr::Number(2.0));
+        assert!(match_pattern(&p, &mut rt, &prog).unwrap());
+    }
 }

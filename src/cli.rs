@@ -211,4 +211,19 @@ mod tests {
         let a = Args::try_parse_from(["awkrs", "-v", "a=1", "-v", "b=two", "{print a,b}"]).unwrap();
         assert_eq!(a.assigns, vec!["a=1".to_string(), "b=two".to_string()]);
     }
+
+    #[test]
+    fn read_ahead_parses_alongside_parallel_threads() {
+        let a = Args::try_parse_from([
+            "awkrs",
+            "-j",
+            "2",
+            "--read-ahead",
+            "16",
+            "{ print $1 }",
+        ])
+        .unwrap();
+        assert_eq!(a.threads, Some(2));
+        assert_eq!(a.read_ahead, 16);
+    }
 }

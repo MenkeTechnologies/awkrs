@@ -36,6 +36,20 @@ fn sub_returns_at_most_one_on_record() {
 }
 
 #[test]
+fn length_empty_string_is_zero() {
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { print length("") }"#, "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "0\n");
+}
+
+#[test]
+fn numeric_lt_false_when_comparing_zero_to_negative() {
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { print (0 < -1) }"#, "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "0\n");
+}
+
+#[test]
 fn substr_start_beyond_string_yields_empty() {
     let (c, o, _) = run_awkrs_stdin(r#"BEGIN { print substr("hi", 99) }"#, "");
     assert_eq!(c, 0);

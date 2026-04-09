@@ -52,4 +52,12 @@ mod tests {
         let s = e.to_string();
         assert!(s.contains("no/such") && s.contains("cannot read"), "{s}");
     }
+
+    #[test]
+    fn io_error_from_std_io_display() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "eacces");
+        let e: Error = io_err.into();
+        let s = e.to_string();
+        assert!(s.contains("I/O") && s.contains("eacces"), "{s}");
+    }
 }

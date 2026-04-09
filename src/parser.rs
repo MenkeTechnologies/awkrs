@@ -1601,4 +1601,26 @@ mod tests {
             s => panic!("expected delete a[1,2], got {s:?}"),
         }
     }
+
+    #[test]
+    fn parses_beginfile_rule() {
+        let p = parse_program("BEGINFILE { bf = 1 }").unwrap();
+        let rule = p
+            .rules
+            .iter()
+            .find(|r| matches!(r.pattern, Pattern::BeginFile))
+            .expect("BEGINFILE rule");
+        assert_eq!(rule.stmts.len(), 1);
+    }
+
+    #[test]
+    fn parses_endfile_rule() {
+        let p = parse_program("ENDFILE { ef = 1 }").unwrap();
+        let rule = p
+            .rules
+            .iter()
+            .find(|r| matches!(r.pattern, Pattern::EndFile))
+            .expect("ENDFILE rule");
+        assert_eq!(rule.stmts.len(), 1);
+    }
 }

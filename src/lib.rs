@@ -1263,6 +1263,13 @@ mod lib_internal_tests {
     }
 
     #[test]
+    fn uses_primary_getline_false_for_coproc_redirect() {
+        let prog = parse_program("{ getline <& \"cat\" }").unwrap();
+        let cp = Compiler::compile_program(&prog);
+        assert!(!uses_primary_getline(&cp));
+    }
+
+    #[test]
     fn uses_primary_getline_scans_functions() {
         let prog = parse_program("function f(){ getline } BEGIN { f() }").unwrap();
         let cp = Compiler::compile_program(&prog);
