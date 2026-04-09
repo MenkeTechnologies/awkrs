@@ -372,11 +372,11 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Option<f64> {
     JIT_RT_PTR.with(|cell| cell.set(std::ptr::null_mut()));
 
     // Write back modified slots
-    if let Some(_) = result {
-        for i in 0..slot_count {
+    if result.is_some() {
+        for (i, &jit_val) in jit_slots.iter().enumerate().take(slot_count) {
             let old = ctx.rt.slots[i].as_number();
-            if (jit_slots[i] - old).abs() > f64::EPSILON || (old == 0.0 && jit_slots[i] != 0.0) {
-                ctx.rt.slots[i] = Value::Num(jit_slots[i]);
+            if (jit_val - old).abs() > f64::EPSILON || (old == 0.0 && jit_val != 0.0) {
+                ctx.rt.slots[i] = Value::Num(jit_val);
             }
         }
     }

@@ -1,6 +1,6 @@
 //! Cranelift JIT compiler for numeric bytecode chunks.
 //!
-//! Compiles eligible [`crate::bytecode::Op`] sequences into native machine code.
+//! Compiles eligible bytecode `Op` sequences into native machine code.
 //! The JIT handles numeric expressions, slot variables, control flow (loops and
 //! conditionals), field access via callback, and fused peephole opcodes.
 //!
@@ -31,8 +31,9 @@ fn ops_hash(ops: &[Op]) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     // Hash the raw bytes of the ops slice — Op is Copy so this is safe.
-    let bytes =
-        unsafe { std::slice::from_raw_parts(ops.as_ptr() as *const u8, std::mem::size_of_val(ops)) };
+    let bytes = unsafe {
+        std::slice::from_raw_parts(ops.as_ptr() as *const u8, std::mem::size_of_val(ops))
+    };
     bytes.hash(&mut h);
     h.finish()
 }
@@ -42,7 +43,7 @@ fn ops_hash(ops: &[Op]) -> u64 {
 /// Per-invocation inputs for running a [`JitChunk`]: backing storage for numeric
 /// slots and the field resolver used by `PushFieldNum`, fused field+slot ops, etc.
 ///
-/// The VM fills `slots` from [`crate::runtime::Runtime`] and supplies a callback
+/// The VM fills `slots` from the interpreter runtime and supplies a callback
 /// that reads `$N` as `f64` (and NR/FNR/NF for negative indices).
 pub struct JitRuntimeState<'a> {
     pub slots: &'a mut [f64],
@@ -109,19 +110,25 @@ pub fn is_jit_eligible(ops: &[Op]) -> bool {
 
             // Arithmetic (pop 2, push 1)
             Op::Add | Op::Sub | Op::Mul | Op::Div | Op::Mod => {
-                if depth < 2 { return false; }
+                if depth < 2 {
+                    return false;
+                }
                 depth -= 1;
             }
 
             // Comparison (pop 2, push 1)
             Op::CmpEq | Op::CmpNe | Op::CmpLt | Op::CmpLe | Op::CmpGt | Op::CmpGe => {
-                if depth < 2 { return false; }
+                if depth < 2 {
+                    return false;
+                }
                 depth -= 1;
             }
 
             // Unary (pop 1, push 1)
             Op::Neg | Op::Pos | Op::Not | Op::ToBool => {
-                if depth < 1 { return false; }
+                if depth < 1 {
+                    return false;
+                }
             }
 
             // Control flow
@@ -132,17 +139,23 @@ pub fn is_jit_eligible(ops: &[Op]) -> bool {
 
             // Stack
             Op::Pop => {
-                if depth < 1 { return false; }
+                if depth < 1 {
+                    return false;
+                }
                 depth -= 1;
             }
             Op::Dup => {
-                if depth < 1 { return false; }
+                if depth < 1 {
+                    return false;
+                }
                 depth += 1;
             }
 
             // Compound assign slot (pop rhs, push result)
             Op::CompoundAssignSlot(_, bop) => {
-                if depth < 1 { return false; }
+                if depth < 1 {
+                    return false;
+                }
                 match bop {
                     BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {}
                     _ => return false,
@@ -209,12 +222,17 @@ fn collect_jump_targets(ops: &[Op]) -> HashSet<usize> {
 
 /// Check if the ops need the field callback.
 fn needs_field_callback(ops: &[Op]) -> bool {
-    ops.iter().any(|op| matches!(op,
-        Op::PushFieldNum(_)
-        | Op::AddFieldToSlot { .. }
-        | Op::AddMulFieldsToSlot { .. }
-        | Op::GetNR | Op::GetFNR | Op::GetNF
-    ))
+    ops.iter().any(|op| {
+        matches!(
+            op,
+            Op::PushFieldNum(_)
+                | Op::AddFieldToSlot { .. }
+                | Op::AddMulFieldsToSlot { .. }
+                | Op::GetNR
+                | Op::GetFNR
+                | Op::GetNF
+        )
+    })
 }
 
 /// Find the maximum slot index referenced.
@@ -265,12 +283,21 @@ pub fn try_compile(ops: &[Op]) -> Option<JitChunk> {
     ctx.func.signature = sig;
     ctx.func.name = UserFuncName::user(0, func_id.as_u32());
 
-    let slot_count = if ops.iter().any(|op| matches!(op,
-        Op::GetSlot(_) | Op::SetSlot(_) | Op::IncrSlot(_) | Op::DecrSlot(_)
-        | Op::CompoundAssignSlot(_, _) | Op::IncDecSlot(_, _)
-        | Op::AddSlotToSlot { .. } | Op::AddFieldToSlot { .. }
-        | Op::AddMulFieldsToSlot { .. } | Op::JumpIfSlotGeNum { .. }
-    )) {
+    let slot_count = if ops.iter().any(|op| {
+        matches!(
+            op,
+            Op::GetSlot(_)
+                | Op::SetSlot(_)
+                | Op::IncrSlot(_)
+                | Op::DecrSlot(_)
+                | Op::CompoundAssignSlot(_, _)
+                | Op::IncDecSlot(_, _)
+                | Op::AddSlotToSlot { .. }
+                | Op::AddFieldToSlot { .. }
+                | Op::AddMulFieldsToSlot { .. }
+                | Op::JumpIfSlotGeNum { .. }
+        )
+    }) {
         max_slot(ops) + 1
     } else {
         0
@@ -360,13 +387,17 @@ pub fn try_compile(ops: &[Op]) -> Option<JitChunk> {
                 // ── Slot access ────────────────────────────────────────
                 Op::GetSlot(slot) => {
                     let offset = (slot as i32) * 8;
-                    let v = builder.ins().load(types::F64, MemFlags::trusted(), slots_ptr, offset);
+                    let v = builder
+                        .ins()
+                        .load(types::F64, MemFlags::trusted(), slots_ptr, offset);
                     stack.push(v);
                 }
                 Op::SetSlot(slot) => {
                     let v = *stack.last().expect("SetSlot: empty stack");
                     let offset = (slot as i32) * 8;
-                    builder.ins().store(MemFlags::trusted(), v, slots_ptr, offset);
+                    builder
+                        .ins()
+                        .store(MemFlags::trusted(), v, slots_ptr, offset);
                 }
 
                 // ── Arithmetic ─────────────────────────────────────────
@@ -403,42 +434,65 @@ pub fn try_compile(ops: &[Op]) -> Option<JitChunk> {
                 Op::CmpEq => {
                     let b = stack.pop().expect("CmpEq");
                     let a = stack.pop().expect("CmpEq");
-                    let cmp = builder.ins().fcmp(cranelift_codegen::ir::condcodes::FloatCC::Equal, a, b);
+                    let cmp =
+                        builder
+                            .ins()
+                            .fcmp(cranelift_codegen::ir::condcodes::FloatCC::Equal, a, b);
                     let i = builder.ins().uextend(types::I32, cmp);
                     stack.push(builder.ins().fcvt_from_uint(types::F64, i));
                 }
                 Op::CmpNe => {
                     let b = stack.pop().expect("CmpNe");
                     let a = stack.pop().expect("CmpNe");
-                    let cmp = builder.ins().fcmp(cranelift_codegen::ir::condcodes::FloatCC::NotEqual, a, b);
+                    let cmp = builder.ins().fcmp(
+                        cranelift_codegen::ir::condcodes::FloatCC::NotEqual,
+                        a,
+                        b,
+                    );
                     let i = builder.ins().uextend(types::I32, cmp);
                     stack.push(builder.ins().fcvt_from_uint(types::F64, i));
                 }
                 Op::CmpLt => {
                     let b = stack.pop().expect("CmpLt");
                     let a = stack.pop().expect("CmpLt");
-                    let cmp = builder.ins().fcmp(cranelift_codegen::ir::condcodes::FloatCC::LessThan, a, b);
+                    let cmp = builder.ins().fcmp(
+                        cranelift_codegen::ir::condcodes::FloatCC::LessThan,
+                        a,
+                        b,
+                    );
                     let i = builder.ins().uextend(types::I32, cmp);
                     stack.push(builder.ins().fcvt_from_uint(types::F64, i));
                 }
                 Op::CmpLe => {
                     let b = stack.pop().expect("CmpLe");
                     let a = stack.pop().expect("CmpLe");
-                    let cmp = builder.ins().fcmp(cranelift_codegen::ir::condcodes::FloatCC::LessThanOrEqual, a, b);
+                    let cmp = builder.ins().fcmp(
+                        cranelift_codegen::ir::condcodes::FloatCC::LessThanOrEqual,
+                        a,
+                        b,
+                    );
                     let i = builder.ins().uextend(types::I32, cmp);
                     stack.push(builder.ins().fcvt_from_uint(types::F64, i));
                 }
                 Op::CmpGt => {
                     let b = stack.pop().expect("CmpGt");
                     let a = stack.pop().expect("CmpGt");
-                    let cmp = builder.ins().fcmp(cranelift_codegen::ir::condcodes::FloatCC::GreaterThan, a, b);
+                    let cmp = builder.ins().fcmp(
+                        cranelift_codegen::ir::condcodes::FloatCC::GreaterThan,
+                        a,
+                        b,
+                    );
                     let i = builder.ins().uextend(types::I32, cmp);
                     stack.push(builder.ins().fcvt_from_uint(types::F64, i));
                 }
                 Op::CmpGe => {
                     let b = stack.pop().expect("CmpGe");
                     let a = stack.pop().expect("CmpGe");
-                    let cmp = builder.ins().fcmp(cranelift_codegen::ir::condcodes::FloatCC::GreaterThanOrEqual, a, b);
+                    let cmp = builder.ins().fcmp(
+                        cranelift_codegen::ir::condcodes::FloatCC::GreaterThanOrEqual,
+                        a,
+                        b,
+                    );
                     let i = builder.ins().uextend(types::I32, cmp);
                     stack.push(builder.ins().fcvt_from_uint(types::F64, i));
                 }
@@ -454,14 +508,22 @@ pub fn try_compile(ops: &[Op]) -> Option<JitChunk> {
                 Op::Not => {
                     let a = stack.pop().expect("Not");
                     let zero = builder.ins().f64const(0.0);
-                    let is_zero = builder.ins().fcmp(cranelift_codegen::ir::condcodes::FloatCC::Equal, a, zero);
+                    let is_zero = builder.ins().fcmp(
+                        cranelift_codegen::ir::condcodes::FloatCC::Equal,
+                        a,
+                        zero,
+                    );
                     let i = builder.ins().uextend(types::I32, is_zero);
                     stack.push(builder.ins().fcvt_from_uint(types::F64, i));
                 }
                 Op::ToBool => {
                     let a = stack.pop().expect("ToBool");
                     let zero = builder.ins().f64const(0.0);
-                    let ne = builder.ins().fcmp(cranelift_codegen::ir::condcodes::FloatCC::NotEqual, a, zero);
+                    let ne = builder.ins().fcmp(
+                        cranelift_codegen::ir::condcodes::FloatCC::NotEqual,
+                        a,
+                        zero,
+                    );
                     let i = builder.ins().uextend(types::I32, ne);
                     stack.push(builder.ins().fcvt_from_uint(types::F64, i));
                 }
@@ -475,20 +537,32 @@ pub fn try_compile(ops: &[Op]) -> Option<JitChunk> {
                 Op::JumpIfFalsePop(target) => {
                     let v = stack.pop().expect("JumpIfFalsePop");
                     let zero = builder.ins().f64const(0.0);
-                    let is_false = builder.ins().fcmp(cranelift_codegen::ir::condcodes::FloatCC::Equal, v, zero);
+                    let is_false = builder.ins().fcmp(
+                        cranelift_codegen::ir::condcodes::FloatCC::Equal,
+                        v,
+                        zero,
+                    );
                     let target_block = block_map[&target];
                     let fall_through = builder.create_block();
-                    builder.ins().brif(is_false, target_block, &[], fall_through, &[]);
+                    builder
+                        .ins()
+                        .brif(is_false, target_block, &[], fall_through, &[]);
                     builder.switch_to_block(fall_through);
                     stack.clear(); // stack doesn't survive branch
                 }
                 Op::JumpIfTruePop(target) => {
                     let v = stack.pop().expect("JumpIfTruePop");
                     let zero = builder.ins().f64const(0.0);
-                    let is_true = builder.ins().fcmp(cranelift_codegen::ir::condcodes::FloatCC::NotEqual, v, zero);
+                    let is_true = builder.ins().fcmp(
+                        cranelift_codegen::ir::condcodes::FloatCC::NotEqual,
+                        v,
+                        zero,
+                    );
                     let target_block = block_map[&target];
                     let fall_through = builder.create_block();
-                    builder.ins().brif(is_true, target_block, &[], fall_through, &[]);
+                    builder
+                        .ins()
+                        .brif(is_true, target_block, &[], fall_through, &[]);
                     builder.switch_to_block(fall_through);
                     stack.clear(); // stack doesn't survive branch
                 }
@@ -506,7 +580,10 @@ pub fn try_compile(ops: &[Op]) -> Option<JitChunk> {
                 Op::CompoundAssignSlot(slot, bop) => {
                     let rhs = stack.pop().expect("CompoundAssignSlot");
                     let offset = (slot as i32) * 8;
-                    let old = builder.ins().load(types::F64, MemFlags::trusted(), slots_ptr, offset);
+                    let old =
+                        builder
+                            .ins()
+                            .load(types::F64, MemFlags::trusted(), slots_ptr, offset);
                     let new_val = match bop {
                         BinOp::Add => builder.ins().fadd(old, rhs),
                         BinOp::Sub => builder.ins().fsub(old, rhs),
@@ -520,20 +597,27 @@ pub fn try_compile(ops: &[Op]) -> Option<JitChunk> {
                         }
                         _ => unreachable!("filtered by is_jit_eligible"),
                     };
-                    builder.ins().store(MemFlags::trusted(), new_val, slots_ptr, offset);
+                    builder
+                        .ins()
+                        .store(MemFlags::trusted(), new_val, slots_ptr, offset);
                     stack.push(new_val);
                 }
 
                 // ── Inc/dec slot (expression context — pushes result) ──
                 Op::IncDecSlot(slot, kind) => {
                     let offset = (slot as i32) * 8;
-                    let old = builder.ins().load(types::F64, MemFlags::trusted(), slots_ptr, offset);
+                    let old =
+                        builder
+                            .ins()
+                            .load(types::F64, MemFlags::trusted(), slots_ptr, offset);
                     let delta = match kind {
                         IncDecOp::PreInc | IncDecOp::PostInc => builder.ins().f64const(1.0),
                         IncDecOp::PreDec | IncDecOp::PostDec => builder.ins().f64const(-1.0),
                     };
                     let new_val = builder.ins().fadd(old, delta);
-                    builder.ins().store(MemFlags::trusted(), new_val, slots_ptr, offset);
+                    builder
+                        .ins()
+                        .store(MemFlags::trusted(), new_val, slots_ptr, offset);
                     let push_val = match kind {
                         IncDecOp::PreInc | IncDecOp::PreDec => new_val,
                         IncDecOp::PostInc | IncDecOp::PostDec => old,
@@ -544,76 +628,128 @@ pub fn try_compile(ops: &[Op]) -> Option<JitChunk> {
                 // ── Fused slot ops (statement context) ─────────────────
                 Op::IncrSlot(slot) => {
                     let offset = (slot as i32) * 8;
-                    let old = builder.ins().load(types::F64, MemFlags::trusted(), slots_ptr, offset);
+                    let old =
+                        builder
+                            .ins()
+                            .load(types::F64, MemFlags::trusted(), slots_ptr, offset);
                     let one = builder.ins().f64const(1.0);
                     let new_val = builder.ins().fadd(old, one);
-                    builder.ins().store(MemFlags::trusted(), new_val, slots_ptr, offset);
+                    builder
+                        .ins()
+                        .store(MemFlags::trusted(), new_val, slots_ptr, offset);
                 }
                 Op::DecrSlot(slot) => {
                     let offset = (slot as i32) * 8;
-                    let old = builder.ins().load(types::F64, MemFlags::trusted(), slots_ptr, offset);
+                    let old =
+                        builder
+                            .ins()
+                            .load(types::F64, MemFlags::trusted(), slots_ptr, offset);
                     let one = builder.ins().f64const(1.0);
                     let new_val = builder.ins().fsub(old, one);
-                    builder.ins().store(MemFlags::trusted(), new_val, slots_ptr, offset);
+                    builder
+                        .ins()
+                        .store(MemFlags::trusted(), new_val, slots_ptr, offset);
                 }
                 Op::AddSlotToSlot { src, dst } => {
-                    let sv = builder.ins().load(types::F64, MemFlags::trusted(), slots_ptr, (src as i32) * 8);
-                    let dv = builder.ins().load(types::F64, MemFlags::trusted(), slots_ptr, (dst as i32) * 8);
+                    let sv = builder.ins().load(
+                        types::F64,
+                        MemFlags::trusted(),
+                        slots_ptr,
+                        (src as i32) * 8,
+                    );
+                    let dv = builder.ins().load(
+                        types::F64,
+                        MemFlags::trusted(),
+                        slots_ptr,
+                        (dst as i32) * 8,
+                    );
                     let sum = builder.ins().fadd(dv, sv);
-                    builder.ins().store(MemFlags::trusted(), sum, slots_ptr, (dst as i32) * 8);
+                    builder
+                        .ins()
+                        .store(MemFlags::trusted(), sum, slots_ptr, (dst as i32) * 8);
                 }
 
                 // ── Field access via callback ──────────────────────────
                 Op::PushFieldNum(field) => {
                     let arg = builder.ins().iconst(types::I32, field as i64);
-                    let call = builder.ins().call_indirect(field_sig_ir, field_fn_ptr, &[arg]);
+                    let call = builder
+                        .ins()
+                        .call_indirect(field_sig_ir, field_fn_ptr, &[arg]);
                     let result = builder.inst_results(call)[0];
                     stack.push(result);
                 }
                 Op::GetNR => {
                     let arg = builder.ins().iconst(types::I32, -1i64);
-                    let call = builder.ins().call_indirect(field_sig_ir, field_fn_ptr, &[arg]);
+                    let call = builder
+                        .ins()
+                        .call_indirect(field_sig_ir, field_fn_ptr, &[arg]);
                     stack.push(builder.inst_results(call)[0]);
                 }
                 Op::GetFNR => {
                     let arg = builder.ins().iconst(types::I32, -2i64);
-                    let call = builder.ins().call_indirect(field_sig_ir, field_fn_ptr, &[arg]);
+                    let call = builder
+                        .ins()
+                        .call_indirect(field_sig_ir, field_fn_ptr, &[arg]);
                     stack.push(builder.inst_results(call)[0]);
                 }
                 Op::GetNF => {
                     let arg = builder.ins().iconst(types::I32, -3i64);
-                    let call = builder.ins().call_indirect(field_sig_ir, field_fn_ptr, &[arg]);
+                    let call = builder
+                        .ins()
+                        .call_indirect(field_sig_ir, field_fn_ptr, &[arg]);
                     stack.push(builder.inst_results(call)[0]);
                 }
 
                 // ── Fused field+slot ops ───────────────────────────────
                 Op::AddFieldToSlot { field, slot } => {
                     let arg = builder.ins().iconst(types::I32, field as i64);
-                    let call = builder.ins().call_indirect(field_sig_ir, field_fn_ptr, &[arg]);
+                    let call = builder
+                        .ins()
+                        .call_indirect(field_sig_ir, field_fn_ptr, &[arg]);
                     let fv = builder.inst_results(call)[0];
                     let offset = (slot as i32) * 8;
-                    let old = builder.ins().load(types::F64, MemFlags::trusted(), slots_ptr, offset);
+                    let old =
+                        builder
+                            .ins()
+                            .load(types::F64, MemFlags::trusted(), slots_ptr, offset);
                     let sum = builder.ins().fadd(old, fv);
-                    builder.ins().store(MemFlags::trusted(), sum, slots_ptr, offset);
+                    builder
+                        .ins()
+                        .store(MemFlags::trusted(), sum, slots_ptr, offset);
                 }
                 Op::AddMulFieldsToSlot { f1, f2, slot } => {
                     let a1 = builder.ins().iconst(types::I32, f1 as i64);
-                    let c1 = builder.ins().call_indirect(field_sig_ir, field_fn_ptr, &[a1]);
+                    let c1 = builder
+                        .ins()
+                        .call_indirect(field_sig_ir, field_fn_ptr, &[a1]);
                     let v1 = builder.inst_results(c1)[0];
                     let a2 = builder.ins().iconst(types::I32, f2 as i64);
-                    let c2 = builder.ins().call_indirect(field_sig_ir, field_fn_ptr, &[a2]);
+                    let c2 = builder
+                        .ins()
+                        .call_indirect(field_sig_ir, field_fn_ptr, &[a2]);
                     let v2 = builder.inst_results(c2)[0];
                     let prod = builder.ins().fmul(v1, v2);
                     let offset = (slot as i32) * 8;
-                    let old = builder.ins().load(types::F64, MemFlags::trusted(), slots_ptr, offset);
+                    let old =
+                        builder
+                            .ins()
+                            .load(types::F64, MemFlags::trusted(), slots_ptr, offset);
                     let sum = builder.ins().fadd(old, prod);
-                    builder.ins().store(MemFlags::trusted(), sum, slots_ptr, offset);
+                    builder
+                        .ins()
+                        .store(MemFlags::trusted(), sum, slots_ptr, offset);
                 }
 
                 // ── Fused loop condition ───────────────────────────────
-                Op::JumpIfSlotGeNum { slot, limit, target } => {
+                Op::JumpIfSlotGeNum {
+                    slot,
+                    limit,
+                    target,
+                } => {
                     let offset = (slot as i32) * 8;
-                    let v = builder.ins().load(types::F64, MemFlags::trusted(), slots_ptr, offset);
+                    let v = builder
+                        .ins()
+                        .load(types::F64, MemFlags::trusted(), slots_ptr, offset);
                     let lim = builder.ins().f64const(limit);
                     let ge = builder.ins().fcmp(
                         cranelift_codegen::ir::condcodes::FloatCC::GreaterThanOrEqual,
@@ -869,7 +1005,7 @@ mod tests {
     #[test]
     fn jit_to_bool() {
         assert!((exec(&[Op::PushNum(0.0), Op::ToBool])).abs() < 1e-15);
-        assert!((exec(&[Op::PushNum(3.14), Op::ToBool]) - 1.0).abs() < 1e-15);
+        assert!((exec(&[Op::PushNum(std::f64::consts::PI), Op::ToBool]) - 1.0).abs() < 1e-15);
     }
 
     // ── Comparisons ────────────────────────────────────────────────────
@@ -942,20 +1078,14 @@ mod tests {
     #[test]
     fn jit_incr_slot() {
         let mut slots = [10.0];
-        exec_with_slots(
-            &[Op::IncrSlot(0), Op::PushNum(0.0)],
-            &mut slots,
-        );
+        exec_with_slots(&[Op::IncrSlot(0), Op::PushNum(0.0)], &mut slots);
         assert!((slots[0] - 11.0).abs() < 1e-15);
     }
 
     #[test]
     fn jit_decr_slot() {
         let mut slots = [10.0];
-        exec_with_slots(
-            &[Op::DecrSlot(0), Op::PushNum(0.0)],
-            &mut slots,
-        );
+        exec_with_slots(&[Op::DecrSlot(0), Op::PushNum(0.0)], &mut slots);
         assert!((slots[0] - 9.0).abs() < 1e-15);
     }
 
@@ -972,10 +1102,7 @@ mod tests {
     #[test]
     fn jit_incdec_slot_pre_inc() {
         let mut slots = [10.0];
-        let r = exec_with_slots(
-            &[Op::IncDecSlot(0, IncDecOp::PreInc)],
-            &mut slots,
-        );
+        let r = exec_with_slots(&[Op::IncDecSlot(0, IncDecOp::PreInc)], &mut slots);
         assert!((r - 11.0).abs() < 1e-15);
         assert!((slots[0] - 11.0).abs() < 1e-15);
     }
@@ -983,10 +1110,7 @@ mod tests {
     #[test]
     fn jit_incdec_slot_post_inc() {
         let mut slots = [10.0];
-        let r = exec_with_slots(
-            &[Op::IncDecSlot(0, IncDecOp::PostInc)],
-            &mut slots,
-        );
+        let r = exec_with_slots(&[Op::IncDecSlot(0, IncDecOp::PostInc)], &mut slots);
         assert!((r - 10.0).abs() < 1e-15); // returns old value
         assert!((slots[0] - 11.0).abs() < 1e-15);
     }
@@ -1000,11 +1124,11 @@ mod tests {
         let mut slots = [0.0];
         let ops = [
             Op::PushNum(1.0),
-            Op::SetSlot(0),     // 1: store in slot
-            Op::Pop,            // 2: clean stack
-            Op::Jump(5),        // 3: jump to 5
-            Op::PushNum(99.0),  // 4: skipped
-            Op::GetSlot(0),     // 5: target — read back from slot
+            Op::SetSlot(0),    // 1: store in slot
+            Op::Pop,           // 2: clean stack
+            Op::Jump(5),       // 3: jump to 5
+            Op::PushNum(99.0), // 4: skipped
+            Op::GetSlot(0),    // 5: target — read back from slot
         ];
         let r = exec_with_slots(&ops, &mut slots);
         assert!((r - 1.0).abs() < 1e-15);
@@ -1014,10 +1138,10 @@ mod tests {
     fn jit_conditional_jump_false() {
         // if (0) skip to push 42; else push 99
         let ops = [
-            Op::PushNum(0.0),       // 0: condition is false
-            Op::JumpIfFalsePop(3),  // 1: jump to 3
-            Op::PushNum(99.0),      // 2: not reached via jump path
-            Op::PushNum(42.0),      // 3: target
+            Op::PushNum(0.0),      // 0: condition is false
+            Op::JumpIfFalsePop(3), // 1: jump to 3
+            Op::PushNum(99.0),     // 2: not reached via jump path
+            Op::PushNum(42.0),     // 3: target
         ];
         let r = exec(&ops);
         assert!((r - 42.0).abs() < 1e-15);
@@ -1027,10 +1151,10 @@ mod tests {
     fn jit_conditional_jump_true_no_jump() {
         // if (1) fall through to push 42
         let ops = [
-            Op::PushNum(1.0),       // condition is true
-            Op::JumpIfFalsePop(3),  // doesn't jump (pops condition)
-            Op::PushNum(42.0),      // 2: executes
-            // 3: would be target (past end)
+            Op::PushNum(1.0),      // condition is true
+            Op::JumpIfFalsePop(3), // doesn't jump (pops condition)
+            Op::PushNum(42.0),     // 2: executes
+                                   // 3: would be target (past end)
         ];
         let r = exec(&ops);
         assert!((r - 42.0).abs() < 1e-15);
@@ -1047,19 +1171,23 @@ mod tests {
         //   goto loop
         // end: return sum
         let ops = [
-            Op::PushNum(0.0),                   // 0: push 0
-            Op::SetSlot(0),                      // 1: sum = 0
-            Op::Pop,                             // 2: pop
-            Op::PushNum(1.0),                    // 3: push 1
-            Op::SetSlot(1),                      // 4: i = 1
-            Op::Pop,                             // 5: pop
+            Op::PushNum(0.0), // 0: push 0
+            Op::SetSlot(0),   // 1: sum = 0
+            Op::Pop,          // 2: pop
+            Op::PushNum(1.0), // 3: push 1
+            Op::SetSlot(1),   // 4: i = 1
+            Op::Pop,          // 5: pop
             // loop body at pc=6:
-            Op::JumpIfSlotGeNum { slot: 1, limit: 11.0, target: 10 }, // 6: if i >= 11 goto 10
+            Op::JumpIfSlotGeNum {
+                slot: 1,
+                limit: 11.0,
+                target: 10,
+            }, // 6: if i >= 11 goto 10
             Op::AddSlotToSlot { src: 1, dst: 0 }, // 7: sum += i
             Op::IncrSlot(1),                      // 8: i++
             Op::Jump(6),                          // 9: goto loop
             // end at pc=10:
-            Op::GetSlot(0),                       // 10: push sum
+            Op::GetSlot(0), // 10: push sum
         ];
         let mut slots = [0.0, 0.0];
         let r = exec_with_slots(&ops, &mut slots);
@@ -1107,7 +1235,11 @@ mod tests {
         let mut slots = [0.0];
         exec_with_fields(
             &[
-                Op::AddMulFieldsToSlot { f1: 1, f2: 2, slot: 0 },
+                Op::AddMulFieldsToSlot {
+                    f1: 1,
+                    f2: 2,
+                    slot: 0,
+                },
                 Op::PushNum(0.0),
             ],
             &mut slots,
@@ -1136,7 +1268,11 @@ mod tests {
         // slot 0 = 15, limit = 10 → should jump
         let r = exec_with_slots(
             &[
-                Op::JumpIfSlotGeNum { slot: 0, limit: 10.0, target: 2 },
+                Op::JumpIfSlotGeNum {
+                    slot: 0,
+                    limit: 10.0,
+                    target: 2,
+                },
                 Op::PushNum(99.0), // skipped
                 Op::PushNum(1.0),  // target
             ],
@@ -1167,7 +1303,11 @@ mod tests {
     #[test]
     fn jit_rejects_string_ops() {
         assert!(!is_jit_eligible(&[Op::PushStr(0)]));
-        assert!(!is_jit_eligible(&[Op::PushNum(1.0), Op::PushStr(0), Op::Concat]));
+        assert!(!is_jit_eligible(&[
+            Op::PushNum(1.0),
+            Op::PushStr(0),
+            Op::Concat
+        ]));
     }
 
     #[test]
@@ -1210,13 +1350,13 @@ mod tests {
         // For a dynamic loop we'd need GetField which requires runtime field index
         // But we can test with the fused AddFieldToSlot in a manually unrolled way
         let ops = [
-            Op::PushNum(0.0),   // 0
-            Op::SetSlot(0),      // 1: sum = 0
-            Op::Pop,             // 2
+            Op::PushNum(0.0),                         // 0
+            Op::SetSlot(0),                           // 1: sum = 0
+            Op::Pop,                                  // 2
             Op::AddFieldToSlot { field: 1, slot: 0 }, // 3: sum += $1
             Op::AddFieldToSlot { field: 2, slot: 0 }, // 4: sum += $2
             Op::AddFieldToSlot { field: 3, slot: 0 }, // 5: sum += $3
-            Op::GetSlot(0),      // 6: return sum
+            Op::GetSlot(0),                           // 6: return sum
         ];
         let mut slots = [0.0, 0.0];
         let r = exec_with_fields(&ops, &mut slots, fields);
