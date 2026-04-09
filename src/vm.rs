@@ -321,11 +321,74 @@ pub fn vm_run_rule(
     result
 }
 
+// ── JIT field callback support ─────────────────────────────────────────────
+
+use std::cell::Cell;
+
+thread_local! {
+    /// Raw pointer to the current Runtime, set before JIT execution so the
+    /// field callback can access `field_as_number`, `nr`, `fnr`, `nf`.
+    static JIT_RT_PTR: Cell<*mut Runtime> = const { Cell::new(std::ptr::null_mut()) };
+}
+
+/// Field callback passed to JIT-compiled code.
+/// Positive i → field $i as f64.
+/// Negative i → special: -1=NR, -2=FNR, -3=NF.
+extern "C" fn jit_field_callback(i: i32) -> f64 {
+    JIT_RT_PTR.with(|cell| {
+        let ptr = cell.get();
+        if ptr.is_null() {
+            return 0.0;
+        }
+        let rt = unsafe { &mut *ptr };
+        match i {
+            -1 => rt.nr,
+            -2 => rt.fnr,
+            -3 => rt.nf() as f64,
+            _ => rt.field_as_number(i),
+        }
+    })
+}
+
+/// Try JIT dispatch for the full instruction set. Converts slots to/from f64[],
+/// sets up the field callback via thread-local, and executes.
+fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Option<f64> {
+    if !crate::jit::jit_enabled() || !crate::jit::is_jit_eligible(ops) {
+        return None;
+    }
+
+    // Build f64 slot array from runtime slots
+    let slot_count = ctx.rt.slots.len();
+    let mut jit_slots: Vec<f64> = ctx.rt.slots.iter().map(|v| v.as_number()).collect();
+
+    // Set thread-local Runtime pointer for the field callback
+    let rt_ptr: *mut Runtime = ctx.rt;
+    JIT_RT_PTR.with(|cell| cell.set(rt_ptr));
+
+    let mut jit_state = crate::jit::JitRuntimeState::new(&mut jit_slots, jit_field_callback);
+    let result = crate::jit::try_jit_execute(ops, &mut jit_state);
+
+    // Clear the pointer
+    JIT_RT_PTR.with(|cell| cell.set(std::ptr::null_mut()));
+
+    // Write back modified slots
+    if let Some(_) = result {
+        for i in 0..slot_count {
+            let old = ctx.rt.slots[i].as_number();
+            if (jit_slots[i] - old).abs() > f64::EPSILON || (old == 0.0 && jit_slots[i] != 0.0) {
+                ctx.rt.slots[i] = Value::Num(jit_slots[i]);
+            }
+        }
+    }
+
+    result
+}
+
 // ── Core VM loop ────────────────────────────────────────────────────────────
 
 fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
     let ops = &chunk.ops;
-    if let Some(v) = crate::jit::try_jit_dispatch_numeric_chunk(ops) {
+    if let Some(v) = try_jit_dispatch(ops, ctx) {
         ctx.push(Value::Num(v));
         return Ok(VmSignal::Normal);
     }

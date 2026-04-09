@@ -10,8 +10,8 @@ mod error;
 mod format;
 pub mod jit;
 pub use jit::{
-    is_numeric_stack_eligible, try_compile_numeric_expr, try_jit_dispatch_numeric_chunk,
-    JitNumericChunk,
+    is_jit_eligible, is_numeric_stack_eligible, try_compile, try_compile_numeric_expr,
+    try_jit_dispatch_numeric_chunk, try_jit_execute, JitChunk, JitNumericChunk, JitRuntimeState,
 };
 #[allow(dead_code)]
 mod interp;
