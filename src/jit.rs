@@ -27,7 +27,8 @@
 //! regex `~`, general array ops, `print` with arguments, etc.) compile those
 //! ops through `val_dispatch` (`MIXED_*`). Chunks with `printf`, user/builtin
 //! calls, getline, or other unsupported opcodes still use the bytecode loop.
-//! Whitelisted [`Op::CallBuiltin`] (see [`jit_call_builtins_ok`]) uses `MIXED_BUILTIN_*`.
+//! Whitelisted [`Op::CallBuiltin`] (see [`jit_call_builtins_ok`]) uses `MIXED_BUILTIN_*`
+//! including `sprintf`/`printf` and I/O helpers when arity and [`jit_call_builtins_ok`] allow.
 //! `typeof` (`TypeofVar` / `TypeofSlot` / `TypeofArrayElem` / `TypeofField` / `TypeofValue`)
 //! compiles to `MIXED_TYPEOF_*` and returns NaN-boxed pool/dynamic strings like other mixed ops.
 
@@ -572,6 +573,8 @@ pub fn jit_call_builtins_ok(ops: &[Op], cp: &CompiledProgram) -> bool {
 }
 
 fn builtin_supported_for_jit(name: &str, argc: u16) -> bool {
+    // Cap so pathological bytecode cannot pass huge arg counts through the JIT buffer.
+    const MAX_CALL_ARGS: u16 = 64;
     match name {
         "length" => argc <= 1,
         "index" => argc == 2,
@@ -585,6 +588,13 @@ fn builtin_supported_for_jit(name: &str, argc: u16) -> bool {
         "mktime" => argc == 1,
         "rand" => argc == 0,
         "srand" => argc <= 1,
+        // Formatting / I/O (same paths as `exec_builtin_dispatch`)
+        "sprintf" => (1..=MAX_CALL_ARGS).contains(&argc),
+        "printf" => (1..=MAX_CALL_ARGS).contains(&argc),
+        "strftime" => argc <= 3,
+        "fflush" => argc <= 1,
+        "close" => argc == 1,
+        "system" => argc == 1,
         _ => false,
     }
 }

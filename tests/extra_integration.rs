@@ -826,6 +826,18 @@ fn jit_whitelisted_builtin_sqrt() {
 }
 
 #[test]
+fn jit_sprintf_builtin() {
+    let (c, o, e) = run_awkrs_stdin_args_env(
+        std::iter::empty::<&str>(),
+        r#"BEGIN { print sprintf("%d", 42) }"#,
+        "",
+        jit_env(),
+    );
+    assert_eq!(c, 0, "stderr: {e}");
+    assert_eq!(o.trim(), "42");
+}
+
+#[test]
 fn jit_return_from_function() {
     let (c, o, e) = run_awkrs_stdin_args_env(
         std::iter::empty::<&str>(),
