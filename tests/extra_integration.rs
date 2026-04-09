@@ -765,6 +765,19 @@ fn jit_mixed_string_slot_preinc() {
 }
 
 #[test]
+fn jit_mixed_field_assign_concat() {
+    // `$2 = $1 "x"` must store a real string via MIXED_SET_FIELD (not Value::Num bits as text).
+    let (c, o, e) = run_awkrs_stdin_args_env(
+        std::iter::empty::<&str>(),
+        "{ $2 = $1 \"x\"; print $2 }",
+        "a\n",
+        jit_env(),
+    );
+    assert_eq!(c, 0, "stderr: {e}");
+    assert_eq!(o.trim(), "ax");
+}
+
+#[test]
 fn jit_return_from_function() {
     let (c, o, e) = run_awkrs_stdin_args_env(
         std::iter::empty::<&str>(),

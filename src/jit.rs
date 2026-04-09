@@ -12,8 +12,10 @@
 //! (`MIXED_*`) preserve string keys and coercion semantics. Fused slot peepholes
 //! (`IncrSlot`, `IncDecSlot`, `AddFieldToSlot`, `JumpIfSlotGeNum`, …) in a mixed
 //! chunk also use `MIXED_*` so slot values are read/written with `Value` coercion,
-//! not raw `fadd` on NaN-boxed bits. The fused `ArrayFieldAddConst` remains a
-//! separate fast path (field index is numeric).
+//! not raw `fadd` on NaN-boxed bits. `SetField` / `CompoundAssignField` in mixed
+//! chunks use `MIXED_SET_FIELD` / `MIXED_COMPOUND_ASSIGN_FIELD` so RHS values are
+//! NaN-box aware. The fused `ArrayFieldAddConst` remains a separate fast path
+//! (field index is numeric).
 //!
 //! Execution takes a [`JitRuntimeState`]: mutable `f64` slot storage and seven
 //! `extern "C"` callbacks — `field_fn`, `array_field_add`, `var_dispatch`,
@@ -263,6 +265,22 @@ pub const MIXED_ADD_FIELD_TO_SLOT: u32 = 161;
 pub const MIXED_ADD_MUL_FIELDS_TO_SLOT: u32 = 162;
 /// Numeric value of slot (for `JumpIfSlotGeNum` in mixed mode): a1 = slot.
 pub const MIXED_SLOT_AS_NUMBER: u32 = 163;
+/// `$idx = val` (mixed): a1 = field index as `i32` bit pattern, a2 = value (NaN-boxed).
+pub const MIXED_SET_FIELD: u32 = 164;
+/// `$idx op= rhs` (mixed): a1 = binop 0–4 (`Add`…`Mod`), a2 = index f64, a3 = rhs (NaN-boxed).
+pub const MIXED_COMPOUND_ASSIGN_FIELD: u32 = 165;
+
+#[inline]
+fn mixed_encode_field_compound_binop(bop: BinOp) -> u32 {
+    match bop {
+        BinOp::Add => 0,
+        BinOp::Sub => 1,
+        BinOp::Mul => 2,
+        BinOp::Div => 3,
+        BinOp::Mod => 4,
+        _ => 0,
+    }
+}
 
 #[inline]
 pub fn mixed_encode_slot_incdec(slot: u16, kind: IncDecOp) -> u32 {
@@ -848,10 +866,11 @@ pub fn try_compile(ops: &[Op]) -> Option<JitChunk> {
         MIXED_CONCAT_POOL, MIXED_DIV, MIXED_GET_FIELD, MIXED_GET_SLOT, MIXED_GET_VAR, MIXED_MOD,
         MIXED_MUL, MIXED_NEG, MIXED_NOT, MIXED_POS, MIXED_PRINT_ARG, MIXED_PRINT_FLUSH,
         MIXED_ADD_FIELD_TO_SLOT, MIXED_ADD_MUL_FIELDS_TO_SLOT, MIXED_ADD_SLOT_TO_SLOT,
-        MIXED_DECR_SLOT, MIXED_INCDEC_SLOT, MIXED_INCR_SLOT, MIXED_PUSH_STR, MIXED_REGEX_MATCH,
-        MIXED_REGEX_NOT_MATCH, MIXED_SET_VAR, MIXED_SLOT_AS_NUMBER, MIXED_SUB, MIXED_TO_BOOL,
-        MIXED_TRUTHINESS, mixed_encode_array_compound, mixed_encode_array_incdec,
-        mixed_encode_field_slot, mixed_encode_slot_incdec, mixed_encode_slot_pair,
+        MIXED_COMPOUND_ASSIGN_FIELD, MIXED_DECR_SLOT, MIXED_INCDEC_SLOT, MIXED_INCR_SLOT,
+        MIXED_PUSH_STR, MIXED_REGEX_MATCH, MIXED_REGEX_NOT_MATCH, MIXED_SET_FIELD, MIXED_SET_VAR,
+        MIXED_SLOT_AS_NUMBER, MIXED_SUB, MIXED_TO_BOOL, MIXED_TRUTHINESS, mixed_encode_array_compound,
+        mixed_encode_array_incdec, mixed_encode_field_slot, mixed_encode_slot_incdec,
+        mixed_encode_slot_pair,
     };
 
     let mut module = new_jit_module()?;
@@ -1223,15 +1242,29 @@ pub fn try_compile(ops: &[Op]) -> Option<JitChunk> {
                 Op::CompoundAssignField(bop) => {
                     let rhs = stack.pop().expect("CompoundAssignField");
                     let idx_f = stack.pop().expect("CompoundAssignField idx");
-                    let idx_i32 = builder.ins().fcvt_to_sint_sat(types::I32, idx_f);
-                    let cop = jit_var_op_for_compound(bop);
-                    let opv = builder.ins().iconst(types::I32, i64::from(cop));
-                    let call = builder.ins().call_indirect(
-                        field_mut_sig_ir,
-                        field_mut_fn_ptr,
-                        &[opv, idx_i32, rhs],
-                    );
-                    stack.push(builder.inst_results(call)[0]);
+                    if mixed {
+                        let bc = mixed_encode_field_compound_binop(bop);
+                        let op_c = builder
+                            .ins()
+                            .iconst(types::I32, i64::from(MIXED_COMPOUND_ASSIGN_FIELD));
+                        let a1 = builder.ins().iconst(types::I32, i64::from(bc));
+                        let call = builder.ins().call_indirect(
+                            val_sig_ir,
+                            val_fn_ptr,
+                            &[op_c, a1, idx_f, rhs],
+                        );
+                        stack.push(builder.inst_results(call)[0]);
+                    } else {
+                        let idx_i32 = builder.ins().fcvt_to_sint_sat(types::I32, idx_f);
+                        let cop = jit_var_op_for_compound(bop);
+                        let opv = builder.ins().iconst(types::I32, i64::from(cop));
+                        let call = builder.ins().call_indirect(
+                            field_mut_sig_ir,
+                            field_mut_fn_ptr,
+                            &[opv, idx_i32, rhs],
+                        );
+                        stack.push(builder.inst_results(call)[0]);
+                    }
                 }
                 Op::IncDecField(kind) => {
                     let idx_f = stack.pop().expect("IncDecField");
@@ -1249,16 +1282,28 @@ pub fn try_compile(ops: &[Op]) -> Option<JitChunk> {
                 Op::SetField => {
                     let val = stack.pop().expect("SetField val");
                     let idx_f = stack.pop().expect("SetField idx");
-                    let idx_i32 = builder.ins().fcvt_to_sint_sat(types::I32, idx_f);
-                    let opv = builder
-                        .ins()
-                        .iconst(types::I32, i64::from(JIT_FIELD_OP_SET_NUM));
-                    let call = builder.ins().call_indirect(
-                        field_mut_sig_ir,
-                        field_mut_fn_ptr,
-                        &[opv, idx_i32, val],
-                    );
-                    stack.push(builder.inst_results(call)[0]);
+                    if mixed {
+                        let idx_i32 = builder.ins().fcvt_to_sint_sat(types::I32, idx_f);
+                        let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_SET_FIELD));
+                        let z = builder.ins().f64const(0.0);
+                        let call = builder.ins().call_indirect(
+                            val_sig_ir,
+                            val_fn_ptr,
+                            &[op_c, idx_i32, val, z],
+                        );
+                        stack.push(builder.inst_results(call)[0]);
+                    } else {
+                        let idx_i32 = builder.ins().fcvt_to_sint_sat(types::I32, idx_f);
+                        let opv = builder
+                            .ins()
+                            .iconst(types::I32, i64::from(JIT_FIELD_OP_SET_NUM));
+                        let call = builder.ins().call_indirect(
+                            field_mut_sig_ir,
+                            field_mut_fn_ptr,
+                            &[opv, idx_i32, val],
+                        );
+                        stack.push(builder.inst_results(call)[0]);
+                    }
                 }
 
                 // ── Arithmetic ─────────────────────────────────────────

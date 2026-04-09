@@ -409,9 +409,9 @@ fn jit_mixed_op_dispatch(
         MIXED_CONCAT_POOL, MIXED_DIV, MIXED_GET_FIELD, MIXED_GET_SLOT, MIXED_GET_VAR, MIXED_MOD,
         MIXED_MUL, MIXED_NEG, MIXED_NOT, MIXED_POS, MIXED_PRINT_ARG, MIXED_PRINT_FLUSH,
         MIXED_ADD_FIELD_TO_SLOT, MIXED_ADD_MUL_FIELDS_TO_SLOT, MIXED_ADD_SLOT_TO_SLOT,
-        MIXED_DECR_SLOT, MIXED_INCDEC_SLOT, MIXED_INCR_SLOT, MIXED_PUSH_STR, MIXED_REGEX_MATCH,
-        MIXED_REGEX_NOT_MATCH, MIXED_SET_VAR, MIXED_SLOT_AS_NUMBER, MIXED_SUB, MIXED_TO_BOOL,
-        MIXED_TRUTHINESS,
+        MIXED_COMPOUND_ASSIGN_FIELD, MIXED_DECR_SLOT, MIXED_INCDEC_SLOT, MIXED_INCR_SLOT,
+        MIXED_PUSH_STR, MIXED_REGEX_MATCH, MIXED_REGEX_NOT_MATCH, MIXED_SET_FIELD, MIXED_SET_VAR,
+        MIXED_SLOT_AS_NUMBER, MIXED_SUB, MIXED_TO_BOOL, MIXED_TRUTHINESS,
     };
 
     fn mixed_jit_slot_load_raw(slot: usize) -> f64 {
@@ -714,6 +714,30 @@ fn jit_mixed_op_dispatch(
         MIXED_SLOT_AS_NUMBER => {
             let slot = a1 as usize;
             jit_f64_to_value(ctx, mixed_jit_slot_load_raw(slot)).as_number()
+        }
+        MIXED_SET_FIELD => {
+            let field_idx = a1 as i32;
+            let val = jit_f64_to_value(ctx, a2);
+            let s = val.as_str();
+            ctx.rt.set_field(field_idx, &s);
+            value_to_jit_f64(ctx, val)
+        }
+        MIXED_COMPOUND_ASSIGN_FIELD => {
+            let bop = match a1 {
+                0 => BinOp::Add,
+                1 => BinOp::Sub,
+                2 => BinOp::Mul,
+                3 => BinOp::Div,
+                4 => BinOp::Mod,
+                _ => BinOp::Add,
+            };
+            let idx = jit_f64_to_value(ctx, a2).as_number() as i32;
+            let rhs = jit_f64_to_value(ctx, a3);
+            let old = ctx.rt.field(idx);
+            let new_val = apply_binop(bop, &old, &rhs).unwrap_or(Value::Num(0.0));
+            let s = new_val.as_str();
+            ctx.rt.set_field(idx, &s);
+            value_to_jit_f64(ctx, new_val)
         }
         _ => 0.0,
     }
