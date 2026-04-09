@@ -2,7 +2,8 @@
 //!
 //! Compiles eligible bytecode `Op` sequences into native machine code.
 //! The JIT handles numeric expressions, slot variables, control flow (loops and
-//! conditionals), field access via callback, and fused peephole opcodes.
+//! conditionals), field access via callback (constant `PushFieldNum`, dynamic
+//! `GetField`, NR/FNR/NF, and fused field+slot ops), and fused peephole opcodes.
 //!
 //! Execution takes a [`JitRuntimeState`]: mutable `f64` slot storage plus an
 //! `extern "C"` field callback (`i32` field index → `f64`; negative indices for
@@ -93,7 +94,8 @@ impl JitChunk {
 /// Check if a chunk can be JIT-compiled.
 ///
 /// Eligible ops: numeric constants, slot access, arithmetic, comparisons,
-/// control flow, field access (numeric), and fused peephole opcodes.
+/// control flow, field access (`PushFieldNum`, `GetField`, NR/FNR/NF, fused
+/// field+slot ops), and fused peephole opcodes.
 pub fn is_jit_eligible(ops: &[Op]) -> bool {
     if ops.is_empty() {
         return false;
@@ -171,6 +173,12 @@ pub fn is_jit_eligible(ops: &[Op]) -> bool {
 
             // Field access (push 1)
             Op::PushFieldNum(_) => depth += 1,
+            // Dynamic `$idx`: pop index, push field as number.
+            Op::GetField => {
+                if depth < 1 {
+                    return false;
+                }
+            }
             Op::GetNR | Op::GetFNR | Op::GetNF => depth += 1,
 
             // Fused field+slot ops (no stack effect)
@@ -226,6 +234,7 @@ fn needs_field_callback(ops: &[Op]) -> bool {
         matches!(
             op,
             Op::PushFieldNum(_)
+                | Op::GetField
                 | Op::AddFieldToSlot { .. }
                 | Op::AddMulFieldsToSlot { .. }
                 | Op::GetNR
@@ -677,6 +686,16 @@ pub fn try_compile(ops: &[Op]) -> Option<JitChunk> {
                         .call_indirect(field_sig_ir, field_fn_ptr, &[arg]);
                     let result = builder.inst_results(call)[0];
                     stack.push(result);
+                }
+                Op::GetField => {
+                    let fv = stack.pop().expect("GetField");
+                    // Match VM: `ctx.pop().as_number() as i32` — use saturating float→int
+                    // (same family of semantics as Rust’s `f64 as i32` on recent editions).
+                    let idx_i32 = builder.ins().fcvt_to_sint_sat(types::I32, fv);
+                    let call = builder
+                        .ins()
+                        .call_indirect(field_sig_ir, field_fn_ptr, &[idx_i32]);
+                    stack.push(builder.inst_results(call)[0]);
                 }
                 Op::GetNR => {
                     let arg = builder.ins().iconst(types::I32, -1i64);
@@ -1220,6 +1239,50 @@ mod tests {
     }
 
     #[test]
+    fn jit_get_field_dynamic() {
+        let mut slots = [0.0; 0];
+        let r = exec_with_fields(&[Op::PushNum(2.0), Op::GetField], &mut slots, test_field_fn);
+        assert!((r - 20.0).abs() < 1e-15);
+    }
+
+    #[test]
+    fn jit_loop_sum_fields_dynamic() {
+        // while (i < 4) { sum += $i; i++ } with NF=3 via callback — same shape as summing `$i` for i in 1..=NF when NF=3.
+        extern "C" fn fields(i: i32) -> f64 {
+            match i {
+                1 => 100.0,
+                2 => 200.0,
+                3 => 300.0,
+                -3 => 3.0, // NF (unused here; limit is explicit)
+                _ => 0.0,
+            }
+        }
+        let ops = [
+            Op::PushNum(0.0),
+            Op::SetSlot(0),
+            Op::Pop,
+            Op::PushNum(1.0),
+            Op::SetSlot(1),
+            Op::Pop,
+            Op::JumpIfSlotGeNum {
+                slot: 1,
+                limit: 4.0,
+                target: 13,
+            },
+            Op::GetSlot(1),
+            Op::GetField,
+            Op::CompoundAssignSlot(0, BinOp::Add),
+            Op::Pop,
+            Op::IncrSlot(1),
+            Op::Jump(6),
+            Op::GetSlot(0),
+        ];
+        let mut slots = [0.0, 0.0];
+        let r = exec_with_fields(&ops, &mut slots, fields);
+        assert!((r - 600.0).abs() < 1e-15);
+    }
+
+    #[test]
     fn jit_add_field_to_slot() {
         let mut slots = [5.0];
         exec_with_fields(
@@ -1345,10 +1408,8 @@ mod tests {
                 _ => 0.0,
             }
         }
-        // This is a simplified version without GetField (uses PushFieldNum with constant)
-        // In practice, the peephole optimizer would fuse this into AddFieldToSlot
-        // For a dynamic loop we'd need GetField which requires runtime field index
-        // But we can test with the fused AddFieldToSlot in a manually unrolled way
+        // Unrolled `sum += $1` … `$3`; dynamic `for (i=1;i<=NF;i++) sum+=$i` is covered by
+        // `jit_loop_sum_fields_dynamic` (`GetField`).
         let ops = [
             Op::PushNum(0.0),                         // 0
             Op::SetSlot(0),                           // 1: sum = 0
