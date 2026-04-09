@@ -768,6 +768,8 @@ impl Runtime {
     }
 
     /// Split `self.record` into `field_ranges` using current **`FPAT`** (if non-empty) or **`FS`**.
+    /// Uses `cached_fs` when available (set by `set_field_sep_split`) to avoid per-record
+    /// HashMap lookups and String allocations for the common case.
     fn split_record_fields(&mut self) {
         let record = self.record.as_str();
         if self.csv_mode {
@@ -781,19 +783,29 @@ impl Runtime {
             self.fields_dirty = true;
             return;
         }
-        let fp_raw = self
+        // Check FPAT: use Cow to avoid heap alloc when the value is already a string.
+        let has_fpat = self
             .get_global_var("FPAT")
-            .map(|v| v.as_str())
-            .unwrap_or_default();
-        let fp = fp_raw.trim();
-        if !fp.is_empty() {
-            if !split_fields_fpat(record, fp, &mut self.field_ranges) {
-                let fs_str = self
-                    .get_global_var("FS")
-                    .map(|v| v.as_str())
-                    .unwrap_or_else(|| " ".to_string());
-                split_fields_into(record, &fs_str, &mut self.field_ranges);
+            .map(|v| match v {
+                Value::Str(s) => !s.trim().is_empty(),
+                _ => false,
+            })
+            .unwrap_or(false);
+        if has_fpat {
+            let fp = self
+                .get_global_var("FPAT")
+                .map(|v| v.as_str())
+                .unwrap_or_default();
+            let fp_trimmed = fp.trim();
+            if !fp_trimmed.is_empty()
+                && split_fields_fpat(record, fp_trimmed, &mut self.field_ranges)
+            {
+                return;
             }
+        }
+        // Use cached_fs (set by set_field_sep_split) to avoid HashMap lookup + String clone.
+        if !self.cached_fs.is_empty() {
+            split_fields_into(record, &self.cached_fs, &mut self.field_ranges);
         } else {
             let fs_str = self
                 .get_global_var("FS")
@@ -996,6 +1008,17 @@ impl Runtime {
             Err(_) => {
                 let lossy = String::from_utf8_lossy(&self.line_buf[..end]);
                 self.record.push_str(&lossy);
+            }
+        }
+        // Sync cached_fs from vars (non-allocating check; only copies when changed).
+        let fs_changed = match self.vars.get("FS") {
+            Some(Value::Str(s)) => s.as_str() != self.cached_fs,
+            _ => false,
+        };
+        if fs_changed {
+            if let Some(Value::Str(s)) = self.vars.get("FS") {
+                self.cached_fs.clear();
+                self.cached_fs.push_str(s);
             }
         }
         // Split using current FPAT or FS

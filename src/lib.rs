@@ -800,9 +800,29 @@ fn process_file_slurp_inline(
         if let InlineAction::GsubLiteralPrint { pat, repl } = action {
             return process_file_gsub_literal_print(data, fs, pat, repl, cp, rt);
         }
-        if let InlineAction::PrintFieldStdout(field) = action {
-            if field > 0 && fs == " " {
-                return process_file_print_field_raw(data, field as usize, rt);
+        if fs == " " {
+            match action {
+                InlineAction::PrintFieldStdout(field) if field > 0 => {
+                    return process_file_print_field_raw(data, field as usize, rt);
+                }
+                InlineAction::AddFieldToSlot { field, slot } if field > 0 => {
+                    return process_file_add_field_to_slot_raw(
+                        data,
+                        field as usize,
+                        slot as usize,
+                        rt,
+                    );
+                }
+                InlineAction::AddMulFieldsToSlot { f1, f2, slot } if f1 > 0 && f2 > 0 => {
+                    return process_file_add_mul_fields_to_slot_raw(
+                        data,
+                        f1 as usize,
+                        f2 as usize,
+                        slot as usize,
+                        rt,
+                    );
+                }
+                _ => {}
             }
         }
     }
@@ -1045,6 +1065,196 @@ fn process_file_print_field_raw(data: &[u8], field_idx: usize, rt: &mut Runtime)
         pos = eol + 1;
     }
     Ok(count)
+}
+
+/// Parse ASCII integer directly from bytes without UTF-8 string conversion.
+/// Returns `Some(n)` for optional sign + digits; `None` otherwise.
+#[inline]
+fn parse_ascii_integer_bytes(b: &[u8]) -> Option<i64> {
+    if b.is_empty() {
+        return None;
+    }
+    let mut i = 0usize;
+    let neg = match b[0] {
+        b'-' => {
+            i = 1;
+            true
+        }
+        b'+' => {
+            i = 1;
+            false
+        }
+        _ => false,
+    };
+    if i >= b.len() {
+        return None;
+    }
+    let mut acc: i64 = 0;
+    while i < b.len() {
+        let d = b[i];
+        if !d.is_ascii_digit() {
+            return None;
+        }
+        acc = acc.checked_mul(10)?.checked_add((d - b'0') as i64)?;
+        i += 1;
+    }
+    Some(if neg { -acc } else { acc })
+}
+
+/// Parse number from raw bytes. Fast path for ASCII integers, fallback to f64 parse.
+#[inline]
+fn parse_number_bytes(b: &[u8]) -> f64 {
+    if b.is_empty() {
+        return 0.0;
+    }
+    if let Some(n) = parse_ascii_integer_bytes(b) {
+        return n as f64;
+    }
+    // Fallback: convert to &str for float parsing.
+    unsafe { std::str::from_utf8_unchecked(b) }
+        .parse()
+        .unwrap_or(0.0)
+}
+
+/// Find the Nth (1-based) whitespace-delimited field in `line` and parse as f64.
+#[inline]
+fn parse_nth_field_number_ws(line: &[u8], field_idx: usize) -> f64 {
+    let llen = line.len();
+    let mut i = 0;
+    // Skip leading whitespace
+    while i < llen && line[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    let mut fi = 0usize;
+    while i < llen {
+        let start = i;
+        while i < llen && !line[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        fi += 1;
+        if fi == field_idx {
+            return parse_number_bytes(&line[start..i]);
+        }
+        while i < llen && line[i].is_ascii_whitespace() {
+            i += 1;
+        }
+    }
+    0.0
+}
+
+/// Raw byte path for `{ s += $N }` with FS=" ": parse field N as number directly from mmap bytes.
+/// No record copy, no field split, no String alloc.
+fn process_file_add_field_to_slot_raw(
+    data: &[u8],
+    field_idx: usize,
+    slot: usize,
+    rt: &mut Runtime,
+) -> Result<usize> {
+    let mut count = 0usize;
+    let mut pos = 0;
+    let len = data.len();
+    let mut acc = rt.slots[slot].as_number();
+
+    while pos < len {
+        let eol = memchr(b'\n', &data[pos..len])
+            .map(|i| pos + i)
+            .unwrap_or(len);
+
+        let end = if eol > pos && data[eol - 1] == b'\r' {
+            eol - 1
+        } else {
+            eol
+        };
+
+        count += 1;
+        rt.nr += 1.0;
+        rt.fnr += 1.0;
+
+        acc += parse_nth_field_number_ws(&data[pos..end], field_idx);
+
+        pos = eol + 1;
+    }
+    rt.slots[slot] = Value::Num(acc);
+    Ok(count)
+}
+
+/// Raw byte path for `{ sum += $f1 * $f2 }` with FS=" ": parse two fields directly from mmap bytes.
+fn process_file_add_mul_fields_to_slot_raw(
+    data: &[u8],
+    f1: usize,
+    f2: usize,
+    slot: usize,
+    rt: &mut Runtime,
+) -> Result<usize> {
+    let mut count = 0usize;
+    let mut pos = 0;
+    let len = data.len();
+    let mut acc = rt.slots[slot].as_number();
+    let max_field = f1.max(f2);
+
+    while pos < len {
+        let eol = memchr(b'\n', &data[pos..len])
+            .map(|i| pos + i)
+            .unwrap_or(len);
+
+        let end = if eol > pos && data[eol - 1] == b'\r' {
+            eol - 1
+        } else {
+            eol
+        };
+
+        count += 1;
+        rt.nr += 1.0;
+        rt.fnr += 1.0;
+
+        let line = &data[pos..end];
+        // Extract both fields in a single pass
+        let (v1, v2) = parse_two_fields_number_ws(line, f1, f2, max_field);
+        acc += v1 * v2;
+
+        pos = eol + 1;
+    }
+    rt.slots[slot] = Value::Num(acc);
+    Ok(count)
+}
+
+/// Parse two whitespace-delimited fields from raw bytes in a single scan pass.
+#[inline]
+fn parse_two_fields_number_ws(
+    line: &[u8],
+    f1: usize,
+    f2: usize,
+    max_field: usize,
+) -> (f64, f64) {
+    let llen = line.len();
+    let mut i = 0;
+    let mut v1 = 0.0f64;
+    let mut v2 = 0.0f64;
+    // Skip leading whitespace
+    while i < llen && line[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    let mut fi = 0usize;
+    while i < llen {
+        let start = i;
+        while i < llen && !line[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        fi += 1;
+        if fi == f1 {
+            v1 = parse_number_bytes(&line[start..i]);
+        }
+        if fi == f2 {
+            v2 = parse_number_bytes(&line[start..i]);
+        }
+        if fi >= max_field {
+            break;
+        }
+        while i < llen && line[i].is_ascii_whitespace() {
+            i += 1;
+        }
+    }
+    (v1, v2)
 }
 
 /// Execute all record rules for the current record. Returns true if processing should stop.
