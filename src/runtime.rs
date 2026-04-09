@@ -4,6 +4,11 @@ use std::collections::HashMap;
 /// Fast hash map for awk variables and arrays. Uses FxHash (no DoS resistance,
 /// but ~2× faster than SipHash for short string keys typical in awk programs).
 pub type AwkMap<K, V> = rustc_hash::FxHashMap<K, V>;
+
+/// Initial capacity for stdout batching (`print` accumulates here until flush).
+/// Large END blocks (e.g. `for (k in a) print …`) grow this heavily; starting larger
+/// avoids repeated `Vec` reallocations without a hard upper bound on output size.
+const DEFAULT_PRINT_BUF_CAPACITY: usize = 512 * 1024;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::Path;
@@ -270,6 +275,13 @@ fn split_csv_gawk_fields(record: &str, field_ranges: &mut Vec<(u32, u32)>) {
 /// Split `record` into `field_ranges` (replaces contents). Shared by lazy split and stdin path.
 fn split_fields_into(record: &str, fs: &str, field_ranges: &mut Vec<(u32, u32)>) {
     field_ranges.clear();
+    // Rough NF estimate from record length reduces per-line `Vec` growth for whitespace/FS splits.
+    if !record.is_empty() {
+        let want = (record.len() / 16).saturating_add(4).min(2048).max(8);
+        if field_ranges.capacity() < want {
+            field_ranges.reserve(want - field_ranges.capacity());
+        }
+    }
     if fs.is_empty() {
         for (i, c) in record.char_indices() {
             field_ranges.push((i as u32, (i + c.len_utf8()) as u32));
@@ -418,7 +430,7 @@ impl Runtime {
             slots: Vec::new(),
             regex_cache: AwkMap::default(),
             memmem_finder_cache: AwkMap::default(),
-            print_buf: Vec::with_capacity(65536),
+            print_buf: Vec::with_capacity(DEFAULT_PRINT_BUF_CAPACITY),
             ofs_bytes: b" ".to_vec(),
             ors_bytes: b"\n".to_vec(),
             vm_stack: Vec::with_capacity(64),
@@ -510,6 +522,7 @@ impl Runtime {
     }
 
     /// Resolve a global name: per-record overlay, then shared `BEGIN` snapshot.
+    #[inline]
     pub fn get_global_var(&self, name: &str) -> Option<&Value> {
         self.vars
             .get(name)
@@ -992,9 +1005,14 @@ impl Runtime {
         self.split_record_fields();
     }
 
+    #[inline]
     pub fn array_get(&self, name: &str, key: &str) -> Value {
         match self.get_global_var(name) {
-            Some(Value::Array(a)) => a.get(key).cloned().unwrap_or(Value::Str(String::new())),
+            Some(Value::Array(a)) => match a.get(key) {
+                Some(Value::Num(n)) => Value::Num(*n),
+                Some(v) => v.clone(),
+                None => Value::Str(String::new()),
+            },
             _ => Value::Str(String::new()),
         }
     }
