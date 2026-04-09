@@ -768,7 +768,9 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
                 };
                 slots.clear();
                 let chunk = format!("{line}{ors}");
-                let _ = emit_with_redir(ctx, &chunk, redir, Some(path));
+                if let Err(e) = emit_with_redir(ctx, &chunk, redir, Some(path)) {
+                    JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+                }
             });
             0.0
         }
@@ -804,7 +806,9 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
                 let vals = &values[1..];
                 if let Ok(v) = sprintf_simple(fmt.as_ref(), vals, ctx.rt.numeric_decimal) {
                     let s = v.as_str();
-                    let _ = emit_with_redir(ctx, s.as_str(), redir, Some(path));
+                    if let Err(e) = emit_with_redir(ctx, s.as_str(), redir, Some(path)) {
+                        JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+                    }
                 }
             });
             0.0
@@ -1512,7 +1516,10 @@ extern "C" fn jit_var_dispatch(op: u32, name_idx: u32, arg: f64) -> f64 {
             JIT_VAR_OP_INCDEC_PRE_INC, JIT_VAR_OP_INCR, JIT_VAR_OP_SET,
         };
         match op {
-            JIT_VAR_OP_GET => ctx.get_var(name_owned.as_str()).as_number(),
+            JIT_VAR_OP_GET => {
+                let v = ctx.get_var(name_owned.as_str());
+                value_to_jit_f64(ctx, v)
+            }
             JIT_VAR_OP_SET => {
                 ctx.set_var(name_owned.as_str(), Value::Num(arg));
                 sync_jit_slot_if_scalar(ctx, name_owned.as_str());
@@ -1791,19 +1798,19 @@ extern "C" fn jit_val_dispatch(op: u32, a1: u32, a2: f64, a3: f64) -> f64 {
             }
             JIT_VAL_ARRAY_GET => {
                 let name = ctx.cp.strings.get(a1);
-                let key = Value::Num(a2).as_str();
+                let key = jit_f64_to_value(ctx, a2).into_string();
                 ctx.rt.array_get(name, &key).as_number()
             }
             JIT_VAL_ARRAY_SET => {
                 let name = ctx.cp.strings.get(a1);
-                let key = Value::Num(a2).as_str();
-                let val = Value::Num(a3);
+                let key = jit_f64_to_value(ctx, a2).into_string();
+                let val = jit_f64_to_value(ctx, a3);
                 ctx.rt.array_set(name, key, val);
                 a3
             }
             JIT_VAL_ARRAY_IN => {
                 let name = ctx.cp.strings.get(a1);
-                let key = Value::Num(a2).as_str();
+                let key = jit_f64_to_value(ctx, a2).into_string();
                 if ctx.rt.array_has(name, &key) {
                     1.0
                 } else {
@@ -1812,7 +1819,7 @@ extern "C" fn jit_val_dispatch(op: u32, a1: u32, a2: f64, a3: f64) -> f64 {
             }
             JIT_VAL_ARRAY_DELETE_ELEM => {
                 let name = ctx.cp.strings.get(a1).to_string();
-                let key = Value::Num(a2).as_str();
+                let key = jit_f64_to_value(ctx, a2).into_string();
                 ctx.rt.array_delete(&name, Some(&key));
                 0.0
             }
@@ -1827,7 +1834,7 @@ extern "C" fn jit_val_dispatch(op: u32, a1: u32, a2: f64, a3: f64) -> f64 {
             | JIT_VAL_ARRAY_COMPOUND_DIV
             | JIT_VAL_ARRAY_COMPOUND_MOD => {
                 let name = ctx.cp.strings.get(a1);
-                let key = Value::Num(a2).as_str();
+                let key = jit_f64_to_value(ctx, a2).into_string();
                 let old = ctx.rt.array_get(name, &key).as_number();
                 let rhs = a3;
                 let n = match op {
@@ -1846,7 +1853,7 @@ extern "C" fn jit_val_dispatch(op: u32, a1: u32, a2: f64, a3: f64) -> f64 {
             | JIT_VAL_ARRAY_INCDEC_PRE_DEC
             | JIT_VAL_ARRAY_INCDEC_POST_DEC => {
                 let name = ctx.cp.strings.get(a1);
-                let key = Value::Num(a2).as_str();
+                let key = jit_f64_to_value(ctx, a2).into_string();
                 let old_n = ctx.rt.array_get(name, &key).as_number();
                 let delta = match op {
                     JIT_VAL_ARRAY_INCDEC_PRE_INC | JIT_VAL_ARRAY_INCDEC_POST_INC => 1.0,
@@ -2065,17 +2072,20 @@ fn try_jit_dispatch(ops: &[Op], ctx: &mut VmCtx<'_>) -> Result<Option<VmSignal>>
         }
         crate::jit::JIT_VAL_SIGNAL_RETURN_VAL => {
             let val = JIT_SIGNAL_ARG.with(|c| c.get());
-            JIT_DYN_STRINGS.with(|c| c.borrow_mut().clear());
+            // Non-mixed JIT still returns strings via NaN-boxed f64; `Value::Num` would mis-decode.
+            let ret = jit_f64_to_value(ctx, val);
+            // Do not clear `JIT_DYN_STRINGS` here: user-function JIT can nest inside an outer
+            // mixed JIT chunk (e.g. `BEGIN` calling `id("ok")`); the outer JIT stack still holds
+            // NaN-encoded indices into this pool until the outer `try_jit_dispatch` finishes.
             MIXED_PRINT_SLOTS.with(|c| c.borrow_mut().clear());
             JIT_JOIN_KEY_PARTS.with(|c| c.borrow_mut().clear());
             JIT_BUILTIN_ARGS.with(|c| c.borrow_mut().clear());
             JIT_CALL_USER_ARGS.with(|c| c.borrow_mut().clear());
             SUB_FN_STASH_KEY.with(|c| *c.borrow_mut() = None);
             JIT_PATSPLIT_SEPS_STASH.with(|c| c.set(0));
-            return Ok(Some(VmSignal::Return(Value::Num(val))));
+            return Ok(Some(VmSignal::Return(ret)));
         }
         crate::jit::JIT_VAL_SIGNAL_RETURN_EMPTY => {
-            JIT_DYN_STRINGS.with(|c| c.borrow_mut().clear());
             MIXED_PRINT_SLOTS.with(|c| c.borrow_mut().clear());
             JIT_JOIN_KEY_PARTS.with(|c| c.borrow_mut().clear());
             JIT_BUILTIN_ARGS.with(|c| c.borrow_mut().clear());
@@ -2201,12 +2211,15 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             // ── Compound assignment ─────────────────────────────────────
             Op::CompoundAssignVar(idx, bop) => {
                 let rhs = ctx.pop();
-                let new_val = ctx.with_short_pool_name_mut(idx, |ctx, name| -> crate::error::Result<Value> {
-                    let old = ctx.get_var(name);
-                    let new_val = apply_binop(bop, &old, &rhs)?;
-                    ctx.set_var(name, new_val.clone());
-                    Ok(new_val)
-                })?;
+                let new_val = ctx.with_short_pool_name_mut(
+                    idx,
+                    |ctx, name| -> crate::error::Result<Value> {
+                        let old = ctx.get_var(name);
+                        let new_val = apply_binop(bop, &old, &rhs)?;
+                        ctx.set_var(name, new_val.clone());
+                        Ok(new_val)
+                    },
+                )?;
                 ctx.push(new_val);
             }
             Op::CompoundAssignSlot(slot, bop) => {
@@ -3120,12 +3133,14 @@ pub(crate) fn exec_builtin_dispatch(
     let argc = args.len();
     let result = match name {
         "length" => {
-            let s = if args.is_empty() {
-                ctx.rt.record.clone()
+            if args.is_empty() {
+                Value::Num(ctx.rt.record.chars().count() as f64)
             } else {
-                args[0].as_str()
-            };
-            Value::Num(s.chars().count() as f64)
+                match &args[0] {
+                    Value::Array(a) => Value::Num(a.len() as f64),
+                    v => Value::Num(v.as_str().chars().count() as f64),
+                }
+            }
         }
         "index" => {
             let hay = args[0].as_str();

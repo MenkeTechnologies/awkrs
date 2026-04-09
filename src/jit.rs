@@ -195,7 +195,7 @@ pub fn decode_nan_str_bits(bits: u64) -> Option<(bool, u32)> {
 // (high 32 bits `0x7FFD_0000`, low 32 bits zero) that does not match
 // [`is_nan_str`].
 
-/// Upper 32 bits of the mixed-mode JIT encoding for [`Value::Uninit`].
+/// Upper 32 bits of the mixed-mode JIT encoding for [`crate::runtime::Value::Uninit`].
 pub const NAN_UNINIT_HI32: u32 = 0x7FFD_0000;
 /// Full bit pattern for [`nan_uninit`].
 pub const NAN_UNINIT_TAG: u64 = (NAN_UNINIT_HI32 as u64) << 32;
@@ -627,7 +627,8 @@ impl JitChunk {
 /// control flow, field access (`PushFieldNum`, `GetField`, NR/FNR/NF, fused
 /// field+slot ops), fused `a[$n] += delta`, and
 /// other fused peephole opcodes.
-/// Returns `true` if any op in the chunk requires mixed-mode (NaN-boxed) codegen.
+/// Returns `true` if any op in the chunk requires mixed-mode (NaN-boxed) codegen
+/// (including [`Op::GetVar`] and [`Op::SetField`], so locals and field assignment match `Value` semantics).
 pub fn needs_mixed_mode(ops: &[Op]) -> bool {
     ops.iter().any(|op| {
         matches!(
@@ -675,6 +676,11 @@ pub fn needs_mixed_mode(ops: &[Op]) -> bool {
         ) || matches!(op, Op::GetLine { .. })
             || matches!(op, Op::CallUser(_, _))
             || matches!(op, Op::SubFn(_) | Op::GsubFn(_))
+            // `$n = expr` must use mixed codegen so the RHS can be NaN-boxed strings.
+            || matches!(op, Op::SetField)
+            // Locals/globals can hold strings; non-mixed JIT would stack plain f64 and break
+            // arithmetic (`x*2` when x is a numeric string) and returns (`return x`).
+            || matches!(op, Op::GetVar(_))
     })
 }
 
@@ -712,7 +718,8 @@ fn builtin_supported_for_jit(name: &str, argc: u16) -> bool {
     // Cap so pathological bytecode cannot pass huge arg counts through the JIT buffer.
     const MAX_CALL_ARGS: u16 = 64;
     match name {
-        "length" => argc <= 1,
+        // `length(expr)` must read full `Value` (arrays, strings); JIT only passes f64.
+        "length" => argc == 0,
         "index" => argc == 2,
         "substr" => argc == 2 || argc == 3,
         "tolower" | "toupper" => argc == 1,
@@ -3789,7 +3796,7 @@ mod tests {
             dummy_var,
             test_field_dispatch,
             dummy_io_dispatch,
-            dummy_val_dispatch,
+            test_field_mixed_val_dispatch,
         );
         chunk.execute(&mut state)
     }
@@ -3812,6 +3819,24 @@ mod tests {
 
     extern "C" fn dummy_val_dispatch(_: u32, _: u32, _: f64, _: f64) -> f64 {
         0.0
+    }
+
+    /// Mixed `SetField` lowers to [`MIXED_SET_FIELD`] on `val_dispatch`; wire it for field tests.
+    extern "C" fn test_field_mixed_val_dispatch(op: u32, a1: u32, a2: f64, a3: f64) -> f64 {
+        if op == MIXED_SET_FIELD {
+            let field_idx = a1 as i32;
+            let i = field_idx.max(0) as usize;
+            TEST_JIT_FIELDS.with(|cell| {
+                let mut v = cell.borrow_mut();
+                if v.len() <= i {
+                    v.resize(i + 1, 0.0);
+                }
+                v[i] = a2;
+                a2
+            })
+        } else {
+            dummy_val_dispatch(op, a1, a2, a3)
+        }
     }
 
     fn exec(ops: &[Op]) -> f64 {

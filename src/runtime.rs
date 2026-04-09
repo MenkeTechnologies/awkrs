@@ -277,7 +277,7 @@ fn split_fields_into(record: &str, fs: &str, field_ranges: &mut Vec<(u32, u32)>)
     field_ranges.clear();
     // Rough NF estimate from record length reduces per-line `Vec` growth for whitespace/FS splits.
     if !record.is_empty() {
-        let want = (record.len() / 16).saturating_add(4).min(2048).max(8);
+        let want = (record.len() / 16).saturating_add(4).clamp(8, 2048);
         if field_ranges.capacity() < want {
             field_ranges.reserve(want - field_ranges.capacity());
         }

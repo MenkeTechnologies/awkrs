@@ -918,12 +918,15 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
     }
     match name {
         "length" => {
-            let s = if args.is_empty() {
-                ctx.rt.record.clone()
+            if args.is_empty() {
+                Ok(Value::Num(ctx.rt.record.chars().count() as f64))
             } else {
-                eval_expr(&args[0], ctx)?.as_str()
-            };
-            Ok(Value::Num(s.chars().count() as f64))
+                let v = eval_expr(&args[0], ctx)?;
+                match &v {
+                    Value::Array(a) => Ok(Value::Num(a.len() as f64)),
+                    _ => Ok(Value::Num(v.as_str().chars().count() as f64)),
+                }
+            }
         }
         "index" if args.len() == 2 => {
             let hay = eval_expr(&args[0], ctx)?.as_str();
