@@ -61,12 +61,14 @@
 //!   for marshaling instead of allocating a fresh `Vec<f64>` per JIT invocation. The VM clears
 //!   `JIT_DYN_STRINGS` *before* filling that buffer in mixed mode so NaN-boxed string slots (e.g.
 //!   `-v` values stored as strings) still match the dynamic-string pool during execution.
-//! - **Single-block slot SSA** — for non-mixed chunks with no jumps and no early `return`/flow
-//!   signals, scalar slots are held in Cranelift [`Variable`]s and flushed to `slots_ptr` once before
-//!   the function return (phi-free; no backedges).
-//! - **Future** — full Cranelift SSA across loop headers (phis for slot vars); keep interpreter
-//!   [`crate::runtime::Value`] slots and the JIT `f64` buffer unified where semantics allow.
-//!   TLS for `BEGIN`/chunks is already skipped when [`jit_chunk_needs_vm_tls`] is `false`.
+//! - **Slot SSA (multi-block)** — for non-mixed chunks with no early `return`/flow signals
+//!   ([`ops_have_early_return_or_signal`]), scalar slots live in Cranelift [`Variable`]s. The
+//!   Cranelift frontend inserts φ-nodes at merge points (loop headers, join blocks). Values are
+//!   flushed to `slots_ptr` once before each normal `return` (including synthetic exits for jump
+//!   targets past the last opcode).
+//! - **Future** — keep interpreter [`crate::runtime::Value`] slots and the JIT `f64` buffer unified
+//!   where semantics allow. TLS for `BEGIN`/chunks is already skipped when [`jit_chunk_needs_vm_tls`]
+//!   is `false`.
 
 use crate::ast::{BinOp, IncDecOp};
 use crate::bytecode::{CompiledProgram, GetlineSource, Op, SubTarget};
@@ -1413,10 +1415,7 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
 
     let has_fields = needs_field_callback(ops);
     let jump_targets = collect_jump_targets(ops);
-    let use_slot_ssa = !mixed
-        && slot_count > 0
-        && jump_targets.is_empty()
-        && !ops_have_early_return_or_signal(ops);
+    let use_slot_ssa = !mixed && slot_count > 0 && !ops_have_early_return_or_signal(ops);
 
     {
         let mut builder = FunctionBuilder::new(&mut ctx.func, &mut func_ctx);
@@ -1476,8 +1475,8 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
         // Seal entry block — its only predecessor is the function entry
         builder.seal_block(entry_block);
 
-        // Single-block non-mixed chunks: keep each scalar slot in Cranelift `Variable` SSA form
-        // and flush to `slots_ptr` once before return (no control-flow merges — phi-free).
+        // Non-mixed chunks: keep each scalar slot in Cranelift `Variable` SSA form and flush to
+        // `slots_ptr` before every return. Loop headers and joins get φ-nodes from the SSA builder.
         let slot_vars: Vec<Variable> = if use_slot_ssa {
             (0..slot_count)
                 .map(|_| builder.declare_var(types::F64))
@@ -2901,6 +2900,8 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
                                 .ins()
                                 .call_indirect(val_sig_ir, val_fn_ptr, &[op_c, a1, z, z]);
                         builder.inst_results(call)[0]
+                    } else if use_slot_ssa {
+                        builder.use_var(slot_vars[slot as usize])
                     } else {
                         let offset = (slot as i32) * 8;
                         builder
@@ -3481,6 +3482,13 @@ pub fn try_compile(ops: &[Op], cp: &CompiledProgram) -> Option<JitChunk> {
             if t >= ops.len() {
                 if let Some(&blk) = block_map.get(&t) {
                     builder.switch_to_block(blk);
+                    let slots_ptr_exit = builder.use_var(var_slots_ptr);
+                    emit_slot_ssa_flush_to_mem(
+                        &mut builder,
+                        use_slot_ssa,
+                        &slot_vars,
+                        slots_ptr_exit,
+                    );
                     let z = builder.ins().f64const(0.0);
                     builder.ins().return_(&[z]);
                 }
