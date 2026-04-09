@@ -485,3 +485,29 @@ fn mawk_w_version_matches_dash_capital_v() {
         .expect("spawn awkrs -V");
     assert_eq!(w.stdout, dash_v.stdout);
 }
+
+// ── typeof(), regexp alternation, empty OFS ─────────────────────────────────
+
+#[test]
+fn typeof_builtin_classifies_numbers_strings_and_uninitialized() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { print typeof(1), typeof("x"), typeof(x); a[1]=2; print typeof(a[1]) }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "number string uninitialized\nnumber\n");
+}
+
+#[test]
+fn regexp_pattern_alternation_matches_either_branch() {
+    let (c, o, _) = run_awkrs_stdin(r#"/a|b/ { print $0 }"#, "xx\nb\n");
+    assert_eq!(c, 0);
+    assert_eq!(o, "b\n");
+}
+
+#[test]
+fn empty_ofs_joins_print_args_without_separator() {
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { OFS = ""; print 1, 2, 3 }"#, "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "123\n");
+}

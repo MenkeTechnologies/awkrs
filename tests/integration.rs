@@ -145,6 +145,20 @@ fn cyberpunk_help_banner() {
 }
 
 #[test]
+fn mawk_w_help_matches_long_help_flag() {
+    let w = Command::new(env!("CARGO_BIN_EXE_awkrs"))
+        .args(["-W", "help"])
+        .output()
+        .expect("spawn awkrs -W help");
+    let long = Command::new(env!("CARGO_BIN_EXE_awkrs"))
+        .arg("--help")
+        .output()
+        .expect("spawn awkrs --help");
+    assert_eq!(w.status, long.status);
+    assert_eq!(w.stdout, long.stdout);
+}
+
+#[test]
 fn gsub_on_record() {
     let (code, stdout, _) = run_awkrs_stdin("{ gsub(\"o\", \"x\"); print }", "hello\n");
     assert_eq!(code, 0);
