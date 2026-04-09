@@ -28,7 +28,7 @@
 `awkrs` runs **pattern → action** programs over input records (lines by default), similar to POSIX `awk`, GNU `gawk`, and `mawk`. The CLI accepts a **union** of common options from those implementations so scripts can pass flags through; see `--help` for which options affect behavior.
 
 #### HELP // SYSTEM INTERFACE
-![`awkrs -h` cyberpunk help (termshot)](assets/awkrs-help.png)
+<img src="assets/awkrs-help.png" alt="awkrs -h cyberpunk help (termshot)" width="100%">
 
 ---
 
