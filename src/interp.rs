@@ -2,8 +2,9 @@ use crate::ast::{IncDecOp, IncDecTarget, *};
 use crate::builtins;
 use crate::error::{Error, Result};
 use crate::format;
-use crate::runtime::{Runtime, Value};
+use crate::runtime::{sorted_in_mode, Runtime, SortedInMode, Value};
 use regex::Regex;
+use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::io::Write;
@@ -350,7 +351,7 @@ fn exec_stmt(s: &Stmt, ctx: &mut ExecCtx<'_>) -> Result<Flow> {
             }
         }
         Stmt::ForIn { var, arr, body } => {
-            let keys = ctx.rt.array_keys(arr);
+            let keys = interp_for_in_keys(ctx, arr)?;
             'outer: for k in keys {
                 ctx.set_var(var, Value::Str(k));
                 for t in body {
@@ -1422,11 +1423,12 @@ fn sprintf_simple(fmt: &str, vals: &[Value], dec: char) -> Result<Value> {
     s.map(Value::Str).map_err(Error::Runtime)
 }
 
-fn call_user(fd: &FunctionDef, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> {
-    let mut vals: Vec<Value> = args
-        .iter()
-        .map(|e| eval_expr(e, ctx))
-        .collect::<Result<_>>()?;
+fn call_user_with_values(name: &str, mut vals: Vec<Value>, ctx: &mut ExecCtx<'_>) -> Result<Value> {
+    let fd = ctx
+        .prog
+        .funcs
+        .get(name)
+        .ok_or_else(|| Error::Runtime(format!("unknown function `{name}`")))?;
     while vals.len() < fd.params.len() {
         vals.push(Value::Uninit);
     }
@@ -1468,6 +1470,75 @@ fn call_user(fd: &FunctionDef, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<V
     ctx.locals.pop();
     ctx.in_function = was_fn;
     Ok(result)
+}
+
+fn call_user(fd: &FunctionDef, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> {
+    let vals: Vec<Value> = args
+        .iter()
+        .map(|e| eval_expr(e, ctx))
+        .collect::<Result<_>>()?;
+    call_user_with_values(&fd.name, vals, ctx)
+}
+
+fn interp_sort_keys_custom(ctx: &mut ExecCtx<'_>, keys: &mut [String], fname: &str) -> Result<()> {
+    if !ctx.prog.funcs.contains_key(fname) {
+        return Err(Error::Runtime(format!(
+            "sorted_in: unknown function `{fname}`"
+        )));
+    }
+    let err: RefCell<Option<Error>> = RefCell::new(None);
+    keys.sort_by(|a, b| {
+        if err.borrow().is_some() {
+            return Ordering::Equal;
+        }
+        match call_user_with_values(
+            fname,
+            vec![Value::Str(a.clone()), Value::Str(b.clone())],
+            ctx,
+        ) {
+            Ok(v) => {
+                let n = v.as_number();
+                if n < 0.0 {
+                    Ordering::Less
+                } else if n > 0.0 {
+                    Ordering::Greater
+                } else {
+                    Ordering::Equal
+                }
+            }
+            Err(e) => {
+                *err.borrow_mut() = Some(e);
+                Ordering::Equal
+            }
+        }
+    });
+    if let Some(e) = err.into_inner() {
+        return Err(e);
+    }
+    Ok(())
+}
+
+fn interp_for_in_keys(ctx: &mut ExecCtx<'_>, arr_name: &str) -> Result<Vec<String>> {
+    if let SortedInMode::CustomFn(fname) = sorted_in_mode(ctx.rt) {
+        if arr_name == "SYMTAB" {
+            let mut keys = ctx.rt.symtab_keys_reflect();
+            if ctx.rt.posix {
+                return Ok(keys);
+            }
+            interp_sort_keys_custom(ctx, &mut keys, fname.as_str())?;
+            return Ok(keys);
+        }
+        let Some(Value::Array(a)) = ctx.rt.get_global_var(arr_name) else {
+            return Ok(Vec::new());
+        };
+        let mut keys: Vec<String> = a.keys().cloned().collect();
+        if ctx.rt.posix {
+            return Ok(keys);
+        }
+        interp_sort_keys_custom(ctx, &mut keys, fname.as_str())?;
+        return Ok(keys);
+    }
+    Ok(ctx.rt.array_keys(arr_name))
 }
 
 #[cfg(test)]

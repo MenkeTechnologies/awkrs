@@ -134,6 +134,15 @@ fn procinfo_sorted_in_ind_str_asc() {
 }
 
 #[test]
+fn procinfo_sorted_in_custom_user_function() {
+    let prog = r#"function cmp(a,b) { if (a < b) return -1; if (a > b) return 1; return 0 }
+BEGIN { a["z"]=1; a["m"]=1; a["a"]=1; PROCINFO["sorted_in"]="cmp"; for (k in a) print k }"#;
+    let (c, o, _) = run_awkrs_stdin(prog, "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "a\nm\nz\n");
+}
+
+#[test]
 fn intdiv_and_mkbool_builtins() {
     let (c, o, _) = run_awkrs_stdin(
         r#"BEGIN { print intdiv(7, 3), intdiv(-7, 3); print mkbool(0), mkbool("x"), mkbool("") }"#,
@@ -1181,4 +1190,20 @@ fn index_utf8_respects_characters_as_bytes_flag() {
     let (c_b, o_b, _) = run_awkrs_stdin_args(["-b"], prog, "");
     assert_eq!(c_b, 0);
     assert_eq!(o_b.trim(), "3");
+}
+
+#[test]
+fn length_substr_utf8_respects_characters_as_bytes_flag() {
+    let prog = r#"BEGIN { print length("αβ"); print substr("αβ", 3, 2) }"#;
+    let (c, o, _) = run_awkrs_stdin(prog, "");
+    assert_eq!(c, 0);
+    let lines: Vec<&str> = o.lines().collect();
+    assert_eq!(lines[0], "2");
+    assert_eq!(lines.get(1).copied().unwrap_or(""), "");
+
+    let (c_b, o_b, _) = run_awkrs_stdin_args(["-b"], prog, "");
+    assert_eq!(c_b, 0);
+    let lines_b: Vec<&str> = o_b.lines().collect();
+    assert_eq!(lines_b[0], "4");
+    assert_eq!(lines_b[1], "β");
 }

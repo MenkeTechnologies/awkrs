@@ -68,8 +68,8 @@ pub fn awk_locale_str_cmp(a: &str, b: &str) -> Ordering {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SortedInMode {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum SortedInMode {
     Unsorted,
     IndStrAsc,
     IndStrDesc,
@@ -81,13 +81,24 @@ enum SortedInMode {
     ValNumDesc,
     ValTypeAsc,
     ValTypeDesc,
+    /// gawk: `PROCINFO["sorted_in"] = "cmp"` — user function `(i1, i2)` returns &lt;0 / 0 / &gt;0 (index sort).
+    CustomFn(String),
 }
 
-/// Returns [`Some`] for recognized `@ind_*` / `@val_*` tokens and for empty / `@unsorted` (→ [`SortedInMode::Unsorted`]).
-/// Returns [`None`] for gawk-style **custom comparator function names** (and typos): those are not implemented.
-fn parse_sorted_in_token(s: &str) -> Option<SortedInMode> {
-    match s.trim() {
-        "" | "@unsorted" => Some(SortedInMode::Unsorted),
+fn is_sorted_in_user_fn_name(s: &str) -> bool {
+    let mut chars = s.chars();
+    let Some(c) = chars.next() else {
+        return false;
+    };
+    if !(c.is_ascii_alphabetic() || c == '_') {
+        return false;
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+fn parse_sorted_in_at_token(t: &str) -> Option<SortedInMode> {
+    match t {
+        "@unsorted" => Some(SortedInMode::Unsorted),
         "@ind_str_asc" => Some(SortedInMode::IndStrAsc),
         "@ind_str_desc" => Some(SortedInMode::IndStrDesc),
         "@ind_num_asc" => Some(SortedInMode::IndNumAsc),
@@ -102,7 +113,7 @@ fn parse_sorted_in_token(s: &str) -> Option<SortedInMode> {
     }
 }
 
-fn sorted_in_mode(rt: &Runtime) -> SortedInMode {
+pub(crate) fn sorted_in_mode(rt: &Runtime) -> SortedInMode {
     if rt.posix {
         return SortedInMode::Unsorted;
     }
@@ -112,14 +123,24 @@ fn sorted_in_mode(rt: &Runtime) -> SortedInMode {
                 return SortedInMode::Unsorted;
             };
             let s = v.as_str();
-            if let Some(mode) = parse_sorted_in_token(&s) {
-                return mode;
+            let t = s.trim();
+            if t.is_empty() {
+                return SortedInMode::Unsorted;
             }
-            if !s.trim().is_empty() && !rt.sorted_in_warned.get() {
-                rt.sorted_in_warned.set(true);
-                eprintln!(
-                    "awkrs: PROCINFO[\"sorted_in\"]={s:?}: gawk user-defined comparator functions are not supported (only @ind_* / @val_* modes); using default key order"
-                );
+            if t.starts_with('@') {
+                if let Some(mode) = parse_sorted_in_at_token(t) {
+                    return mode;
+                }
+                if !rt.sorted_in_warned.get() {
+                    rt.sorted_in_warned.set(true);
+                    eprintln!(
+                        "awkrs: PROCINFO[\"sorted_in\"]={s:?}: unknown @… token (expected @ind_* / @val_* / @unsorted)"
+                    );
+                }
+                return SortedInMode::Unsorted;
+            }
+            if is_sorted_in_user_fn_name(t) {
+                return SortedInMode::CustomFn(t.to_string());
             }
             SortedInMode::Unsorted
         }
@@ -137,10 +158,15 @@ fn val_type_rank(v: &Value) -> u8 {
     }
 }
 
-fn sort_for_in_keys(keys: &mut [String], arr: &AwkMap<String, Value>, mode: SortedInMode) {
+pub(crate) fn sort_for_in_keys(
+    keys: &mut [String],
+    arr: &AwkMap<String, Value>,
+    mode: SortedInMode,
+) {
     use SortedInMode::*;
     match mode {
         Unsorted => {}
+        CustomFn(_) => {}
         IndStrAsc => keys.sort(),
         IndStrDesc => keys.sort_by(|a, b| b.cmp(a)),
         IndNumAsc => keys.sort_by(|a, b| {
@@ -2120,6 +2146,9 @@ impl Runtime {
         }
     }
 
+    /// Keys for `for (k in arr)` / `SYMTAB` in **sorted** order. When `PROCINFO["sorted_in"]` names a
+    /// **user function**, sorting requires VM/interpreter context — use [`crate::vm::VmCtx::for_in_keys`]
+    /// or the interpreter path; this method returns **unsorted** hash iteration order in that case.
     pub fn array_keys(&self, name: &str) -> Vec<String> {
         if name == "SYMTAB" {
             let mut keys = self.symtab_keys_reflect();
@@ -2127,6 +2156,9 @@ impl Runtime {
                 return keys;
             }
             let mode = sorted_in_mode(self);
+            if matches!(mode, SortedInMode::CustomFn(_)) {
+                return keys;
+            }
             let mut tmp: AwkMap<String, Value> = AwkMap::default();
             for k in &keys {
                 tmp.insert(k.clone(), self.symtab_elem_get(k));
@@ -2142,6 +2174,9 @@ impl Runtime {
             return keys;
         }
         let mode = sorted_in_mode(self);
+        if matches!(mode, SortedInMode::CustomFn(_)) {
+            return keys;
+        }
         sort_for_in_keys(&mut keys, a, mode);
         keys
     }

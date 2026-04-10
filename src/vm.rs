@@ -7,9 +7,10 @@ use crate::error::{Error, Result};
 use crate::format;
 use crate::interp::Flow;
 use crate::runtime::AwkMap;
-use crate::runtime::{value_to_float, Runtime, Value};
+use crate::runtime::{sorted_in_mode, value_to_float, Runtime, SortedInMode, Value};
 use rug::Float;
 use std::borrow::Cow;
+use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::ffi::c_void;
 use std::io::{self, Write};
@@ -139,12 +140,33 @@ impl<'a> VmCtx<'a> {
         self.rt.array_has("SYMTAB", key)
     }
 
-    fn symtab_keys(&self) -> Vec<String> {
-        self.rt.array_keys("SYMTAB")
+    fn symtab_key_count(&self) -> usize {
+        self.rt.symtab_keys_reflect().len()
     }
 
-    fn symtab_key_count(&self) -> usize {
-        self.symtab_keys().len()
+    /// Keys for `for (k in …)` / `SYMTAB` iteration order, including **`PROCINFO["sorted_in"]`** and
+    /// user-defined comparators (`cmp` with two index arguments).
+    pub(crate) fn for_in_keys(&mut self, name: &str) -> Result<Vec<String>> {
+        if let SortedInMode::CustomFn(fname) = sorted_in_mode(self.rt) {
+            if name == "SYMTAB" {
+                let mut keys = self.rt.symtab_keys_reflect();
+                if self.rt.posix {
+                    return Ok(keys);
+                }
+                sort_keys_with_custom_cmp(self, &mut keys, fname.as_str())?;
+                return Ok(keys);
+            }
+            let Some(Value::Array(a)) = self.rt.get_global_var(name) else {
+                return Ok(Vec::new());
+            };
+            let mut keys: Vec<String> = a.keys().cloned().collect();
+            if self.rt.posix {
+                return Ok(keys);
+            }
+            sort_keys_with_custom_cmp(self, &mut keys, fname.as_str())?;
+            return Ok(keys);
+        }
+        Ok(self.rt.array_keys(name))
     }
 
     fn symtab_delete(&mut self, key: &str) {
@@ -478,8 +500,6 @@ thread_local! {
     /// `seps` pool index between [`crate::jit::MIXED_PATSPLIT_STASH_SEPS`] and [`crate::jit::MIXED_PATSPLIT_FP_SEP_WIDE`].
     static JIT_PATSPLIT_SEPS_STASH: Cell<u32> = const { Cell::new(0) };
 }
-
-use std::cell::RefCell;
 
 thread_local! {
     /// ForIn iterator stack for JIT-compiled for-in loops.
@@ -1951,14 +1971,16 @@ extern "C" fn jit_val_dispatch(vmctx: *mut c_void, op: u32, a1: u32, a2: f64, a3
             // ── ForIn iteration ────────────────────────────────────────
             JIT_VAL_FORIN_START => {
                 let name = ctx.cp.strings.get(a1);
-                let keys = if name == "SYMTAB" {
-                    ctx.symtab_keys()
-                } else {
-                    ctx.rt.array_keys(name)
-                };
-                JIT_FORIN_ITERS.with(|c| {
-                    c.borrow_mut().push(ForInState { keys, index: 0 });
-                });
+                match ctx.for_in_keys(name) {
+                    Ok(keys) => {
+                        JIT_FORIN_ITERS.with(|c| {
+                            c.borrow_mut().push(ForInState { keys, index: 0 });
+                        });
+                    }
+                    Err(e) => {
+                        JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+                    }
+                }
                 0.0
             }
             JIT_VAL_FORIN_NEXT => {
@@ -2800,12 +2822,8 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
 
             // ── ForIn ───────────────────────────────────────────────────
             Op::ForInStart(arr) => {
-                let name = ctx.str_ref(arr);
-                let keys = if name == "SYMTAB" {
-                    ctx.symtab_keys()
-                } else {
-                    ctx.rt.array_keys(name)
-                };
+                let name = ctx.str_ref(arr).to_string();
+                let keys = ctx.for_in_keys(name.as_str())?;
                 ctx.for_in_iters.push(ForInState { keys, index: 0 });
             }
             Op::ForInNext { var, end_jump } => {
@@ -3745,6 +3763,44 @@ pub(crate) fn exec_builtin_dispatch(
         _ => return Err(Error::Runtime(format!("unknown function `{name}`"))),
     };
     Ok(result)
+}
+
+fn sort_keys_with_custom_cmp(ctx: &mut VmCtx<'_>, keys: &mut [String], fname: &str) -> Result<()> {
+    if !ctx.cp.functions.contains_key(fname) {
+        return Err(Error::Runtime(format!(
+            "sorted_in: unknown function `{fname}`"
+        )));
+    }
+    let err: RefCell<Option<Error>> = RefCell::new(None);
+    keys.sort_by(|a, b| {
+        if err.borrow().is_some() {
+            return Ordering::Equal;
+        }
+        match exec_call_user_inner(
+            ctx,
+            fname,
+            vec![Value::Str(a.clone()), Value::Str(b.clone())],
+        ) {
+            Ok(v) => {
+                let n = v.as_number();
+                if n < 0.0 {
+                    Ordering::Less
+                } else if n > 0.0 {
+                    Ordering::Greater
+                } else {
+                    Ordering::Equal
+                }
+            }
+            Err(e) => {
+                *err.borrow_mut() = Some(e);
+                Ordering::Equal
+            }
+        }
+    });
+    if let Some(e) = err.into_inner() {
+        return Err(e);
+    }
+    Ok(())
 }
 
 /// Run a user function with explicit arguments (VM stack path and JIT `MIXED_CALL_USER_*`).
