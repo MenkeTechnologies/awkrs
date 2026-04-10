@@ -177,6 +177,17 @@ pub fn awk_compl_values(a: &Value, rt: &Runtime) -> Value {
     Value::Mpfr(Float::with_val_round(prec, Integer::from(r), round).0)
 }
 
+/// `%s` conversion for [`Float`]: exact integers as decimal digit strings (no MPFR fixed-point tail);
+/// non-integers use MPFR’s string with trailing fractional zeros trimmed.
+pub fn mpfr_string_for_percent_s(f: &Float) -> String {
+    let tr = f.clone().trunc();
+    if &tr == f {
+        format!("{}", float_trunc_integer(f))
+    } else {
+        mpfr_string_trim_trailing_zeros(f.to_string())
+    }
+}
+
 /// Strip redundant fractional zeros from MPFR’s default string (for `%s` / concat).
 pub fn mpfr_string_trim_trailing_zeros(s: String) -> String {
     let mut t = s;
@@ -215,5 +226,15 @@ mod tests {
         )
         .unwrap();
         assert_eq!(s, "9223372036854775808");
+    }
+
+    #[test]
+    fn mpfr_percent_s_whole_number_is_plain_digits() {
+        use std::str::FromStr;
+        let i = Integer::from_str("1267650600228229401496703205376").unwrap();
+        let f = Float::with_val(256, i);
+        let s = mpfr_string_for_percent_s(&f);
+        assert_eq!(s, "1267650600228229401496703205376");
+        assert!(!s.contains('.'));
     }
 }

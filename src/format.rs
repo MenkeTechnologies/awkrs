@@ -1,6 +1,6 @@
 //! `sprintf` / `printf` formatting (POSIX-ish; common awk conversions).
 
-use crate::bignum::{float_trunc_integer, mpfr_string_trim_trailing_zeros, value_to_mpfr};
+use crate::bignum::{float_trunc_integer, mpfr_string_for_percent_s, value_to_mpfr};
 use crate::runtime::Value;
 use rug::float::Round;
 
@@ -336,7 +336,7 @@ fn format_one(
     match conv {
         's' => {
             let mut s: String = match (mpfr_mode, v) {
-                (Some(_), Value::Mpfr(f)) => mpfr_string_trim_trailing_zeros(f.to_string()),
+                (Some(_), Value::Mpfr(f)) => mpfr_string_for_percent_s(f),
                 _ => v.as_str(),
             };
             if let Some(p) = prec {

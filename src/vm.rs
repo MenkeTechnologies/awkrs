@@ -3039,19 +3039,39 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             }
             Op::IncrSlot(slot) => {
                 let s = slot as usize;
-                let n = match &ctx.rt.slots[s] {
-                    Value::Num(v) => *v,
-                    other => other.as_number(),
-                };
-                ctx.rt.slots[s] = Value::Num(n + 1.0);
+                if ctx.rt.bignum {
+                    let prec = ctx.rt.mpfr_prec_bits();
+                    let round = ctx.rt.mpfr_round();
+                    let old = ctx.rt.slots[s].clone();
+                    let old_f = value_to_float(&old, prec, round);
+                    let d = Float::with_val(prec, 1.0);
+                    let new_f = Float::with_val_round(prec, &old_f + &d, round).0;
+                    ctx.rt.slots[s] = Value::Mpfr(new_f);
+                } else {
+                    let n = match &ctx.rt.slots[s] {
+                        Value::Num(v) => *v,
+                        other => other.as_number(),
+                    };
+                    ctx.rt.slots[s] = Value::Num(n + 1.0);
+                }
             }
             Op::DecrSlot(slot) => {
                 let s = slot as usize;
-                let n = match &ctx.rt.slots[s] {
-                    Value::Num(v) => *v,
-                    other => other.as_number(),
-                };
-                ctx.rt.slots[s] = Value::Num(n - 1.0);
+                if ctx.rt.bignum {
+                    let prec = ctx.rt.mpfr_prec_bits();
+                    let round = ctx.rt.mpfr_round();
+                    let old = ctx.rt.slots[s].clone();
+                    let old_f = value_to_float(&old, prec, round);
+                    let d = Float::with_val(prec, 1.0);
+                    let new_f = Float::with_val_round(prec, &old_f - &d, round).0;
+                    ctx.rt.slots[s] = Value::Mpfr(new_f);
+                } else {
+                    let n = match &ctx.rt.slots[s] {
+                        Value::Num(v) => *v,
+                        other => other.as_number(),
+                    };
+                    ctx.rt.slots[s] = Value::Num(n - 1.0);
+                }
             }
             Op::AddSlotToSlot { src, dst } => {
                 let sv = match &ctx.rt.slots[src as usize] {

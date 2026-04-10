@@ -188,6 +188,27 @@ fn bignum_sprintf_percent_d_from_numeric_string() {
 }
 
 #[test]
+fn bignum_postinc_slot_preserves_mpfr() {
+    // Globals compiled to slots fuse `x++` → IncrSlot; must not round-trip through f64.
+    let (c, o, _) = run_awkrs_stdin_args(
+        ["-M"],
+        r#"BEGIN {
+  PROCINFO["prec"]=200
+  x = 2^100
+  print sprintf("%d", x)
+  x++
+  print sprintf("%d", x)
+}"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(
+        o,
+        "1267650600228229401496703205376\n1267650600228229401496703205377\n"
+    );
+}
+
+#[test]
 fn intdiv_and_mkbool_builtins() {
     let (c, o, _) = run_awkrs_stdin(
         r#"BEGIN { print intdiv(7, 3), intdiv(-7, 3); print mkbool(0), mkbool("x"), mkbool("") }"#,
