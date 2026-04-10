@@ -111,7 +111,7 @@ autoload -Uz compinit && compinit
  │ SUBSYSTEM: LEXER ████ PARSER ████ COMPILER ████ VM ████     │
  └──────────────────────────────────────────────────────────────┘
 
-- **Rules:** `BEGIN`, `END`, `BEGINFILE`/`ENDFILE`, empty pattern, `/regex/`, expression patterns, range patterns (`/a/,/b/` or `NR==1,NR==5`).
+- **Rules:** `BEGIN`, `END`, `BEGINFILE`/`ENDFILE`, empty pattern, `/regex/`, expression patterns, range patterns (`/a/,/b/` or `NR==1,NR==5`). Like gawk, the four special patterns **must** use `{ … }`; record rules may omit braces for the default `{ print $0 }`.
 - **Statements:** `if`/`while`/`do…while`/`for` (C-style and `for (i in arr)`), `switch`/`case`/`default` (gawk-style: no fall-through, regex `case /re/`), `print`/`printf` (with `>`, `>>`, `|`, `|&` redirection), `break`, `continue`, `next`, `nextfile`, `exit`, `delete`, `return`, `getline` (primary, `< file`, `<& cmd`, `expr | getline [var]`).
 - **`getline` as expression:** value `1` (read), `0` (EOF), `-1` (error), `-2` (gawk retryable I/O when `PROCINFO[input,"RETRY"]` is set). JIT `getline` failures abort the JIT chunk instead of returning `-1`/`-2`.
 - **Operators:** arithmetic, comparison, string concat, ternary, `in`, `~`/`!~`, `++`/`--` (prefix/postfix on vars, `$n`, `a[k]`), `^`/`**` (right-associative; unary `+`/`-`/`!` bind looser, so `-2^2` = `-(2^2)`).

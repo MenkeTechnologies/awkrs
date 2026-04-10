@@ -213,11 +213,24 @@ impl<'a> Parser<'a> {
             self.bump(true)?;
             stmts
         } else {
-            // Pattern with no `{ … }` — POSIX default action `{ print $0 }` (bare `print` prints `$0`).
-            vec![Stmt::Print {
-                args: vec![],
-                redir: None,
-            }]
+            match &pattern {
+                // gawk: `BEGIN` / `END` / `BEGINFILE` / `ENDFILE` must have `{ … }` (not implicit `print $0`).
+                Pattern::Begin | Pattern::End | Pattern::BeginFile | Pattern::EndFile => {
+                    return Err(Error::Parse {
+                        line: self.line,
+                        msg:
+                            "`BEGIN`, `END`, `BEGINFILE`, and `ENDFILE` require a `{ ... }` action"
+                                .into(),
+                    });
+                }
+                _ => {
+                    // Record rule with no `{ … }` — POSIX default `{ print $0 }`.
+                    vec![Stmt::Print {
+                        args: vec![],
+                        redir: None,
+                    }]
+                }
+            }
         };
         Ok(Rule { pattern, stmts })
     }
@@ -1277,8 +1290,11 @@ impl<'a> Parser<'a> {
 
     fn parse_primary(&mut self, _regex_mode: bool) -> Result<Expr> {
         // `/` is only lexed as [`Token::Slash`] when `regex_mode` was false (e.g. after `=`).
-        // At the start of a primary, `/` cannot be division — division is handled in
-        // [`Self::parse_multiplicative`]. So reinterpret as `/regex/` (POSIX awk).
+        // At the start of a **primary**, `/` cannot be division — division is handled in
+        // [`Self::parse_multiplicative`]. Reinterpret as `/regex/` (POSIX awk).
+        //
+        // Do **not** set `regex_mode = true` for whole `gsub`/`sub`/… arguments: a replacement
+        // like `b/c` must stay division; only this primary-boundary rule is correct.
         if self.cur == Token::Slash {
             self.rescan_slash_as_regexp()?;
         }
@@ -1498,8 +1514,8 @@ impl<'a> Parser<'a> {
 mod tests {
     use super::*;
     use crate::ast::{
-        BinOp, Expr, GetlineRedir, IncDecOp, IncDecTarget, Pattern, PrintRedir, Stmt, SwitchArm,
-        SwitchLabel,
+        BinOp, Expr, GetlineRedir, IncDecOp, IncDecTarget, Pattern, PrintRedir, Rule, Stmt,
+        SwitchArm, SwitchLabel,
     };
 
     fn first_begin_stmt(prog: &crate::ast::Program) -> &Stmt {
@@ -1700,6 +1716,44 @@ mod tests {
                 _ => panic!("expected `in`"),
             },
             _ => panic!("expected print"),
+        }
+    }
+
+    #[test]
+    fn begin_end_special_patterns_require_braced_action() {
+        for src in ["BEGIN", "END", "BEGINFILE", "ENDFILE"] {
+            let e = parse_program(src).unwrap_err();
+            match e {
+                crate::error::Error::Parse { msg, .. } => {
+                    assert!(
+                        msg.contains("BEGIN") || msg.contains("END"),
+                        "src={src:?} msg={msg:?}"
+                    );
+                }
+                e => panic!("unexpected err for {src:?}: {e:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn record_pattern_without_brace_is_default_print_dollar0() {
+        let p = parse_program("/x/").unwrap();
+        assert_eq!(p.rules.len(), 1);
+        match &p.rules[0] {
+            Rule {
+                pattern: Pattern::Regexp(re),
+                stmts,
+            } => {
+                assert_eq!(re, "x");
+                assert!(
+                    matches!(
+                        stmts.as_slice(),
+                        [Stmt::Print { args, redir: None }] if args.is_empty()
+                    ),
+                    "stmts={stmts:?}"
+                );
+            }
+            r => panic!("unexpected rule: {r:?}"),
         }
     }
 
