@@ -145,8 +145,9 @@ fn expand_inner(
                 line: line_no,
                 msg: format!(
                     "`@load` {path_str}: awkrs only inlines `.awk` source (like `@include`). \
-                     gawk loadable C modules (`filefuncs`, `time`, `readdir`, `inplace`, `ordchr`, …) \
-                     and `.so` extensions are not loaded"
+                     gawk `.so` loadable modules are not loaded; the usual builtins from those \
+                     extensions (`chdir`, `stat`, `fts`, `ord`, `readfile`, …) are implemented \
+                     in awkrs and do not require `@load`"
                 ),
             });
         }

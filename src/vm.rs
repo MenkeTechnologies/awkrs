@@ -3760,6 +3760,112 @@ pub(crate) fn exec_builtin_dispatch(
                 Value::Str((if n == 1.0 { s1 } else { s2 }).to_string())
             }
         }
+        "chdir" => {
+            if argc != 1 {
+                return Err(Error::Runtime("`chdir` expects one argument".into()));
+            }
+            crate::gawk_extensions::chdir(ctx.rt, &args[0].as_str())?
+        }
+        "stat" => {
+            if argc != 2 {
+                return Err(Error::Runtime("`stat` expects two arguments".into()));
+            }
+            crate::gawk_extensions::stat(ctx.rt, &args[0].as_str(), &args[1].as_str())?
+        }
+        "statvfs" => {
+            if argc != 2 {
+                return Err(Error::Runtime("`statvfs` expects two arguments".into()));
+            }
+            crate::gawk_extensions::statvfs(ctx.rt, &args[0].as_str(), &args[1].as_str())?
+        }
+        "fts" => {
+            if argc != 2 {
+                return Err(Error::Runtime("`fts` expects two arguments".into()));
+            }
+            crate::gawk_extensions::fts(ctx.rt, &args[0].as_str(), &args[1].as_str())?
+        }
+        "gettimeofday" => {
+            if argc != 1 {
+                return Err(Error::Runtime("`gettimeofday` expects one argument".into()));
+            }
+            crate::gawk_extensions::gettimeofday(ctx.rt, &args[0].as_str())?
+        }
+        "sleep" => {
+            if argc != 1 {
+                return Err(Error::Runtime("`sleep` expects one argument".into()));
+            }
+            crate::gawk_extensions::sleep_secs(ctx.rt, args[0].as_number())?
+        }
+        "ord" => {
+            if argc != 1 {
+                return Err(Error::Runtime("`ord` expects one argument".into()));
+            }
+            crate::gawk_extensions::ord(ctx.rt, &args[0].as_str())?
+        }
+        "chr" => {
+            if argc != 1 {
+                return Err(Error::Runtime("`chr` expects one argument".into()));
+            }
+            crate::gawk_extensions::chr(ctx.rt, args[0].as_number())?
+        }
+        "readfile" => {
+            if argc != 1 {
+                return Err(Error::Runtime("`readfile` expects one argument".into()));
+            }
+            crate::gawk_extensions::readfile(ctx.rt, &args[0].as_str())?
+        }
+        "revoutput" => {
+            if argc != 1 {
+                return Err(Error::Runtime("`revoutput` expects one argument".into()));
+            }
+            crate::gawk_extensions::revoutput(ctx.rt, &args[0].as_str())?
+        }
+        "revtwoway" => {
+            if argc != 1 {
+                return Err(Error::Runtime("`revtwoway` expects one argument".into()));
+            }
+            crate::gawk_extensions::revtwoway(ctx.rt, &args[0].as_str())?
+        }
+        "rename" => {
+            if argc != 2 {
+                return Err(Error::Runtime("`rename` expects two arguments".into()));
+            }
+            crate::gawk_extensions::rename(ctx.rt, &args[0].as_str(), &args[1].as_str())?
+        }
+        "inplace_tmpfile" => {
+            if argc != 1 {
+                return Err(Error::Runtime(
+                    "`inplace_tmpfile` expects one argument".into(),
+                ));
+            }
+            crate::gawk_extensions::inplace_tmpfile(ctx.rt, &args[0].as_str())?
+        }
+        "inplace_commit" => {
+            if argc != 2 {
+                return Err(Error::Runtime(
+                    "`inplace_commit` expects two arguments".into(),
+                ));
+            }
+            crate::gawk_extensions::inplace_commit(ctx.rt, &args[0].as_str(), &args[1].as_str())?
+        }
+        "writea" => {
+            if argc != 2 {
+                return Err(Error::Runtime("`writea` expects two arguments".into()));
+            }
+            crate::gawk_extensions::writea(ctx.rt, &args[0].as_str(), &args[1].as_str())?
+        }
+        "reada" => {
+            if argc != 2 {
+                return Err(Error::Runtime("`reada` expects two arguments".into()));
+            }
+            crate::gawk_extensions::reada(ctx.rt, &args[0].as_str(), &args[1].as_str())?
+        }
+        "intdiv0" => {
+            if argc != 2 {
+                return Err(Error::Runtime("`intdiv0` expects two arguments".into()));
+            }
+            crate::gawk_extensions::intdiv0(ctx.rt, args[0].as_number(), args[1].as_number())?
+        }
         _ => return Err(Error::Runtime(format!("unknown function `{name}`"))),
     };
     Ok(result)

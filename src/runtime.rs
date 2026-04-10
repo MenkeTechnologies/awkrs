@@ -755,6 +755,8 @@ pub struct Runtime {
     pub input_reader: Option<SharedInputReader>,
     /// Open files for `getline < path` / `close`.
     pub file_handles: HashMap<String, BufReader<File>>,
+    /// Directory iteration for `getline var < dir` (gawk **readdir** extension semantics).
+    pub dir_read: HashMap<String, (Vec<String>, usize)>,
     /// Open files for `print … > path` / `print … >> path` / `fflush` / `close`.
     pub output_handles: HashMap<String, BufWriter<File>>,
     /// `print`/`printf` `| "cmd"` — stdin of `sh -c cmd` (key is the command string).
@@ -871,6 +873,7 @@ impl Runtime {
             gettext_dir: String::new(),
             bignum: false,
             file_handles: HashMap::new(),
+            dir_read: HashMap::new(),
             output_handles: HashMap::new(),
             pipe_stdin: HashMap::new(),
             pipe_children: HashMap::new(),
@@ -1082,6 +1085,7 @@ impl Runtime {
             gettext_dir: String::new(),
             bignum,
             file_handles: HashMap::new(),
+            dir_read: HashMap::new(),
             output_handles: HashMap::new(),
             pipe_stdin: HashMap::new(),
             pipe_children: HashMap::new(),
@@ -1156,6 +1160,10 @@ impl Runtime {
 
     pub fn set_errno_io(&mut self, e: &std::io::Error) {
         self.vars.insert("ERRNO".into(), Value::Str(e.to_string()));
+    }
+
+    pub fn set_errno_str(&mut self, msg: impl Into<String>) {
+        self.vars.insert("ERRNO".into(), Value::Str(msg.into()));
     }
 
     pub fn ensure_rs_regex_bytes(&mut self) -> Result<()> {
@@ -1464,6 +1472,24 @@ impl Runtime {
             )));
         }
         let p = Path::new(path);
+        if p.is_dir() {
+            self.require_unsandboxed_io()?;
+            if !self.dir_read.contains_key(path) {
+                let mut names: Vec<String> = std::fs::read_dir(p)
+                    .map_err(|e| Error::Runtime(format!("read_dir {path}: {e}")))?
+                    .filter_map(|e| e.ok().map(|x| x.file_name().to_string_lossy().into_owned()))
+                    .collect();
+                names.sort();
+                self.dir_read.insert(path.to_string(), (names, 0));
+            }
+            let (names, i) = self.dir_read.get_mut(path).unwrap();
+            if *i >= names.len() {
+                return Ok(None);
+            }
+            let name = names[*i].clone();
+            *i += 1;
+            return Ok(Some(name));
+        }
         if !self.file_handles.contains_key(path) {
             let f = File::open(p).map_err(|e| Error::Runtime(format!("open {path}: {e}")))?;
             self.file_handles
@@ -1557,6 +1583,7 @@ impl Runtime {
             let _ = ch.wait();
         }
         let _ = self.file_handles.remove(path);
+        let _ = self.dir_read.remove(path);
         let _ = self.inet_tcp_read.remove(path);
         let _ = self.inet_tcp_write.remove(path);
         let _ = self.inet_udp.remove(path);
@@ -2259,6 +2286,7 @@ impl Clone for Runtime {
             gettext_dir: self.gettext_dir.clone(),
             bignum: self.bignum,
             file_handles: HashMap::new(),
+            dir_read: HashMap::new(),
             output_handles: HashMap::new(),
             pipe_stdin: HashMap::new(),
             pipe_children: HashMap::new(),

@@ -951,6 +951,106 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
         return call_user(fd, args, ctx);
     }
     match name {
+        "stat" if args.len() == 2 => {
+            if let Expr::Var(arr) = &args[1] {
+                let path = eval_expr(&args[0], ctx)?.as_str();
+                return crate::gawk_extensions::stat(ctx.rt, path.as_ref(), arr);
+            }
+            Err(Error::Runtime(
+                "stat: second argument must be an array name".into(),
+            ))
+        }
+        "statvfs" if args.len() == 2 => {
+            if let Expr::Var(arr) = &args[1] {
+                let path = eval_expr(&args[0], ctx)?.as_str();
+                return crate::gawk_extensions::statvfs(ctx.rt, path.as_ref(), arr);
+            }
+            Err(Error::Runtime(
+                "statvfs: second argument must be an array name".into(),
+            ))
+        }
+        "fts" if args.len() == 2 => {
+            if let Expr::Var(arr) = &args[1] {
+                let path = eval_expr(&args[0], ctx)?.as_str();
+                return crate::gawk_extensions::fts(ctx.rt, path.as_ref(), arr);
+            }
+            Err(Error::Runtime(
+                "fts: second argument must be an array name".into(),
+            ))
+        }
+        "gettimeofday" if args.len() == 1 => {
+            if let Expr::Var(arr) = &args[0] {
+                return crate::gawk_extensions::gettimeofday(ctx.rt, arr);
+            }
+            Err(Error::Runtime(
+                "gettimeofday: argument must be an array name".into(),
+            ))
+        }
+        "writea" if args.len() == 2 => {
+            if let Expr::Var(arr) = &args[1] {
+                let path = eval_expr(&args[0], ctx)?.as_str();
+                return crate::gawk_extensions::writea(ctx.rt, path.as_ref(), arr);
+            }
+            Err(Error::Runtime(
+                "writea: second argument must be an array name".into(),
+            ))
+        }
+        "reada" if args.len() == 2 => {
+            if let Expr::Var(arr) = &args[1] {
+                let path = eval_expr(&args[0], ctx)?.as_str();
+                return crate::gawk_extensions::reada(ctx.rt, path.as_ref(), arr);
+            }
+            Err(Error::Runtime(
+                "reada: second argument must be an array name".into(),
+            ))
+        }
+        "chdir" if args.len() == 1 => {
+            let path = eval_expr(&args[0], ctx)?.as_str();
+            crate::gawk_extensions::chdir(ctx.rt, path.as_ref())
+        }
+        "sleep" if args.len() == 1 => {
+            let sec = eval_expr(&args[0], ctx)?.as_number();
+            crate::gawk_extensions::sleep_secs(ctx.rt, sec)
+        }
+        "ord" if args.len() == 1 => {
+            let s = eval_expr(&args[0], ctx)?.as_str();
+            crate::gawk_extensions::ord(ctx.rt, s.as_ref())
+        }
+        "chr" if args.len() == 1 => {
+            let n = eval_expr(&args[0], ctx)?.as_number();
+            crate::gawk_extensions::chr(ctx.rt, n)
+        }
+        "readfile" if args.len() == 1 => {
+            let path = eval_expr(&args[0], ctx)?.as_str();
+            crate::gawk_extensions::readfile(ctx.rt, path.as_ref())
+        }
+        "revoutput" if args.len() == 1 => {
+            let s = eval_expr(&args[0], ctx)?.as_str();
+            crate::gawk_extensions::revoutput(ctx.rt, s.as_ref())
+        }
+        "revtwoway" if args.len() == 1 => {
+            let s = eval_expr(&args[0], ctx)?.as_str();
+            crate::gawk_extensions::revtwoway(ctx.rt, s.as_ref())
+        }
+        "rename" if args.len() == 2 => {
+            let a = eval_expr(&args[0], ctx)?.as_str();
+            let b = eval_expr(&args[1], ctx)?.as_str();
+            crate::gawk_extensions::rename(ctx.rt, a.as_ref(), b.as_ref())
+        }
+        "inplace_tmpfile" if args.len() == 1 => {
+            let path = eval_expr(&args[0], ctx)?.as_str();
+            crate::gawk_extensions::inplace_tmpfile(ctx.rt, path.as_ref())
+        }
+        "inplace_commit" if args.len() == 2 => {
+            let a = eval_expr(&args[0], ctx)?.as_str();
+            let b = eval_expr(&args[1], ctx)?.as_str();
+            crate::gawk_extensions::inplace_commit(ctx.rt, a.as_ref(), b.as_ref())
+        }
+        "intdiv0" if args.len() == 2 => {
+            let a = eval_expr(&args[0], ctx)?.as_number();
+            let b = eval_expr(&args[1], ctx)?.as_number();
+            crate::gawk_extensions::intdiv0(ctx.rt, a, b)
+        }
         "length" => {
             if args.is_empty() {
                 let n = if ctx.rt.characters_as_bytes {
