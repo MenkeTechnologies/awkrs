@@ -29,7 +29,8 @@ fn assign_expr(lhs: Expr, op: Option<BinOp>, rhs: Expr, line: usize) -> Result<E
 }
 
 pub fn parse_program(src: &str) -> Result<Program> {
-    let mut p = Parser::new(src);
+    let expanded = crate::source_expand::expand_source_directives(src)?;
+    let mut p = Parser::new(&expanded);
     p.parse_program()
 }
 
@@ -1145,6 +1146,39 @@ impl<'a> Parser<'a> {
                 let s = s.clone();
                 self.bump(false)?;
                 Ok(Expr::Str(s))
+            }
+            Token::At => {
+                self.bump(false)?;
+                let callee = self.parse_expr_allow_gt(false)?;
+                if self.cur != Token::LParen {
+                    return Err(Error::Parse {
+                        line: self.line,
+                        msg: "expected `(` after `@` expression for indirect call".into(),
+                    });
+                }
+                self.bump(false)?;
+                let mut args = Vec::new();
+                if self.cur != Token::RParen {
+                    loop {
+                        args.push(self.parse_expr_allow_gt(false)?);
+                        if self.cur == Token::Comma {
+                            self.bump(false)?;
+                            continue;
+                        }
+                        break;
+                    }
+                }
+                if self.cur != Token::RParen {
+                    return Err(Error::Parse {
+                        line: self.line,
+                        msg: "expected `)`".into(),
+                    });
+                }
+                self.bump(false)?;
+                Ok(Expr::IndirectCall {
+                    callee: Box::new(callee),
+                    args,
+                })
             }
             Token::Ident(name) => {
                 let name = name.clone();

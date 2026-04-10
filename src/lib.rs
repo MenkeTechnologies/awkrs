@@ -22,6 +22,7 @@ mod locale_numeric;
 mod parser;
 mod record_io;
 mod runtime;
+mod source_expand;
 mod vm;
 
 pub use error::{Error, Result};
@@ -84,11 +85,6 @@ pub fn run(bin_name: &str) -> Result<()> {
         );
         return Ok(());
     }
-    if args.bignum {
-        eprintln!(
-            "{bin_name}: warning: -M/--bignum is not implemented; arithmetic uses double precision (f64)"
-        );
-    }
     if args.dump_variables.is_some() {
         eprintln!("{bin_name}: warning: --dump-variables is not fully implemented");
     }
@@ -102,6 +98,7 @@ pub fn run(bin_name: &str) -> Result<()> {
     let cp: Arc<CompiledProgram> = Arc::new(Compiler::compile_program(&prog));
 
     let mut rt = Runtime::new();
+    rt.bignum = args.bignum;
     if args.use_lc_numeric {
         locale_numeric::set_locale_numeric_from_env();
         rt.numeric_decimal = locale_numeric::decimal_point_from_locale();
@@ -226,6 +223,7 @@ fn process_lines_parallel_chunk(
     seed_base: u64,
     numeric_dec: char,
     csv_mode: bool,
+    bignum: bool,
 ) -> Result<Vec<(usize, ParallelRecordOut)>> {
     let shared_cp = Arc::clone(cp);
     let results: Vec<std::result::Result<(usize, ParallelRecordOut), Error>> = pool.install(|| {
@@ -241,6 +239,7 @@ fn process_lines_parallel_chunk(
                     seed_base ^ (i as u64).wrapping_mul(0x9e3779b97f4a7c15),
                     numeric_dec,
                     csv_mode,
+                    bignum,
                 );
                 local.slots = (*shared_slots).clone();
                 local.nr = nr_offset + i as f64 + 1.0;
@@ -371,6 +370,7 @@ fn process_stdin_parallel(
             seed_base,
             numeric_dec,
             csv_mode,
+            rt.bignum,
         )?;
 
         let n = outs.len();
@@ -486,6 +486,7 @@ fn process_file_parallel(
         seed_base,
         numeric_dec,
         csv_mode,
+        rt.bignum,
     )?;
 
     let mut stdout = io::stdout().lock();

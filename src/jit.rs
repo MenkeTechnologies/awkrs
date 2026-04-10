@@ -764,7 +764,8 @@ pub fn needs_mixed_mode(ops: &[Op]) -> bool {
         ) || matches!(
             op,
             Op::Printf { redir, .. } if *redir != crate::bytecode::RedirKind::Stdout
-        ) || matches!(op, Op::GetLine { .. })
+        )             || matches!(op, Op::GetLine { .. })
+            || matches!(op, Op::CallIndirect(_))
             || matches!(op, Op::CallUser(_, _))
             || matches!(op, Op::SubFn(_) | Op::GsubFn(_))
             // `$n = expr` must use mixed codegen so the RHS can be NaN-boxed strings.

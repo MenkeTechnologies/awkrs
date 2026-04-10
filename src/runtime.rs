@@ -6,11 +6,13 @@ use std::collections::HashMap;
 pub type AwkMap<K, V> = rustc_hash::FxHashMap<K, V>;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
+use std::net::TcpStream;
 use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{Arc, Mutex};
 
 use crate::error::{Error, Result};
+use rug::Float;
 use memchr::memmem;
 use regex::bytes::Regex as BytesRegex;
 use regex::{Regex, RegexBuilder};
@@ -21,6 +23,69 @@ use regex::{Regex, RegexBuilder};
 const DEFAULT_PRINT_BUF_CAPACITY: usize = 512 * 1024;
 
 pub(crate) type SharedInputReader = Arc<Mutex<BufReader<Box<dyn Read + Send>>>>;
+
+/// Default precision for [`Value::Mpfr`] when `-M` / `--bignum` is enabled (MPFR bits).
+pub const MPFR_PREC: u32 = 256;
+
+/// Convert a [`Value`] to a [`Float`] for MPFR arithmetic (`-M`).
+pub fn value_to_float(v: &Value, prec: u32) -> Float {
+    match v {
+        Value::Mpfr(f) => f.clone(),
+        Value::Num(n) => Float::with_val(prec, *n),
+        Value::Str(s) => Float::with_val(prec, parse_number(s.trim())),
+        Value::Uninit => Float::with_val(prec, 0),
+        Value::Array(_) => Float::with_val(prec, 0),
+    }
+}
+
+/// Binary `+=` / `-=` / … for compound assignment; uses MPFR when `bignum` is true.
+pub fn awk_binop_values(
+    op: crate::ast::BinOp,
+    old: &Value,
+    rhs: &Value,
+    bignum: bool,
+) -> crate::error::Result<Value> {
+    use crate::ast::BinOp;
+    use crate::error::Error;
+    if !bignum {
+        let a = old.as_number();
+        let b = rhs.as_number();
+        let n = match op {
+            BinOp::Add => a + b,
+            BinOp::Sub => a - b,
+            BinOp::Mul => a * b,
+            BinOp::Div => a / b,
+            BinOp::Mod => a % b,
+            _ => return Err(Error::Runtime("invalid compound assignment op".into())),
+        };
+        return Ok(Value::Num(n));
+    }
+    let prec = MPFR_PREC;
+    let a = value_to_float(old, prec);
+    let b = value_to_float(rhs, prec);
+    let r = match op {
+        BinOp::Add => Float::with_val(prec, &a + &b),
+        BinOp::Sub => Float::with_val(prec, &a - &b),
+        BinOp::Mul => Float::with_val(prec, &a * &b),
+        BinOp::Div => Float::with_val(prec, &a / &b),
+        BinOp::Mod => Float::with_val(prec, &a % &b),
+        _ => return Err(Error::Runtime("invalid compound assignment op".into())),
+    };
+    Ok(Value::Mpfr(r))
+}
+
+/// Parse gawk-style `/inet/tcp/lport/host/rport` (local port `0` = ephemeral client).
+pub fn parse_inet_tcp(path: &str) -> Option<(u16, String, u16)> {
+    let rest = path.strip_prefix("/inet/tcp/")?;
+    let mut it = rest.split('/');
+    let lport = it.next()?.parse().ok()?;
+    let host = it.next()?.to_string();
+    let rport = it.next()?.parse().ok()?;
+    if it.next().is_some() {
+        return None;
+    }
+    Some((lport, host, rport))
+}
 
 /// Open two-way pipe to `sh -c` (gawk-style `|&` / `<&`).
 pub struct CoprocHandle {
@@ -36,6 +101,8 @@ pub enum Value {
     Uninit,
     Str(String),
     Num(f64),
+    /// GNU MPFR arbitrary-precision float (`-M` / `--bignum`).
+    Mpfr(Float),
     Array(AwkMap<String, Value>),
 }
 
@@ -45,6 +112,7 @@ impl Value {
             Value::Uninit => String::new(),
             Value::Str(s) => s.clone(),
             Value::Num(n) => format_number(*n),
+            Value::Mpfr(f) => f.to_string(),
             Value::Array(_) => String::new(),
         }
     }
@@ -56,6 +124,7 @@ impl Value {
             Value::Uninit => Cow::Borrowed(""),
             Value::Str(s) => Cow::Borrowed(s.as_str()),
             Value::Num(n) => Cow::Owned(format_number(*n)),
+            Value::Mpfr(f) => Cow::Owned(f.to_string()),
             Value::Array(_) => Cow::Borrowed(""),
         }
     }
@@ -85,6 +154,7 @@ impl Value {
                     let _ = write!(buf, "{n}");
                 }
             }
+            Value::Mpfr(f) => buf.extend_from_slice(f.to_string().as_bytes()),
             Value::Array(_) => {}
         }
     }
@@ -94,6 +164,7 @@ impl Value {
             Value::Uninit => 0.0,
             Value::Num(n) => *n,
             Value::Str(s) => parse_number(s),
+            Value::Mpfr(f) => f.to_f64(),
             Value::Array(_) => 0.0,
         }
     }
@@ -103,6 +174,7 @@ impl Value {
             Value::Uninit => false,
             Value::Num(n) => *n != 0.0,
             Value::Str(s) => !s.is_empty() && s.parse::<f64>().map(|n| n != 0.0).unwrap_or(true),
+            Value::Mpfr(f) => !f.is_zero(),
             Value::Array(a) => !a.is_empty(),
         }
     }
@@ -115,6 +187,7 @@ impl Value {
             Value::Uninit => String::new(),
             Value::Str(s) => s,
             Value::Num(n) => format_number(n),
+            Value::Mpfr(f) => f.to_string(),
             Value::Array(_) => String::new(),
         }
     }
@@ -135,6 +208,7 @@ impl Value {
                     let _ = write!(buf, "{n}");
                 }
             }
+            Value::Mpfr(f) => buf.push_str(&f.to_string()),
             Value::Array(_) => {}
         }
     }
@@ -144,6 +218,7 @@ impl Value {
         match self {
             Value::Uninit => false,
             Value::Num(_) => true,
+            Value::Mpfr(_) => true,
             Value::Str(s) => {
                 let t = s.trim();
                 !t.is_empty() && t.parse::<f64>().is_ok()
@@ -411,6 +486,14 @@ pub struct Runtime {
     pub pipe_children: HashMap<String, Child>,
     /// `print`/`printf` `|& "cmd"` / `getline <& "cmd"` — two-way `sh -c` (same key for both directions).
     pub coproc_handles: HashMap<String, CoprocHandle>,
+    /// gawk `/inet/tcp/...` TCP streams (read half).
+    pub inet_tcp_read: HashMap<String, BufReader<TcpStream>>,
+    /// gawk `/inet/tcp/...` TCP streams (write half).
+    pub inet_tcp_write: HashMap<String, TcpStream>,
+    /// Last `bindtextdomain` directory (gettext stub / future real i18n).
+    pub gettext_dir: String,
+    /// `-M` / `--bignum`: use MPFR ([`Value::Mpfr`]) for arithmetic in the VM.
+    pub bignum: bool,
     pub rand_seed: u64,
     /// Radix for `%f` / `%g` / etc. and `print` of numbers when `-N` / `--use-lc-numeric` is set (Unix).
     pub numeric_decimal: char,
@@ -486,6 +569,10 @@ impl Runtime {
             exit_pending: false,
             exit_code: 0,
             input_reader: None,
+            inet_tcp_read: HashMap::new(),
+            inet_tcp_write: HashMap::new(),
+            gettext_dir: String::new(),
+            bignum: false,
             file_handles: HashMap::new(),
             output_handles: HashMap::new(),
             pipe_stdin: HashMap::new(),
@@ -541,6 +628,7 @@ impl Runtime {
         rand_seed: u64,
         numeric_decimal: char,
         csv_mode: bool,
+        bignum: bool,
     ) -> Self {
         Self {
             vars: AwkMap::default(),
@@ -558,6 +646,10 @@ impl Runtime {
             exit_pending: false,
             exit_code: 0,
             input_reader: None,
+            inet_tcp_read: HashMap::new(),
+            inet_tcp_write: HashMap::new(),
+            gettext_dir: String::new(),
+            bignum,
             file_handles: HashMap::new(),
             output_handles: HashMap::new(),
             pipe_stdin: HashMap::new(),
@@ -749,6 +841,13 @@ impl Runtime {
     /// Write one `print` line (including `ORS`) to `path`. First open uses truncate (`>`) or
     /// append (`>>`); later writes reuse the same handle until `close`.
     pub fn write_output_line(&mut self, path: &str, data: &str, append: bool) -> Result<()> {
+        if path.starts_with("/inet/tcp/") {
+            let _ = append;
+            self.ensure_inet_tcp_pair(path)?;
+            let w = self.inet_tcp_write.get_mut(path).unwrap();
+            w.write_all(data.as_bytes()).map_err(Error::Io)?;
+            return Ok(());
+        }
         self.ensure_output_writer(path, append)?;
         let w = self.output_handles.get_mut(path).unwrap();
         w.write_all(data.as_bytes()).map_err(Error::Io)?;
@@ -756,6 +855,9 @@ impl Runtime {
     }
 
     fn ensure_output_writer(&mut self, path: &str, append: bool) -> Result<()> {
+        if path.starts_with("/inet/") {
+            return self.ensure_inet_tcp_pair(path);
+        }
         if self.output_handles.contains_key(path) {
             return Ok(());
         }
@@ -777,6 +879,10 @@ impl Runtime {
     /// Flush buffered output for a file or pipe opened with `print`/`printf` redirection.
     pub fn flush_redirect_target(&mut self, key: &str) -> Result<()> {
         if let Some(w) = self.output_handles.get_mut(key) {
+            w.flush().map_err(Error::Io)?;
+            return Ok(());
+        }
+        if let Some(w) = self.inet_tcp_write.get_mut(key) {
             w.flush().map_err(Error::Io)?;
             return Ok(());
         }
@@ -862,6 +968,21 @@ impl Runtime {
 
     /// `getline var < filename` — one line from a kept-open file handle.
     pub fn read_line_file(&mut self, path: &str) -> Result<Option<String>> {
+        if path.starts_with("/inet/") {
+            if path.starts_with("/inet/tcp/") {
+                self.ensure_inet_tcp_pair(path)?;
+                let reader = self.inet_tcp_read.get_mut(path).unwrap();
+                let mut line = String::new();
+                let n = reader.read_line(&mut line).map_err(Error::Io)?;
+                if n == 0 {
+                    return Ok(None);
+                }
+                return Ok(Some(line));
+            }
+            return Err(Error::Runtime(format!(
+                "unsupported inet path `{path}` (only /inet/tcp/lport/host/port is implemented)"
+            )));
+        }
         let p = Path::new(path);
         if !self.file_handles.contains_key(path) {
             let f = File::open(p).map_err(|e| Error::Runtime(format!("open {path}: {e}")))?;
@@ -875,6 +996,29 @@ impl Runtime {
             return Ok(None);
         }
         Ok(Some(line))
+    }
+
+    fn ensure_inet_tcp_pair(&mut self, path: &str) -> Result<()> {
+        if self.inet_tcp_read.contains_key(path) {
+            return Ok(());
+        }
+        let (lport, host, rport) = parse_inet_tcp(path).ok_or_else(|| {
+            Error::Runtime(format!("invalid /inet/tcp/ path `{path}`"))
+        })?;
+        if lport != 0 {
+            return Err(Error::Runtime(
+                "non-zero local port in /inet/tcp/ is not supported yet".into(),
+            ));
+        }
+        let stream = TcpStream::connect((host.as_str(), rport))
+            .map_err(|e| Error::Runtime(format!("inet connect `{path}`: {e}")))?;
+        let w = stream
+            .try_clone()
+            .map_err(|e| Error::Runtime(format!("inet: {e}")))?;
+        self.inet_tcp_read
+            .insert(path.to_string(), BufReader::new(stream));
+        self.inet_tcp_write.insert(path.to_string(), w);
+        Ok(())
     }
 
     pub fn close_handle(&mut self, path: &str) -> f64 {
@@ -891,6 +1035,8 @@ impl Runtime {
             let _ = ch.wait();
         }
         let _ = self.file_handles.remove(path);
+        let _ = self.inet_tcp_read.remove(path);
+        let _ = self.inet_tcp_write.remove(path);
         0.0
     }
 
@@ -1456,6 +1602,10 @@ impl Clone for Runtime {
             exit_pending: self.exit_pending,
             exit_code: self.exit_code,
             input_reader: None,
+            inet_tcp_read: HashMap::new(),
+            inet_tcp_write: HashMap::new(),
+            gettext_dir: self.gettext_dir.clone(),
+            bignum: self.bignum,
             file_handles: HashMap::new(),
             output_handles: HashMap::new(),
             pipe_stdin: HashMap::new(),

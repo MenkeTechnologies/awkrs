@@ -75,6 +75,8 @@ pub enum Token {
     LBracket,
     RBracket,
     Dollar,
+    /// `@` — indirect function calls (`@expr(...)`) and distinct from directives handled in preprocessing.
+    At,
     Newline,
     Eof,
 }
@@ -304,6 +306,7 @@ impl<'a> Lexer<'a> {
             ';' => Token::Semi,
             ',' => Token::Comma,
             '$' => Token::Dollar,
+            '@' => Token::At,
             '?' => Token::Question,
             ':' => Token::Colon,
             '+' => {

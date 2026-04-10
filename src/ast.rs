@@ -181,6 +181,11 @@ pub enum Expr {
         name: String,
         args: Vec<Expr>,
     },
+    /// Indirect call: `@expr(args)` — `expr` must yield the function name (gawk).
+    IndirectCall {
+        callee: Box<Expr>,
+        args: Vec<Expr>,
+    },
     Ternary {
         cond: Box<Expr>,
         then_: Box<Expr>,

@@ -90,6 +90,8 @@ fn expr_blocks_parallel(e: &Expr) -> bool {
             }
             args.iter().any(expr_blocks_parallel)
         }
+        // Dynamic callee — cannot prove parallel-safety.
+        Expr::IndirectCall { .. } => true,
         Expr::Index { indices, .. } => indices.iter().any(expr_blocks_parallel),
         Expr::Field(inner) => expr_blocks_parallel(inner),
         Expr::Ternary { cond, then_, else_ } => {

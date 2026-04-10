@@ -706,6 +706,14 @@ impl Compiler {
                 self.compile_call(name, args, ops);
             }
 
+            Expr::IndirectCall { callee, args } => {
+                for a in args {
+                    self.compile_expr(a, ops);
+                }
+                self.compile_expr(callee, ops);
+                ops.push(Op::CallIndirect(args.len() as u16));
+            }
+
             Expr::Ternary { cond, then_, else_ } => {
                 self.compile_expr(cond, ops);
                 let jump_else = ops.len();
@@ -1159,6 +1167,12 @@ fn collect_array_names_expr(e: &Expr, names: &mut HashSet<String>) {
         }
         Expr::Field(inner) => collect_array_names_expr(inner, names),
         Expr::Call { args, .. } => {
+            for a in args {
+                collect_array_names_expr(a, names);
+            }
+        }
+        Expr::IndirectCall { callee, args } => {
+            collect_array_names_expr(callee, names);
             for a in args {
                 collect_array_names_expr(a, names);
             }

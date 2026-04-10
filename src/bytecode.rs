@@ -165,6 +165,8 @@ pub enum Op {
     CallBuiltin(u32, u16),
     /// Pop `argc` args, call user function by name index, push result.
     CallUser(u32, u16),
+    /// Pop `argc` args then callee name (TOS), resolve builtin or user function, push result.
+    CallIndirect(u16),
 
     /// `typeof(var)` — interned name; push `"string"` / `"number"` / `"array"` / `"uninitialized"`.
     TypeofVar(u32),

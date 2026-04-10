@@ -635,7 +635,7 @@ pub fn eval_expr(e: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {
             let v = eval_expr(rhs, ctx)?;
             let newv = if let Some(bop) = op {
                 let old = ctx.get_var(name);
-                apply_binop(*bop, &old, &v)?
+                apply_binop(*bop, &old, &v, ctx.rt.bignum)?
             } else {
                 v
             };
@@ -647,7 +647,7 @@ pub fn eval_expr(e: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {
             let v = eval_expr(rhs, ctx)?;
             let newv = if let Some(bop) = op {
                 let old = Value::Str(ctx.rt.field(idx).as_str());
-                apply_binop(*bop, &old, &v)?
+                apply_binop(*bop, &old, &v, ctx.rt.bignum)?
             } else {
                 v
             };
@@ -665,7 +665,7 @@ pub fn eval_expr(e: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {
             let v = eval_expr(rhs, ctx)?;
             let newv = if let Some(bop) = op {
                 let old = ctx.rt.array_get(name, &k);
-                apply_binop(*bop, &old, &v)?
+                apply_binop(*bop, &old, &v, ctx.rt.bignum)?
             } else {
                 v
             };
@@ -673,6 +673,10 @@ pub fn eval_expr(e: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {
             newv
         }
         Expr::Call { name, args } => eval_call(name, args, ctx)?,
+        Expr::IndirectCall { callee, args } => {
+            let fname = eval_expr(callee, ctx)?.as_str();
+            eval_call(&fname, args, ctx)?
+        }
         Expr::Ternary { cond, then_, else_ } => {
             if truthy(&eval_expr(cond, ctx)?) {
                 eval_expr(then_, ctx)?
@@ -743,6 +747,16 @@ fn eval_binary(op: BinOp, left: &Expr, right: &Expr, ctx: &mut ExecCtx<'_>) -> R
     if matches!(op, BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge) {
         return awk_rel(op, left, right, ctx);
     }
+    if ctx.rt.bignum
+        && matches!(
+            op,
+            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod
+        )
+    {
+        let av = eval_expr(left, ctx)?;
+        let bv = eval_expr(right, ctx)?;
+        return crate::runtime::awk_binop_values(op, &av, &bv, true);
+    }
     let a = eval_expr(left, ctx)?.as_number();
     let b = eval_expr(right, ctx)?.as_number();
     let n = match op {
@@ -790,6 +804,12 @@ fn locale_str_cmp(a: &str, b: &str) -> Ordering {
 fn awk_eq(left: &Expr, right: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {
     let lv = eval_expr(left, ctx)?;
     let rv = eval_expr(right, ctx)?;
+    if ctx.rt.bignum && lv.is_numeric_str() && rv.is_numeric_str() {
+        let prec = crate::runtime::MPFR_PREC;
+        let fa = crate::runtime::value_to_float(&lv, prec);
+        let fb = crate::runtime::value_to_float(&rv, prec);
+        return Ok(Value::Num(if fa == fb { 1.0 } else { 0.0 }));
+    }
     if lv.is_numeric_str() && rv.is_numeric_str() {
         let a = lv.as_number();
         let b = rv.as_number();
@@ -810,6 +830,12 @@ fn awk_eq(left: &Expr, right: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {
 
 #[inline]
 fn switch_value_eq(lv: &Value, rv: &Value) -> bool {
+    if matches!(lv, Value::Mpfr(_)) || matches!(rv, Value::Mpfr(_)) {
+        let prec = crate::runtime::MPFR_PREC;
+        let fa = crate::runtime::value_to_float(lv, prec);
+        let fb = crate::runtime::value_to_float(rv, prec);
+        return fa == fb;
+    }
     if lv.is_numeric_str() && rv.is_numeric_str() {
         let a = lv.as_number();
         let b = rv.as_number();
@@ -826,6 +852,20 @@ fn awk_ne(left: &Expr, right: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {
 fn awk_rel(op: BinOp, left: &Expr, right: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {
     let lv = eval_expr(left, ctx)?;
     let rv = eval_expr(right, ctx)?;
+    if ctx.rt.bignum && lv.is_numeric_str() && rv.is_numeric_str() {
+        let prec = crate::runtime::MPFR_PREC;
+        let fa = crate::runtime::value_to_float(&lv, prec);
+        let fb = crate::runtime::value_to_float(&rv, prec);
+        let ord = fa.partial_cmp(&fb).unwrap_or(Ordering::Equal);
+        let ok = match op {
+            BinOp::Lt => ord == Ordering::Less,
+            BinOp::Le => matches!(ord, Ordering::Less | Ordering::Equal),
+            BinOp::Gt => ord == Ordering::Greater,
+            BinOp::Ge => matches!(ord, Ordering::Greater | Ordering::Equal),
+            _ => unreachable!(),
+        };
+        return Ok(Value::Num(if ok { 1.0 } else { 0.0 }));
+    }
     if lv.is_numeric_str() && rv.is_numeric_str() {
         let a = lv.as_number();
         let b = rv.as_number();
@@ -854,24 +894,30 @@ fn awk_rel(op: BinOp, left: &Expr, right: &Expr, ctx: &mut ExecCtx<'_>) -> Resul
 fn eval_unary(op: UnaryOp, expr: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {
     let v = eval_expr(expr, ctx)?;
     Ok(match op {
-        UnaryOp::Neg => Value::Num(-v.as_number()),
-        UnaryOp::Pos => Value::Num(v.as_number()),
+        UnaryOp::Neg => {
+            if ctx.rt.bignum {
+                let prec = crate::runtime::MPFR_PREC;
+                let f = crate::runtime::value_to_float(&v, prec);
+                Value::Mpfr(rug::Float::with_val(prec, -f))
+            } else {
+                Value::Num(-v.as_number())
+            }
+        }
+        UnaryOp::Pos => {
+            if ctx.rt.bignum {
+                let prec = crate::runtime::MPFR_PREC;
+                let f = crate::runtime::value_to_float(&v, prec);
+                Value::Mpfr(f)
+            } else {
+                Value::Num(v.as_number())
+            }
+        }
         UnaryOp::Not => Value::Num(if truthy(&v) { 0.0 } else { 1.0 }),
     })
 }
 
-fn apply_binop(op: BinOp, old: &Value, new: &Value) -> Result<Value> {
-    let a = old.as_number();
-    let b = new.as_number();
-    let n = match op {
-        BinOp::Add => a + b,
-        BinOp::Sub => a - b,
-        BinOp::Mul => a * b,
-        BinOp::Div => a / b,
-        BinOp::Mod => a % b,
-        _ => return Err(Error::Runtime("invalid compound assignment op".into())),
-    };
-    Ok(Value::Num(n))
+fn apply_binop(op: BinOp, old: &Value, new: &Value, bignum: bool) -> Result<Value> {
+    crate::runtime::awk_binop_values(op, old, new, bignum)
 }
 
 fn interp_typeof_scalar(ctx: &ExecCtx<'_>, name: &str) -> &'static str {

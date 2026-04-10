@@ -637,6 +637,7 @@ pub fn awk_typeof_value(v: &Value) -> &'static str {
     match v {
         Value::Uninit => "uninitialized",
         Value::Num(_) => "number",
+        Value::Mpfr(_) => "number",
         Value::Str(_) => "string",
         Value::Array(_) => "array",
     }
