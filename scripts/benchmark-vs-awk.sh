@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# Compare awkrs (release) to system awk and gawk (if present). Writes benchmarks/benchmark-results.md.
-# Requires: cargo, hyperfine (https://github.com/sharkdp/hyperfine). Optional: gawk.
+# Compare awkrs (release) to awk/gawk/mawk across README §1–§10 workloads.
+# Each §N is a SINGLE hyperfine invocation including BSD awk, gawk (if present),
+# mawk (if present), awkrs (JIT default) and awkrs (AWKRS_JIT=0 bytecode only),
+# so the "Relative" column in every table is apples-to-apples.
+# Requires: cargo, hyperfine (https://github.com/sharkdp/hyperfine). Optional: gawk, mawk.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-cd "$ROOT"
+builtin cd "$ROOT" || exit 1
 command mkdir -p "$ROOT/benchmarks"
 
 echo "Building awkrs --release..."
@@ -13,18 +16,33 @@ command cargo build --release -q
 AWKRS="$ROOT/target/release/awkrs"
 AWK_BIN="${AWK:-/usr/bin/awk}"
 GAWK_BIN="$(command -v gawk 2>/dev/null || true)"
+MAWK_BIN="$(command -v mawk 2>/dev/null || true)"
 
-TMP_LINES="$(command mktemp "${TMPDIR:-/tmp}/awkrs-bench-lines.XXXXXX")"
-trap 'command rm -f "$TMP_LINES"' EXIT
+TMP1="$(command mktemp "${TMPDIR:-/tmp}/awkrs-bench1.XXXXXX")"
+TMP5F="$(command mktemp "${TMPDIR:-/tmp}/awkrs-bench5.XXXXXX")"
+TMP2F="$(command mktemp "${TMPDIR:-/tmp}/awkrs-bench2.XXXXXX")"
+trap 'command rm -f "$TMP1" "$TMP5F" "$TMP2F"' EXIT
 
-# Deterministic input: one integer field per line
-command seq 1 200000 >"$TMP_LINES"
+# 1 M lines (overridable via $AWKRS_BENCH_LINES) — enough to lift short workloads
+# like `{ print $1 }` out of hyperfine's sub-5 ms shell-startup noise floor.
+# One field (§1,§3,§5,§10), five fields (§4,§6,§9), two fields (§7,§8).
+LINES="${AWKRS_BENCH_LINES:-1000000}"
+command seq 1 "$LINES" >"$TMP1"
+"$AWK_BIN" -v n="$LINES" 'BEGIN{for(i=1;i<=n;i++) print i, i+1, i+2, i+3, i+4}' >"$TMP5F"
+"$AWK_BIN" -v n="$LINES" 'BEGIN{for(i=1;i<=n;i++) print i, i*2}' >"$TMP2F"
+LINES_LABEL="$(command printf '%s' "$LINES" | "$AWK_BIN" '{
+  if ($1 >= 1000000) printf "%g M", $1/1000000
+  else if ($1 >= 1000) printf "%g K", $1/1000
+  else print $1
+}')"
 
 OUT="$ROOT/benchmarks/benchmark-results.md"
 {
   echo "# awkrs vs awk benchmarks"
   echo ""
   echo "This file is **generated** by \`./scripts/benchmark-vs-awk.sh\`. Do not edit by hand."
+  echo ""
+  echo "Each \`§N\` section below is a **single** \`hyperfine\` invocation with every available engine (BSD awk, gawk, mawk, awkrs JIT-default, awkrs \`AWKRS_JIT=0\` bytecode-only) on the same input, so the *Relative* column is apples-to-apples within each table. Input size: **${LINES_LABEL}** lines (override with \`AWKRS_BENCH_LINES=500000 ./scripts/benchmark-vs-awk.sh\`). Sizes smaller than ~500 K will put \`{ print \$1 }\`-style workloads below hyperfine's shell-startup noise floor (< 5 ms), so the mean becomes unreliable even with more runs. Workloads mirror [README.md](../README.md) **[0x06] BENCHMARKS** §1–§10. For the focused awkrs-only JIT vs bytecode A/B (same programs), see [\`benchmark-readme-jit.md\`](benchmark-readme-jit.md) from \`./scripts/benchmark-readme-jit-vs-vm.sh\`."
   echo ""
   echo "## Environment"
   echo ""
@@ -39,19 +57,21 @@ OUT="$ROOT/benchmarks/benchmark-results.md"
   else
     echo "- **gawk:** not found on PATH"
   fi
+  if [[ -n "$MAWK_BIN" ]]; then
+    echo "- **mawk:** \`$MAWK_BIN\` (\`$(command "$MAWK_BIN" -W version 2>&1 | command head -1)\`)"
+  else
+    echo "- **mawk:** not found on PATH"
+  fi
   echo "- **awkrs:** \`$AWKRS\` (\`$(command "$AWKRS" --version 2>/dev/null | command head -1)\`)"
   echo ""
-
-  echo "## 1. Throughput: print first field"
-  echo ""
-  echo 'Input: **200000** lines from `seq 1 200000` (one field per line). Program: `{ print $1 }`.'
+  echo "**JIT on:** \`env -u AWKRS_JIT …\` — **JIT off:** \`env AWKRS_JIT=0 …\` (same binary)."
   echo ""
 } >"$OUT"
 
 append_hf_markdown() {
   local md
   md="$(command mktemp "${TMPDIR:-/tmp}/awkrs-hf.XXXXXX")"
-  command hyperfine --style none --warmup 2 --min-runs 8 "$@" --export-markdown "$md" || {
+  command hyperfine --style none --warmup 3 --min-runs 10 "$@" --export-markdown "$md" || {
     command rm -f "$md"
     return 1
   }
@@ -59,106 +79,71 @@ append_hf_markdown() {
   command rm -f "$md"
 }
 
-if [[ -n "$GAWK_BIN" ]]; then
-  append_hf_markdown \
-    -n "BSD awk" "$AWK_BIN '{ print \$1 }' '$TMP_LINES'" \
-    -n "gawk" "$GAWK_BIN '{ print \$1 }' '$TMP_LINES'" \
-    -n "awkrs" "$AWKRS '{ print \$1 }' '$TMP_LINES'" \
-    -n "awkrs (parallel)" "$AWKRS -j8 '{ print \$1 }' '$TMP_LINES'"
-else
-  append_hf_markdown \
-    -n "awk" "$AWK_BIN '{ print \$1 }' '$TMP_LINES'" \
-    -n "awkrs" "$AWKRS '{ print \$1 }' '$TMP_LINES'" \
-    -n "awkrs (parallel)" "$AWKRS -j8 '{ print \$1 }' '$TMP_LINES'"
-fi
+# bench_cross "title" "<awk program>" "<input file or empty for </dev/null>"
+bench_cross() {
+  local title="$1"
+  local prog="$2"
+  local input="${3:-}"
+  local inputQ redir
+  if [[ -z "$input" ]]; then
+    inputQ=""
+    redir=" </dev/null"
+  else
+    inputQ=" '$input'"
+    redir=""
+  fi
+  {
+    echo "## $title"
+    echo ""
+  } >>"$OUT"
+  local -a args=()
+  args+=(-n "BSD awk"         "$AWK_BIN '$prog'${inputQ}${redir}")
+  if [[ -n "$GAWK_BIN" ]]; then
+    args+=(-n "gawk"          "$GAWK_BIN '$prog'${inputQ}${redir}")
+  fi
+  if [[ -n "$MAWK_BIN" ]]; then
+    args+=(-n "mawk"          "$MAWK_BIN '$prog'${inputQ}${redir}")
+  fi
+  args+=(-n "awkrs (JIT)"      "env -u AWKRS_JIT \"$AWKRS\" '$prog'${inputQ}${redir}")
+  args+=(-n "awkrs (bytecode)" "env AWKRS_JIT=0 \"$AWKRS\" '$prog'${inputQ}${redir}")
+  append_hf_markdown "${args[@]}"
+  echo "" >>"$OUT"
+}
+
+bench_cross "1. Throughput: \`{ print \$1 }\` (${LINES_LABEL} × 1 field)" \
+  '{ print $1 }' "$TMP1"
+
+bench_cross "2. CPU-bound BEGIN (no input, 400 K-iter loop)" \
+  'BEGIN { s = 0; for (i = 1; i < 400001; i = i + 1) s += i; print s }' ""
+
+bench_cross "3. Sum first column: \`{ s += \$1 } END { print s }\` (${LINES_LABEL} × 1 field)" \
+  '{ s += $1 } END { print s }' "$TMP1"
+
+bench_cross "4. Multi-field print: \`{ print \$1, \$3, \$5 }\` (${LINES_LABEL} × 5 fields)" \
+  '{ print $1, $3, $5 }' "$TMP5F"
+
+bench_cross "5. Regex filter: \`/alpha/ { c += 1 } END { print c }\` (${LINES_LABEL}, no matches)" \
+  '/alpha/ { c += 1 } END { print c }' "$TMP1"
+
+bench_cross "6. Associative array: \`{ a[\$5] += 1 } END { for (k in a) print k, a[k] }\` (${LINES_LABEL} × 5 fields)" \
+  '{ a[$5] += 1 } END { for (k in a) print k, a[k] }' "$TMP5F"
+
+bench_cross "7. Conditional field: \`NR % 2 == 0 { print \$2 }\` (${LINES_LABEL} × 2 fields)" \
+  'NR % 2 == 0 { print $2 }' "$TMP2F"
+
+bench_cross "8. Field computation: \`{ sum += \$1 * \$2 } END { print sum }\` (${LINES_LABEL} × 2 fields)" \
+  '{ sum += $1 * $2 } END { print sum }' "$TMP2F"
+
+bench_cross "9. String concat print: \`{ print \$3 \"-\" \$5 }\` (${LINES_LABEL} × 5 fields)" \
+  '{ print $3 "-" $5 }' "$TMP5F"
+
+bench_cross "10. gsub: \`{ gsub(\"alpha\", \"ALPHA\"); print }\` (${LINES_LABEL} × 1 field, no matches)" \
+  '{ gsub("alpha", "ALPHA"); print }' "$TMP1"
 
 {
-  echo ""
-  echo "## 2. CPU-bound BEGIN (no input)"
-  echo ""
-  echo "Program: \`BEGIN { s = 0; for (i = 1; i < 400001; i = i + 1) s += i; print s }\` (stdin empty; \`<\` avoids a parser limitation on \`<=\` in this \`for\`)."
-  echo ""
-} >>"$OUT"
-
-if [[ -n "$GAWK_BIN" ]]; then
-  append_hf_markdown \
-    -n "BSD awk" "$AWK_BIN 'BEGIN { s = 0; for (i = 1; i < 400001; i = i + 1) s += i; print s }' </dev/null" \
-    -n "gawk" "$GAWK_BIN 'BEGIN { s = 0; for (i = 1; i < 400001; i = i + 1) s += i; print s }' </dev/null" \
-    -n "awkrs" "$AWKRS 'BEGIN { s = 0; for (i = 1; i < 400001; i = i + 1) s += i; print s }' </dev/null"
-else
-  append_hf_markdown \
-    -n "awk" "$AWK_BIN 'BEGIN { s = 0; for (i = 1; i < 400001; i = i + 1) s += i; print s }' </dev/null" \
-    -n "awkrs" "$AWKRS 'BEGIN { s = 0; for (i = 1; i < 400001; i = i + 1) s += i; print s }' </dev/null"
-fi
-
-{
-  echo ""
-  echo "## 3. Sum first column (single-threaded)"
-  echo ""
-  echo 'Same input as §1. Program: `{ s += $1 } END { print s }`. (Cross-record state is not parallel-safe in awkrs, so **awkrs** is single-threaded by default here.)'
-  echo ""
-} >>"$OUT"
-
-if [[ -n "$GAWK_BIN" ]]; then
-  append_hf_markdown \
-    -n "BSD awk" "$AWK_BIN '{ s += \$1 } END { print s }' '$TMP_LINES'" \
-    -n "gawk" "$GAWK_BIN '{ s += \$1 } END { print s }' '$TMP_LINES'" \
-    -n "awkrs" "$AWKRS '{ s += \$1 } END { print s }' '$TMP_LINES'"
-else
-  append_hf_markdown \
-    -n "awk" "$AWK_BIN '{ s += \$1 } END { print s }' '$TMP_LINES'" \
-    -n "awkrs" "$AWKRS '{ s += \$1 } END { print s }' '$TMP_LINES'"
-fi
-
-{
-  echo ""
-  echo "## 4. awkrs: JIT vs bytecode VM"
-  echo ""
-  echo "Same **awkrs** binary: default path (JIT attempted for eligible chunks) vs \`AWKRS_JIT=0\` (bytecode interpreter only). Use \`env -u AWKRS_JIT\` so a shell \`AWKRS_JIT\` alias does not skew the “JIT on” run."
-  echo ""
-  echo "### 4a. CPU-bound BEGIN (same program as §2)"
-  echo ""
-} >>"$OUT"
-
-append_hf_markdown \
-  -n "awkrs (JIT default)" "env -u AWKRS_JIT \"$AWKRS\" 'BEGIN { s = 0; for (i = 1; i < 400001; i = i + 1) s += i; print s }' </dev/null" \
-  -n "awkrs (bytecode only)" "env AWKRS_JIT=0 \"$AWKRS\" 'BEGIN { s = 0; for (i = 1; i < 400001; i = i + 1) s += i; print s }' </dev/null"
-
-{
-  echo ""
-  echo "### 4b. Sum first column (same program and input as §3)"
-  echo ""
-} >>"$OUT"
-
-append_hf_markdown \
-  -n "awkrs (JIT default)" "env -u AWKRS_JIT \"$AWKRS\" '{ s += \$1 } END { print s }' '$TMP_LINES'" \
-  -n "awkrs (bytecode only)" "env AWKRS_JIT=0 \"$AWKRS\" '{ s += \$1 } END { print s }' '$TMP_LINES'"
-
-{
-  echo ""
-  echo "### 4c. Throughput: print first field (same program and input as §1)"
-  echo ""
-} >>"$OUT"
-
-append_hf_markdown \
-  -n "awkrs (JIT default)" "env -u AWKRS_JIT \"$AWKRS\" '{ print \$1 }' '$TMP_LINES'" \
-  -n "awkrs (bytecode only)" "env AWKRS_JIT=0 \"$AWKRS\" '{ print \$1 }' '$TMP_LINES'"
-
-{
-  echo ""
-  echo "### 4d. Parallel \`-j8\` (same program and input as §1 \`awkrs (parallel)\`)"
-  echo ""
-} >>"$OUT"
-
-append_hf_markdown \
-  -n "awkrs (JIT default)" "env -u AWKRS_JIT \"$AWKRS\" -j8 '{ print \$1 }' '$TMP_LINES'" \
-  -n "awkrs (bytecode only)" "env AWKRS_JIT=0 \"$AWKRS\" -j8 '{ print \$1 }' '$TMP_LINES'"
-
-{
-  echo ""
   echo "---"
   echo ""
-  echo "Throughput (§1) can use **awkrs \`-j\`** when the program is parallel-safe; **BEGIN-only** (§2) and **accumulators** (§3) are effectively single-threaded here. **§4** compares JIT vs bytecode for every **awkrs** workload in §1–§3 (4a = §2, 4b = §3, 4c–4d = §1). Re-run after \`cargo build --release\` on your hardware."
+  echo "Re-run after \`cargo build --release\` on your hardware. Install mawk (\`brew install mawk\` / \`apt install mawk\`) and gawk for full cross-engine tables; without them the table simply omits that row. §6 iteration order differs across engines, so its output is not compared — only the mean time."
   echo ""
 } >>"$OUT"
 

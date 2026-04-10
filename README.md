@@ -147,17 +147,17 @@ The engine compiles AWK programs into a flat bytecode instruction stream, then r
  │ HARDWARE: APPLE M5 MAX &nbsp;&nbsp; OS: macOS &nbsp;&nbsp; ARCH: arm64         │
  └──────────────────────────────────────────────────────────────┘
 
-Measured with [hyperfine](https://github.com/sharkdp/hyperfine) (`--shell none` for spot-checks below). BSD awk (`/usr/bin/awk`), GNU gawk 5.4.0, mawk 1.3.4, awkrs **0.1.18**. **Relative** = mean time ÷ **fastest** mean in that table. **awkrs** has two rows: default (**JIT** attempted) vs **`AWKRS_JIT=0`** (**bytecode** only) — refreshed from [`benchmarks/benchmark-readme-jit.md`](benchmarks/benchmark-readme-jit.md) (generated **2026-04-09** UTC by `./scripts/benchmark-readme-jit-vs-vm.sh`; re-run after `cargo build --release` to update). **§6** is a single hyperfine run with all five engines on the same 200 K-line input; **§1–§5** and **§7–§10** still mix an older BSD/gawk/mawk sheet with refreshed awkrs rows unless you re-measure everything together. [`benchmarks/benchmark-results.md`](benchmarks/benchmark-results.md) is from `./scripts/benchmark-vs-awk.sh` (cross-engine §1–§4 plus JIT vs bytecode §4a–§4d).
+Measured with [hyperfine](https://github.com/sharkdp/hyperfine). BSD awk (`/usr/bin/awk`), GNU gawk 5.4.0, mawk 1.3.4, awkrs **0.1.18**. **Relative** = mean time ÷ **fastest** mean in that table. **awkrs** has two rows: default (**JIT** attempted) vs **`AWKRS_JIT=0`** (**bytecode** only). **Every §N table below is a single `hyperfine` invocation** with all five commands on the same **1 M-line** input, generated **2026-04-10** UTC by `./scripts/benchmark-vs-awk.sh` and taken verbatim from [`benchmarks/benchmark-results.md`](benchmarks/benchmark-results.md) — the *Relative* column is apples-to-apples within each table (earlier revisions of this README stitched awkrs rows from one run with mawk/gawk rows from another; that is no longer the case). 1 M lines was chosen to lift every workload above hyperfine's ~5 ms shell-startup noise floor; re-run with `AWKRS_BENCH_LINES=500000 ./scripts/benchmark-vs-awk.sh` for a faster sweep or larger values for throughput-limit checks. For the awkrs-only JIT-vs-bytecode A/B at a tighter focus, see [`benchmarks/benchmark-readme-jit.md`](benchmarks/benchmark-readme-jit.md) from `./scripts/benchmark-readme-jit-vs-vm.sh`.
 
-### 1. Throughput: `{ print $1 }` over 200 K lines
+### 1. Throughput: `{ print $1 }` over 1 M lines
 
 | Command | Mean | Min | Max | Relative |
 |:---|---:|---:|---:|---:|
-| BSD awk | 39.8 ms | 35.3 ms | 55.5 ms | 6.32× |
-| gawk | 23.9 ms | 21.7 ms | 29.1 ms | 3.79× |
-| mawk | 14.7 ms | 13.2 ms | 18.9 ms | 2.33× |
-| awkrs (JIT) | 6.2 ms | 5.2 ms | 8.1 ms | **1.00×** |
-| awkrs (bytecode) | 6.2 ms | 5.2 ms | 8.5 ms | **1.00×** |
+| BSD awk | 195.0 ms | 179.8 ms | 221.6 ms | 12.43× |
+| gawk | 100.8 ms | 92.8 ms | 115.8 ms | 6.42× |
+| mawk | 66.2 ms | 61.9 ms | 78.4 ms | 4.22× |
+| awkrs (JIT) | 15.7 ms | 13.3 ms | 19.6 ms | **1.00×** |
+| awkrs (bytecode) | 16.1 ms | 13.1 ms | 20.2 ms | 1.03× |
 
 ### 2. CPU-bound BEGIN (no input)
 
@@ -165,102 +165,103 @@ Measured with [hyperfine](https://github.com/sharkdp/hyperfine) (`--shell none` 
 
 | Command | Mean | Min | Max | Relative |
 |:---|---:|---:|---:|---:|
-| gawk | 19.6 ms | 17.4 ms | 22.2 ms | 2.42× |
-| BSD awk | 14.9 ms | 13.0 ms | 17.8 ms | 1.84× |
-| mawk | 9.0 ms | 7.5 ms | 10.4 ms | 1.11× |
-| awkrs (JIT) | 13.3 ms | 11.4 ms | 15.8 ms | 1.71× |
-| awkrs (bytecode) | 7.8 ms | 6.7 ms | 9.8 ms | **1.00×** |
+| BSD awk | 15.8 ms | 14.0 ms | 18.6 ms | 1.71× |
+| gawk | 20.7 ms | 18.8 ms | 22.9 ms | 2.24× |
+| mawk | 9.7 ms | 8.3 ms | 11.4 ms | 1.06× |
+| awkrs (JIT) | 9.2 ms | 8.4 ms | 12.0 ms | **1.00×** |
+| awkrs (bytecode) | 9.6 ms | 8.2 ms | 12.0 ms | 1.04× |
 
-### 3. Sum first column (`{ s += $1 } END { print s }`, 200 K lines)
+### 3. Sum first column (`{ s += $1 } END { print s }`, 1 M lines)
 
 Cross-record state is not parallel-safe, so awkrs stays **single-threaded** (default) here. On regular-file input, awkrs uses a **raw byte** path: parses the Nth whitespace-delimited field as a number directly from the mmap'd buffer — no record copy, no field splitting, no String allocation.
 
 | Command | Mean | Min | Max | Relative |
 |:---|---:|---:|---:|---:|
-| BSD awk | 32.0 ms | 28.8 ms | 46.5 ms | 5.42× |
-| gawk | 16.5 ms | 14.8 ms | 22.4 ms | 2.80× |
-| mawk | 9.0 ms | 8.2 ms | 10.6 ms | 1.53× |
-| awkrs (JIT) | 5.6 ms | 4.8 ms | 7.2 ms | **1.00×** |
-| awkrs (bytecode) | 5.7 ms | 4.5 ms | 9.0 ms | 1.02× |
+| BSD awk | 158.5 ms | 147.0 ms | 172.7 ms | 12.27× |
+| gawk | 62.9 ms | 58.4 ms | 68.9 ms | 4.87× |
+| mawk | 37.5 ms | 33.7 ms | 39.9 ms | 2.90× |
+| awkrs (JIT) | 13.0 ms | 11.9 ms | 15.4 ms | 1.01× |
+| awkrs (bytecode) | 12.9 ms | 11.5 ms | 16.1 ms | **1.00×** |
 
-### 4. Multi-field print (`{ print $1, $3, $5 }`, 200 K lines, 5 fields/line)
-
-| Command | Mean | Min | Max | Relative |
-|:---|---:|---:|---:|---:|
-| BSD awk | 120.8 ms | 113.8 ms | 132.1 ms | 8.45× |
-| gawk | 58.4 ms | 53.2 ms | 66.8 ms | 4.08× |
-| mawk | 33.2 ms | 30.5 ms | 38.5 ms | 2.32× |
-| awkrs (JIT) | 14.5 ms | 13.3 ms | 16.1 ms | **1.00×** |
-| awkrs (bytecode) | 15.1 ms | 13.3 ms | 18.1 ms | 1.04× |
-
-### 5. Regex filter (`/alpha/ { c += 1 } END { print c }`, 200 K lines)
+### 4. Multi-field print (`{ print $1, $3, $5 }`, 1 M lines, 5 fields/line)
 
 | Command | Mean | Min | Max | Relative |
 |:---|---:|---:|---:|---:|
-| BSD awk | 127.2 ms | 115.7 ms | 150.8 ms | 22.32× |
-| gawk | 80.9 ms | 79.2 ms | 90.1 ms | 14.19× |
-| mawk | 5.6 ms | 4.8 ms | 7.6 ms | **1.00×** |
-| awkrs (JIT) | 5.8 ms | 4.6 ms | 8.4 ms | 1.04× |
-| awkrs (bytecode) | 5.7 ms | 4.9 ms | 7.1 ms | 1.02× |
+| BSD awk | 647.6 ms | 623.5 ms | 686.3 ms | 11.60× |
+| gawk | 266.1 ms | 257.4 ms | 301.8 ms | 4.77× |
+| mawk | 156.6 ms | 149.8 ms | 170.7 ms | 2.81× |
+| awkrs (JIT) | 56.4 ms | 53.1 ms | 61.8 ms | 1.01× |
+| awkrs (bytecode) | 55.8 ms | 53.4 ms | 61.6 ms | **1.00×** |
 
-### 6. Associative array (`{ a[$5] += 1 } END { for (k in a) print k, a[k] }`, 200 K lines)
-
-| Command | Mean | Min | Max | Relative |
-|:---|---:|---:|---:|---:|
-| BSD awk | 164.4 ms | 155.8 ms | 177.0 ms | 3.74× |
-| gawk | 75.3 ms | 71.4 ms | 85.4 ms | 1.71× |
-| mawk | 81.6 ms | 69.4 ms | 111.0 ms | 1.85× |
-| awkrs (JIT) | 62.0 ms | 57.6 ms | 69.9 ms | 1.41× |
-| awkrs (bytecode) | 43.9 ms | 40.1 ms | 53.5 ms | **1.00×** |
-
-### 7. Conditional field (`NR % 2 == 0 { print $2 }`, 200 K lines)
+### 5. Regex filter (`/alpha/ { c += 1 } END { print c }`, 1 M lines, no matches)
 
 | Command | Mean | Min | Max | Relative |
 |:---|---:|---:|---:|---:|
-| BSD awk | 105.4 ms | 97.8 ms | 136.5 ms | 12.40× |
-| gawk | 28.7 ms | 26.7 ms | 32.3 ms | 3.38× |
-| mawk | 17.8 ms | 16.2 ms | 21.0 ms | 2.09× |
-| awkrs (JIT) | 9.0 ms | 7.8 ms | 11.7 ms | 1.01× |
-| awkrs (bytecode) | 8.9 ms | 7.7 ms | 10.8 ms | **1.00×** |
+| BSD awk | 191.8 ms | 180.1 ms | 208.9 ms | 17.31× |
+| gawk | 351.4 ms | 342.7 ms | 363.3 ms | 31.72× |
+| mawk | 19.3 ms | 17.5 ms | 21.8 ms | 1.74× |
+| awkrs (JIT) | 11.1 ms | 9.5 ms | 13.5 ms | **1.00×** |
+| awkrs (bytecode) | 11.1 ms | 9.5 ms | 14.6 ms | 1.00× |
 
-### 8. Field computation (`{ sum += $1 * $2 } END { print sum }`, 200 K lines)
+### 6. Associative array (`{ a[$5] += 1 } END { for (k in a) print k, a[k] }`, 1 M lines)
+
+| Command | Mean | Min | Max | Relative |
+|:---|---:|---:|---:|---:|
+| BSD awk | 826.2 ms | 792.2 ms | 896.0 ms | 2.43× |
+| gawk | 342.4 ms | 330.6 ms | 362.5 ms | 1.01× |
+| mawk | 610.0 ms | 588.9 ms | 648.7 ms | 1.79× |
+| awkrs (JIT) | 340.0 ms | 324.2 ms | 377.7 ms | **1.00×** |
+| awkrs (bytecode) | 343.7 ms | 323.5 ms | 356.7 ms | 1.01× |
+
+### 7. Conditional field (`NR % 2 == 0 { print $2 }`, 1 M lines, 2 fields/line)
+
+| Command | Mean | Min | Max | Relative |
+|:---|---:|---:|---:|---:|
+| BSD awk | 289.1 ms | 263.1 ms | 321.1 ms | 9.58× |
+| gawk | 116.1 ms | 111.0 ms | 124.4 ms | 3.85× |
+| mawk | 71.1 ms | 66.9 ms | 83.6 ms | 2.36× |
+| awkrs (JIT) | 30.2 ms | 28.1 ms | 34.0 ms | **1.00×** |
+| awkrs (bytecode) | 30.7 ms | 28.0 ms | 35.5 ms | 1.02× |
+
+### 8. Field computation (`{ sum += $1 * $2 } END { print sum }`, 1 M lines, 2 fields/line)
 
 On regular-file input with default FS, awkrs uses a **raw byte** path: extracts both fields in a single byte scan and parses them as numbers directly from the mmap'd buffer.
 
 | Command | Mean | Min | Max | Relative |
 |:---|---:|---:|---:|---:|
-| BSD awk | 104.2 ms | 94.9 ms | 133.9 ms | 14.08× |
-| gawk | 25.6 ms | 24.0 ms | 27.6 ms | 3.46× |
-| mawk | 17.4 ms | 16.1 ms | 22.7 ms | 2.35× |
-| awkrs (JIT) | 7.1 ms | 6.2 ms | 9.0 ms | **1.00×** |
-| awkrs (bytecode) | 7.2 ms | 6.0 ms | 9.2 ms | 1.01× |
+| BSD awk | 261.8 ms | 251.4 ms | 280.8 ms | 13.96× |
+| gawk | 100.5 ms | 95.3 ms | 109.5 ms | 5.36× |
+| mawk | 57.7 ms | 54.5 ms | 61.1 ms | 3.08× |
+| awkrs (JIT) | 19.0 ms | 17.6 ms | 23.0 ms | 1.01× |
+| awkrs (bytecode) | 18.8 ms | 17.5 ms | 22.8 ms | **1.00×** |
 
-### 9. String concat print (`{ print $3 "-" $5 }`, 200 K lines)
+### 9. String concat print (`{ print $3 "-" $5 }`, 1 M lines, 5 fields/line)
 
 | Command | Mean | Min | Max | Relative |
 |:---|---:|---:|---:|---:|
-| BSD awk | 120.0 ms | 114.7 ms | 139.5 ms | 8.70× |
-| gawk | 42.3 ms | 38.3 ms | 90.0 ms | 3.07× |
-| mawk | 25.3 ms | 23.0 ms | 30.3 ms | 1.83× |
-| awkrs (JIT) | 13.7 ms | 12.4 ms | 15.9 ms | **1.00×** |
-| awkrs (bytecode) | 13.9 ms | 12.4 ms | 16.4 ms | 1.02× |
+| BSD awk | 640.8 ms | 611.9 ms | 689.3 ms | 12.68× |
+| gawk | 182.2 ms | 168.1 ms | 197.2 ms | 3.61× |
+| mawk | 121.0 ms | 113.6 ms | 128.1 ms | 2.39× |
+| awkrs (JIT) | 51.0 ms | 49.2 ms | 53.8 ms | 1.01× |
+| awkrs (bytecode) | 50.5 ms | 48.8 ms | 54.8 ms | **1.00×** |
 
-### 10. gsub (`{ gsub("alpha", "ALPHA"); print }`, 200 K lines)
+### 10. gsub (`{ gsub("alpha", "ALPHA"); print }`, 1 M lines, no matches)
 
 Input lines do not contain `alpha`, so this measures **no-match** `gsub` plus `print` (still scans each line for the literal). On **regular file** input, awkrs uses a **slurp inline** path: byte `memmem` scan + `print` without VM or per-line `set_field_sep_split` when the literal is absent.
 
 | Command | Mean | Min | Max | Relative |
 |:---|---:|---:|---:|---:|
-| BSD awk | 162.2 ms | 154.7 ms | 187.6 ms | 24.21× |
-| gawk | 106.8 ms | 105.0 ms | 110.8 ms | 15.94× |
-| mawk | 17.3 ms | 15.6 ms | 22.1 ms | 2.58× |
-| awkrs (JIT) | 6.2 ms | 5.1 ms | 7.8 ms | 1.02× |
-| awkrs (bytecode) | 6.1 ms | 5.2 ms | 8.2 ms | **1.00×** |
+| BSD awk | 291.5 ms | 282.3 ms | 300.4 ms | 21.15× |
+| gawk | 436.3 ms | 425.7 ms | 459.3 ms | 31.66× |
+| mawk | 74.3 ms | 68.8 ms | 84.2 ms | 5.39× |
+| awkrs (JIT) | 13.8 ms | 12.8 ms | 16.2 ms | **1.00×** |
+| awkrs (bytecode) | 13.9 ms | 12.7 ms | 17.6 ms | 1.01× |
 
-> Regenerate after `cargo build --release` (requires `hyperfine`; `gawk` optional). Includes **§4** JIT vs bytecode rows (`AWKRS_JIT=0` disables JIT for A/B).
+> Regenerate after `cargo build --release` (requires `hyperfine`; `gawk`/`mawk` optional — missing engines are simply omitted from the tables). Each §N run above is one hyperfine invocation across all five commands, so every *Relative* column compares apples-to-apples. Override input size with `AWKRS_BENCH_LINES=…` to sweep throughput.
 > ```bash
-> ./scripts/benchmark-vs-awk.sh
-> ./scripts/benchmark-readme-jit-vs-vm.sh
+> ./scripts/benchmark-vs-awk.sh                    # cross-engine §1–§10 (1 M lines)
+> AWKRS_BENCH_LINES=5000000 ./scripts/benchmark-vs-awk.sh   # 5 M line sweep
+> ./scripts/benchmark-readme-jit-vs-vm.sh           # awkrs-only JIT vs bytecode A/B
 > ```
 
 ---
