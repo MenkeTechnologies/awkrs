@@ -4,10 +4,13 @@
 //!
 //! **Implemented behaviors (see `awkrs::run` and `cli_effects`):**
 //! `-d`/`--dump-variables` (dump after run), `-D`/`--debug` (rule/function listing to file or stderr),
-//! `-p`/`--profile` (wall-clock summary), `-o`/`--pretty-print`, `-g`/`--gen-pot`, `-L`/`--lint`,
+//! `-p`/`--profile` (awkrs-specific wall-clock summary; not gawk’s profiler format), `-o`/`--pretty-print`
+//! (AST-derived listing; not gawk’s `--pretty-print` output), `-g`/`--gen-pot`, `-L`/`--lint`,
 //! `-t`/`--lint-old`, `-S`/`--sandbox`, `-l`/`--load` (AWKPATH), `-b`/`--characters-as-bytes`,
 //! `-c`/`--traditional`, `-P`/`--posix` (reserved flags on [`crate::runtime::Runtime`]), `-n`/`--non-decimal-data`,
 //! `-s`/`--no-optimize` (disables JIT). `-O`/`--optimize` is accepted alongside gawk; JIT is on unless `-s` is set.
+//! `-r`/`--re-interval` is accepted as a no-op (interval regex syntax is always available). `-N`/`--use-lc-numeric`
+//! applies `LC_NUMERIC` to sprintf/printf and print/CONVFMT/OFMT formatting; string→number parsing still uses `.`.
 
 use clap::{ArgAction, Parser, ValueHint};
 use std::path::PathBuf;

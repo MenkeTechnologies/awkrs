@@ -1,4 +1,6 @@
-//! `LC_NUMERIC` setup for `-N` / `--use-lc-numeric` (Unix): C `localeconv()` decimal point.
+//! `LC_NUMERIC` setup for `-N` / `--use-lc-numeric` (Unix): C `localeconv()` decimal point and
+//! thousands separator for sprintf/printf/`%'` — string→number parsing of user data still uses **`.`**
+//! (see README **Not “all awks”** / **`-N`**).
 
 #[cfg(unix)]
 pub fn set_locale_numeric_from_env() {
