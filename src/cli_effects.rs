@@ -352,10 +352,16 @@ pub fn pretty_print_ast(prog: &Program) -> String {
     format!("{prog:#?}")
 }
 
-/// Emit lint warnings for gawk extensions when `-L` or `-t` is set.
-pub fn emit_lint_warnings(bin_name: &str, prog: &Program, lint: Option<&str>, lint_old: bool) {
+/// Emit lint warnings for gawk extensions when `-L`, `-t`, or a truthy **`LINT`** variable is set.
+pub fn emit_lint_warnings(
+    bin_name: &str,
+    prog: &Program,
+    lint: Option<&str>,
+    lint_old: bool,
+    runtime_lint_var: bool,
+) {
     let fatal = matches!(lint, Some(s) if s.eq_ignore_ascii_case("fatal"));
-    let warn = lint.is_some() || lint_old;
+    let warn = lint.is_some() || lint_old || runtime_lint_var;
     if !warn {
         return;
     }

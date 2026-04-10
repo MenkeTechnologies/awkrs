@@ -1,4 +1,4 @@
-//! Gawk-style source directives before parse: `@include`, `@load`, `@namespace`.
+//! Gawk-style source directives before parse: `@include`, `@load` (`.awk` only, like include), `@namespace` (ignored).
 
 use crate::error::{Error, Result};
 use std::collections::HashSet;
@@ -39,7 +39,7 @@ fn take_double_quoted(rest: &str) -> Option<(String, &str)> {
     None
 }
 
-/// Expand `@include` recursively; reject `@load`; warn and drop `@namespace` lines.
+/// Expand `@include` / `@load "*.awk"` recursively; warn and drop `@namespace` lines.
 pub fn expand_source_directives(src: &str) -> Result<String> {
     let mut visited = HashSet::new();
     expand_inner(src, None, &mut visited)
@@ -80,10 +80,39 @@ fn expand_inner(
             }
             continue;
         }
-        if trimmed.starts_with("@load") {
+        if let Some(rest) = trimmed.strip_prefix("@load") {
+            let rest = rest.trim_start();
+            let Some((path_str, _after)) = take_double_quoted(rest) else {
+                return Err(Error::Parse {
+                    line: line_no,
+                    msg: "malformed `@load` (expected `@load \"file\"`)".into(),
+                });
+            };
+            let pl = path_str.to_ascii_lowercase();
+            if pl.ends_with(".awk") {
+                let resolved = resolve_include_path(base_dir, &path_str)?;
+                let canon = fs::canonicalize(&resolved).unwrap_or_else(|_| resolved.clone());
+                if !visited.insert(canon.clone()) {
+                    return Err(Error::Parse {
+                        line: line_no,
+                        msg: format!("@load cycle: {}", canon.display()),
+                    });
+                }
+                let inner =
+                    fs::read_to_string(&resolved).map_err(|e| Error::ProgramFile(resolved.clone(), e))?;
+                let expanded = expand_inner(&inner, resolved.parent(), visited)?;
+                visited.remove(&canon);
+                out.push_str(&expanded);
+                if !expanded.is_empty() && !expanded.ends_with('\n') {
+                    out.push('\n');
+                }
+                continue;
+            }
             return Err(Error::Parse {
                 line: line_no,
-                msg: "`@load` is not supported in awkrs (no dynamic extension loading)".into(),
+                msg: format!(
+                    "`@load` {path_str}: only `.awk` source is supported (shared-object extensions are not loaded)"
+                ),
             });
         }
         if trimmed.starts_with("@namespace") {
@@ -125,5 +154,17 @@ mod tests {
         let out = expand_source_directives("@namespace \"ns\"\nBEGIN { }\n").unwrap();
         assert!(!out.contains("@namespace"));
         assert!(out.contains("BEGIN"));
+    }
+
+    #[test]
+    fn load_awk_file_inlines_like_include() {
+        let dir = std::env::temp_dir();
+        let id = std::process::id();
+        let inc = dir.join(format!("awkrs_load_inc_{id}.awk"));
+        std::fs::write(&inc, "function f() { return 1 }\n").unwrap();
+        let main = format!("@load \"{}\"\nBEGIN {{ print f() }}\n", inc.display());
+        let out = expand_source_directives(&main).unwrap();
+        assert!(out.contains("function f"));
+        let _ = std::fs::remove_file(&inc);
     }
 }

@@ -12,7 +12,9 @@ use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{Arc, Mutex};
 
+use crate::bytecode::CompiledProgram;
 use crate::error::{Error, Result};
+use gettext::Catalog;
 use rug::Float;
 
 thread_local! {
@@ -566,6 +568,8 @@ pub struct Runtime {
     pub traditional: bool,
     /// Bytecode JIT (`-s` / `--no-optimize` disables when set).
     pub jit_enabled: bool,
+    /// GNU MO catalogs loaded by `bindtextdomain` (domain → catalog).
+    pub gettext_catalogs: AwkMap<String, Arc<Catalog>>,
 }
 
 impl Runtime {
@@ -644,7 +648,82 @@ impl Runtime {
             posix: false,
             traditional: false,
             jit_enabled: true,
+            gettext_catalogs: AwkMap::default(),
         }
+    }
+
+    /// True when the **`LINT`** variable is set to a truthy value (after `BEGIN`, includes `-v LINT=1`).
+    pub fn lint_runtime_active(&self) -> bool {
+        self.get_global_var("LINT")
+            .map(|v| v.truthy())
+            .unwrap_or(false)
+    }
+
+    /// Refresh **`PROCINFO`**, **`FUNCTAB`**, and a **`SYMTAB`** mirror of globals (best-effort vs gawk introspection).
+    pub fn refresh_special_arrays(&mut self, cp: &CompiledProgram, bin_name: &str) {
+        self.procinfo_refresh(bin_name);
+        self.functab_refresh(cp);
+        self.symtab_mirror_refresh();
+    }
+
+    fn procinfo_refresh(&mut self, bin_name: &str) {
+        let mut p = AwkMap::default();
+        p.insert("version".into(), Value::Str(env!("CARGO_PKG_VERSION").into()));
+        p.insert("api".into(), Value::Str("awkrs".into()));
+        p.insert("program".into(), Value::Str(bin_name.into()));
+        p.insert(
+            "platform".into(),
+            Value::Str(std::env::consts::OS.into()),
+        );
+        p.insert("pid".into(), Value::Num(std::process::id() as f64));
+        #[cfg(unix)]
+        {
+            unsafe {
+                p.insert("ppid".into(), Value::Num(libc::getppid() as f64));
+                p.insert("uid".into(), Value::Num(libc::getuid() as f64));
+                p.insert("euid".into(), Value::Num(libc::geteuid() as f64));
+                p.insert("gid".into(), Value::Num(libc::getgid() as f64));
+                p.insert("egid".into(), Value::Num(libc::getegid() as f64));
+            }
+        }
+        if self.bignum {
+            p.insert("prec".into(), Value::Num(MPFR_PREC as f64));
+        }
+        let binmode = self
+            .get_global_var("BINMODE")
+            .map(|v| v.as_number())
+            .unwrap_or(0.0);
+        p.insert(
+            "awkrs_binmode".into(),
+            Value::Num(binmode),
+        );
+        self.vars.insert("PROCINFO".into(), Value::Array(p));
+    }
+
+    fn functab_refresh(&mut self, cp: &CompiledProgram) {
+        let mut ft = AwkMap::default();
+        for (name, f) in &cp.functions {
+            let mut meta = AwkMap::default();
+            meta.insert("type".into(), Value::Str("user".into()));
+            meta.insert(
+                "arity".into(),
+                Value::Num(f.params.len() as f64),
+            );
+            ft.insert(name.clone(), Value::Array(meta));
+        }
+        self.vars.insert("FUNCTAB".into(), Value::Array(ft));
+    }
+
+    fn symtab_mirror_refresh(&mut self) {
+        let mut st = AwkMap::default();
+        for (k, v) in &self.vars {
+            match k.as_str() {
+                "SYMTAB" | "FUNCTAB" | "PROCINFO" => continue,
+                _ => {}
+            }
+            st.insert(k.clone(), v.clone());
+        }
+        self.vars.insert("SYMTAB".into(), Value::Array(st));
     }
 
     /// Resize [`Self::jit_slot_buf`] for JIT (`n` elements; no shrink).
@@ -687,6 +766,7 @@ impl Runtime {
         posix: bool,
         traditional: bool,
         jit_enabled: bool,
+        gettext_catalogs: AwkMap<String, Arc<Catalog>>,
     ) -> Self {
         Self {
             vars: AwkMap::default(),
@@ -731,6 +811,7 @@ impl Runtime {
             posix,
             traditional,
             jit_enabled,
+            gettext_catalogs,
         }
     }
 
@@ -1045,6 +1126,12 @@ impl Runtime {
     /// `getline var < filename` — one line from a kept-open file handle.
     pub fn read_line_file(&mut self, path: &str) -> Result<Option<String>> {
         self.require_unsandboxed_io()?;
+        if path.starts_with("/inet/udp/") {
+            return Err(Error::Runtime(
+                "/inet/udp/... is not implemented (only /inet/tcp/lport/host/port with lport=0 is supported)"
+                    .into(),
+            ));
+        }
         if path.starts_with("/inet/") {
             if path.starts_with("/inet/tcp/") {
                 self.ensure_inet_tcp_pair(path)?;
@@ -1706,6 +1793,7 @@ impl Clone for Runtime {
             posix: self.posix,
             traditional: self.traditional,
             jit_enabled: self.jit_enabled,
+            gettext_catalogs: self.gettext_catalogs.clone(),
         }
     }
 }

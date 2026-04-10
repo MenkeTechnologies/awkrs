@@ -21,6 +21,7 @@ mod interp;
 mod lexer;
 mod locale_numeric;
 mod parser;
+mod gettext_util;
 mod record_io;
 mod runtime;
 mod source_expand;
@@ -35,7 +36,9 @@ use crate::cli::{Args, MawkWAction};
 use crate::compiler::Compiler;
 use crate::interp::Flow;
 use crate::parser::parse_program;
-use crate::runtime::{Runtime, Value};
+use crate::runtime::{AwkMap, Runtime, Value};
+use gettext::Catalog;
+use std::sync::Arc;
 
 fn rs_is_default_newline(rt: &Runtime) -> bool {
     rt.rs_string() == "\n"
@@ -53,7 +56,6 @@ use rayon::ThreadPool;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::Instant;
 
 /// Run the interpreter. `bin_name` is used for diagnostics and help (e.g. `"awkrs"` or `"ars"`).
@@ -95,13 +97,6 @@ pub fn run(bin_name: &str) -> Result<()> {
     let (program_text, files) = resolve_program_and_files(&args)?;
     let prog = parse_program(&program_text)?;
     let parallel_ok = parallel::record_rules_parallel_safe(&prog);
-
-    cli_effects::emit_lint_warnings(
-        bin_name,
-        &prog,
-        args.lint.as_deref(),
-        args.lint_old,
-    );
 
     if let Some(ref p) = args.pretty_print {
         let s = cli_effects::pretty_print_ast(&prog);
@@ -166,6 +161,14 @@ pub fn run(bin_name: &str) -> Result<()> {
     let worker_jit_enabled = rt.jit_enabled;
 
     vm_run_begin(cp.as_ref(), &mut rt)?;
+    rt.refresh_special_arrays(cp.as_ref(), bin_name);
+    cli_effects::emit_lint_warnings(
+        bin_name,
+        &prog,
+        args.lint.as_deref(),
+        args.lint_old,
+        rt.lint_runtime_active(),
+    );
     flush_print_buf(&mut rt.print_buf)?;
     if rt.exit_pending {
         vm_run_end(cp.as_ref(), &mut rt)?;
@@ -176,11 +179,9 @@ pub fn run(bin_name: &str) -> Result<()> {
 
     let mut range_state: Vec<bool> = vec![false; prog.rules.len()];
 
-    // Parallel record mode: whole regular files in memory, or stdin in chunks of `--read-ahead` lines.
-    let     use_parallel_files = threads > 1
-        && parallel_ok
-        && !files.is_empty()
-        && rs_is_default_newline(&rt);
+    // Parallel record mode: mmap whole files with RS-aware splitting (`record_io::split_input_into_records`).
+    // Stdin parallel still chunks on newlines only (see `process_stdin_parallel`).
+    let use_parallel_files = threads > 1 && parallel_ok && !files.is_empty();
     let stdin_parallel = files.is_empty()
         && threads > 1
         && parallel_ok
@@ -307,6 +308,18 @@ fn parallel_pool(threads: usize) -> Result<ThreadPool> {
 /// Run record rules for `lines` in parallel; `line_base` is the 0-based index of `lines[0]` within
 /// the current input file, and `nr_offset` is global `NR` before the first line of that file.
 #[allow(clippy::too_many_arguments)]
+fn parallel_set_rt_approx(rt: &mut Runtime) {
+    let rs = rt.rs_string();
+    let rt_sep = if rs == "\n" {
+        "\n".to_string()
+    } else if rs.is_empty() {
+        "\n\n".to_string()
+    } else {
+        rs
+    };
+    rt.vars.insert("RT".into(), Value::Str(rt_sep));
+}
+
 fn process_lines_parallel_chunk(
     pool: &ThreadPool,
     lines: Vec<String>,
@@ -326,6 +339,7 @@ fn process_lines_parallel_chunk(
     posix: bool,
     traditional: bool,
     jit_enabled: bool,
+    gettext_catalogs: AwkMap<String, Arc<Catalog>>,
 ) -> Result<Vec<(usize, ParallelRecordOut)>> {
     let shared_cp = Arc::clone(cp);
     let results: Vec<std::result::Result<(usize, ParallelRecordOut), Error>> = pool.install(|| {
@@ -348,11 +362,13 @@ fn process_lines_parallel_chunk(
                     posix,
                     traditional,
                     jit_enabled,
+                    gettext_catalogs.clone(),
                 );
                 local.slots = (*shared_slots).clone();
                 local.nr = nr_offset + i as f64 + 1.0;
                 local.fnr = i as f64 + 1.0;
                 local.set_record_from_line(&line);
+                parallel_set_rt_approx(&mut local);
 
                 let mut buf = Vec::new();
                 for rule in &cp.record_rules {
@@ -491,6 +507,7 @@ fn process_stdin_parallel(
             posix,
             traditional,
             jit_enabled,
+            rt.gettext_catalogs.clone(),
         )?;
 
         let n = outs.len();
@@ -529,7 +546,20 @@ fn mmap_file_readonly(path: &Path, rt: &mut Runtime) -> Result<Mmap> {
     }
 }
 
-/// Newline-split `data` into owned lines (same boundaries as the slurp loop; `\r` before `\n` trimmed).
+/// Split mmap/stdin slurp bytes into records using current **`RS`** (paragraph, regex, literal, or newline).
+fn mmap_split_into_owned_records(rt: &mut Runtime, data: &[u8]) -> Result<Vec<String>> {
+    rt.ensure_rs_regex_bytes()?;
+    let rs = rt.rs_string();
+    let re_owned = rt.rs_regex_bytes.clone();
+    let chunks = crate::record_io::split_input_into_records(data, &rs, re_owned.as_ref());
+    Ok(chunks
+        .into_iter()
+        .map(|c| String::from_utf8_lossy(c).into_owned())
+        .collect())
+}
+
+/// Newline-split `data` into owned lines (tests and stdin parallel chunking; RS=`\\n` only).
+#[cfg_attr(not(test), allow(dead_code))]
 fn split_bytes_into_owned_lines(data: &[u8]) -> Vec<String> {
     let mut lines = Vec::new();
     let mut pos = 0usize;
@@ -582,7 +612,7 @@ fn process_file_parallel(
 ) -> Result<usize> {
     let lines = if let Some(p) = path {
         let mmap = mmap_file_readonly(p, rt)?;
-        split_bytes_into_owned_lines(mmap.as_ref())
+        mmap_split_into_owned_records(rt, mmap.as_ref())?
     } else {
         read_all_lines(std::io::stdin())?
     };
@@ -619,6 +649,7 @@ fn process_file_parallel(
         posix,
         traditional,
         jit_enabled,
+        rt.gettext_catalogs.clone(),
     )?;
 
     let mut stdout = io::stdout().lock();

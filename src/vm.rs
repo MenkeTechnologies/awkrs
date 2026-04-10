@@ -3570,11 +3570,18 @@ pub(crate) fn exec_builtin_dispatch(
             }
             let domain = args[0].as_str();
             let dirname = args[1].as_str();
-            ctx.rt.gettext_dir = dirname.to_string();
+            ctx.rt.gettext_dir = dirname.clone();
             ctx.rt
                 .vars
-                .insert("TEXTDOMAIN".into(), Value::Str(domain.to_string()));
-            Value::Str(dirname.to_string())
+                .insert("TEXTDOMAIN".into(), Value::Str(domain.clone()));
+            if let Some(cat) =
+                crate::gettext_util::try_load_gettext_catalog(&domain, &dirname)
+            {
+                ctx.rt
+                    .gettext_catalogs
+                    .insert(domain, cat);
+            }
+            Value::Str(dirname)
         }
         "dcgettext" => {
             if argc != 3 {
@@ -3583,10 +3590,13 @@ pub(crate) fn exec_builtin_dispatch(
                 ));
             }
             let msgid = args[0].as_str();
-            let _domain = args[1].as_str();
+            let domain = args[1].as_str();
             let _cat = args[2].as_number() as i32;
-            let _ = (_domain, _cat);
-            Value::Str(msgid.to_string())
+            if let Some(cat) = ctx.rt.gettext_catalogs.get(&domain) {
+                Value::Str(cat.gettext(msgid.as_str()).to_string())
+            } else {
+                Value::Str(msgid)
+            }
         }
         "dcngettext" => {
             if argc != 5 {
@@ -3597,8 +3607,13 @@ pub(crate) fn exec_builtin_dispatch(
             let s1 = args[0].as_str();
             let s2 = args[1].as_str();
             let n = args[2].as_number();
-            let _ = (args[3].as_str(), args[4].as_number() as i32);
-            Value::Str((if n == 1.0 { s1 } else { s2 }).to_string())
+            let domain = args[3].as_str();
+            let _ = args[4].as_number() as i32;
+            if let Some(cat) = ctx.rt.gettext_catalogs.get(&domain) {
+                Value::Str(cat.ngettext(s1.as_str(), s2.as_str(), n as u64).to_string())
+            } else {
+                Value::Str((if n == 1.0 { s1 } else { s2 }).to_string())
+            }
         }
         _ => return Err(Error::Runtime(format!("unknown function `{name}`"))),
     };
