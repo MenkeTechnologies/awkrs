@@ -4,6 +4,7 @@ mod ast;
 mod builtins;
 mod bytecode;
 mod cli;
+mod cli_effects;
 mod compiler;
 mod cyber_help;
 mod error;
@@ -53,6 +54,7 @@ use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
 
 /// Run the interpreter. `bin_name` is used for diagnostics and help (e.g. `"awkrs"` or `"ars"`).
 pub fn run(bin_name: &str) -> Result<()> {
@@ -85,20 +87,55 @@ pub fn run(bin_name: &str) -> Result<()> {
         );
         return Ok(());
     }
-    if args.dump_variables.is_some() {
-        eprintln!("{bin_name}: warning: --dump-variables is not fully implemented");
-    }
     let threads = args.threads.unwrap_or(1).max(1);
+    let profile_start = args.profile.is_some().then(Instant::now);
+
+    crate::runtime::set_numeric_parse_mode(args.non_decimal_data);
 
     let (program_text, files) = resolve_program_and_files(&args)?;
     let prog = parse_program(&program_text)?;
     let parallel_ok = parallel::record_rules_parallel_safe(&prog);
 
+    cli_effects::emit_lint_warnings(
+        bin_name,
+        &prog,
+        args.lint.as_deref(),
+        args.lint_old,
+    );
+
+    if let Some(ref p) = args.pretty_print {
+        let s = cli_effects::pretty_print_ast(&prog);
+        if p.is_empty() || p == "-" {
+            print!("{s}");
+        } else {
+            std::fs::write(p, s).map_err(Error::Io)?;
+        }
+        return Ok(());
+    }
+    if args.gen_pot {
+        print!("{}", cli_effects::gen_pot(&prog));
+        return Ok(());
+    }
+
     // Compile once; `Arc` is shared with parallel workers (cheap refcount) instead of cloning [`CompiledProgram`].
     let cp: Arc<CompiledProgram> = Arc::new(Compiler::compile_program(&prog));
 
+    if let Some(ref p) = args.debug {
+        let mut w: Box<dyn Write> = if p.is_empty() || p == "-" {
+            Box::new(std::io::stderr())
+        } else {
+            Box::new(std::fs::File::create(p).map_err(Error::Io)?)
+        };
+        cli_effects::write_debug_listing(&prog, &mut *w, bin_name)?;
+    }
+
     let mut rt = Runtime::new();
     rt.bignum = args.bignum;
+    rt.sandbox = args.sandbox;
+    rt.characters_as_bytes = args.characters_as_bytes;
+    rt.posix = args.posix;
+    rt.traditional = args.traditional;
+    rt.jit_enabled = !args.no_optimize;
     if args.use_lc_numeric {
         locale_numeric::set_locale_numeric_from_env();
         rt.numeric_decimal = locale_numeric::decimal_point_from_locale();
@@ -116,14 +153,24 @@ pub fn run(bin_name: &str) -> Result<()> {
         rt.vars
             .insert("FPAT".into(), Value::Str("[^[:space:]]+".into()));
     }
+    if args.lint.is_some() {
+        rt.vars.insert("LINT".into(), Value::Num(1.0));
+    }
 
     rt.slots = cp.init_slots(&rt.vars);
+
+    let worker_sandbox = rt.sandbox;
+    let worker_characters_as_bytes = rt.characters_as_bytes;
+    let worker_posix = rt.posix;
+    let worker_traditional = rt.traditional;
+    let worker_jit_enabled = rt.jit_enabled;
 
     vm_run_begin(cp.as_ref(), &mut rt)?;
     flush_print_buf(&mut rt.print_buf)?;
     if rt.exit_pending {
         vm_run_end(cp.as_ref(), &mut rt)?;
         flush_print_buf(&mut rt.print_buf)?;
+        finalize_cli_outputs(&args, bin_name, &rt, cp.as_ref(), profile_start)?;
         std::process::exit(rt.exit_code);
     }
 
@@ -153,10 +200,22 @@ pub fn run(bin_name: &str) -> Result<()> {
         if rt.exit_pending {
             vm_run_endfile(cp.as_ref(), &mut rt)?;
             vm_run_end(cp.as_ref(), &mut rt)?;
+            finalize_cli_outputs(&args, bin_name, &rt, cp.as_ref(), profile_start)?;
             std::process::exit(rt.exit_code);
         }
         if stdin_parallel {
-            process_stdin_parallel(&cp, &mut rt, threads, chunk_lines)?;
+            process_stdin_parallel(
+                &cp,
+                &mut rt,
+                threads,
+                chunk_lines,
+                args.non_decimal_data,
+                worker_sandbox,
+                worker_characters_as_bytes,
+                worker_posix,
+                worker_traditional,
+                worker_jit_enabled,
+            )?;
         } else {
             process_file(None, cp.as_ref(), &mut range_state, &mut rt)?;
         }
@@ -171,10 +230,24 @@ pub fn run(bin_name: &str) -> Result<()> {
             if rt.exit_pending {
                 vm_run_endfile(cp.as_ref(), &mut rt)?;
                 vm_run_end(cp.as_ref(), &mut rt)?;
+                finalize_cli_outputs(&args, bin_name, &rt, cp.as_ref(), profile_start)?;
                 std::process::exit(rt.exit_code);
             }
             let n = if use_parallel_files {
-                process_file_parallel(Some(p.as_path()), &prog, &cp, &mut rt, threads, nr_global)?
+                process_file_parallel(
+                    Some(p.as_path()),
+                    &prog,
+                    &cp,
+                    &mut rt,
+                    threads,
+                    nr_global,
+                    args.non_decimal_data,
+                    worker_sandbox,
+                    worker_characters_as_bytes,
+                    worker_posix,
+                    worker_traditional,
+                    worker_jit_enabled,
+                )?
             } else {
                 process_file(Some(p.as_path()), cp.as_ref(), &mut range_state, &mut rt)?
             };
@@ -189,8 +262,31 @@ pub fn run(bin_name: &str) -> Result<()> {
     flush_print_buf(&mut rt.print_buf)?;
     vm_run_end(cp.as_ref(), &mut rt)?;
     flush_print_buf(&mut rt.print_buf)?;
+    finalize_cli_outputs(&args, bin_name, &rt, cp.as_ref(), profile_start)?;
     if rt.exit_pending {
         std::process::exit(rt.exit_code);
+    }
+    Ok(())
+}
+
+fn finalize_cli_outputs(
+    args: &Args,
+    bin_name: &str,
+    rt: &Runtime,
+    cp: &CompiledProgram,
+    profile_start: Option<Instant>,
+) -> Result<()> {
+    if let Some(ref path) = args.dump_variables {
+        let mut w: Box<dyn Write> = if path.is_empty() || path == "-" {
+            Box::new(std::io::stdout())
+        } else {
+            Box::new(std::fs::File::create(path).map_err(Error::Io)?)
+        };
+        writeln!(w, "# {bin_name} --dump-variables").map_err(Error::Io)?;
+        cli_effects::dump_variables(rt, cp, &mut *w)?;
+    }
+    if let (Some(ref path), Some(t0)) = (&args.profile, profile_start) {
+        cli_effects::write_profile_summary(path, t0.elapsed(), Some(rt.nr.max(0.0) as usize))?;
     }
     Ok(())
 }
@@ -224,6 +320,12 @@ fn process_lines_parallel_chunk(
     numeric_dec: char,
     csv_mode: bool,
     bignum: bool,
+    non_decimal_data: bool,
+    sandbox: bool,
+    characters_as_bytes: bool,
+    posix: bool,
+    traditional: bool,
+    jit_enabled: bool,
 ) -> Result<Vec<(usize, ParallelRecordOut)>> {
     let shared_cp = Arc::clone(cp);
     let results: Vec<std::result::Result<(usize, ParallelRecordOut), Error>> = pool.install(|| {
@@ -233,6 +335,7 @@ fn process_lines_parallel_chunk(
             .map(|(j, line)| {
                 let i = line_base + j;
                 let cp = Arc::clone(&shared_cp);
+                crate::runtime::set_numeric_parse_mode(non_decimal_data);
                 let mut local = Runtime::for_parallel_worker(
                     Arc::clone(&shared_globals),
                     fname.clone(),
@@ -240,6 +343,11 @@ fn process_lines_parallel_chunk(
                     numeric_dec,
                     csv_mode,
                     bignum,
+                    sandbox,
+                    characters_as_bytes,
+                    posix,
+                    traditional,
+                    jit_enabled,
                 );
                 local.slots = (*shared_slots).clone();
                 local.nr = nr_offset + i as f64 + 1.0;
@@ -330,6 +438,12 @@ fn process_stdin_parallel(
     rt: &mut Runtime,
     threads: usize,
     chunk_lines: usize,
+    non_decimal_data: bool,
+    sandbox: bool,
+    characters_as_bytes: bool,
+    posix: bool,
+    traditional: bool,
+    jit_enabled: bool,
 ) -> Result<()> {
     let pool = parallel_pool(threads)?;
     let shared_globals = Arc::new(rt.vars.clone());
@@ -371,6 +485,12 @@ fn process_stdin_parallel(
             numeric_dec,
             csv_mode,
             rt.bignum,
+            non_decimal_data,
+            sandbox,
+            characters_as_bytes,
+            posix,
+            traditional,
+            jit_enabled,
         )?;
 
         let n = outs.len();
@@ -453,6 +573,12 @@ fn process_file_parallel(
     rt: &mut Runtime,
     threads: usize,
     nr_offset: f64,
+    non_decimal_data: bool,
+    sandbox: bool,
+    characters_as_bytes: bool,
+    posix: bool,
+    traditional: bool,
+    jit_enabled: bool,
 ) -> Result<usize> {
     let lines = if let Some(p) = path {
         let mmap = mmap_file_readonly(p, rt)?;
@@ -487,6 +613,12 @@ fn process_file_parallel(
         numeric_dec,
         csv_mode,
         rt.bignum,
+        non_decimal_data,
+        sandbox,
+        characters_as_bytes,
+        posix,
+        traditional,
+        jit_enabled,
     )?;
 
     let mut stdout = io::stdout().lock();
@@ -1342,6 +1474,9 @@ fn resolve_program_and_files(args: &Args) -> Result<(String, Vec<PathBuf>)> {
     for p in &args.include {
         prog.push_str(&std::fs::read_to_string(p).map_err(|e| Error::ProgramFile(p.clone(), e))?);
     }
+    for lib in &args.load {
+        prog.push_str(&load_awk_library_source(lib)?);
+    }
     for p in &args.progfiles {
         prog.push_str(&std::fs::read_to_string(p).map_err(|e| Error::ProgramFile(p.clone(), e))?);
     }
@@ -1367,6 +1502,25 @@ fn resolve_program_and_files(args: &Args) -> Result<(String, Vec<PathBuf>)> {
     }
     let files: Vec<PathBuf> = args.rest.iter().map(PathBuf::from).collect();
     Ok((prog, files))
+}
+
+/// Resolve gawk-style `-l` / `--load` names against `AWKPATH` (default `.`).
+fn load_awk_library_source(name: &str) -> Result<String> {
+    let candidates = [format!("{name}.awk"), name.to_string()];
+    let awkpath = std::env::var("AWKPATH").unwrap_or_else(|_| ".".to_string());
+    for dir in awkpath.split(':').filter(|s| !s.is_empty()) {
+        for c in &candidates {
+            let p = Path::new(dir).join(c);
+            if p.is_file() {
+                return std::fs::read_to_string(&p).map_err(|e| {
+                    Error::Runtime(format!("-l {name}: read {}: {e}", p.display()))
+                });
+            }
+        }
+    }
+    Err(Error::Runtime(format!(
+        "-l {name}: not found under AWKPATH (tried `{name}.awk` and `{name}` per directory)"
+    )))
 }
 
 fn apply_assigns(args: &Args, rt: &mut Runtime) -> Result<()> {

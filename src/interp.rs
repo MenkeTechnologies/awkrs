@@ -944,12 +944,25 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
     match name {
         "length" => {
             if args.is_empty() {
-                Ok(Value::Num(ctx.rt.record.chars().count() as f64))
+                let n = if ctx.rt.characters_as_bytes {
+                    ctx.rt.record.len()
+                } else {
+                    ctx.rt.record.chars().count()
+                };
+                Ok(Value::Num(n as f64))
             } else {
                 let v = eval_expr(&args[0], ctx)?;
                 match &v {
                     Value::Array(a) => Ok(Value::Num(a.len() as f64)),
-                    _ => Ok(Value::Num(v.as_str().chars().count() as f64)),
+                    _ => {
+                        let s = v.as_str();
+                        let n = if ctx.rt.characters_as_bytes {
+                            s.len()
+                        } else {
+                            s.chars().count()
+                        };
+                        Ok(Value::Num(n as f64))
+                    }
                 }
             }
         }
@@ -983,7 +996,17 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
                 return Ok(Value::Str(String::new()));
             }
             let start0 = start - 1;
-            let slice: String = s.chars().skip(start0).take(len).collect();
+            let slice = if ctx.rt.characters_as_bytes {
+                s.as_bytes()
+                    .get(start0..)
+                    .map(|rest| {
+                        let take = len.min(rest.len());
+                        String::from_utf8_lossy(&rest[..take]).into_owned()
+                    })
+                    .unwrap_or_default()
+            } else {
+                s.chars().skip(start0).take(len).collect()
+            };
             Ok(Value::Str(slice))
         }
         "gsub" => {

@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::cell::Cell;
 use std::collections::HashMap;
 
 /// Fast hash map for awk variables and arrays. Uses FxHash (no DoS resistance,
@@ -13,6 +14,21 @@ use std::sync::{Arc, Mutex};
 
 use crate::error::{Error, Result};
 use rug::Float;
+
+thread_local! {
+    static NON_DECIMAL_PARSE: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Set how string→number coercion parses literals (gawk `--non-decimal-data` / `-n`).
+pub fn set_numeric_parse_mode(enabled: bool) {
+    NON_DECIMAL_PARSE.with(|c| c.set(enabled));
+}
+
+/// Whether [`parse_number`] uses hex/octal rules like gawk `strtonum`.
+#[inline]
+pub fn numeric_parse_mode() -> bool {
+    NON_DECIMAL_PARSE.with(|c| c.get())
+}
 use memchr::memmem;
 use regex::bytes::Regex as BytesRegex;
 use regex::{Regex, RegexBuilder};
@@ -238,6 +254,25 @@ fn format_number(n: f64) -> String {
     }
 }
 
+/// gawk `strtonum`-style parse (hex `0x…`, octal `0…`, else float).
+#[inline]
+fn parse_number_strtonum(s: &str) -> f64 {
+    let t = s.trim();
+    if t.is_empty() {
+        return 0.0;
+    }
+    if t.starts_with("0x") || t.starts_with("0X") {
+        return u64::from_str_radix(&t[2..], 16)
+            .map(|v| v as f64)
+            .unwrap_or(0.0);
+    }
+    if t.len() > 1 && t.starts_with('0') && !t.contains('.') && !t.contains('e') && !t.contains('E')
+    {
+        return i64::from_str_radix(t, 8).map(|v| v as f64).unwrap_or(0.0);
+    }
+    t.parse::<f64>().unwrap_or(0.0)
+}
+
 /// Parse a string to f64, returning 0.0 for non-numeric. Handles leading/trailing whitespace.
 #[inline]
 fn parse_number(s: &str) -> f64 {
@@ -247,6 +282,9 @@ fn parse_number(s: &str) -> f64 {
     let s = s.trim();
     if s.is_empty() {
         return 0.0;
+    }
+    if numeric_parse_mode() {
+        return parse_number_strtonum(s);
     }
     // Hot path: decimal integers (e.g. `seq`, many data columns) without float parsing.
     if let Some(n) = parse_ascii_integer(s) {
@@ -518,6 +556,16 @@ pub struct Runtime {
     /// gawk: `RS` longer than one character is a regex delimiter (cached here).
     pub rs_pattern_for_regex: String,
     pub rs_regex_bytes: Option<BytesRegex>,
+    /// gawk `--sandbox` / `-S`: disallow file redirects, pipes, coprocesses, inet, `system()`.
+    pub sandbox: bool,
+    /// gawk `-b` / `--characters-as-bytes`: `length` / `substr` use byte units.
+    pub characters_as_bytes: bool,
+    /// gawk `--posix` / `-P` (reserved; stricter POSIX checks may be added incrementally).
+    pub posix: bool,
+    /// gawk `--traditional` / `-c` (reserved; traditional awk rules may be added incrementally).
+    pub traditional: bool,
+    /// Bytecode JIT (`-s` / `--no-optimize` disables when set).
+    pub jit_enabled: bool,
 }
 
 impl Runtime {
@@ -591,6 +639,11 @@ impl Runtime {
             csv_mode: false,
             rs_pattern_for_regex: String::new(),
             rs_regex_bytes: None,
+            sandbox: false,
+            characters_as_bytes: false,
+            posix: false,
+            traditional: false,
+            jit_enabled: true,
         }
     }
 
@@ -629,6 +682,11 @@ impl Runtime {
         numeric_decimal: char,
         csv_mode: bool,
         bignum: bool,
+        sandbox: bool,
+        characters_as_bytes: bool,
+        posix: bool,
+        traditional: bool,
+        jit_enabled: bool,
     ) -> Self {
         Self {
             vars: AwkMap::default(),
@@ -668,7 +726,22 @@ impl Runtime {
             csv_mode,
             rs_pattern_for_regex: String::new(),
             rs_regex_bytes: None,
+            sandbox,
+            characters_as_bytes,
+            posix,
+            traditional,
+            jit_enabled,
         }
+    }
+
+    /// Refused when [`Self::sandbox`] is set (gawk-style `-S`).
+    pub fn require_unsandboxed_io(&self) -> Result<()> {
+        if self.sandbox {
+            return Err(Error::Runtime(
+                "sandbox: file I/O, pipes, coprocesses, inet, and system() are disabled".into(),
+            ));
+        }
+        Ok(())
     }
 
     /// Ensure a regex is compiled and cached. Call before `regex_ref()`.
@@ -758,6 +831,7 @@ impl Runtime {
 
     /// `print … | "cmd"` / `printf … | "cmd"` — append bytes to the coprocess stdin (spawn on first use).
     pub fn write_pipe_line(&mut self, cmd: &str, data: &str) -> Result<()> {
+        self.require_unsandboxed_io()?;
         if self.coproc_handles.contains_key(cmd) {
             return Err(Error::Runtime(format!(
                 "one-way pipe `|` conflicts with two-way `|&` for `{cmd}`"
@@ -784,6 +858,7 @@ impl Runtime {
     }
 
     fn ensure_coproc(&mut self, cmd: &str) -> Result<()> {
+        self.require_unsandboxed_io()?;
         if self.coproc_handles.contains_key(cmd) {
             return Ok(());
         }
@@ -841,6 +916,7 @@ impl Runtime {
     /// Write one `print` line (including `ORS`) to `path`. First open uses truncate (`>`) or
     /// append (`>>`); later writes reuse the same handle until `close`.
     pub fn write_output_line(&mut self, path: &str, data: &str, append: bool) -> Result<()> {
+        self.require_unsandboxed_io()?;
         if path.starts_with("/inet/tcp/") {
             let _ = append;
             self.ensure_inet_tcp_pair(path)?;
@@ -968,6 +1044,7 @@ impl Runtime {
 
     /// `getline var < filename` — one line from a kept-open file handle.
     pub fn read_line_file(&mut self, path: &str) -> Result<Option<String>> {
+        self.require_unsandboxed_io()?;
         if path.starts_with("/inet/") {
             if path.starts_with("/inet/tcp/") {
                 self.ensure_inet_tcp_pair(path)?;
@@ -1624,6 +1701,11 @@ impl Clone for Runtime {
             csv_mode: self.csv_mode,
             rs_pattern_for_regex: self.rs_pattern_for_regex.clone(),
             rs_regex_bytes: self.rs_regex_bytes.clone(),
+            sandbox: self.sandbox,
+            characters_as_bytes: self.characters_as_bytes,
+            posix: self.posix,
+            traditional: self.traditional,
+            jit_enabled: self.jit_enabled,
         }
     }
 }

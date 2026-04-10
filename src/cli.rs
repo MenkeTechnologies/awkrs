@@ -2,11 +2,12 @@
 //!
 //! Extension flags are accepted for script compatibility; some only affect diagnostics.
 //!
-//! **Stub / no-op (parsed only):** `-D`/`--debug`, `-p`/`--profile`, `-o`/`--pretty-print`,
-//! `-g`/`--gen-pot`, `-L`/`--lint`, `-t`/`--lint-old`, `-S`/`--sandbox`, `-l`/`--load`,
-//! `-b`/`--characters-as-bytes`, `-c`/`--traditional`, `-P`/`--posix`, `-n`/`--non-decimal-data`,
-//! `-O`/`--optimize`, `-s`/`--no-optimize` — no runtime effect. `-d`/`--dump-variables` is stubbed
-//! but emits a one-line warning to stderr when present (see `awkrs::run`).
+//! **Implemented behaviors (see `awkrs::run` and `cli_effects`):**
+//! `-d`/`--dump-variables` (dump after run), `-D`/`--debug` (rule/function listing to file or stderr),
+//! `-p`/`--profile` (wall-clock summary), `-o`/`--pretty-print`, `-g`/`--gen-pot`, `-L`/`--lint`,
+//! `-t`/`--lint-old`, `-S`/`--sandbox`, `-l`/`--load` (AWKPATH), `-b`/`--characters-as-bytes`,
+//! `-c`/`--traditional`, `-P`/`--posix` (reserved flags on [`crate::runtime::Runtime`]), `-n`/`--non-decimal-data`,
+//! `-s`/`--no-optimize` (disables JIT). `-O`/`--optimize` is accepted alongside gawk; JIT is on unless `-s` is set.
 
 use clap::{ArgAction, Parser, ValueHint};
 use std::path::PathBuf;
@@ -48,7 +49,7 @@ pub struct Args {
     #[arg(short = 'C', long = "copyright")]
     pub copyright: bool,
 
-    /// Dump variable state (stub: stderr warning only; no dump output).
+    /// Dump variable state after execution (stdout, `-`, or a file path).
     #[arg(
         short = 'd',
         long = "dump-variables",
@@ -252,7 +253,7 @@ mod tests {
     }
 
     #[test]
-    fn stub_gawk_flags_parse_without_effect_fields() {
+    fn gawk_compat_flags_parse_to_expected_fields() {
         let a = Args::try_parse_from([
             "awkrs",
             "-d",

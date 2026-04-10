@@ -1936,6 +1936,9 @@ fn try_jit_dispatch(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<Option<VmSigna
     if ctx.rt.bignum {
         return Ok(None);
     }
+    if !ctx.rt.jit_enabled {
+        return Ok(None);
+    }
     if crate::jit::jit_disabled_by_env() {
         return Ok(None);
     }
@@ -3321,11 +3324,24 @@ pub(crate) fn exec_builtin_dispatch(
     let result = match name {
         "length" => {
             if args.is_empty() {
-                Value::Num(ctx.rt.record.chars().count() as f64)
+                let n = if ctx.rt.characters_as_bytes {
+                    ctx.rt.record.len()
+                } else {
+                    ctx.rt.record.chars().count()
+                };
+                Value::Num(n as f64)
             } else {
                 match &args[0] {
                     Value::Array(a) => Value::Num(a.len() as f64),
-                    v => Value::Num(v.as_str().chars().count() as f64),
+                    v => {
+                        let s = v.as_str();
+                        let n = if ctx.rt.characters_as_bytes {
+                            s.len()
+                        } else {
+                            s.chars().count()
+                        };
+                        Value::Num(n as f64)
+                    }
                 }
             }
         }
@@ -3348,6 +3364,17 @@ pub(crate) fn exec_builtin_dispatch(
                 .unwrap_or(usize::MAX);
             if start < 1 {
                 Value::Str(String::new())
+            } else if ctx.rt.characters_as_bytes {
+                let b = s.as_bytes();
+                let s0 = start - 1;
+                let slice = b
+                    .get(s0..)
+                    .map(|rest| {
+                        let take = len.min(rest.len());
+                        String::from_utf8_lossy(&rest[..take]).into_owned()
+                    })
+                    .unwrap_or_default();
+                Value::Str(slice)
             } else {
                 let s0 = start - 1;
                 let slice: String = s.chars().skip(s0).take(len).collect();
@@ -3407,6 +3434,11 @@ pub(crate) fn exec_builtin_dispatch(
             Value::Num(ctx.rt.srand(n))
         }
         "system" => {
+            if ctx.rt.sandbox {
+                return Err(Error::Runtime(
+                    "sandbox: system() is disabled (-S/--sandbox)".into(),
+                ));
+            }
             use std::process::Command;
             let cmd = args[0].as_str();
             let st = Command::new("sh")

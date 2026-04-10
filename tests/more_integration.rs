@@ -1067,6 +1067,17 @@ fn strtonum_empty_string_is_zero() {
 }
 
 #[test]
+fn non_decimal_data_flag_coerces_hex_strings_in_numeric_context() {
+    let (c, o, _) = run_awkrs_stdin_args(
+        ["-n"],
+        r#"BEGIN { v = "0x10"; print v + 0 }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "16\n");
+}
+
+#[test]
 fn dollar_field_dynamic_expression() {
     let (c, o, _) = run_awkrs_stdin("{ print $(1 + 1) }", "a b c\n");
     assert_eq!(c, 0);
