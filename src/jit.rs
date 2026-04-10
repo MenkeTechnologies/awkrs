@@ -2969,7 +2969,9 @@ pub fn try_compile_with_options(
                     }
                 }
                 Op::GetNR => {
-                    let arg = builder.ins().iconst(types::I32, JIT_FIELD_SENTINEL_NR as i64);
+                    let arg = builder
+                        .ins()
+                        .iconst(types::I32, JIT_FIELD_SENTINEL_NR as i64);
                     let result = emit_field_call(
                         &mut builder,
                         field_sig_ir,
@@ -2981,7 +2983,9 @@ pub fn try_compile_with_options(
                     stack.push(result);
                 }
                 Op::GetFNR => {
-                    let arg = builder.ins().iconst(types::I32, JIT_FIELD_SENTINEL_FNR as i64);
+                    let arg = builder
+                        .ins()
+                        .iconst(types::I32, JIT_FIELD_SENTINEL_FNR as i64);
                     let result = emit_field_call(
                         &mut builder,
                         field_sig_ir,
@@ -2993,7 +2997,9 @@ pub fn try_compile_with_options(
                     stack.push(result);
                 }
                 Op::GetNF => {
-                    let arg = builder.ins().iconst(types::I32, JIT_FIELD_SENTINEL_NF as i64);
+                    let arg = builder
+                        .ins()
+                        .iconst(types::I32, JIT_FIELD_SENTINEL_NF as i64);
                     let result = emit_field_call(
                         &mut builder,
                         field_sig_ir,

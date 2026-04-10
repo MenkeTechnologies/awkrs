@@ -982,12 +982,7 @@ impl<'a> Parser<'a> {
         self.parse_assign_rest(lhs, regex_mode, re_pat)
     }
 
-    fn parse_assign_rest(
-        &mut self,
-        lhs: Expr,
-        _regex_mode: bool,
-        re_pat: bool,
-    ) -> Result<Expr> {
+    fn parse_assign_rest(&mut self, lhs: Expr, _regex_mode: bool, re_pat: bool) -> Result<Expr> {
         let op_tok = self.cur.clone();
         match op_tok {
             Token::Assign => {

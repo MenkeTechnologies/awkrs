@@ -1435,8 +1435,7 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
                 let round = ctx.rt.mpfr_round();
                 let f = value_to_float(&v, prec, round);
                 if matches!(f.cmp0(), Some(Ordering::Less)) {
-                    ctx.rt
-                        .warn_builtin_negative_arg("sqrt", f.to_f64());
+                    ctx.rt.warn_builtin_negative_arg("sqrt", f.to_f64());
                 }
                 Ok(Value::Mpfr(Float::with_val_round(prec, f.sqrt(), round).0))
             } else {

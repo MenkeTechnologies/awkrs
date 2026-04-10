@@ -130,10 +130,7 @@ fn print_concat_array_scalar_is_fatal() {
 
 #[test]
 fn record_pattern_regex_may_start_compound_expression() {
-    let (c, o, _) = run_awkrs_stdin(
-        r#"/foo/ && NR > 1 { print $0 }"#,
-        "foo\nfoo\nbar\n",
-    );
+    let (c, o, _) = run_awkrs_stdin(r#"/foo/ && NR > 1 { print $0 }"#, "foo\nfoo\nbar\n");
     assert_eq!(c, 0);
     assert_eq!(o, "foo\n");
 }

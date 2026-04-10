@@ -313,13 +313,21 @@ fn format_g_decimal_significant_f64(mut n: f64, p: usize) -> String {
     let neg = n.is_sign_negative();
     n = n.abs();
     if n == 0.0 {
-        return if neg { "-0".to_string() } else { "0".to_string() };
+        return if neg {
+            "-0".to_string()
+        } else {
+            "0".to_string()
+        };
     }
     let e = n.log10().floor() as i32;
     let sig_scale = 10f64.powi(p as i32 - 1 - e);
     let r = (n * sig_scale).round() / sig_scale;
     if r == 0.0 {
-        return if neg { "-0".to_string() } else { "0".to_string() };
+        return if neg {
+            "-0".to_string()
+        } else {
+            "0".to_string()
+        };
     }
     let e2 = r.log10().floor() as i32;
     let frac = (p as i32 - e2 - 1).max(0) as usize;

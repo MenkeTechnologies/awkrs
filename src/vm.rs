@@ -2212,9 +2212,7 @@ extern "C" fn jit_val_dispatch(vmctx: *mut c_void, op: u32, a1: u32, a2: f64, a3
                     } else {
                         let key = mem::take(&mut state.keys[state.index]);
                         state.index += 1;
-                        if let Err(e) =
-                            ctx.set_var_interned_jit_sync(var_idx, Value::Str(key))
-                        {
+                        if let Err(e) = ctx.set_var_interned_jit_sync(var_idx, Value::Str(key)) {
                             JIT_CHUNK_ERR.with(|ce| *ce.borrow_mut() = Some(e));
                             return 0.0;
                         }
@@ -2590,9 +2588,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             Op::TypeofField => {
                 let i = ctx.pop().as_number() as i32;
                 if i < 0 {
-                    return Err(Error::Runtime(
-                        "attempt to access field number -1".into(),
-                    ));
+                    return Err(Error::Runtime("attempt to access field number -1".into()));
                 }
                 let t = if ctx.rt.field_is_unassigned(i) {
                     "uninitialized"
@@ -2668,26 +2664,28 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 if ctx.rt.bignum {
                     let prec = ctx.rt.mpfr_prec_bits();
                     let round = ctx.rt.mpfr_round();
-                    let pushed = ctx.with_short_pool_name_mut(idx, |ctx, name| -> Result<Value> {
-                        let old = ctx.get_var(name);
-                        let old_f = value_to_float(&old, prec, round);
-                        let d = Float::with_val(prec, delta);
-                        let new_f = Float::with_val_round(prec, &old_f + &d, round).0;
-                        ctx.set_var(name, Value::Mpfr(new_f.clone()))?;
-                        Ok(match kind {
-                            IncDecOp::PreInc | IncDecOp::PreDec => Value::Mpfr(new_f),
-                            IncDecOp::PostInc | IncDecOp::PostDec => Value::Mpfr(old_f),
-                        })
-                    })?;
+                    let pushed =
+                        ctx.with_short_pool_name_mut(idx, |ctx, name| -> Result<Value> {
+                            let old = ctx.get_var(name);
+                            let old_f = value_to_float(&old, prec, round);
+                            let d = Float::with_val(prec, delta);
+                            let new_f = Float::with_val_round(prec, &old_f + &d, round).0;
+                            ctx.set_var(name, Value::Mpfr(new_f.clone()))?;
+                            Ok(match kind {
+                                IncDecOp::PreInc | IncDecOp::PreDec => Value::Mpfr(new_f),
+                                IncDecOp::PostInc | IncDecOp::PostDec => Value::Mpfr(old_f),
+                            })
+                        })?;
                     ctx.push(pushed);
                 } else {
-                    let (old_n, new_n) = ctx.with_short_pool_name_mut(idx, |ctx, name| -> Result<(f64, f64)> {
-                        let old = ctx.get_var(name);
-                        let old_n = old.as_number();
-                        let new_n = old_n + delta;
-                        ctx.set_var(name, Value::Num(new_n))?;
-                        Ok((old_n, new_n))
-                    })?;
+                    let (old_n, new_n) =
+                        ctx.with_short_pool_name_mut(idx, |ctx, name| -> Result<(f64, f64)> {
+                            let old = ctx.get_var(name);
+                            let old_n = old.as_number();
+                            let new_n = old_n + delta;
+                            ctx.set_var(name, Value::Num(new_n))?;
+                            Ok((old_n, new_n))
+                        })?;
                     ctx.push(Value::Num(incdec_push(kind, old_n, new_n)));
                 }
             }
@@ -4042,8 +4040,7 @@ pub(crate) fn exec_builtin_dispatch(
                 let round = ctx.rt.mpfr_round();
                 let f = value_to_float(&args[0], prec, round);
                 if matches!(f.cmp0(), Some(Ordering::Less)) {
-                    ctx.rt
-                        .warn_builtin_negative_arg("sqrt", f.to_f64());
+                    ctx.rt.warn_builtin_negative_arg("sqrt", f.to_f64());
                 }
                 Value::Mpfr(Float::with_val_round(prec, f.sqrt(), round).0)
             } else {
