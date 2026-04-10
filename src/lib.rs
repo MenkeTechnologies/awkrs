@@ -87,9 +87,6 @@ pub fn run(bin_name: &str) -> Result<()> {
     if args.dump_variables.is_some() {
         eprintln!("{bin_name}: warning: --dump-variables is not fully implemented");
     }
-    if args.debug.is_some() {
-        eprintln!("{bin_name}: warning: --debug is not fully implemented");
-    }
     let threads = args.threads.unwrap_or(1).max(1);
 
     let (program_text, files) = resolve_program_and_files(&args)?;

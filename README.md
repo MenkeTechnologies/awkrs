@@ -25,7 +25,7 @@
 
 ## [0x00] SYSTEM SCAN
 
-`awkrs` runs **pattern → action** programs over input records (lines by default), similar to POSIX `awk`, GNU `gawk`, and `mawk`. The CLI accepts a **union** of common options from those implementations so scripts can pass flags through; see `--help` for which options affect behavior.
+`awkrs` runs **pattern → action** programs over input records (lines by default), similar to POSIX `awk`, GNU `gawk`, and `mawk`. The CLI accepts a **union** of common options from those implementations so scripts can pass flags through; see `--help` for which options affect behavior. Many gawk-style switches (**`-D`**, **`-p`**, **`-o`**, **`-g`**, **`-L`**, **`-t`**, **`-S`**, **`-l`**, **`-b`**, **`-c`**, **`-P`**, **`-n`**, **`-O`** / **`-s`**) are parsed for compatibility but currently do nothing; **`-d`** / **`--dump-variables`** only prints a stderr warning that the feature is not implemented.
 
 **Positioning:** The implementation targets **POSIX awk** plus **practical gawk extensions** that show up in everyday scripts (e.g. `BEGINFILE` / `ENDFILE`, coprocess `|&`, CSV mode, many builtins). The **performance** goal is to beat typical `awk` / `mawk` / `gawk` on **supported** workloads (see benchmarks below)—**not** to claim parity with every dialect or extension.
 

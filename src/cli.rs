@@ -1,6 +1,12 @@
 //! Command-line surface compatible with POSIX awk, GNU gawk, and mawk-style `-W` options.
 //!
 //! Extension flags are accepted for script compatibility; some only affect diagnostics.
+//!
+//! **Stub / no-op (parsed only):** `-D`/`--debug`, `-p`/`--profile`, `-o`/`--pretty-print`,
+//! `-g`/`--gen-pot`, `-L`/`--lint`, `-t`/`--lint-old`, `-S`/`--sandbox`, `-l`/`--load`,
+//! `-b`/`--characters-as-bytes`, `-c`/`--traditional`, `-P`/`--posix`, `-n`/`--non-decimal-data`,
+//! `-O`/`--optimize`, `-s`/`--no-optimize` — no runtime effect. `-d`/`--dump-variables` is stubbed
+//! but emits a one-line warning to stderr when present (see `awkrs::run`).
 
 use clap::{ArgAction, Parser, ValueHint};
 use std::path::PathBuf;
@@ -42,10 +48,23 @@ pub struct Args {
     #[arg(short = 'C', long = "copyright")]
     pub copyright: bool,
 
-    #[arg(short = 'd', long = "dump-variables", value_name = "FILE")]
+    /// Dump variable state (stub: stderr warning only; no dump output).
+    #[arg(
+        short = 'd',
+        long = "dump-variables",
+        value_name = "FILE",
+        num_args = 0..=1,
+        default_missing_value = ""
+    )]
     pub dump_variables: Option<String>,
 
-    #[arg(short = 'D', long = "debug", value_name = "FILE")]
+    #[arg(
+        short = 'D',
+        long = "debug",
+        value_name = "FILE",
+        num_args = 0..=1,
+        default_missing_value = ""
+    )]
     pub debug: Option<String>,
 
     #[arg(short = 'E', long = "exec", value_name = "FILE", value_hint = ValueHint::FilePath)]
@@ -76,13 +95,25 @@ pub struct Args {
     #[arg(short = 'n', long = "non-decimal-data")]
     pub non_decimal_data: bool,
 
-    #[arg(short = 'o', long = "pretty-print", value_name = "FILE")]
+    #[arg(
+        short = 'o',
+        long = "pretty-print",
+        value_name = "FILE",
+        num_args = 0..=1,
+        default_missing_value = ""
+    )]
     pub pretty_print: Option<String>,
 
     #[arg(short = 'O', long = "optimize")]
     pub optimize: bool,
 
-    #[arg(short = 'p', long = "profile", value_name = "FILE")]
+    #[arg(
+        short = 'p',
+        long = "profile",
+        value_name = "FILE",
+        num_args = 0..=1,
+        default_missing_value = ""
+    )]
     pub profile: Option<String>,
 
     #[arg(short = 'P', long = "posix")]
@@ -218,5 +249,56 @@ mod tests {
             .unwrap();
         assert_eq!(a.threads, Some(2));
         assert_eq!(a.read_ahead, 16);
+    }
+
+    #[test]
+    fn stub_gawk_flags_parse_without_effect_fields() {
+        let a = Args::try_parse_from([
+            "awkrs",
+            "-d",
+            "-D",
+            "-p",
+            "-o",
+            "-g",
+            "-L",
+            "fatal",
+            "-t",
+            "-S",
+            "-l",
+            "foo",
+            "-b",
+            "-c",
+            "-P",
+            "-n",
+            "-O",
+            "-s",
+            "{print}",
+        ])
+        .unwrap();
+        assert_eq!(a.dump_variables.as_deref(), Some(""));
+        assert_eq!(a.debug.as_deref(), Some(""));
+        assert_eq!(a.profile.as_deref(), Some(""));
+        assert_eq!(a.pretty_print.as_deref(), Some(""));
+        assert!(a.gen_pot);
+        assert_eq!(a.lint.as_deref(), Some("fatal"));
+        assert!(a.lint_old);
+        assert!(a.sandbox);
+        assert_eq!(a.load, vec!["foo".to_string()]);
+        assert!(a.characters_as_bytes);
+        assert!(a.traditional);
+        assert!(a.posix);
+        assert!(a.non_decimal_data);
+        assert!(a.optimize);
+        assert!(a.no_optimize);
+    }
+
+    #[test]
+    fn dump_debug_pretty_profile_accept_optional_file() {
+        let a = Args::try_parse_from(["awkrs", "-d", "/tmp/v", "-D", "/tmp/d", "-o", "/tmp/o", "-p", "/tmp/p", "1"])
+            .unwrap();
+        assert_eq!(a.dump_variables.as_deref(), Some("/tmp/v"));
+        assert_eq!(a.debug.as_deref(), Some("/tmp/d"));
+        assert_eq!(a.pretty_print.as_deref(), Some("/tmp/o"));
+        assert_eq!(a.profile.as_deref(), Some("/tmp/p"));
     }
 }
