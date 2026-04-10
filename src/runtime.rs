@@ -19,7 +19,7 @@ use regex::Regex;
 /// avoids repeated `Vec` reallocations without a hard upper bound on output size.
 const DEFAULT_PRINT_BUF_CAPACITY: usize = 512 * 1024;
 
-type SharedInputReader = Arc<Mutex<BufReader<Box<dyn Read + Send>>>>;
+pub(crate) type SharedInputReader = Arc<Mutex<BufReader<Box<dyn Read + Send>>>>;
 
 /// Open two-way pipe to `sh -c` (gawk-style `|&` / `<&`).
 pub struct CoprocHandle {
@@ -402,6 +402,24 @@ impl Runtime {
         vars.insert("OFS".into(), Value::Str(" ".into()));
         vars.insert("ORS".into(), Value::Str("\n".into()));
         vars.insert("OFMT".into(), Value::Str("%.6g".into()));
+        // POSIX: number→string coercion (distinct from OFMT, which is for print).
+        vars.insert("CONVFMT".into(), Value::Str("%.6g".into()));
+        // POSIX record separator (default newline).
+        vars.insert("RS".into(), Value::Str("\n".into()));
+        // Text of the input record separator for the last record read (gawk).
+        vars.insert("RT".into(), Value::Str(String::new()));
+        vars.insert("ERRNO".into(), Value::Str(String::new()));
+        vars.insert("ARGIND".into(), Value::Num(0.0));
+        // Process environment (gawk associative array).
+        let mut environ = AwkMap::default();
+        for (k, v) in std::env::vars() {
+            environ.insert(k, Value::Str(v));
+        }
+        vars.insert("ENVIRON".into(), Value::Array(environ));
+        // Stub gawk special arrays (full semantics not implemented).
+        vars.insert("PROCINFO".into(), Value::Array(AwkMap::default()));
+        vars.insert("SYMTAB".into(), Value::Array(AwkMap::default()));
+        vars.insert("FUNCTAB".into(), Value::Array(AwkMap::default()));
         // POSIX octal \034 — multidimensional array subscript separator
         vars.insert("SUBSEP".into(), Value::Str("\x1c".into()));
         // Empty FPAT means use FS for field splitting (gawk).
@@ -680,22 +698,62 @@ impl Runtime {
         self.input_reader = None;
     }
 
-    /// Next line from the primary input stream (used by `getline` with no redirection).
+    /// Current [`RS`](https://www.gnu.org/software/gawk/manual/html_node/Built_002din-Variables.html) value.
+    pub fn rs_string(&self) -> String {
+        match self.get_global_var("RS") {
+            Some(Value::Str(s)) => s.clone(),
+            Some(v) => v.as_str(),
+            None => "\n".to_string(),
+        }
+    }
+
+    /// POSIX / gawk: format a number using **`CONVFMT`** (string coercion).
+    pub fn num_to_string_convfmt(&self, n: f64) -> String {
+        let fmt = self
+            .get_global_var("CONVFMT")
+            .map(|v| v.as_str())
+            .unwrap_or_else(|| "%.6g".to_string());
+        crate::format::awk_sprintf_with_decimal(&fmt, &[Value::Num(n)], self.numeric_decimal)
+            .unwrap_or_else(|_| format_number(n))
+    }
+
+    /// POSIX: `print` formats numbers with **`OFMT`** (distinct from [`Self::num_to_string_convfmt`]).
+    pub fn num_to_string_ofmt(&self, n: f64) -> String {
+        let fmt = self
+            .get_global_var("OFMT")
+            .map(|v| v.as_str())
+            .unwrap_or_else(|| "%.6g".to_string());
+        crate::format::awk_sprintf_with_decimal(&fmt, &[Value::Num(n)], self.numeric_decimal)
+            .unwrap_or_else(|_| format_number(n))
+    }
+
+    /// gawk `RT`: text of the input record separator for the last record read.
+    pub fn set_rt_after_read(&mut self, rs_pat: &str) {
+        let t = if rs_pat == "\n" {
+            "\n".to_string()
+        } else if rs_pat.is_empty() {
+            "\n".to_string()
+        } else {
+            rs_pat.to_string()
+        };
+        self.vars.insert("RT".into(), Value::Str(t));
+    }
+
+    /// Next **record** from the primary input stream (respects `RS`), used by `getline` with no redirection.
     pub fn read_line_primary(&mut self) -> Result<Option<String>> {
         let Some(r) = &self.input_reader else {
             return Err(Error::Runtime(
                 "`getline` with no file is only valid during normal input".into(),
             ));
         };
-        let mut line = String::new();
-        let mut guard = r
-            .lock()
-            .map_err(|_| Error::Runtime("input reader lock poisoned".into()))?;
-        let n = guard.read_line(&mut line).map_err(Error::Io)?;
-        if n == 0 {
+        let rs = self.rs_string();
+        if !crate::record_io::read_next_record(r, &rs, &mut self.line_buf)? {
             return Ok(None);
         }
-        Ok(Some(line))
+        let end = crate::record_io::trim_end_record_bytes(&self.line_buf);
+        Ok(Some(
+            String::from_utf8_lossy(&self.line_buf[..end]).into_owned(),
+        ))
     }
 
     /// `getline var < filename` — one line from a kept-open file handle.

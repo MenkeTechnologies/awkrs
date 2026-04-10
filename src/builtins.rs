@@ -237,6 +237,92 @@ fn replace_all_awk(re: &Regex, s: &str, repl: &str, repl_has_special: bool) -> (
     (out, count)
 }
 
+fn replace_nth_awk(
+    re: &Regex,
+    s: &str,
+    repl: &str,
+    repl_has_special: bool,
+    n: usize,
+) -> String {
+    if n == 0 {
+        let (out, _) = replace_all_awk(re, s, repl, repl_has_special);
+        return out;
+    }
+    let mut i = 0usize;
+    for m in re.find_iter(s) {
+        i += 1;
+        if i == n {
+            let piece = if repl_has_special {
+                expand_repl(repl, m.as_str())
+            } else {
+                repl.to_string()
+            };
+            let mut out = String::with_capacity(s.len());
+            out.push_str(&s[..m.start()]);
+            out.push_str(&piece);
+            out.push_str(&s[m.end()..]);
+            return out;
+        }
+    }
+    s.to_string()
+}
+
+/// gawk `gensub(ere, repl, how [, target])` — returns modified string.
+/// `how`: a string beginning with `g` / `G` replaces all matches; a non‑negative number replaces
+/// that occurrence (`0` = all matches, like `g`).
+pub fn awk_gensub(
+    rt: &mut Runtime,
+    ere: &str,
+    repl: &str,
+    how: &Value,
+    target: Option<String>,
+) -> Result<String> {
+    let s = match target {
+        Some(t) => t,
+        None => rt.record.clone(),
+    };
+    rt.ensure_regex(ere).map_err(Error::Runtime)?;
+    let re = rt.regex_ref(ere).clone();
+    let s_ref = s.as_str();
+    let repl_has_special = repl.contains('&') || repl.contains('\\');
+    match how {
+        Value::Str(h) => {
+            let h = h.trim();
+            if h.is_empty() {
+                return Err(Error::Runtime(
+                    "gensub: third argument cannot be empty".into(),
+                ));
+            }
+            if h.starts_with('g') || h.starts_with('G') {
+                let (out, _) = replace_all_awk(&re, s_ref, repl, repl_has_special);
+                Ok(out)
+            } else {
+                Err(Error::Runtime(format!(
+                    "gensub: string third argument must begin with `g` or `G`, got `{h}`"
+                )))
+            }
+        }
+        Value::Num(n) => {
+            let which = *n as i64;
+            if which < 0 {
+                return Err(Error::Runtime(
+                    "gensub: numeric third argument must be >= 0".into(),
+                ));
+            }
+            Ok(replace_nth_awk(
+                &re,
+                s_ref,
+                repl,
+                repl_has_special,
+                which as usize,
+            ))
+        }
+        _ => Err(Error::Runtime(
+            "gensub: third argument must be string or number".into(),
+        )),
+    }
+}
+
 fn expand_repl(repl: &str, matched: &str) -> String {
     let mut out = String::new();
     let mut chars = repl.chars().peekable();

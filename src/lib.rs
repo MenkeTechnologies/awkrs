@@ -20,6 +20,7 @@ mod interp;
 mod lexer;
 mod locale_numeric;
 mod parser;
+mod record_io;
 mod runtime;
 mod vm;
 
@@ -33,6 +34,10 @@ use crate::compiler::Compiler;
 use crate::interp::Flow;
 use crate::parser::parse_program;
 use crate::runtime::{Runtime, Value};
+
+fn rs_is_default_newline(rt: &Runtime) -> bool {
+    rt.rs_string() == "\n"
+}
 use crate::vm::{
     flush_print_buf, vm_pattern_matches, vm_range_step, vm_run_begin, vm_run_beginfile, vm_run_end,
     vm_run_endfile, vm_run_rule,
@@ -126,9 +131,15 @@ pub fn run(bin_name: &str) -> Result<()> {
     let mut range_state: Vec<bool> = vec![false; prog.rules.len()];
 
     // Parallel record mode: whole regular files in memory, or stdin in chunks of `--read-ahead` lines.
-    let use_parallel_files = threads > 1 && parallel_ok && !files.is_empty();
-    let stdin_parallel =
-        files.is_empty() && threads > 1 && parallel_ok && !uses_primary_getline(cp.as_ref());
+    let     use_parallel_files = threads > 1
+        && parallel_ok
+        && !files.is_empty()
+        && rs_is_default_newline(&rt);
+    let stdin_parallel = files.is_empty()
+        && threads > 1
+        && parallel_ok
+        && !uses_primary_getline(cp.as_ref())
+        && rs_is_default_newline(&rt);
     if threads > 1 && !parallel_ok {
         eprintln!("{bin_name}: warning: program is not parallel-safe (range patterns, exit, getline without file, getline coprocess, cross-record assignments, …); running sequentially (use a single thread to silence this warning)");
     }
@@ -528,15 +539,11 @@ fn process_file(
 
     let mut count = 0usize;
     loop {
-        rt.line_buf.clear();
-        let n = br
-            .lock()
-            .map_err(|_| Error::Runtime("input reader lock poisoned".into()))?
-            .read_until(b'\n', &mut rt.line_buf)
-            .map_err(Error::Io)?;
-        if n == 0 {
+        let rs = rt.rs_string();
+        if !crate::record_io::read_next_record(&br, &rs, &mut rt.line_buf)? {
             break;
         }
+        rt.set_rt_after_read(&rs);
         count += 1;
         rt.nr += 1.0;
         rt.fnr += 1.0;
@@ -628,7 +635,10 @@ fn set_record_from_line_bytes(rt: &mut Runtime, fs: &str, line_bytes: &[u8]) {
 }
 
 /// Detect programs that can bypass the full VM dispatch loop.
-fn detect_inline_program(cp: &CompiledProgram) -> Option<(InlinePattern, InlineAction)> {
+fn detect_inline_program(cp: &CompiledProgram, rt: &Runtime) -> Option<(InlinePattern, InlineAction)> {
+    if rt.rs_string() != "\n" {
+        return None;
+    }
     if cp.record_rules.len() != 1 {
         return None;
     }
@@ -736,42 +746,24 @@ fn process_file_slurp(
         .unwrap_or_else(|| " ".into());
 
     // Try the inlined fast path for trivial single-rule programs.
-    if let Some((pattern, action)) = detect_inline_program(cp) {
+    if let Some((pattern, action)) = detect_inline_program(cp, rt) {
         return process_file_slurp_inline(data, &fs, pattern, action, cp, rt);
     }
 
+    let rs = rt.rs_string();
+    let chunks = crate::record_io::split_input_into_records(data, &rs);
     let mut count = 0usize;
-    let mut pos = 0;
-    let len = data.len();
-
-    while pos < len {
-        let eol = memchr(b'\n', &data[pos..len])
-            .map(|i| pos + i)
-            .unwrap_or(len);
-
-        // Trim trailing \r
-        let end = if eol > pos && data[eol - 1] == b'\r' {
-            eol - 1
-        } else {
-            eol
-        };
-
+    for chunk in chunks {
         count += 1;
         rt.nr += 1.0;
         rt.fnr += 1.0;
-
-        // SAFETY: awk field splitting and printing operate on bytes internally.
-        // Invalid UTF-8 would produce garbled output (same as other awks), not UB.
-        // The record String may contain non-UTF-8 but push_str on ASCII is safe,
-        // and awk programs rarely process binary data.
-        let line = unsafe { std::str::from_utf8_unchecked(&data[pos..end]) };
-        rt.set_field_sep_split(&fs, line);
+        rt.set_rt_after_read(&rs);
+        let line = String::from_utf8_lossy(chunk);
+        rt.set_field_sep_split(&fs, line.as_ref());
 
         if dispatch_rules(cp, range_state, rt)? {
             break;
         }
-
-        pos = eol + 1;
     }
     Ok(count)
 }

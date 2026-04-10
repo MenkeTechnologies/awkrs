@@ -148,6 +148,7 @@ impl<'a> VmCtx<'a> {
         match name {
             "OFS" => self.rt.ofs_bytes = val.as_str().into_bytes(),
             "ORS" => self.rt.ors_bytes = val.as_str().into_bytes(),
+            // RS / CONVFMT: no cached bytes; next read uses [`Runtime::rs_string`] / CONVFMT lookup.
             _ => {}
         }
         match self.rt.vars.get_mut(name) {
@@ -2396,21 +2397,38 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             Op::Concat => {
                 let b = ctx.pop();
                 let a = ctx.pop();
-                // Reuse a's String allocation when possible.
-                let mut s = a.into_string();
-                b.append_to_string(&mut s);
+                let mut s = match a {
+                    Value::Str(s) => s,
+                    Value::Num(n) => ctx.rt.num_to_string_convfmt(n),
+                    Value::Uninit => String::new(),
+                    Value::Array(_) => String::new(),
+                };
+                match b {
+                    Value::Str(ref t) => s.push_str(t),
+                    Value::Num(n) => s.push_str(&ctx.rt.num_to_string_convfmt(n)),
+                    Value::Uninit => {}
+                    Value::Array(_) => {}
+                }
                 ctx.push(Value::Str(s));
             }
             Op::RegexMatch => {
                 let pat = ctx.pop().as_str();
-                let s = ctx.pop().as_str();
+                let v = ctx.pop();
+                let s = match &v {
+                    Value::Num(n) => ctx.rt.num_to_string_convfmt(*n),
+                    _ => v.as_str(),
+                };
                 ctx.rt.ensure_regex(&pat).map_err(Error::Runtime)?;
                 let m = ctx.rt.regex_ref(&pat).is_match(&s);
                 ctx.push(Value::Num(if m { 1.0 } else { 0.0 }));
             }
             Op::RegexNotMatch => {
                 let pat = ctx.pop().as_str();
-                let s = ctx.pop().as_str();
+                let v = ctx.pop();
+                let s = match &v {
+                    Value::Num(n) => ctx.rt.num_to_string_convfmt(*n),
+                    _ => v.as_str(),
+                };
                 ctx.rt.ensure_regex(&pat).map_err(Error::Runtime)?;
                 let m = ctx.rt.regex_ref(&pat).is_match(&s);
                 ctx.push(Value::Num(if !m { 1.0 } else { 0.0 }));
@@ -2932,7 +2950,14 @@ fn exec_print(ctx: &mut VmCtx<'_>, argc: u16, redir: RedirKind, is_printf: bool)
                 if i > 0 {
                     ctx.rt.print_buf.extend_from_slice(&ofs_local[..ofs_len]);
                 }
-                ctx.stack[start + i].write_to(&mut ctx.rt.print_buf);
+                let idx = start + i;
+                match &ctx.stack[idx] {
+                    Value::Num(n) => {
+                        let t = ctx.rt.num_to_string_ofmt(*n);
+                        ctx.rt.print_buf.extend_from_slice(t.as_bytes());
+                    }
+                    other => other.write_to(&mut ctx.rt.print_buf),
+                }
             }
             ctx.stack.truncate(start);
         }
@@ -2946,7 +2971,14 @@ fn exec_print(ctx: &mut VmCtx<'_>, argc: u16, redir: RedirKind, is_printf: bool)
             ctx.rt.record.clone()
         } else {
             let start = ctx.stack.len() - argc;
-            let parts: Vec<String> = ctx.stack.drain(start..).map(|v| v.as_str()).collect();
+            let parts: Vec<String> = ctx
+                .stack
+                .drain(start..)
+                .map(|v| match v {
+                    Value::Num(n) => ctx.rt.num_to_string_ofmt(n),
+                    other => other.as_str(),
+                })
+                .collect();
             parts.join(&ofs)
         };
         let chunk = format!("{line}{ors}");
@@ -3344,6 +3376,33 @@ pub(crate) fn exec_builtin_dispatch(
                 return Err(Error::Runtime("`typeof` expects one argument".into()));
             }
             Value::Str(builtins::awk_typeof_value(&args[0]).into())
+        }
+        "gensub" => {
+            if !(3..=4).contains(&argc) {
+                return Err(Error::Runtime("gensub: expected 3 or 4 arguments".into()));
+            }
+            let target = if argc == 4 {
+                Some(args[3].as_str())
+            } else {
+                None
+            };
+            let out = builtins::awk_gensub(
+                ctx.rt,
+                &args[0].as_str(),
+                &args[1].as_str(),
+                &args[2],
+                target,
+            )?;
+            Value::Str(out)
+        }
+        "isarray" => {
+            if argc != 1 {
+                return Err(Error::Runtime("`isarray` expects one argument".into()));
+            }
+            Value::Num(match &args[0] {
+                Value::Array(_) => 1.0,
+                _ => 0.0,
+            })
         }
         _ => return Err(Error::Runtime(format!("unknown function `{name}`"))),
     };

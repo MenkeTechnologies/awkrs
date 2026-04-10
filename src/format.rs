@@ -195,6 +195,32 @@ fn localize_float_radix(s: String, decimal: char) -> String {
     s.replacen('.', &rep, 1)
 }
 
+/// C `printf` `%g` / `%G`: trim fractional zeros and a dangling radix point.
+fn trim_trailing_zero_fraction(s: &str) -> String {
+    if !s.contains('.') {
+        return s.to_string();
+    }
+    let mut t = s.trim_end_matches('0').to_string();
+    if t.ends_with('.') {
+        t.pop();
+    }
+    t
+}
+
+/// After `%e`/`%E` formatting for `%g`, trim zeros in the mantissa only (leave exponent intact).
+fn trim_sprintf_g_scientific(s: &str) -> String {
+    let Some(pos) = s.find(|c| c == 'e' || c == 'E') else {
+        return trim_trailing_zero_fraction(s);
+    };
+    let (mant, exp_part) = s.split_at(pos);
+    let exp_char = exp_part.chars().next().unwrap();
+    let exp_digits = &exp_part[1..];
+    format!(
+        "{}{exp_char}{exp_digits}",
+        trim_trailing_zero_fraction(mant)
+    )
+}
+
 fn parse_width_or_star(
     chars: &[char],
     mut i: usize,
@@ -307,8 +333,37 @@ fn format_one(
         }
         'g' | 'G' => {
             let n = v.as_number();
-            let p = prec.unwrap_or(6);
-            let s = localize_float_radix(format!("{:.*}", p, n), decimal);
+            if !n.is_finite() {
+                return Err("sprintf: non-finite value for %g".into());
+            }
+            // C/POSIX %g: use %e-style if exponent < -4 or >= precision; else fixed with precision `p`,
+            // then strip trailing zeros (was incorrectly using %f-only `{:.*}`).
+            let p = prec.unwrap_or(6).max(1);
+            let abs_n = n.abs();
+            // Zero must not take the %e branch (log10(0) is undefined; avoids `0e0`).
+            if abs_n == 0.0 {
+                let raw = format!("{:.*}", p, n);
+                let localized = localize_float_radix(raw, decimal);
+                let s = trim_trailing_zero_fraction(&localized);
+                return pad_numeric(&s, w, left, pad_char);
+            }
+            let exp = abs_n.log10().floor() as i32;
+            let use_e = exp < -4 || exp >= p as i32;
+            let raw = if use_e {
+                let mantissa_prec = p.saturating_sub(1).max(1);
+                format!("{:.*e}", mantissa_prec, n)
+            } else {
+                format!("{:.*}", p, n)
+            };
+            let localized = localize_float_radix(raw, decimal);
+            let mut s = if use_e {
+                trim_sprintf_g_scientific(&localized)
+            } else {
+                trim_trailing_zero_fraction(&localized)
+            };
+            if conv == 'G' {
+                s = s.replace('e', "E");
+            }
             pad_numeric(&s, w, left, pad_char)
         }
         'c' => {

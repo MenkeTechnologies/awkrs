@@ -7,8 +7,29 @@ use std::collections::{HashMap, HashSet};
 /// Variables with special awk semantics — accessed by Runtime methods or computed
 /// from Runtime fields. These bypass the slot system and use the HashMap path.
 const SPECIAL_VARS: &[&str] = &[
-    "NR", "FNR", "NF", "FILENAME", "FS", "OFS", "ORS", "SUBSEP", "OFMT", "FPAT", "RSTART",
-    "RLENGTH", "ENVIRON", "ARGC", "ARGV",
+    "NR",
+    "FNR",
+    "NF",
+    "FILENAME",
+    "FS",
+    "OFS",
+    "ORS",
+    "RS",
+    "RT",
+    "SUBSEP",
+    "OFMT",
+    "CONVFMT",
+    "FPAT",
+    "RSTART",
+    "RLENGTH",
+    "ENVIRON",
+    "ARGC",
+    "ARGV",
+    "ARGIND",
+    "ERRNO",
+    "PROCINFO",
+    "SYMTAB",
+    "FUNCTAB",
 ];
 
 /// Loop or `switch` — both support `break`; only loops support `continue`.
