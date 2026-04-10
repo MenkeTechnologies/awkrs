@@ -1435,13 +1435,14 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
                 let round = ctx.rt.mpfr_round();
                 let f = value_to_float(&v, prec, round);
                 if matches!(f.cmp0(), Some(Ordering::Less)) {
-                    ctx.rt.lint_warn("sqrt: domain error (negative argument)");
+                    ctx.rt
+                        .warn_builtin_negative_arg("sqrt", f.to_f64());
                 }
                 Ok(Value::Mpfr(Float::with_val_round(prec, f.sqrt(), round).0))
             } else {
                 let x = v.as_number();
                 if x < 0.0 {
-                    ctx.rt.lint_warn("sqrt: domain error (negative argument)");
+                    ctx.rt.warn_builtin_negative_arg("sqrt", x);
                 }
                 Ok(Value::Num(x.sqrt()))
             }
@@ -1502,10 +1503,10 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
                 let f = value_to_float(&v, prec, round);
                 match f.cmp0() {
                     Some(Ordering::Less) => {
-                        ctx.rt.lint_warn("log: domain error (negative argument)")
+                        ctx.rt.warn_builtin_negative_arg("log", f.to_f64());
                     }
                     Some(Ordering::Equal) => {
-                        ctx.rt.lint_warn("log: zero argument yields -infinity")
+                        ctx.rt.lint_warn("log: zero argument yields -infinity");
                     }
                     Some(Ordering::Greater) | None => {}
                 }
@@ -1513,7 +1514,7 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
             } else {
                 let x = v.as_number();
                 if x < 0.0 {
-                    ctx.rt.lint_warn("log: domain error (negative argument)");
+                    ctx.rt.warn_builtin_negative_arg("log", x);
                 } else if x == 0.0 {
                     ctx.rt.lint_warn("log: zero argument yields -infinity");
                 }

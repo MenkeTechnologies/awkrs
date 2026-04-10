@@ -1520,7 +1520,15 @@ impl<'a> Parser<'a> {
                     self.bump(false)?;
                     Ok(Expr::Call { name, args })
                 } else {
-                    Ok(Expr::Var(name))
+                    // POSIX: `length` with no `(` means `length($0)` (same as `length()`).
+                    if name == "length" {
+                        Ok(Expr::Call {
+                            name,
+                            args: Vec::new(),
+                        })
+                    } else {
+                        Ok(Expr::Var(name))
+                    }
                 }
             }
             Token::Dollar => {

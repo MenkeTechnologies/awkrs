@@ -4042,13 +4042,14 @@ pub(crate) fn exec_builtin_dispatch(
                 let round = ctx.rt.mpfr_round();
                 let f = value_to_float(&args[0], prec, round);
                 if matches!(f.cmp0(), Some(Ordering::Less)) {
-                    ctx.rt.lint_warn("sqrt: domain error (negative argument)");
+                    ctx.rt
+                        .warn_builtin_negative_arg("sqrt", f.to_f64());
                 }
                 Value::Mpfr(Float::with_val_round(prec, f.sqrt(), round).0)
             } else {
                 let x = args[0].as_number();
                 if x < 0.0 {
-                    ctx.rt.lint_warn("sqrt: domain error (negative argument)");
+                    ctx.rt.warn_builtin_negative_arg("sqrt", x);
                 }
                 Value::Num(x.sqrt())
             }
@@ -4116,10 +4117,10 @@ pub(crate) fn exec_builtin_dispatch(
                 let f = value_to_float(&args[0], prec, round);
                 match f.cmp0() {
                     Some(Ordering::Less) => {
-                        ctx.rt.lint_warn("log: domain error (negative argument)")
+                        ctx.rt.warn_builtin_negative_arg("log", f.to_f64());
                     }
                     Some(Ordering::Equal) => {
-                        ctx.rt.lint_warn("log: zero argument yields -infinity")
+                        ctx.rt.lint_warn("log: zero argument yields -infinity");
                     }
                     Some(Ordering::Greater) | None => {}
                 }
@@ -4127,7 +4128,7 @@ pub(crate) fn exec_builtin_dispatch(
             } else {
                 let x = args[0].as_number();
                 if x < 0.0 {
-                    ctx.rt.lint_warn("log: domain error (negative argument)");
+                    ctx.rt.warn_builtin_negative_arg("log", x);
                 } else if x == 0.0 {
                     ctx.rt.lint_warn("log: zero argument yields -infinity");
                 }

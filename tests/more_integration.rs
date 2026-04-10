@@ -378,6 +378,14 @@ fn length_no_args_is_record() {
 }
 
 #[test]
+fn length_bare_ident_is_length_dollar_zero() {
+    // POSIX / gawk / nawk: `length` without `(` is `length($0)` (not a variable).
+    let (c, o, _) = run_awkrs_stdin("BEGIN { print length }", "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "0\n");
+}
+
+#[test]
 fn tolower_toupper() {
     let (c, o, _) = run_awkrs_stdin("BEGIN { print tolower(\"AbC\"), toupper(\"xYz\") }", "");
     assert_eq!(c, 0);

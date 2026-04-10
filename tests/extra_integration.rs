@@ -758,10 +758,25 @@ fn log_zero_is_negative_infinity() {
 
 #[test]
 fn sqrt_negative_one_is_nan() {
-    let (c, o, _) = run_awkrs_stdin("BEGIN { print sqrt(-1) }", "");
+    let (c, o, e) = run_awkrs_stdin("BEGIN { print sqrt(-1) }", "");
     assert_eq!(c, 0);
     let t = o.trim();
     assert!(t.eq_ignore_ascii_case("nan"), "expected NaN, got {o:?}");
+    assert!(
+        e.contains("sqrt: received negative argument"),
+        "gawk warns on stderr even without LINT; stderr={e:?}"
+    );
+}
+
+#[test]
+fn log_negative_one_warns_and_yields_nan() {
+    let (c, o, e) = run_awkrs_stdin("BEGIN { print log(-1) }", "");
+    assert_eq!(c, 0);
+    assert!(o.trim().eq_ignore_ascii_case("nan"), "stdout={o:?}");
+    assert!(
+        e.contains("log: received negative argument"),
+        "stderr={e:?}"
+    );
 }
 
 // ── JIT integration tests ───────────────────────────────────────────────

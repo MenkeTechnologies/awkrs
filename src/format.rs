@@ -303,6 +303,34 @@ fn trim_sprintf_g_scientific(s: &str) -> String {
     )
 }
 
+/// ISO C / POSIX: for `%g` / `%G` in **fixed** style, precision is **significant digits**, not
+/// fraction digits after the radix (unlike `%f`).
+fn format_g_decimal_significant_f64(mut n: f64, p: usize) -> String {
+    let p = p.max(1);
+    if !n.is_finite() {
+        return format!("{n}");
+    }
+    let neg = n.is_sign_negative();
+    n = n.abs();
+    if n == 0.0 {
+        return if neg { "-0".to_string() } else { "0".to_string() };
+    }
+    let e = n.log10().floor() as i32;
+    let sig_scale = 10f64.powi(p as i32 - 1 - e);
+    let r = (n * sig_scale).round() / sig_scale;
+    if r == 0.0 {
+        return if neg { "-0".to_string() } else { "0".to_string() };
+    }
+    let e2 = r.log10().floor() as i32;
+    let frac = (p as i32 - e2 - 1).max(0) as usize;
+    let body = format!("{:.*}", frac, r);
+    if neg {
+        format!("-{body}")
+    } else {
+        body
+    }
+}
+
 fn sprintf_c_char(v: &Value) -> String {
     match v {
         Value::Str(s) | Value::StrLit(s) | Value::Regexp(s) => {
@@ -534,7 +562,12 @@ fn format_one(
                     let mantissa_prec = p.saturating_sub(1).max(1);
                     format!("{:.*e}", mantissa_prec, fsrc)
                 } else {
-                    format!("{:.*}", p, fsrc)
+                    let n0 = fsrc.to_f64();
+                    if n0.is_finite() {
+                        format_g_decimal_significant_f64(n0, p)
+                    } else {
+                        format!("{:.*}", p, fsrc)
+                    }
                 };
                 let localized = localize_float_radix(raw, decimal);
                 let mut s = if use_e {
@@ -564,7 +597,7 @@ fn format_one(
                 let mantissa_prec = p.saturating_sub(1).max(1);
                 format!("{:.*e}", mantissa_prec, n)
             } else {
-                format!("{:.*}", p, n)
+                format_g_decimal_significant_f64(n, p)
             };
             let localized = localize_float_radix(raw, decimal);
             let mut s = if use_e {
@@ -793,6 +826,13 @@ mod tests {
     fn lc_numeric_general_g() {
         let s = awk_sprintf_with_decimal("%.4g", &[Value::Num(PI)], ',', Some(','), None).unwrap();
         assert!(s.contains(','), "got {s:?}");
+    }
+
+    #[test]
+    fn percent_g_uses_significant_digits_not_fraction_digits() {
+        // C/POSIX: %.6g rounds to6 significant digits (matches gawk / nawk / mawk).
+        let s = awk_sprintf("%.6g", &[Value::Num(1.23456789)]).unwrap();
+        assert_eq!(s, "1.23457", "got {s:?}");
     }
 
     #[test]

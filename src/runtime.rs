@@ -1021,6 +1021,14 @@ impl Runtime {
         }
     }
 
+    /// gawk warns for **`log(x)`** / **`sqrt(x)`** when **`x < 0`**, even when **`LINT`** is off.
+    pub fn warn_builtin_negative_arg(&self, name: &str, x: f64) {
+        if x.is_nan() {
+            return;
+        }
+        eprintln!("awkrs: warning: {name}: received negative argument {x}");
+    }
+
     /// gawk **`PROCINFO["prec"]`**: MPFR precision in bits when **`-M`** / **`--bignum`** is active.
     pub fn mpfr_prec_bits(&self) -> u32 {
         if !self.bignum {
