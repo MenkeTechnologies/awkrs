@@ -644,6 +644,13 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
         MIXED_CONCAT => {
             let a = jit_f64_to_value(ctx, a2);
             let b = jit_f64_to_value(ctx, a3);
+            if let Err(e) = a
+                .reject_if_array_scalar()
+                .and_then(|_| b.reject_if_array_scalar())
+            {
+                JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+                return 0.0;
+            }
             let mut s = a.into_string();
             b.append_to_string(&mut s);
             value_to_jit_f64(ctx, Value::Str(s))
@@ -651,6 +658,10 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
         MIXED_CONCAT_POOL => {
             let pool = ctx.str_ref(a1).to_string();
             let a = jit_f64_to_value(ctx, a2);
+            if let Err(e) = a.reject_if_array_scalar() {
+                JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+                return 0.0;
+            }
             let mut s = a.into_string();
             s.push_str(&pool);
             value_to_jit_f64(ctx, Value::Str(s))
@@ -662,7 +673,16 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
                 MIXED_ADD => a.as_number() + b.as_number(),
                 MIXED_SUB => a.as_number() - b.as_number(),
                 MIXED_MUL => a.as_number() * b.as_number(),
-                MIXED_DIV => a.as_number() / b.as_number(),
+                MIXED_DIV => {
+                    if b.as_number() == 0.0 {
+                        JIT_CHUNK_ERR.with(|c| {
+                            *c.borrow_mut() =
+                                Some(Error::Runtime("division by zero attempted".into()));
+                        });
+                        return 0.0;
+                    }
+                    a.as_number() / b.as_number()
+                }
                 MIXED_MOD => a.as_number() % b.as_number(),
                 MIXED_POW => a.as_number().powf(b.as_number()),
                 _ => unreachable!(),
@@ -986,7 +1006,13 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
                 ctx.array_elem_get(name, k.as_ref())
             };
             let rhs = jit_f64_to_value(ctx, a3);
-            let newv = apply_binop(bop, &old, &rhs, false, ctx.rt).unwrap_or(Value::Num(0.0));
+            let newv = match apply_binop(bop, &old, &rhs, false, ctx.rt) {
+                Ok(v) => v,
+                Err(e) => {
+                    JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+                    return 0.0;
+                }
+            };
             let n = newv.as_number();
             let key = key_val.into_string();
             ctx.array_elem_set(name, key, Value::Num(n));
@@ -1111,7 +1137,13 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
             let idx = jit_f64_to_value(ctx, a2).as_number() as i32;
             let rhs = jit_f64_to_value(ctx, a3);
             let old = ctx.rt.field(idx);
-            let new_val = apply_binop(bop, &old, &rhs, false, ctx.rt).unwrap_or(Value::Num(0.0));
+            let new_val = match apply_binop(bop, &old, &rhs, false, ctx.rt) {
+                Ok(v) => v,
+                Err(e) => {
+                    JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+                    return 0.0;
+                }
+            };
             let s = new_val.as_str();
             ctx.rt.set_field(idx, &s);
             value_to_jit_f64(ctx, new_val)
@@ -1670,17 +1702,16 @@ extern "C" fn jit_var_dispatch(vmctx: *mut c_void, op: u32, name_idx: u32, arg: 
                     _ => unreachable!(),
                 };
                 let old = ctx.get_var(name_owned.as_str());
-                let a = old.as_number();
-                let b = arg;
-                let n = match bop {
-                    BinOp::Add => a + b,
-                    BinOp::Sub => a - b,
-                    BinOp::Mul => a * b,
-                    BinOp::Div => a / b,
-                    BinOp::Mod => a % b,
-                    _ => 0.0,
+                let rhs = Value::Num(arg);
+                let new_val = match apply_binop(bop, &old, &rhs, false, ctx.rt) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+                        return 0.0;
+                    }
                 };
-                ctx.set_var(name_owned.as_str(), Value::Num(n));
+                let n = new_val.as_number();
+                ctx.set_var(name_owned.as_str(), new_val);
                 sync_jit_slot_if_scalar(ctx, name_owned.as_str());
                 n
             }
@@ -1744,7 +1775,10 @@ extern "C" fn jit_field_dispatch(vmctx: *mut c_void, op: u32, field_idx: i32, ar
                 let old = ctx.rt.field(field_idx);
                 let new_val = match apply_binop(bop, &old, &Value::Num(arg), false, ctx.rt) {
                     Ok(v) => v,
-                    Err(_) => return 0.0,
+                    Err(e) => {
+                        JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+                        return 0.0;
+                    }
                 };
                 let s = new_val.as_str();
                 ctx.rt.set_field(field_idx, &s);
@@ -1861,9 +1895,10 @@ extern "C" fn jit_val_dispatch(vmctx: *mut c_void, op: u32, a1: u32, a2: f64, a3
         JIT_VAL_ARRAY_DELETE_ELEM, JIT_VAL_ARRAY_GET, JIT_VAL_ARRAY_IN,
         JIT_VAL_ARRAY_INCDEC_POST_DEC, JIT_VAL_ARRAY_INCDEC_POST_INC, JIT_VAL_ARRAY_INCDEC_PRE_DEC,
         JIT_VAL_ARRAY_INCDEC_PRE_INC, JIT_VAL_ARRAY_SET, JIT_VAL_ASORT, JIT_VAL_ASORTI,
-        JIT_VAL_FORIN_END, JIT_VAL_FORIN_NEXT, JIT_VAL_FORIN_START, JIT_VAL_MATCH_REGEXP,
-        JIT_VAL_SIGNAL_EXIT_CODE, JIT_VAL_SIGNAL_EXIT_DEFAULT, JIT_VAL_SIGNAL_NEXT,
-        JIT_VAL_SIGNAL_NEXT_FILE, JIT_VAL_SIGNAL_RETURN_EMPTY, JIT_VAL_SIGNAL_RETURN_VAL,
+        JIT_VAL_FDIV_CHECKED, JIT_VAL_FORIN_END, JIT_VAL_FORIN_NEXT, JIT_VAL_FORIN_START,
+        JIT_VAL_MATCH_REGEXP, JIT_VAL_SIGNAL_EXIT_CODE, JIT_VAL_SIGNAL_EXIT_DEFAULT,
+        JIT_VAL_SIGNAL_NEXT, JIT_VAL_SIGNAL_NEXT_FILE, JIT_VAL_SIGNAL_RETURN_EMPTY,
+        JIT_VAL_SIGNAL_RETURN_VAL,
     };
 
     // Signals — set thread-local flag and return immediately.
@@ -1897,6 +1932,17 @@ extern "C" fn jit_val_dispatch(vmctx: *mut c_void, op: u32, a1: u32, a2: f64, a3
     {
         let ctx = unsafe { &mut *vmctx.cast::<VmCtx<'static>>() };
         match op {
+            JIT_VAL_FDIV_CHECKED => {
+                let b = a3;
+                let a = a2;
+                if b == 0.0 {
+                    JIT_CHUNK_ERR.with(|c| {
+                        *c.borrow_mut() = Some(Error::Runtime("division by zero attempted".into()));
+                    });
+                    return 0.0;
+                }
+                a / b
+            }
             JIT_VAL_MATCH_REGEXP => {
                 let idx = a1;
                 let pat = ctx.str_ref(idx).to_string();
@@ -2646,14 +2692,14 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                     let fa = value_to_float(&a, prec, round);
                     let fb = value_to_float(&b, prec, round);
                     if fb.is_zero() {
-                        ctx.rt.lint_warn("division by zero");
+                        return Err(Error::Runtime("division by zero attempted".into()));
                     }
                     ctx.push(Value::Mpfr(Float::with_val_round(prec, &fa / &fb, round).0));
                 } else {
                     let b = ctx.pop().as_number();
                     let a = ctx.pop().as_number();
                     if b == 0.0 {
-                        ctx.rt.lint_warn("division by zero yields infinity or NaN");
+                        return Err(Error::Runtime("division by zero attempted".into()));
                     }
                     ctx.push(Value::Num(a / b));
                 }

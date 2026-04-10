@@ -102,6 +102,13 @@ fn substr_start_zero_clamped_like_gawk() {
 }
 
 #[test]
+fn substr_large_negative_start_clamped_like_gawk() {
+    let (c, o, e) = run_awkrs_stdin(r#"BEGIN { print substr("hello", -10, 3) }"#, "");
+    assert_eq!(c, 0, "stderr={e:?}");
+    assert_eq!(o, "hel\n");
+}
+
+#[test]
 fn print_whole_array_scalar_is_fatal() {
     let (c, o, e) = run_awkrs_stdin(r#"BEGIN { a[1] = 1; print a }"#, "");
     assert_ne!(c, 0, "expected nonzero exit, out={o:?} stderr={e:?}");
@@ -112,16 +119,22 @@ fn print_whole_array_scalar_is_fatal() {
 }
 
 #[test]
-fn lint_truthy_warns_on_division_by_zero() {
-    let (c, o, e) = run_awkrs_stdin_args(["-v", "LINT=1"], r#"BEGIN { print 1/0 }"#, "");
-    assert_eq!(c, 0, "stderr={e:?}");
+fn print_concat_array_scalar_is_fatal() {
+    let (c, o, e) = run_awkrs_stdin(r#"BEGIN { a[1] = 1; print "x=" a "." }"#, "");
+    assert_ne!(c, 0, "expected nonzero exit, out={o:?} stderr={e:?}");
     assert!(
-        e.contains("awkrs: warning:") && e.contains("division"),
+        e.contains("attempt to use an array in a scalar context"),
         "stderr={e:?}"
     );
+}
+
+#[test]
+fn division_by_zero_is_fatal_like_gawk() {
+    let (c, o, e) = run_awkrs_stdin(r#"BEGIN { print 1/0 }"#, "");
+    assert_ne!(c, 0, "stderr={e:?}");
     assert!(
-        o.to_ascii_lowercase().contains("inf"),
-        "stdout should be inf-like: {o:?}"
+        e.contains("division by zero attempted"),
+        "stderr={e:?} stdout={o:?}"
     );
 }
 
@@ -241,13 +254,6 @@ fn postincrement_style_via_assignment() {
     let (c, o, _) = run_awkrs_stdin("BEGIN { x=1; x=x+1; print x }", "");
     assert_eq!(c, 0);
     assert_eq!(o, "2\n");
-}
-
-#[test]
-fn division_by_zero_yields_inf_or_nan_printable() {
-    let (c, o, _) = run_awkrs_stdin("BEGIN { print 1/0 }", "");
-    assert_eq!(c, 0);
-    assert!(o.contains("inf") || o == "nan\n" || o.contains("Inf"));
 }
 
 #[test]
@@ -521,7 +527,7 @@ fn empty_program_file_only_end() {
 
 #[test]
 fn compare_nan_never_equals_itself_awk_semantics() {
-    let (c, o, _) = run_awkrs_stdin("BEGIN { n = 0/0; print (n == n) }", "");
+    let (c, o, _) = run_awkrs_stdin("BEGIN { n = sqrt(-1); print (n == n) }", "");
     assert_eq!(c, 0);
     assert_eq!(o, "0\n");
 }

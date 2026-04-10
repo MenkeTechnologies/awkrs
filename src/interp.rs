@@ -940,7 +940,7 @@ fn eval_binary(op: BinOp, left: &Expr, right: &Expr, ctx: &mut ExecCtx<'_>) -> R
         BinOp::Mul => a * b,
         BinOp::Div => {
             if b == 0.0 {
-                ctx.rt.lint_warn("division by zero yields infinity or NaN");
+                return Err(Error::Runtime("division by zero attempted".into()));
             }
             a / b
         }

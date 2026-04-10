@@ -205,6 +205,8 @@ pub const JIT_VAL_FORIN_END: u32 = 23;
 // ── Array sorting ────────────────────────────────────────────────────────
 pub const JIT_VAL_ASORT: u32 = 24;
 pub const JIT_VAL_ASORTI: u32 = 25;
+/// Pure `a2 / a3` with gawk-style fatal on divisor **0.0** (non–mixed-mode JIT).
+pub const JIT_VAL_FDIV_CHECKED: u32 = 26;
 
 // ── NaN-boxing ───────────────────────────────────────────────────────────
 //
@@ -2485,7 +2487,16 @@ pub fn try_compile_with_options(
                         );
                         stack.push(builder.inst_results(call)[0]);
                     } else {
-                        stack.push(builder.ins().fdiv(a, b));
+                        let op_c = builder
+                            .ins()
+                            .iconst(types::I32, i64::from(JIT_VAL_FDIV_CHECKED));
+                        let z32 = builder.ins().iconst(types::I32, 0);
+                        let call = builder.ins().call_indirect(
+                            val_sig_ir,
+                            val_fn_ptr,
+                            &[vmctx, op_c, z32, a, b],
+                        );
+                        stack.push(builder.inst_results(call)[0]);
                     }
                 }
                 Op::Mod => {
@@ -3989,7 +4000,10 @@ impl JitNumericChunk {
             0.0
         }
         extern "C" fn dummy_io_dispatch(_: *mut c_void, _: u32, _: i32, _: i32, _: i32) {}
-        extern "C" fn dummy_val_dispatch(_: *mut c_void, _: u32, _: u32, _: f64, _: f64) -> f64 {
+        extern "C" fn dummy_val_dispatch(_: *mut c_void, op: u32, _: u32, a2: f64, a3: f64) -> f64 {
+            if op == JIT_VAL_FDIV_CHECKED {
+                return if a3 == 0.0 { f64::NAN } else { a2 / a3 };
+            }
             0.0
         }
         let mut slots: Vec<f64> = if self.slot_words == 0 {
@@ -4306,7 +4320,10 @@ mod tests {
 
     extern "C" fn dummy_io_dispatch(_: *mut c_void, _: u32, _: i32, _: i32, _: i32) {}
 
-    extern "C" fn dummy_val_dispatch(_: *mut c_void, _: u32, _: u32, _: f64, _: f64) -> f64 {
+    extern "C" fn dummy_val_dispatch(_: *mut c_void, op: u32, _: u32, a2: f64, a3: f64) -> f64 {
+        if op == JIT_VAL_FDIV_CHECKED {
+            return if a3 == 0.0 { f64::NAN } else { a2 / a3 };
+        }
         0.0
     }
 

@@ -275,7 +275,7 @@ pub fn awk_binop_values(
             BinOp::Mul => a * b,
             BinOp::Div => {
                 if b == 0.0 {
-                    rt.lint_warn("division by zero yields infinity or NaN");
+                    return Err(Error::Runtime("division by zero attempted".into()));
                 }
                 a / b
             }
@@ -295,7 +295,7 @@ pub fn awk_binop_values(
         BinOp::Mul => Float::with_val_round(prec, &a * &b, round).0,
         BinOp::Div => {
             if b.is_zero() {
-                rt.lint_warn("division by zero");
+                return Err(Error::Runtime("division by zero attempted".into()));
             }
             Float::with_val_round(prec, &a / &b, round).0
         }
