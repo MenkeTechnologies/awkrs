@@ -27,6 +27,13 @@
 
 `awkrs` runs **pattern → action** programs over input records (lines by default), similar to POSIX `awk`, GNU `gawk`, and `mawk`. The CLI accepts a **union** of common options from those implementations so scripts can pass flags through; see `--help` for which options affect behavior.
 
+**Positioning:** The implementation targets **POSIX awk** plus **practical gawk extensions** that show up in everyday scripts (e.g. `BEGINFILE` / `ENDFILE`, coprocess `|&`, CSV mode, many builtins). The **performance** goal is to beat typical `awk` / `mawk` / `gawk` on **supported** workloads (see benchmarks below)—**not** to claim parity with every dialect or extension.
+
+**Not “all awks”:** Calling this “all functionality of all awk variants” would be inaccurate. **Gaps you hit early** when porting GNU awk scripts include:
+
+- **`RS`** — input records are **newline-delimited only**. Custom `RS`, paragraph mode (`RS=""`), and regex record separators are **not** implemented, so paragraph mode and other RS-driven scripts will not run as in gawk.
+- **`CONVFMT`**, **`ENVIRON`** (gawk-style environment as an associative array), **`gensub`**, **`PROCINFO`**, and other gawk-only APIs are missing or incomplete.
+
 #### HELP // SYSTEM INTERFACE
 <img src="assets/awkrs-help.png" alt="awkrs -h cyberpunk help (termshot)" width="100%">
 
