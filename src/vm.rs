@@ -7,7 +7,7 @@ use crate::error::{Error, Result};
 use crate::format;
 use crate::interp::Flow;
 use crate::runtime::AwkMap;
-use crate::runtime::{value_to_float, Runtime, Value, MPFR_PREC};
+use crate::runtime::{value_to_float, Runtime, Value};
 use rug::Float;
 use std::borrow::Cow;
 use std::cmp::Ordering;
@@ -663,7 +663,7 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
                 &jit_f64_to_value(ctx, a2),
                 &jit_f64_to_value(ctx, a3),
                 ic,
-                false,
+                ctx.rt,
             );
             r.as_number()
         }
@@ -673,7 +673,7 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
                 &jit_f64_to_value(ctx, a2),
                 &jit_f64_to_value(ctx, a3),
                 ic,
-                false,
+                ctx.rt,
             );
             Value::Num(if eq.as_number() != 0.0 { 0.0 } else { 1.0 }).as_number()
         }
@@ -691,7 +691,7 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
                 &jit_f64_to_value(ctx, a2),
                 &jit_f64_to_value(ctx, a3),
                 ic,
-                false,
+                ctx.rt,
             )
             .as_number()
         }
@@ -963,7 +963,7 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
                 ctx.array_elem_get(name, k.as_ref())
             };
             let rhs = jit_f64_to_value(ctx, a3);
-            let newv = apply_binop(bop, &old, &rhs, false).unwrap_or(Value::Num(0.0));
+            let newv = apply_binop(bop, &old, &rhs, false, ctx.rt).unwrap_or(Value::Num(0.0));
             let n = newv.as_number();
             let key = key_val.into_string();
             ctx.array_elem_set(name, key, Value::Num(n));
@@ -1088,7 +1088,7 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
             let idx = jit_f64_to_value(ctx, a2).as_number() as i32;
             let rhs = jit_f64_to_value(ctx, a3);
             let old = ctx.rt.field(idx);
-            let new_val = apply_binop(bop, &old, &rhs, false).unwrap_or(Value::Num(0.0));
+            let new_val = apply_binop(bop, &old, &rhs, false, ctx.rt).unwrap_or(Value::Num(0.0));
             let s = new_val.as_str();
             ctx.rt.set_field(idx, &s);
             value_to_jit_f64(ctx, new_val)
@@ -1719,7 +1719,7 @@ extern "C" fn jit_field_dispatch(vmctx: *mut c_void, op: u32, field_idx: i32, ar
                     _ => unreachable!(),
                 };
                 let old = ctx.rt.field(field_idx);
-                let new_val = match apply_binop(bop, &old, &Value::Num(arg), false) {
+                let new_val = match apply_binop(bop, &old, &Value::Num(arg), false, ctx.rt) {
                     Ok(v) => v,
                     Err(_) => return 0.0,
                 };
@@ -2274,7 +2274,9 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             // ── Constants ───────────────────────────────────────────────
             Op::PushNum(n) => {
                 if ctx.rt.bignum {
-                    ctx.push(Value::Mpfr(Float::with_val(MPFR_PREC, n)));
+                    let prec = ctx.rt.mpfr_prec_bits();
+                    let round = ctx.rt.mpfr_round();
+                    ctx.push(Value::Mpfr(Float::with_val_round(prec, n, round).0));
                 } else {
                     ctx.push(Value::Num(n));
                 }
@@ -2373,7 +2375,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                     idx,
                     |ctx, name| -> crate::error::Result<Value> {
                         let old = ctx.get_var(name);
-                        let new_val = apply_binop(bop, &old, &rhs, ctx.rt.bignum)?;
+                        let new_val = apply_binop(bop, &old, &rhs, ctx.rt.bignum, ctx.rt)?;
                         ctx.set_var(name, new_val.clone());
                         Ok(new_val)
                     },
@@ -2382,7 +2384,13 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             }
             Op::CompoundAssignSlot(slot, bop) => {
                 let rhs = ctx.pop();
-                let new_val = apply_binop(bop, &ctx.rt.slots[slot as usize], &rhs, ctx.rt.bignum)?;
+                let new_val = apply_binop(
+                    bop,
+                    &ctx.rt.slots[slot as usize],
+                    &rhs,
+                    ctx.rt.bignum,
+                    ctx.rt,
+                )?;
                 ctx.rt.slots[slot as usize] = new_val.clone();
                 ctx.push(new_val);
             }
@@ -2390,7 +2398,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 let rhs = ctx.pop();
                 let idx = ctx.pop().as_number() as i32;
                 let old = ctx.rt.field(idx);
-                let new_val = apply_binop(bop, &old, &rhs, ctx.rt.bignum)?;
+                let new_val = apply_binop(bop, &old, &rhs, ctx.rt.bignum, ctx.rt)?;
                 let s = new_val.as_str();
                 ctx.rt.set_field(idx, &s);
                 ctx.push(new_val);
@@ -2403,7 +2411,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                     let k = key_val.as_str_cow();
                     ctx.array_elem_get(name, k.as_ref())
                 };
-                let new_val = apply_binop(bop, &old, &rhs, ctx.rt.bignum)?;
+                let new_val = apply_binop(bop, &old, &rhs, ctx.rt.bignum, ctx.rt)?;
                 let key = key_val.into_string();
                 ctx.array_elem_set(name, key, new_val.clone());
                 ctx.push(new_val);
@@ -2466,10 +2474,11 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 if ctx.rt.bignum {
                     let b = ctx.pop();
                     let a = ctx.pop();
-                    let prec = MPFR_PREC;
+                    let prec = ctx.rt.mpfr_prec_bits();
+                    let round = ctx.rt.mpfr_round();
                     let fa = value_to_float(&a, prec);
                     let fb = value_to_float(&b, prec);
-                    ctx.push(Value::Mpfr(Float::with_val(prec, &fa + &fb)));
+                    ctx.push(Value::Mpfr(Float::with_val_round(prec, &fa + &fb, round).0));
                 } else {
                     let b = ctx.pop().as_number();
                     let a = ctx.pop().as_number();
@@ -2480,10 +2489,11 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 if ctx.rt.bignum {
                     let b = ctx.pop();
                     let a = ctx.pop();
-                    let prec = MPFR_PREC;
+                    let prec = ctx.rt.mpfr_prec_bits();
+                    let round = ctx.rt.mpfr_round();
                     let fa = value_to_float(&a, prec);
                     let fb = value_to_float(&b, prec);
-                    ctx.push(Value::Mpfr(Float::with_val(prec, &fa - &fb)));
+                    ctx.push(Value::Mpfr(Float::with_val_round(prec, &fa - &fb, round).0));
                 } else {
                     let b = ctx.pop().as_number();
                     let a = ctx.pop().as_number();
@@ -2494,10 +2504,11 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 if ctx.rt.bignum {
                     let b = ctx.pop();
                     let a = ctx.pop();
-                    let prec = MPFR_PREC;
+                    let prec = ctx.rt.mpfr_prec_bits();
+                    let round = ctx.rt.mpfr_round();
                     let fa = value_to_float(&a, prec);
                     let fb = value_to_float(&b, prec);
-                    ctx.push(Value::Mpfr(Float::with_val(prec, &fa * &fb)));
+                    ctx.push(Value::Mpfr(Float::with_val_round(prec, &fa * &fb, round).0));
                 } else {
                     let b = ctx.pop().as_number();
                     let a = ctx.pop().as_number();
@@ -2508,10 +2519,11 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 if ctx.rt.bignum {
                     let b = ctx.pop();
                     let a = ctx.pop();
-                    let prec = MPFR_PREC;
+                    let prec = ctx.rt.mpfr_prec_bits();
+                    let round = ctx.rt.mpfr_round();
                     let fa = value_to_float(&a, prec);
                     let fb = value_to_float(&b, prec);
-                    ctx.push(Value::Mpfr(Float::with_val(prec, &fa / &fb)));
+                    ctx.push(Value::Mpfr(Float::with_val_round(prec, &fa / &fb, round).0));
                 } else {
                     let b = ctx.pop().as_number();
                     let a = ctx.pop().as_number();
@@ -2522,10 +2534,11 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 if ctx.rt.bignum {
                     let b = ctx.pop();
                     let a = ctx.pop();
-                    let prec = MPFR_PREC;
+                    let prec = ctx.rt.mpfr_prec_bits();
+                    let round = ctx.rt.mpfr_round();
                     let fa = value_to_float(&a, prec);
                     let fb = value_to_float(&b, prec);
-                    ctx.push(Value::Mpfr(Float::with_val(prec, &fa % &fb)));
+                    ctx.push(Value::Mpfr(Float::with_val_round(prec, &fa % &fb, round).0));
                 } else {
                     let b = ctx.pop().as_number();
                     let a = ctx.pop().as_number();
@@ -2538,44 +2551,38 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 let b = ctx.pop();
                 let a = ctx.pop();
                 let ic = ctx.rt.ignore_case_flag();
-                let bn = ctx.rt.bignum;
-                ctx.push(awk_cmp_eq(&a, &b, ic, bn));
+                ctx.push(awk_cmp_eq(&a, &b, ic, ctx.rt));
             }
             Op::CmpNe => {
                 let b = ctx.pop();
                 let a = ctx.pop();
                 let ic = ctx.rt.ignore_case_flag();
-                let bn = ctx.rt.bignum;
-                let eq = awk_cmp_eq(&a, &b, ic, bn);
+                let eq = awk_cmp_eq(&a, &b, ic, ctx.rt);
                 ctx.push(Value::Num(if eq.as_number() != 0.0 { 0.0 } else { 1.0 }));
             }
             Op::CmpLt => {
                 let b = ctx.pop();
                 let a = ctx.pop();
                 let ic = ctx.rt.ignore_case_flag();
-                let bn = ctx.rt.bignum;
-                ctx.push(awk_cmp_rel(BinOp::Lt, &a, &b, ic, bn));
+                ctx.push(awk_cmp_rel(BinOp::Lt, &a, &b, ic, ctx.rt));
             }
             Op::CmpLe => {
                 let b = ctx.pop();
                 let a = ctx.pop();
                 let ic = ctx.rt.ignore_case_flag();
-                let bn = ctx.rt.bignum;
-                ctx.push(awk_cmp_rel(BinOp::Le, &a, &b, ic, bn));
+                ctx.push(awk_cmp_rel(BinOp::Le, &a, &b, ic, ctx.rt));
             }
             Op::CmpGt => {
                 let b = ctx.pop();
                 let a = ctx.pop();
                 let ic = ctx.rt.ignore_case_flag();
-                let bn = ctx.rt.bignum;
-                ctx.push(awk_cmp_rel(BinOp::Gt, &a, &b, ic, bn));
+                ctx.push(awk_cmp_rel(BinOp::Gt, &a, &b, ic, ctx.rt));
             }
             Op::CmpGe => {
                 let b = ctx.pop();
                 let a = ctx.pop();
                 let ic = ctx.rt.ignore_case_flag();
-                let bn = ctx.rt.bignum;
-                ctx.push(awk_cmp_rel(BinOp::Ge, &a, &b, ic, bn));
+                ctx.push(awk_cmp_rel(BinOp::Ge, &a, &b, ic, ctx.rt));
             }
 
             // ── String / regex ──────────────────────────────────────────
@@ -2625,9 +2632,10 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             Op::Neg => {
                 if ctx.rt.bignum {
                     let v = ctx.pop();
-                    let prec = MPFR_PREC;
+                    let prec = ctx.rt.mpfr_prec_bits();
+                    let round = ctx.rt.mpfr_round();
                     let f = value_to_float(&v, prec);
-                    ctx.push(Value::Mpfr(Float::with_val(prec, -f)));
+                    ctx.push(Value::Mpfr(Float::with_val_round(prec, -f, round).0));
                 } else {
                     let v = ctx.pop().as_number();
                     ctx.push(Value::Num(-v));
@@ -2636,9 +2644,10 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             Op::Pos => {
                 if ctx.rt.bignum {
                     let v = ctx.pop();
-                    let prec = MPFR_PREC;
+                    let prec = ctx.rt.mpfr_prec_bits();
+                    let round = ctx.rt.mpfr_round();
                     let f = value_to_float(&v, prec);
-                    ctx.push(Value::Mpfr(f));
+                    ctx.push(Value::Mpfr(Float::with_val_round(prec, f, round).0));
                 } else {
                     let v = ctx.pop().as_number();
                     ctx.push(Value::Num(v));
@@ -3033,8 +3042,8 @@ fn incdec_push(kind: IncDecOp, old_n: f64, new_n: f64) -> f64 {
     }
 }
 
-fn apply_binop(op: BinOp, old: &Value, rhs: &Value, bignum: bool) -> Result<Value> {
-    crate::runtime::awk_binop_values(op, old, rhs, bignum)
+fn apply_binop(op: BinOp, old: &Value, rhs: &Value, use_mpfr: bool, rt: &Runtime) -> Result<Value> {
+    crate::runtime::awk_binop_values(op, old, rhs, use_mpfr, rt)
 }
 
 /// POSIX string compare via `strcoll` on Unix.
@@ -3056,10 +3065,11 @@ fn locale_str_cmp(a: &str, b: &str) -> Ordering {
     }
 }
 
-fn awk_cmp_eq(a: &Value, b: &Value, ignore_case: bool, bignum: bool) -> Value {
-    if bignum && a.is_numeric_str() && b.is_numeric_str() {
-        let fa = value_to_float(a, MPFR_PREC);
-        let fb = value_to_float(b, MPFR_PREC);
+fn awk_cmp_eq(a: &Value, b: &Value, ignore_case: bool, rt: &Runtime) -> Value {
+    if rt.bignum && a.is_numeric_str() && b.is_numeric_str() {
+        let prec = rt.mpfr_prec_bits();
+        let fa = value_to_float(a, prec);
+        let fb = value_to_float(b, prec);
         return Value::Num(if fa == fb { 1.0 } else { 0.0 });
     }
     // Fast path: both Num — skip is_numeric_str() entirely.
@@ -3092,10 +3102,11 @@ fn awk_cmp_eq(a: &Value, b: &Value, ignore_case: bool, bignum: bool) -> Value {
     Value::Num(if ord == Ordering::Equal { 1.0 } else { 0.0 })
 }
 
-fn awk_cmp_rel(op: BinOp, a: &Value, b: &Value, ignore_case: bool, bignum: bool) -> Value {
-    if bignum && a.is_numeric_str() && b.is_numeric_str() {
-        let fa = value_to_float(a, MPFR_PREC);
-        let fb = value_to_float(b, MPFR_PREC);
+fn awk_cmp_rel(op: BinOp, a: &Value, b: &Value, ignore_case: bool, rt: &Runtime) -> Value {
+    if rt.bignum && a.is_numeric_str() && b.is_numeric_str() {
+        let prec = rt.mpfr_prec_bits();
+        let fa = value_to_float(a, prec);
+        let fb = value_to_float(b, prec);
         let ord = fa.partial_cmp(&fb).unwrap_or(Ordering::Equal);
         let ok = match op {
             BinOp::Lt => ord == Ordering::Less,
@@ -3497,6 +3508,24 @@ pub(crate) fn exec_builtin_dispatch(
         "tolower" => Value::Str(args[0].as_str().to_lowercase()),
         "toupper" => Value::Str(args[0].as_str().to_uppercase()),
         "int" => Value::Num(args[0].as_number().trunc()),
+        "intdiv" => {
+            if argc != 2 {
+                return Err(Error::Runtime("`intdiv` expects two arguments".into()));
+            }
+            let b = args[1].as_number();
+            if b == 0.0 {
+                return Err(Error::Runtime("intdiv: division by zero".into()));
+            }
+            let a = args[0].as_number() as i64;
+            let bi = b as i64;
+            Value::Num((a / bi) as f64)
+        }
+        "mkbool" => {
+            if argc != 1 {
+                return Err(Error::Runtime("`mkbool` expects one argument".into()));
+            }
+            Value::Num(if truthy(&args[0]) { 1.0 } else { 0.0 })
+        }
         "sqrt" => Value::Num(args[0].as_number().sqrt()),
         "sin" => {
             if argc != 1 {

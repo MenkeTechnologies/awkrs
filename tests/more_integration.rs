@@ -124,6 +124,26 @@ fn for_in_array() {
 }
 
 #[test]
+fn procinfo_sorted_in_ind_str_asc() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { a["b"]=1; a["a"]=2; PROCINFO["sorted_in"]="@ind_str_asc"; for (k in a) print k }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "a\nb\n");
+}
+
+#[test]
+fn intdiv_and_mkbool_builtins() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { print intdiv(7, 3), intdiv(-7, 3); print mkbool(0), mkbool("x"), mkbool("") }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "2 -2\n0 1 0\n");
+}
+
+#[test]
 fn break_in_while() {
     let (c, o, _) = run_awkrs_stdin(
         "BEGIN { i = 0; while (1) { i = i + 1; if (i == 2) break } print i }",

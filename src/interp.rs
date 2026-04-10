@@ -472,7 +472,7 @@ fn exec_stmt(s: &Stmt, ctx: &mut ExecCtx<'_>) -> Result<Flow> {
                         let matched = match label {
                             SwitchLabel::Expr(e) => {
                                 let ev = eval_expr(e, ctx)?;
-                                switch_value_eq(&v, &ev)
+                                switch_value_eq(&v, &ev, ctx.rt)
                             }
                             SwitchLabel::Regexp(re) => {
                                 let r =
@@ -635,7 +635,7 @@ pub fn eval_expr(e: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {
             let v = eval_expr(rhs, ctx)?;
             let newv = if let Some(bop) = op {
                 let old = ctx.get_var(name);
-                apply_binop(*bop, &old, &v, ctx.rt.bignum)?
+                apply_binop(*bop, &old, &v, ctx.rt.bignum, ctx.rt)?
             } else {
                 v
             };
@@ -647,7 +647,7 @@ pub fn eval_expr(e: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {
             let v = eval_expr(rhs, ctx)?;
             let newv = if let Some(bop) = op {
                 let old = Value::Str(ctx.rt.field(idx).as_str());
-                apply_binop(*bop, &old, &v, ctx.rt.bignum)?
+                apply_binop(*bop, &old, &v, ctx.rt.bignum, ctx.rt)?
             } else {
                 v
             };
@@ -665,7 +665,7 @@ pub fn eval_expr(e: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {
             let v = eval_expr(rhs, ctx)?;
             let newv = if let Some(bop) = op {
                 let old = ctx.rt.array_get(name, &k);
-                apply_binop(*bop, &old, &v, ctx.rt.bignum)?
+                apply_binop(*bop, &old, &v, ctx.rt.bignum, ctx.rt)?
             } else {
                 v
             };
@@ -755,7 +755,7 @@ fn eval_binary(op: BinOp, left: &Expr, right: &Expr, ctx: &mut ExecCtx<'_>) -> R
     {
         let av = eval_expr(left, ctx)?;
         let bv = eval_expr(right, ctx)?;
-        return crate::runtime::awk_binop_values(op, &av, &bv, true);
+        return crate::runtime::awk_binop_values(op, &av, &bv, true, ctx.rt);
     }
     let a = eval_expr(left, ctx)?.as_number();
     let b = eval_expr(right, ctx)?.as_number();
@@ -805,7 +805,7 @@ fn awk_eq(left: &Expr, right: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {
     let lv = eval_expr(left, ctx)?;
     let rv = eval_expr(right, ctx)?;
     if ctx.rt.bignum && lv.is_numeric_str() && rv.is_numeric_str() {
-        let prec = crate::runtime::MPFR_PREC;
+        let prec = ctx.rt.mpfr_prec_bits();
         let fa = crate::runtime::value_to_float(&lv, prec);
         let fb = crate::runtime::value_to_float(&rv, prec);
         return Ok(Value::Num(if fa == fb { 1.0 } else { 0.0 }));
@@ -829,9 +829,9 @@ fn awk_eq(left: &Expr, right: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {
 }
 
 #[inline]
-fn switch_value_eq(lv: &Value, rv: &Value) -> bool {
+fn switch_value_eq(lv: &Value, rv: &Value, rt: &crate::runtime::Runtime) -> bool {
     if matches!(lv, Value::Mpfr(_)) || matches!(rv, Value::Mpfr(_)) {
-        let prec = crate::runtime::MPFR_PREC;
+        let prec = rt.mpfr_prec_bits();
         let fa = crate::runtime::value_to_float(lv, prec);
         let fb = crate::runtime::value_to_float(rv, prec);
         return fa == fb;
@@ -853,7 +853,7 @@ fn awk_rel(op: BinOp, left: &Expr, right: &Expr, ctx: &mut ExecCtx<'_>) -> Resul
     let lv = eval_expr(left, ctx)?;
     let rv = eval_expr(right, ctx)?;
     if ctx.rt.bignum && lv.is_numeric_str() && rv.is_numeric_str() {
-        let prec = crate::runtime::MPFR_PREC;
+        let prec = ctx.rt.mpfr_prec_bits();
         let fa = crate::runtime::value_to_float(&lv, prec);
         let fb = crate::runtime::value_to_float(&rv, prec);
         let ord = fa.partial_cmp(&fb).unwrap_or(Ordering::Equal);
@@ -896,18 +896,20 @@ fn eval_unary(op: UnaryOp, expr: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> 
     Ok(match op {
         UnaryOp::Neg => {
             if ctx.rt.bignum {
-                let prec = crate::runtime::MPFR_PREC;
+                let prec = ctx.rt.mpfr_prec_bits();
+                let round = ctx.rt.mpfr_round();
                 let f = crate::runtime::value_to_float(&v, prec);
-                Value::Mpfr(rug::Float::with_val(prec, -f))
+                Value::Mpfr(rug::Float::with_val_round(prec, -f, round).0)
             } else {
                 Value::Num(-v.as_number())
             }
         }
         UnaryOp::Pos => {
             if ctx.rt.bignum {
-                let prec = crate::runtime::MPFR_PREC;
+                let prec = ctx.rt.mpfr_prec_bits();
+                let round = ctx.rt.mpfr_round();
                 let f = crate::runtime::value_to_float(&v, prec);
-                Value::Mpfr(f)
+                Value::Mpfr(rug::Float::with_val_round(prec, f, round).0)
             } else {
                 Value::Num(v.as_number())
             }
@@ -916,8 +918,14 @@ fn eval_unary(op: UnaryOp, expr: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> 
     })
 }
 
-fn apply_binop(op: BinOp, old: &Value, new: &Value, bignum: bool) -> Result<Value> {
-    crate::runtime::awk_binop_values(op, old, new, bignum)
+fn apply_binop(
+    op: BinOp,
+    old: &Value,
+    new: &Value,
+    bignum: bool,
+    rt: &crate::runtime::Runtime,
+) -> Result<Value> {
+    crate::runtime::awk_binop_values(op, old, new, bignum, rt)
 }
 
 fn interp_typeof_scalar(ctx: &ExecCtx<'_>, name: &str) -> &'static str {
@@ -1103,6 +1111,19 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
         "int" if args.len() == 1 => {
             let n = eval_expr(&args[0], ctx)?.as_number();
             Ok(Value::Num(n.trunc()))
+        }
+        "intdiv" if args.len() == 2 => {
+            let b = eval_expr(&args[1], ctx)?.as_number();
+            if b == 0.0 {
+                return Err(Error::Runtime("intdiv: division by zero".into()));
+            }
+            let a = eval_expr(&args[0], ctx)?.as_number() as i64;
+            let bi = b as i64;
+            Ok(Value::Num((a / bi) as f64))
+        }
+        "mkbool" if args.len() == 1 => {
+            let v = eval_expr(&args[0], ctx)?;
+            Ok(Value::Num(if truthy(&v) { 1.0 } else { 0.0 }))
         }
         "sqrt" if args.len() == 1 => {
             let n = eval_expr(&args[0], ctx)?.as_number();

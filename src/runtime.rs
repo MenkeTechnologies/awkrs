@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::cell::Cell;
+use std::cmp::Ordering;
 use std::collections::HashMap;
 
 /// Fast hash map for awk variables and arrays. Uses FxHash (no DoS resistance,
@@ -12,10 +13,12 @@ use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream, ToSocketAddrs, UdpSock
 use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use crate::bytecode::CompiledProgram;
 use crate::error::{Error, Result};
 use gettext::Catalog;
+use rug::float::Round;
 use rug::Float;
 
 thread_local! {
@@ -46,6 +49,165 @@ pub(crate) type SharedInputReader = Arc<Mutex<BufReader<Box<dyn Read + Send>>>>;
 /// Default precision for [`Value::Mpfr`] when `-M` / `--bignum` is enabled (MPFR bits).
 pub const MPFR_PREC: u32 = 256;
 
+/// POSIX / gawk: string ordering via `strcoll` on Unix (used by `for-in` value sorts and comparisons).
+pub fn awk_locale_str_cmp(a: &str, b: &str) -> Ordering {
+    #[cfg(unix)]
+    {
+        use std::ffi::CString;
+        match (CString::new(a), CString::new(b)) {
+            (Ok(ca), Ok(cb)) => unsafe {
+                let r = libc::strcoll(ca.as_ptr(), cb.as_ptr());
+                r.cmp(&0)
+            },
+            _ => a.cmp(b),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        a.cmp(b)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SortedInMode {
+    Unsorted,
+    IndStrAsc,
+    IndStrDesc,
+    IndNumAsc,
+    IndNumDesc,
+    ValStrAsc,
+    ValStrDesc,
+    ValNumAsc,
+    ValNumDesc,
+    ValTypeAsc,
+    ValTypeDesc,
+}
+
+fn parse_sorted_in(s: &str) -> SortedInMode {
+    match s.trim() {
+        "" | "@unsorted" => SortedInMode::Unsorted,
+        "@ind_str_asc" => SortedInMode::IndStrAsc,
+        "@ind_str_desc" => SortedInMode::IndStrDesc,
+        "@ind_num_asc" => SortedInMode::IndNumAsc,
+        "@ind_num_desc" => SortedInMode::IndNumDesc,
+        "@val_str_asc" => SortedInMode::ValStrAsc,
+        "@val_str_desc" => SortedInMode::ValStrDesc,
+        "@val_num_asc" => SortedInMode::ValNumAsc,
+        "@val_num_desc" => SortedInMode::ValNumDesc,
+        "@val_type_asc" => SortedInMode::ValTypeAsc,
+        "@val_type_desc" => SortedInMode::ValTypeDesc,
+        // Custom comparator name — not implemented; keep gawk default (unsorted).
+        _ => SortedInMode::Unsorted,
+    }
+}
+
+fn sorted_in_mode(rt: &Runtime) -> SortedInMode {
+    if rt.posix {
+        return SortedInMode::Unsorted;
+    }
+    match rt.get_global_var("PROCINFO") {
+        Some(Value::Array(m)) => m
+            .get("sorted_in")
+            .map(|v| parse_sorted_in(&v.as_str()))
+            .unwrap_or(SortedInMode::Unsorted),
+        _ => SortedInMode::Unsorted,
+    }
+}
+
+#[inline]
+fn val_type_rank(v: &Value) -> u8 {
+    match v {
+        Value::Uninit => 0,
+        Value::Num(_) | Value::Mpfr(_) => 1,
+        Value::Str(_) => 2,
+        Value::Array(_) => 3,
+    }
+}
+
+fn sort_for_in_keys(keys: &mut [String], arr: &AwkMap<String, Value>, mode: SortedInMode) {
+    use SortedInMode::*;
+    match mode {
+        Unsorted => {}
+        IndStrAsc => keys.sort(),
+        IndStrDesc => keys.sort_by(|a, b| b.cmp(a)),
+        IndNumAsc => keys.sort_by(|a, b| {
+            parse_number(a)
+                .partial_cmp(&parse_number(b))
+                .unwrap_or(Ordering::Equal)
+        }),
+        IndNumDesc => keys.sort_by(|a, b| {
+            parse_number(b)
+                .partial_cmp(&parse_number(a))
+                .unwrap_or(Ordering::Equal)
+        }),
+        ValStrAsc => keys.sort_by(|ka, kb| {
+            let sa = arr.get(ka).map(|v| v.as_str()).unwrap_or_default();
+            let sb = arr.get(kb).map(|v| v.as_str()).unwrap_or_default();
+            awk_locale_str_cmp(&sa, &sb)
+        }),
+        ValStrDesc => keys.sort_by(|ka, kb| {
+            let sa = arr.get(ka).map(|v| v.as_str()).unwrap_or_default();
+            let sb = arr.get(kb).map(|v| v.as_str()).unwrap_or_default();
+            awk_locale_str_cmp(&sb, &sa)
+        }),
+        ValNumAsc => keys.sort_by(|ka, kb| {
+            let na = arr.get(ka).map(|v| v.as_number()).unwrap_or(0.0);
+            let nb = arr.get(kb).map(|v| v.as_number()).unwrap_or(0.0);
+            na.partial_cmp(&nb).unwrap_or(Ordering::Equal)
+        }),
+        ValNumDesc => keys.sort_by(|ka, kb| {
+            let na = arr.get(ka).map(|v| v.as_number()).unwrap_or(0.0);
+            let nb = arr.get(kb).map(|v| v.as_number()).unwrap_or(0.0);
+            nb.partial_cmp(&na).unwrap_or(Ordering::Equal)
+        }),
+        ValTypeAsc => keys.sort_by(|ka, kb| {
+            let va = arr.get(ka.as_str());
+            let vb = arr.get(kb.as_str());
+            let ra = va.map(val_type_rank).unwrap_or(0);
+            let rb = vb.map(val_type_rank).unwrap_or(0);
+            ra.cmp(&rb).then_with(|| {
+                let sa = va.map(|v| v.as_str()).unwrap_or_default();
+                let sb = vb.map(|v| v.as_str()).unwrap_or_default();
+                awk_locale_str_cmp(&sa, &sb)
+            })
+        }),
+        ValTypeDesc => keys.sort_by(|ka, kb| {
+            let va = arr.get(ka.as_str());
+            let vb = arr.get(kb.as_str());
+            let ra = va.map(val_type_rank).unwrap_or(0);
+            let rb = vb.map(val_type_rank).unwrap_or(0);
+            rb.cmp(&ra).then_with(|| {
+                let sa = va.map(|v| v.as_str()).unwrap_or_default();
+                let sb = vb.map(|v| v.as_str()).unwrap_or_default();
+                awk_locale_str_cmp(&sb, &sa)
+            })
+        }),
+    }
+}
+
+#[cfg(unix)]
+fn wait_fd_read_timeout(fd: std::os::unix::io::RawFd, timeout_ms: i32) -> crate::error::Result<()> {
+    if timeout_ms <= 0 {
+        return Ok(());
+    }
+    let mut fds = libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let rc = unsafe { libc::poll(&mut fds, 1, timeout_ms) };
+    if rc < 0 {
+        return Err(crate::error::Error::Io(std::io::Error::last_os_error()));
+    }
+    if rc == 0 {
+        return Err(crate::error::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "read timeout (PROCINFO[\"READ_TIMEOUT\"])",
+        )));
+    }
+    Ok(())
+}
+
 /// Convert a [`Value`] to a [`Float`] for MPFR arithmetic (`-M`).
 pub fn value_to_float(v: &Value, prec: u32) -> Float {
     match v {
@@ -57,16 +219,17 @@ pub fn value_to_float(v: &Value, prec: u32) -> Float {
     }
 }
 
-/// Binary `+=` / `-=` / … for compound assignment; uses MPFR when `bignum` is true.
+/// Binary `+=` / `-=` / … for compound assignment; uses MPFR when `use_mpfr` is true.
 pub fn awk_binop_values(
     op: crate::ast::BinOp,
     old: &Value,
     rhs: &Value,
-    bignum: bool,
+    use_mpfr: bool,
+    rt: &Runtime,
 ) -> crate::error::Result<Value> {
     use crate::ast::BinOp;
     use crate::error::Error;
-    if !bignum {
+    if !use_mpfr {
         let a = old.as_number();
         let b = rhs.as_number();
         let n = match op {
@@ -79,15 +242,16 @@ pub fn awk_binop_values(
         };
         return Ok(Value::Num(n));
     }
-    let prec = MPFR_PREC;
+    let prec = rt.mpfr_prec_bits();
+    let round = rt.mpfr_round();
     let a = value_to_float(old, prec);
     let b = value_to_float(rhs, prec);
     let r = match op {
-        BinOp::Add => Float::with_val(prec, &a + &b),
-        BinOp::Sub => Float::with_val(prec, &a - &b),
-        BinOp::Mul => Float::with_val(prec, &a * &b),
-        BinOp::Div => Float::with_val(prec, &a / &b),
-        BinOp::Mod => Float::with_val(prec, &a % &b),
+        BinOp::Add => Float::with_val_round(prec, &a + &b, round).0,
+        BinOp::Sub => Float::with_val_round(prec, &a - &b, round).0,
+        BinOp::Mul => Float::with_val_round(prec, &a * &b, round).0,
+        BinOp::Div => Float::with_val_round(prec, &a / &b, round).0,
+        BinOp::Mod => Float::with_val_round(prec, &a % &b, round).0,
         _ => return Err(Error::Runtime("invalid compound assignment op".into())),
     };
     Ok(Value::Mpfr(r))
@@ -695,6 +859,49 @@ impl Runtime {
             .unwrap_or(false)
     }
 
+    /// gawk **`PROCINFO["prec"]`**: MPFR precision in bits when **`-M`** / **`--bignum`** is active.
+    pub fn mpfr_prec_bits(&self) -> u32 {
+        if !self.bignum {
+            return MPFR_PREC;
+        }
+        match self.get_global_var("PROCINFO") {
+            Some(Value::Array(m)) => m
+                .get("prec")
+                .map(|v| v.as_number() as u32)
+                .filter(|&p| (53..=1_000_000).contains(&p))
+                .unwrap_or(MPFR_PREC),
+            _ => MPFR_PREC,
+        }
+    }
+
+    /// gawk **`PROCINFO["roundmode"]`**: MPFR rounding (`N` nearest, `Z` zero, `U` up, `D` down, `A` away).
+    pub fn mpfr_round(&self) -> Round {
+        let s = match self.get_global_var("PROCINFO") {
+            Some(Value::Array(m)) => m.get("roundmode").map(|v| v.as_str()).unwrap_or_default(),
+            _ => String::new(),
+        };
+        let c = s.trim().chars().next().unwrap_or('N');
+        match c.to_ascii_uppercase() {
+            'N' => Round::Nearest,
+            'Z' => Round::Zero,
+            'U' => Round::Up,
+            'D' => Round::Down,
+            'A' => Round::AwayZero,
+            _ => Round::Nearest,
+        }
+    }
+
+    /// gawk **`PROCINFO["READ_TIMEOUT"]`**: positive = milliseconds for blocking reads on files / inet; **`0`** = no timeout.
+    pub fn read_timeout_ms(&self) -> i32 {
+        match self.get_global_var("PROCINFO") {
+            Some(Value::Array(m)) => m
+                .get("READ_TIMEOUT")
+                .map(|v| v.as_number() as i32)
+                .unwrap_or(0),
+            _ => 0,
+        }
+    }
+
     /// Refresh **`PROCINFO`**, **`FUNCTAB`**, and a **`SYMTAB`** mirror of globals (best-effort vs gawk introspection).
     pub fn refresh_special_arrays(&mut self, cp: &CompiledProgram, bin_name: &str) {
         self.procinfo_refresh(bin_name);
@@ -704,6 +911,11 @@ impl Runtime {
 
     fn procinfo_refresh(&mut self, bin_name: &str) {
         let mut p = AwkMap::default();
+        if let Some(Value::Array(old)) = self.vars.get("PROCINFO") {
+            for (k, v) in old.iter() {
+                p.insert(k.clone(), v.clone());
+            }
+        }
         p.insert(
             "version".into(),
             Value::Str(env!("CARGO_PKG_VERSION").into()),
@@ -722,8 +934,14 @@ impl Runtime {
                 p.insert("egid".into(), Value::Num(libc::getegid() as f64));
             }
         }
-        if self.bignum {
+        if self.bignum && !p.contains_key("prec") {
             p.insert("prec".into(), Value::Num(MPFR_PREC as f64));
+        }
+        if !p.contains_key("roundmode") {
+            p.insert("roundmode".into(), Value::Str("N".into()));
+        }
+        if !p.contains_key("READ_TIMEOUT") {
+            p.insert("READ_TIMEOUT".into(), Value::Num(0.0));
         }
         let binmode = self
             .get_global_var("BINMODE")
@@ -1215,7 +1433,14 @@ impl Runtime {
             self.file_handles
                 .insert(path.to_string(), BufReader::new(f));
         }
+        let to = self.read_timeout_ms();
         let reader = self.file_handles.get_mut(path).unwrap();
+        #[cfg(unix)]
+        if to > 0 {
+            use std::os::unix::io::AsRawFd;
+            let fd = reader.get_ref().as_raw_fd();
+            wait_fd_read_timeout(fd, to)?;
+        }
         let mut line = String::new();
         let n = reader.read_line(&mut line).map_err(Error::Io)?;
         if n == 0 {
@@ -1239,6 +1464,13 @@ impl Runtime {
         let w = stream
             .try_clone()
             .map_err(|e| Error::Runtime(format!("inet: {e}")))?;
+        let to = self.read_timeout_ms();
+        if to > 0 {
+            let d = Duration::from_millis(to as u64);
+            stream
+                .set_read_timeout(Some(d))
+                .map_err(|e| Error::Runtime(format!("inet tcp read timeout: {e}")))?;
+        }
         self.inet_tcp_read
             .insert(path.to_string(), BufReader::new(stream));
         self.inet_tcp_write.insert(path.to_string(), w);
@@ -1265,6 +1497,12 @@ impl Runtime {
         socket
             .connect(addr)
             .map_err(|e| Error::Runtime(format!("inet udp connect `{path}`: {e}")))?;
+        let to = self.read_timeout_ms();
+        if to > 0 {
+            socket
+                .set_read_timeout(Some(Duration::from_millis(to as u64)))
+                .map_err(|e| Error::Runtime(format!("inet udp read timeout: {e}")))?;
+        }
         self.inet_udp.insert(path.to_string(), socket);
         Ok(())
     }
@@ -1776,10 +2014,16 @@ impl Runtime {
     }
 
     pub fn array_keys(&self, name: &str) -> Vec<String> {
-        match self.get_global_var(name) {
-            Some(Value::Array(a)) => a.keys().cloned().collect(),
-            _ => Vec::new(),
+        let Some(Value::Array(a)) = self.get_global_var(name) else {
+            return Vec::new();
+        };
+        let mut keys: Vec<String> = a.keys().cloned().collect();
+        if self.posix {
+            return keys;
         }
+        let mode = sorted_in_mode(self);
+        sort_for_in_keys(&mut keys, a, mode);
+        keys
     }
 
     /// `key in arr` — true iff `arr` is an array that has `key` (POSIX: subscript was used).
