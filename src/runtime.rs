@@ -273,7 +273,12 @@ pub fn awk_binop_values(
             BinOp::Add => a + b,
             BinOp::Sub => a - b,
             BinOp::Mul => a * b,
-            BinOp::Div => a / b,
+            BinOp::Div => {
+                if b == 0.0 {
+                    rt.lint_warn("division by zero yields infinity or NaN");
+                }
+                a / b
+            }
             BinOp::Mod => a % b,
             BinOp::Pow => a.powf(b),
             _ => return Err(Error::Runtime("invalid compound assignment op".into())),
@@ -288,7 +293,12 @@ pub fn awk_binop_values(
         BinOp::Add => Float::with_val_round(prec, &a + &b, round).0,
         BinOp::Sub => Float::with_val_round(prec, &a - &b, round).0,
         BinOp::Mul => Float::with_val_round(prec, &a * &b, round).0,
-        BinOp::Div => Float::with_val_round(prec, &a / &b, round).0,
+        BinOp::Div => {
+            if b.is_zero() {
+                rt.lint_warn("division by zero");
+            }
+            Float::with_val_round(prec, &a / &b, round).0
+        }
         BinOp::Mod => Float::with_val_round(prec, &a % &b, round).0,
         BinOp::Pow => Float::with_val_round(prec, a.pow(&b), round).0,
         _ => return Err(Error::Runtime("invalid compound assignment op".into())),
@@ -403,6 +413,17 @@ pub(crate) fn longest_f64_prefix(s: &str) -> Option<&str> {
 }
 
 impl Value {
+    /// gawk-style fatal: whole arrays cannot be coerced to a string in scalar contexts (`print a`, concat, etc.).
+    #[inline]
+    pub fn reject_if_array_scalar(&self) -> Result<()> {
+        if matches!(self, Value::Array(_)) {
+            return Err(Error::Runtime(
+                "attempt to use an array in a scalar context".into(),
+            ));
+        }
+        Ok(())
+    }
+
     pub fn as_str(&self) -> String {
         match self {
             Value::Uninit => String::new(),
@@ -974,6 +995,13 @@ impl Runtime {
         self.get_global_var("LINT")
             .map(|v| v.truthy())
             .unwrap_or(false)
+    }
+
+    /// Emit a **`LINT`**-controlled warning to stderr (no-op when `LINT` is unset/false).
+    pub fn lint_warn(&self, msg: &str) {
+        if self.lint_runtime_active() {
+            eprintln!("awkrs: warning: {msg}");
+        }
     }
 
     /// gawk **`PROCINFO["prec"]`**: MPFR precision in bits when **`-M`** / **`--bignum`** is active.

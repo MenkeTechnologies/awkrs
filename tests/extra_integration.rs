@@ -95,6 +95,37 @@ fn substr_start_beyond_string_yields_empty() {
 }
 
 #[test]
+fn substr_start_zero_clamped_like_gawk() {
+    let (c, o, e) = run_awkrs_stdin(r#"BEGIN { print substr("hello", 0, 3) }"#, "");
+    assert_eq!(c, 0, "stderr={e:?}");
+    assert_eq!(o, "hel\n");
+}
+
+#[test]
+fn print_whole_array_scalar_is_fatal() {
+    let (c, o, e) = run_awkrs_stdin(r#"BEGIN { a[1] = 1; print a }"#, "");
+    assert_ne!(c, 0, "expected nonzero exit, out={o:?} stderr={e:?}");
+    assert!(
+        e.contains("attempt to use an array in a scalar context"),
+        "stderr={e:?}"
+    );
+}
+
+#[test]
+fn lint_truthy_warns_on_division_by_zero() {
+    let (c, o, e) = run_awkrs_stdin_args(["-v", "LINT=1"], r#"BEGIN { print 1/0 }"#, "");
+    assert_eq!(c, 0, "stderr={e:?}");
+    assert!(
+        e.contains("awkrs: warning:") && e.contains("division"),
+        "stderr={e:?}"
+    );
+    assert!(
+        o.to_ascii_lowercase().contains("inf"),
+        "stdout should be inf-like: {o:?}"
+    );
+}
+
+#[test]
 fn index_miss_returns_zero() {
     let (c, o, _) = run_awkrs_stdin(r#"BEGIN { print index("abc", "z") }"#, "");
     assert_eq!(c, 0);

@@ -403,7 +403,9 @@ fn exec_stmt(s: &Stmt, ctx: &mut ExecCtx<'_>) -> Result<Flow> {
             let mut parts = Vec::new();
             for a in args {
                 for fe in flatten_print_exprs(a) {
-                    parts.push(eval_expr(fe, ctx)?.as_str());
+                    let v = eval_expr(fe, ctx)?;
+                    v.reject_if_array_scalar()?;
+                    parts.push(v.as_str());
                 }
             }
             let line = if parts.is_empty() {
@@ -436,11 +438,16 @@ fn exec_stmt(s: &Stmt, ctx: &mut ExecCtx<'_>) -> Result<Flow> {
             if args.is_empty() {
                 return Err(Error::Runtime("`printf` needs a format string".into()));
             }
-            let fmt = eval_expr(&args[0], ctx)?.as_str();
+            let fmtv = eval_expr(&args[0], ctx)?;
+            fmtv.reject_if_array_scalar()?;
+            let fmt = fmtv.as_str();
             let vals: Vec<Value> = args[1..]
                 .iter()
                 .map(|e| eval_expr(e, ctx))
                 .collect::<Result<_>>()?;
+            for v in &vals {
+                v.reject_if_array_scalar()?;
+            }
             let out = sprintf_simple(
                 &fmt,
                 &vals,
@@ -721,7 +728,9 @@ pub fn eval_expr(e: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {
         }
         Expr::Call { name, args } => eval_call(name, args, ctx)?,
         Expr::IndirectCall { callee, args } => {
-            let fname = eval_expr(callee, ctx)?.as_str();
+            let callee_v = eval_expr(callee, ctx)?;
+            callee_v.reject_if_array_scalar()?;
+            let fname = callee_v.as_str();
             eval_call(&fname, args, ctx)?
         }
         Expr::Ternary { cond, then_, else_ } => {
@@ -886,13 +895,19 @@ fn eval_inc_dec(op: IncDecOp, target: &IncDecTarget, ctx: &mut ExecCtx<'_>) -> R
 
 fn eval_binary(op: BinOp, left: &Expr, right: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {
     if op == BinOp::Concat {
-        let a = eval_expr(left, ctx)?.as_str();
-        let b = eval_expr(right, ctx)?.as_str();
-        return Ok(Value::Str(format!("{a}{b}")));
+        let av = eval_expr(left, ctx)?;
+        let bv = eval_expr(right, ctx)?;
+        av.reject_if_array_scalar()?;
+        bv.reject_if_array_scalar()?;
+        return Ok(Value::Str(format!("{}{}", av.as_str(), bv.as_str())));
     }
     if op == BinOp::Match || op == BinOp::NotMatch {
-        let s = eval_expr(left, ctx)?.as_str();
-        let pat = eval_expr(right, ctx)?.as_str();
+        let lv = eval_expr(left, ctx)?;
+        let rv = eval_expr(right, ctx)?;
+        lv.reject_if_array_scalar()?;
+        rv.reject_if_array_scalar()?;
+        let s = lv.as_str();
+        let pat = rv.as_str();
         let r = Regex::new(&pat).map_err(|e| Error::Runtime(e.to_string()))?;
         let m = r.is_match(&s);
         let res = if op == BinOp::Match { m } else { !m };
@@ -923,7 +938,12 @@ fn eval_binary(op: BinOp, left: &Expr, right: &Expr, ctx: &mut ExecCtx<'_>) -> R
         BinOp::Add => a + b,
         BinOp::Sub => a - b,
         BinOp::Mul => a * b,
-        BinOp::Div => a / b,
+        BinOp::Div => {
+            if b == 0.0 {
+                ctx.rt.lint_warn("division by zero yields infinity or NaN");
+            }
+            a / b
+        }
         BinOp::Mod => a % b,
         BinOp::Pow => a.powf(b),
         BinOp::Eq
@@ -1267,9 +1287,8 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
                 ctx,
             )?
             .as_number();
-            let m0 = start_raw as i64;
-            let mut m = m0;
-            let mut len_opt = if let Some(e) = args.get(2) {
+            let mut m = start_raw as i64;
+            let len_opt = if let Some(e) = args.get(2) {
                 let l = eval_expr(e, ctx)?.as_number() as i64;
                 if l <= 0 {
                     return Ok(Value::Str(String::new()));
@@ -1279,14 +1298,7 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
                 None
             };
             if m < 1 {
-                let deficit = 1 - m0;
                 m = 1;
-                if let Some(ref mut ln) = len_opt {
-                    *ln = (*ln).saturating_sub(deficit);
-                    if *ln <= 0 {
-                        return Ok(Value::Str(String::new()));
-                    }
-                }
             }
             let len = len_opt.map(|l| l as usize).unwrap_or(usize::MAX);
             let start0 = (m as usize).saturating_sub(1);
@@ -1413,9 +1425,16 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
                 let prec = ctx.rt.mpfr_prec_bits();
                 let round = ctx.rt.mpfr_round();
                 let f = value_to_float(&v, prec, round);
+                if matches!(f.cmp0(), Some(Ordering::Less)) {
+                    ctx.rt.lint_warn("sqrt: domain error (negative argument)");
+                }
                 Ok(Value::Mpfr(Float::with_val_round(prec, f.sqrt(), round).0))
             } else {
-                Ok(Value::Num(v.as_number().sqrt()))
+                let x = v.as_number();
+                if x < 0.0 {
+                    ctx.rt.lint_warn("sqrt: domain error (negative argument)");
+                }
+                Ok(Value::Num(x.sqrt()))
             }
         }
         "sin" if args.len() == 1 => {
@@ -1472,9 +1491,24 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
                 let prec = ctx.rt.mpfr_prec_bits();
                 let round = ctx.rt.mpfr_round();
                 let f = value_to_float(&v, prec, round);
+                match f.cmp0() {
+                    Some(Ordering::Less) => {
+                        ctx.rt.lint_warn("log: domain error (negative argument)")
+                    }
+                    Some(Ordering::Equal) => {
+                        ctx.rt.lint_warn("log: zero argument yields -infinity")
+                    }
+                    Some(Ordering::Greater) | None => {}
+                }
                 Ok(Value::Mpfr(Float::with_val_round(prec, f.ln(), round).0))
             } else {
-                Ok(Value::Num(v.as_number().ln()))
+                let x = v.as_number();
+                if x < 0.0 {
+                    ctx.rt.lint_warn("log: domain error (negative argument)");
+                } else if x == 0.0 {
+                    ctx.rt.lint_warn("log: zero argument yields -infinity");
+                }
+                Ok(Value::Num(x.ln()))
             }
         }
         "systime" if args.is_empty() => Ok(Value::Num(builtins::awk_systime())),

@@ -2645,10 +2645,16 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                     let round = ctx.rt.mpfr_round();
                     let fa = value_to_float(&a, prec, round);
                     let fb = value_to_float(&b, prec, round);
+                    if fb.is_zero() {
+                        ctx.rt.lint_warn("division by zero");
+                    }
                     ctx.push(Value::Mpfr(Float::with_val_round(prec, &fa / &fb, round).0));
                 } else {
                     let b = ctx.pop().as_number();
                     let a = ctx.pop().as_number();
+                    if b == 0.0 {
+                        ctx.rt.lint_warn("division by zero yields infinity or NaN");
+                    }
                     ctx.push(Value::Num(a / b));
                 }
             }
@@ -2728,6 +2734,8 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             Op::Concat => {
                 let b = ctx.pop();
                 let a = ctx.pop();
+                a.reject_if_array_scalar()?;
+                b.reject_if_array_scalar()?;
                 let both_lit = matches!(&a, Value::StrLit(_)) && matches!(&b, Value::StrLit(_));
                 let mut s = match a {
                     Value::Str(s) => s,
@@ -2755,8 +2763,11 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 ctx.push(out);
             }
             Op::RegexMatch => {
-                let pat = ctx.pop().as_str();
+                let pat_v = ctx.pop();
+                pat_v.reject_if_array_scalar()?;
+                let pat = pat_v.as_str();
                 let v = ctx.pop();
+                v.reject_if_array_scalar()?;
                 let s = match &v {
                     Value::Num(n) => ctx.rt.num_to_string_convfmt(*n),
                     Value::Mpfr(f) => ctx.rt.mpfr_to_string_convfmt(f),
@@ -2767,8 +2778,11 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 ctx.push(Value::Num(if m { 1.0 } else { 0.0 }));
             }
             Op::RegexNotMatch => {
-                let pat = ctx.pop().as_str();
+                let pat_v = ctx.pop();
+                pat_v.reject_if_array_scalar()?;
+                let pat = pat_v.as_str();
                 let v = ctx.pop();
+                v.reject_if_array_scalar()?;
                 let s = match &v {
                     Value::Num(n) => ctx.rt.num_to_string_convfmt(*n),
                     Value::Mpfr(f) => ctx.rt.mpfr_to_string_convfmt(f),
@@ -3339,7 +3353,9 @@ fn awk_cmp_rel(op: BinOp, a: &Value, b: &Value, ignore_case: bool, rt: &Runtime)
 fn exec_print(ctx: &mut VmCtx<'_>, argc: u16, redir: RedirKind, is_printf: bool) -> Result<()> {
     // Pop redirect target (if any) first — it was pushed last
     let redir_path = if redir != RedirKind::Stdout {
-        Some(ctx.pop().as_str())
+        let v = ctx.pop();
+        v.reject_if_array_scalar()?;
+        Some(v.as_str())
     } else {
         None
     };
@@ -3352,6 +3368,9 @@ fn exec_print(ctx: &mut VmCtx<'_>, argc: u16, redir: RedirKind, is_printf: bool)
         }
         let start = ctx.stack.len() - argc;
         let args: Vec<Value> = ctx.stack.drain(start..).collect();
+        for a in &args {
+            a.reject_if_array_scalar()?;
+        }
         let fmt = args[0].as_str();
         let vals = &args[1..];
         let out = sprintf_simple(
@@ -3373,6 +3392,9 @@ fn exec_print(ctx: &mut VmCtx<'_>, argc: u16, redir: RedirKind, is_printf: bool)
             ctx.rt.print_buf.extend_from_slice(ctx.rt.record.as_bytes());
         } else {
             let start = ctx.stack.len() - argc;
+            for i in 0..argc {
+                ctx.stack[start + i].reject_if_array_scalar()?;
+            }
             ctx.rt.print_buf.reserve(
                 argc.saturating_mul(32)
                     .saturating_add(ofs_len.saturating_mul(argc.saturating_sub(1)))
@@ -3407,15 +3429,15 @@ fn exec_print(ctx: &mut VmCtx<'_>, argc: u16, redir: RedirKind, is_printf: bool)
             ctx.rt.record.clone()
         } else {
             let start = ctx.stack.len() - argc;
-            let parts: Vec<String> = ctx
-                .stack
-                .drain(start..)
-                .map(|v| match v {
+            let mut parts = Vec::with_capacity(argc);
+            for v in ctx.stack.drain(start..) {
+                v.reject_if_array_scalar()?;
+                parts.push(match v {
                     Value::Num(n) => ctx.rt.num_to_string_ofmt(n),
                     Value::Mpfr(f) => ctx.rt.mpfr_to_string_ofmt(&f),
                     other => other.as_str(),
-                })
-                .collect();
+                });
+            }
             parts.join(&ofs)
         };
         let chunk = format!("{line}{ors}");
@@ -3709,9 +3731,8 @@ pub(crate) fn exec_builtin_dispatch(
         "substr" => {
             let s = args[0].as_str();
             let start_raw = args[1].as_number();
-            let m0 = start_raw as i64;
-            let mut m = m0;
-            let mut len_opt = if let Some(v) = args.get(2) {
+            let mut m = start_raw as i64;
+            let len_opt = if let Some(v) = args.get(2) {
                 let l = v.as_number() as i64;
                 if l <= 0 {
                     return Ok(Value::Str(String::new()));
@@ -3720,15 +3741,9 @@ pub(crate) fn exec_builtin_dispatch(
             } else {
                 None
             };
+            // gawk: start < 1 is treated as 1; length is not shortened (POSIX extension).
             if m < 1 {
-                let deficit = 1 - m0;
                 m = 1;
-                if let Some(ref mut ln) = len_opt {
-                    *ln = (*ln).saturating_sub(deficit);
-                    if *ln <= 0 {
-                        return Ok(Value::Str(String::new()));
-                    }
-                }
             }
             let len = len_opt.map(|l| l as usize).unwrap_or(usize::MAX);
             let start0 = (m as usize).saturating_sub(1);
@@ -3770,9 +3785,16 @@ pub(crate) fn exec_builtin_dispatch(
                 let prec = ctx.rt.mpfr_prec_bits();
                 let round = ctx.rt.mpfr_round();
                 let f = value_to_float(&args[0], prec, round);
+                if matches!(f.cmp0(), Some(Ordering::Less)) {
+                    ctx.rt.lint_warn("sqrt: domain error (negative argument)");
+                }
                 Value::Mpfr(Float::with_val_round(prec, f.sqrt(), round).0)
             } else {
-                Value::Num(args[0].as_number().sqrt())
+                let x = args[0].as_number();
+                if x < 0.0 {
+                    ctx.rt.lint_warn("sqrt: domain error (negative argument)");
+                }
+                Value::Num(x.sqrt())
             }
         }
         "sin" => {
@@ -3836,9 +3858,24 @@ pub(crate) fn exec_builtin_dispatch(
                 let prec = ctx.rt.mpfr_prec_bits();
                 let round = ctx.rt.mpfr_round();
                 let f = value_to_float(&args[0], prec, round);
+                match f.cmp0() {
+                    Some(Ordering::Less) => {
+                        ctx.rt.lint_warn("log: domain error (negative argument)")
+                    }
+                    Some(Ordering::Equal) => {
+                        ctx.rt.lint_warn("log: zero argument yields -infinity")
+                    }
+                    Some(Ordering::Greater) | None => {}
+                }
                 Value::Mpfr(Float::with_val_round(prec, f.ln(), round).0)
             } else {
-                Value::Num(args[0].as_number().ln())
+                let x = args[0].as_number();
+                if x < 0.0 {
+                    ctx.rt.lint_warn("log: domain error (negative argument)");
+                } else if x == 0.0 {
+                    ctx.rt.lint_warn("log: zero argument yields -infinity");
+                }
+                Value::Num(x.ln())
             }
         }
         "systime" => {
