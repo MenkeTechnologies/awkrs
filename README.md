@@ -31,7 +31,7 @@
 - [\[0x01\] SYSTEM REQUIREMENTS](#0x01-system-requirements)
 - [\[0x02\] INSTALLATION](#0x02-installation)
 - [\[0x03\] LANGUAGE COVERAGE](#0x03-language-coverage)
-- [Compatibility matrix (BSD awk / mawk / gawk)](docs/COMPATIBILITY.md)
+  - [Compatibility matrix (BSD awk / mawk / gawk)](documentation/COMPATIBILITY.md)
 - [\[0x04\] MULTITHREADING](#0x04-multithreading--parallel-execution-grid)
 - [\[0x05\] BYTECODE VM](#0x05-bytecode-vm--execution-core)
 - [\[0x06\] BENCHMARKS](#0x06-benchmarks--combat-metrics-vs-awk--gawk--mawk)
@@ -108,7 +108,7 @@ autoload -Uz compinit && compinit
 
 ## [0x03] LANGUAGE COVERAGE
 
-**Compatibility matrix:** [BSD awk, mawk, and gawk vs awkrs](docs/COMPATIBILITY.md).
+**Compatibility matrix:** [BSD awk, mawk, and gawk vs awkrs](documentation/COMPATIBILITY.md).
 
  ┌──────────────────────────────────────────────────────────────┐
  │ SUBSYSTEM: LEXER ████ PARSER ████ COMPILER ████ VM ████     │
