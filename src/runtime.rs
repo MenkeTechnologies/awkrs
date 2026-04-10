@@ -1327,9 +1327,10 @@ impl Runtime {
             .stdout(Stdio::piped())
             .spawn()
             .map_err(|e| Error::Runtime(format!("pipe getline `{cmd}`: {e}")))?;
-        let stdout = child.stdout.take().ok_or_else(|| {
-            Error::Runtime(format!("pipe getline `{cmd}`: no stdout"))
-        })?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| Error::Runtime(format!("pipe getline `{cmd}`: no stdout")))?;
         let mut reader = BufReader::new(stdout);
         let mut line = String::new();
         let n = reader.read_line(&mut line).map_err(Error::Io)?;
@@ -1446,7 +1447,7 @@ impl Runtime {
             self.numeric_decimal,
             self.numeric_thousands_sep,
         )
-            .unwrap_or_else(|_| format_number(n))
+        .unwrap_or_else(|_| format_number(n))
     }
 
     /// POSIX: `print` formats numbers with **`OFMT`** (distinct from [`Self::num_to_string_convfmt`]).
@@ -1461,7 +1462,7 @@ impl Runtime {
             self.numeric_decimal,
             self.numeric_thousands_sep,
         )
-            .unwrap_or_else(|_| format_number(n))
+        .unwrap_or_else(|_| format_number(n))
     }
 
     /// Next **record** from the primary input stream (respects `RS`), used by `getline` with no redirection.

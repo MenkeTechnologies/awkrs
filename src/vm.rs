@@ -622,11 +622,11 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
         MIXED_GET_VAR, MIXED_GSUB_FIELD, MIXED_GSUB_INDEX, MIXED_GSUB_INDEX_STASH,
         MIXED_GSUB_RECORD, MIXED_GSUB_SLOT, MIXED_GSUB_VAR, MIXED_INCDEC_SLOT, MIXED_INCR_SLOT,
         MIXED_JOIN_ARRAY_KEY, MIXED_JOIN_KEY_ARG, MIXED_MATCH_BUILTIN, MIXED_MATCH_BUILTIN_ARR,
-        MIXED_MOD, MIXED_MUL, MIXED_NEG, MIXED_NOT, MIXED_PATSPLIT, MIXED_PATSPLIT_FP, MIXED_POW,
+        MIXED_MOD, MIXED_MUL, MIXED_NEG, MIXED_NOT, MIXED_PATSPLIT, MIXED_PATSPLIT_FP,
         MIXED_PATSPLIT_FP_SEP, MIXED_PATSPLIT_FP_SEP_WIDE, MIXED_PATSPLIT_SEP,
-        MIXED_PATSPLIT_STASH_SEPS, MIXED_POS, MIXED_PRINTF_FLUSH, MIXED_PRINTF_FLUSH_REDIR,
-        MIXED_PRINT_ARG, MIXED_PRINT_FLUSH, MIXED_PRINT_FLUSH_REDIR, MIXED_PUSH_STR,
-        MIXED_REGEX_MATCH, MIXED_REGEX_NOT_MATCH, MIXED_SET_FIELD, MIXED_SET_VAR,
+        MIXED_PATSPLIT_STASH_SEPS, MIXED_POS, MIXED_POW, MIXED_PRINTF_FLUSH,
+        MIXED_PRINTF_FLUSH_REDIR, MIXED_PRINT_ARG, MIXED_PRINT_FLUSH, MIXED_PRINT_FLUSH_REDIR,
+        MIXED_PUSH_STR, MIXED_REGEX_MATCH, MIXED_REGEX_NOT_MATCH, MIXED_SET_FIELD, MIXED_SET_VAR,
         MIXED_SLOT_AS_NUMBER, MIXED_SPLIT, MIXED_SPLIT_WITH_FS, MIXED_SUB, MIXED_SUB_FIELD,
         MIXED_SUB_INDEX, MIXED_SUB_INDEX_STASH, MIXED_SUB_RECORD, MIXED_SUB_SLOT, MIXED_SUB_VAR,
         MIXED_TO_BOOL, MIXED_TRUTHINESS, MIXED_TYPEOF_ARRAY_ELEM, MIXED_TYPEOF_FIELD,
@@ -2571,7 +2571,9 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                     let round = ctx.rt.mpfr_round();
                     let fa = value_to_float(&a, prec);
                     let fb = value_to_float(&b, prec);
-                    ctx.push(Value::Mpfr(Float::with_val_round(prec, fa.pow(&fb), round).0));
+                    ctx.push(Value::Mpfr(
+                        Float::with_val_round(prec, fa.pow(&fb), round).0,
+                    ));
                 } else {
                     let b = ctx.pop().as_number();
                     let a = ctx.pop().as_number();
@@ -3214,7 +3216,12 @@ fn exec_print(ctx: &mut VmCtx<'_>, argc: u16, redir: RedirKind, is_printf: bool)
         let args: Vec<Value> = ctx.stack.drain(start..).collect();
         let fmt = args[0].as_str();
         let vals = &args[1..];
-        let out = sprintf_simple(&fmt, vals, ctx.rt.numeric_decimal, ctx.rt.numeric_thousands_sep)?;
+        let out = sprintf_simple(
+            &fmt,
+            vals,
+            ctx.rt.numeric_decimal,
+            ctx.rt.numeric_thousands_sep,
+        )?;
         let s = out.as_str();
         emit_with_redir(ctx, &s, redir, redir_path.as_deref())?;
     } else if redir == RedirKind::Stdout && ctx.print_out.is_none() {
@@ -3357,7 +3364,9 @@ fn exec_getline(
     let line_res = match source {
         GetlineSource::Primary => ctx.rt.read_line_primary(),
         GetlineSource::File => ctx.rt.read_line_file(file_path.as_ref().unwrap().as_str()),
-        GetlineSource::Coproc => ctx.rt.read_line_coproc(file_path.as_ref().unwrap().as_str()),
+        GetlineSource::Coproc => ctx
+            .rt
+            .read_line_coproc(file_path.as_ref().unwrap().as_str()),
         GetlineSource::Pipe => ctx.rt.read_line_pipe(file_path.as_ref().unwrap().as_str()),
     };
 

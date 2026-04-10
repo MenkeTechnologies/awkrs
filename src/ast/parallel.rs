@@ -36,8 +36,7 @@ fn stmt_blocks_parallel(s: &Stmt) -> bool {
     match s {
         Stmt::Exit(_) => true,
         Stmt::GetLine {
-            pipe_cmd: Some(_),
-            ..
+            pipe_cmd: Some(_), ..
         } => true,
         Stmt::GetLine {
             pipe_cmd: None,
@@ -104,8 +103,7 @@ fn expr_blocks_parallel(e: &Expr) -> bool {
         }
         Expr::In { key, .. } => expr_blocks_parallel(key),
         Expr::GetLine {
-            pipe_cmd: Some(_),
-            ..
+            pipe_cmd: Some(_), ..
         } => true,
         Expr::GetLine {
             pipe_cmd: None,

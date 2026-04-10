@@ -429,7 +429,12 @@ fn exec_stmt(s: &Stmt, ctx: &mut ExecCtx<'_>) -> Result<Flow> {
                 .iter()
                 .map(|e| eval_expr(e, ctx))
                 .collect::<Result<_>>()?;
-            let out = sprintf_simple(&fmt, &vals, ctx.rt.numeric_decimal, ctx.rt.numeric_thousands_sep)?;
+            let out = sprintf_simple(
+                &fmt,
+                &vals,
+                ctx.rt.numeric_decimal,
+                ctx.rt.numeric_thousands_sep,
+            )?;
             let s = out.as_str();
             match redir {
                 None => ctx.emit_print(&s),
@@ -557,12 +562,9 @@ fn exec_stmt(s: &Stmt, ctx: &mut ExecCtx<'_>) -> Result<Flow> {
                     let nf = ctx.rt.nf() as f64;
                     ctx.rt.vars.insert("NF".into(), Value::Num(nf));
                 }
-                match (pipe_cmd.as_ref(), redir) {
-                    (None, GetlineRedir::Primary) => {
-                        ctx.rt.nr += 1.0;
-                        ctx.rt.fnr += 1.0;
-                    }
-                    _ => {}
+                if let (None, GetlineRedir::Primary) = (pipe_cmd.as_ref(), redir) {
+                    ctx.rt.nr += 1.0;
+                    ctx.rt.fnr += 1.0;
                 }
             }
         }
@@ -748,12 +750,9 @@ pub fn eval_expr(e: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {
                             let nf = ctx.rt.nf() as f64;
                             ctx.rt.vars.insert("NF".into(), Value::Num(nf));
                         }
-                        match (pipe_cmd.as_ref(), redir) {
-                            (None, GetlineRedir::Primary) => {
-                                ctx.rt.nr += 1.0;
-                                ctx.rt.fnr += 1.0;
-                            }
-                            _ => {}
+                        if let (None, GetlineRedir::Primary) = (pipe_cmd.as_ref(), redir) {
+                            ctx.rt.nr += 1.0;
+                            ctx.rt.fnr += 1.0;
                         }
                     }
                     Value::Num(if has { 1.0 } else { 0.0 })
@@ -1460,7 +1459,12 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
                 .iter()
                 .map(|e| eval_expr(e, ctx))
                 .collect::<Result<_>>()?;
-            sprintf_simple(&fmt, &vals, ctx.rt.numeric_decimal, ctx.rt.numeric_thousands_sep)
+            sprintf_simple(
+                &fmt,
+                &vals,
+                ctx.rt.numeric_decimal,
+                ctx.rt.numeric_thousands_sep,
+            )
         }
         "and" if args.len() == 2 => {
             let a = eval_expr(&args[0], ctx)?.as_number();
@@ -1578,7 +1582,13 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
                 .iter()
                 .map(|e| eval_expr(e, ctx))
                 .collect::<Result<_>>()?;
-            let s = sprintf_simple(&fmt, &vals, ctx.rt.numeric_decimal, ctx.rt.numeric_thousands_sep)?.as_str();
+            let s = sprintf_simple(
+                &fmt,
+                &vals,
+                ctx.rt.numeric_decimal,
+                ctx.rt.numeric_thousands_sep,
+            )?
+            .as_str();
             ctx.emit_print(&s);
             Ok(Value::Num(0.0))
         }

@@ -597,10 +597,7 @@ mod tests {
                 Token::Tilde,
             ]
         );
-        assert_eq!(
-            tokens_no_regex("^ **"),
-            vec![Token::Caret, Token::StarStar],
-        );
+        assert_eq!(tokens_no_regex("^ **"), vec![Token::Caret, Token::StarStar],);
         assert_eq!(
             tokens_no_regex("= += -= *= /= %="),
             vec![

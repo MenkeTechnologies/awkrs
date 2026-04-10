@@ -1548,10 +1548,7 @@ mod tests {
     fn parses_regexp_literal_at_slash() {
         let p = parse_program("BEGIN { x = @/foo/ }").unwrap();
         match first_begin_stmt(&p) {
-            Stmt::Expr(Expr::Assign {
-                rhs,
-                ..
-            }) => match rhs.as_ref() {
+            Stmt::Expr(Expr::Assign { rhs, .. }) => match rhs.as_ref() {
                 Expr::RegexpLiteral(s) => assert_eq!(s, "foo"),
                 e => panic!("expected RegexpLiteral, got {e:?}"),
             },

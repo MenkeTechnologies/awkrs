@@ -154,9 +154,7 @@ fn collect_stmt_strings(s: &Stmt, out: &mut BTreeMap<String, usize>) {
             }
         }
         Stmt::GetLine {
-            pipe_cmd,
-            redir,
-            ..
+            pipe_cmd, redir, ..
         } => {
             use crate::ast::GetlineRedir;
             if let Some(cmd) = pipe_cmd {
@@ -263,9 +261,7 @@ fn collect_expr_strings(e: &Expr, out: &mut BTreeMap<String, usize>) {
             crate::ast::IncDecTarget::Var(_) => {}
         },
         Expr::GetLine {
-            pipe_cmd,
-            redir,
-            ..
+            pipe_cmd, redir, ..
         } => {
             use crate::ast::GetlineRedir;
             if let Some(cmd) = pipe_cmd {
@@ -882,9 +878,7 @@ fn stmt_lint_reads(
             }
         }
         Stmt::GetLine {
-            pipe_cmd,
-            redir,
-            ..
+            pipe_cmd, redir, ..
         } => {
             if let Some(cmd) = pipe_cmd {
                 expr_lint_reads(cmd, global_def, params, warned, w);
@@ -996,9 +990,7 @@ fn expr_lint_reads(
             }
         },
         Expr::GetLine {
-            pipe_cmd,
-            redir,
-            ..
+            pipe_cmd, redir, ..
         } => {
             if let Some(cmd) = pipe_cmd {
                 expr_lint_reads(cmd, global_def, params, warned, w);
@@ -1160,9 +1152,7 @@ fn lint_expr_printf_deep(w: &impl Fn(&str), e: &Expr) {
             IncDecTarget::Var(_) => {}
         },
         Expr::GetLine {
-            pipe_cmd,
-            redir,
-            ..
+            pipe_cmd, redir, ..
         } => {
             if let Some(cmd) = pipe_cmd {
                 lint_expr_printf_deep(w, cmd);
@@ -1279,9 +1269,7 @@ fn lint_stmt_printf_args(w: &impl Fn(&str), stmt: &Stmt) {
             }
         }
         Stmt::GetLine {
-            pipe_cmd,
-            redir,
-            ..
+            pipe_cmd, redir, ..
         } => {
             if let Some(cmd) = pipe_cmd {
                 lint_expr_printf_deep(w, cmd);

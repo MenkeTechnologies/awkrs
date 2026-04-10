@@ -51,30 +51,21 @@ fn numeric_lt_false_when_comparing_zero_to_negative() {
 
 #[test]
 fn posix_exponentiation_caret_star_star_right_assoc() {
-    let (c, o, _) = run_awkrs_stdin(
-        r#"BEGIN { print 2^3, 2**3, 2^3^2, -2^2 }"#,
-        "",
-    );
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { print 2^3, 2**3, 2^3^2, -2^2 }"#, "");
     assert_eq!(c, 0);
     assert_eq!(o, "8 8 512 -4\n");
 }
 
 #[test]
 fn getline_expr_compares_return_value() {
-    let (c, o, _) = run_awkrs_stdin(
-        r#"BEGIN { if ((getline x) > 0) print x }"#,
-        "hello\n",
-    );
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { if ((getline x) > 0) print x }"#, "hello\n");
     assert_eq!(c, 0);
     assert_eq!(o, "hello\n");
 }
 
 #[test]
 fn pipe_getline_reads_from_sh_c_pipeline() {
-    let (c, o, _) = run_awkrs_stdin(
-        r#"BEGIN { "echo hi" | getline x; print x }"#,
-        "",
-    );
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { "echo hi" | getline x; print x }"#, "");
     assert_eq!(c, 0);
     assert_eq!(o, "hi\n");
 }
@@ -91,10 +82,7 @@ fn gawk_regexp_constant_typeof_and_match() {
 
 #[test]
 fn printf_group_flag_inserts_separators() {
-    let (c, o, _) = run_awkrs_stdin(
-        r#"BEGIN { printf "%'d\n", 1234567 }"#,
-        "",
-    );
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { printf "%'d\n", 1234567 }"#, "");
     assert_eq!(c, 0);
     assert_eq!(o, "1,234,567\n");
 }

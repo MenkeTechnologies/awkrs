@@ -1213,18 +1213,18 @@ fn collect_array_names_stmt(s: &Stmt, names: &mut HashSet<String>) {
         }
         Stmt::Exit(Some(e)) | Stmt::Return(Some(e)) => collect_array_names_expr(e, names),
         Stmt::GetLine {
-            pipe_cmd,
-            redir,
-            ..
+            pipe_cmd, redir, ..
         } => {
             if let Some(p) = pipe_cmd {
                 collect_array_names_expr(p, names);
             }
             match redir {
-                GetlineRedir::File(e) | GetlineRedir::Coproc(e) => collect_array_names_expr(e, names),
+                GetlineRedir::File(e) | GetlineRedir::Coproc(e) => {
+                    collect_array_names_expr(e, names)
+                }
                 GetlineRedir::Primary => {}
             }
-        },
+        }
         Stmt::Switch { expr, arms } => {
             collect_array_names_expr(expr, names);
             for arm in arms {
@@ -1313,19 +1313,19 @@ fn collect_array_names_expr(e: &Expr, names: &mut HashSet<String>) {
             IncDecTarget::Var(_) => {}
         },
         Expr::GetLine {
-            pipe_cmd,
-            redir,
-            ..
+            pipe_cmd, redir, ..
         } => {
             if let Some(p) = pipe_cmd {
                 collect_array_names_expr(p, names);
             }
             match redir {
-                GetlineRedir::File(e) | GetlineRedir::Coproc(e) => collect_array_names_expr(e, names),
+                GetlineRedir::File(e) | GetlineRedir::Coproc(e) => {
+                    collect_array_names_expr(e, names)
+                }
                 GetlineRedir::Primary => {}
             }
-        },
-            Expr::Number(_) | Expr::Str(_) | Expr::RegexpLiteral(_) | Expr::Var(_) => {}
+        }
+        Expr::Number(_) | Expr::Str(_) | Expr::RegexpLiteral(_) | Expr::Var(_) => {}
     }
 }
 

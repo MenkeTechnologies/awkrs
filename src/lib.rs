@@ -193,10 +193,8 @@ pub fn run(bin_name: &str) -> Result<()> {
     // Stdin parallel still chunks on newlines only (see `process_stdin_parallel`).
     // Primary `getline` shares the same stream as the record loop; parallel file mode slurps/mmaps
     // independently and does not advance that stream.
-    let use_parallel_files = threads > 1
-        && parallel_ok
-        && !files.is_empty()
-        && !uses_primary_getline(cp.as_ref());
+    let use_parallel_files =
+        threads > 1 && parallel_ok && !files.is_empty() && !uses_primary_getline(cp.as_ref());
     let stdin_parallel = files.is_empty()
         && threads > 1
         && parallel_ok
