@@ -5,7 +5,7 @@ use rustc_hash::FxHashSet;
 use std::collections::HashMap;
 
 /// Built-in function names (must not be prefixed with `ns::`).
-const BUILTIN_NAMES: &[&str] = &[
+pub const BUILTIN_NAMES: &[&str] = &[
     "and",
     "asort",
     "asorti",
