@@ -1211,7 +1211,7 @@ fn process_file_slurp_inline(
             }
             InlineAction::AddMulFieldsToSlot { f1, f2, slot } => {
                 set_record_from_line_bytes(rt, fs, line_bytes);
-                let p = rt.field_as_number(f1 as i32) * rt.field_as_number(f2 as i32);
+                let p = rt.field_as_number(f1 as i32)? * rt.field_as_number(f2 as i32)?;
                 let old = rt.slots[slot as usize].as_number();
                 rt.slots[slot as usize] = Value::Num(old + p);
             }
@@ -1244,7 +1244,7 @@ fn process_file_slurp_inline(
             }
             InlineAction::AddFieldToSlot { field, slot } => {
                 set_record_from_line_bytes(rt, fs, line_bytes);
-                let fv = rt.field_as_number(field as i32);
+                let fv = rt.field_as_number(field as i32)?;
                 let sv = rt.slots[slot as usize].as_number();
                 rt.slots[slot as usize] = Value::Num(sv + fv);
             }

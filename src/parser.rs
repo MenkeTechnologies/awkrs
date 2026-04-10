@@ -283,7 +283,32 @@ impl<'a> Parser<'a> {
                     let p2 = self.parse_pattern()?;
                     return Ok(Pattern::Range(Box::new(Pattern::Regexp(s)), Box::new(p2)));
                 }
-                Ok(Pattern::Regexp(s))
+                self.skip_newlines()?;
+                if self.pattern_regex_stands_alone() {
+                    return Ok(Pattern::Regexp(s));
+                }
+                let e = self.parse_expr_from_concat_seed(Self::pattern_regex_match_seed(s))?;
+                if self.cur == Token::Comma {
+                    self.bump(true)?;
+                    let e2 = self.parse_expr(false, false)?;
+                    if matches!(e2, Expr::Tuple(_)) {
+                        return Err(Error::Parse {
+                            line: self.line,
+                            msg: "parenthesized comma list cannot be a pattern".into(),
+                        });
+                    }
+                    return Ok(Pattern::Range(
+                        Box::new(Pattern::Expr(e)),
+                        Box::new(Pattern::Expr(e2)),
+                    ));
+                }
+                if matches!(e, Expr::Tuple(_)) {
+                    return Err(Error::Parse {
+                        line: self.line,
+                        msg: "parenthesized comma list cannot be a pattern".into(),
+                    });
+                }
+                Ok(Pattern::Expr(e))
             }
             Token::LBrace => Ok(Pattern::Empty),
             _ => {
@@ -888,6 +913,46 @@ impl<'a> Parser<'a> {
 
     fn parse_expr(&mut self, regex_mode: bool, re_pat: bool) -> Result<Expr> {
         let e = self.parse_assign(regex_mode, re_pat)?;
+        self.parse_expr_pipe_getline_suffix(e)
+    }
+
+    /// After a `/regex/` token in a record rule, the pattern is a plain match unless another rule
+    /// or `{` follows, or an operator continues a compound expression (`/foo/ && …`).
+    fn pattern_regex_stands_alone(&self) -> bool {
+        matches!(
+            self.cur,
+            Token::LBrace
+                | Token::Semi
+                | Token::Eof
+                | Token::Begin
+                | Token::End
+                | Token::BeginFile
+                | Token::EndFile
+        ) || matches!(self.cur, Token::Regexp(_))
+    }
+
+    /// Same desugaring as [`Self::parse_primary`] for bare `/re/` in expression context:
+    /// `$0 ~ "pattern"` (pattern stored as [`Expr::Str`] for the compiler/`~` pipeline).
+    fn pattern_regex_match_seed(pat: String) -> Expr {
+        Expr::Binary {
+            op: BinOp::Match,
+            left: Box::new(Expr::Field(Box::new(Expr::Number(0.0)))),
+            right: Box::new(Expr::Str(pat)),
+        }
+    }
+
+    /// Continue parsing from a completed [`Self::parse_concat`]-level subexpression (used when a
+    /// record rule pattern starts with `/re/` but continues with `&&` / `||` / comparisons / …).
+    fn parse_expr_from_concat_seed(&mut self, seed: Expr) -> Result<Expr> {
+        let e = self.parse_cmp_rest(seed, false)?;
+        let e = self.parse_and_rest(e, false)?;
+        let e = self.parse_or_rest(e, false)?;
+        let e = self.parse_cond_rest(e, false)?;
+        let e = self.parse_assign_rest(e, false, false)?;
+        self.parse_expr_pipe_getline_suffix(e)
+    }
+
+    fn parse_expr_pipe_getline_suffix(&mut self, e: Expr) -> Result<Expr> {
         // `expr | getline [var]` — `|` must be followed by `getline` (not `print | cmd`).
         if self.cur == Token::Pipe {
             let mut peek = self.lexer.clone();
@@ -914,6 +979,15 @@ impl<'a> Parser<'a> {
 
     fn parse_assign(&mut self, regex_mode: bool, re_pat: bool) -> Result<Expr> {
         let lhs = self.parse_cond(regex_mode, re_pat)?;
+        self.parse_assign_rest(lhs, regex_mode, re_pat)
+    }
+
+    fn parse_assign_rest(
+        &mut self,
+        lhs: Expr,
+        _regex_mode: bool,
+        re_pat: bool,
+    ) -> Result<Expr> {
         let op_tok = self.cur.clone();
         match op_tok {
             Token::Assign => {
@@ -944,6 +1018,10 @@ impl<'a> Parser<'a> {
 
     fn parse_cond(&mut self, regex_mode: bool, re_pat: bool) -> Result<Expr> {
         let e = self.parse_or(regex_mode, re_pat)?;
+        self.parse_cond_rest(e, re_pat)
+    }
+
+    fn parse_cond_rest(&mut self, mut e: Expr, re_pat: bool) -> Result<Expr> {
         if self.cur == Token::Question {
             Self::reject_tuple_expr(&e, self.line)?;
             self.bump(true)?;
@@ -958,17 +1036,21 @@ impl<'a> Parser<'a> {
             self.bump(true)?;
             let f = self.parse_cond(false, re_pat)?;
             Self::reject_tuple_expr(&f, self.line)?;
-            return Ok(Expr::Ternary {
+            e = Expr::Ternary {
                 cond: Box::new(e),
                 then_: Box::new(t),
                 else_: Box::new(f),
-            });
+            };
         }
         Ok(e)
     }
 
     fn parse_or(&mut self, regex_mode: bool, re_pat: bool) -> Result<Expr> {
-        let mut e = self.parse_and(regex_mode, re_pat)?;
+        let e = self.parse_and(regex_mode, re_pat)?;
+        self.parse_or_rest(e, re_pat)
+    }
+
+    fn parse_or_rest(&mut self, mut e: Expr, re_pat: bool) -> Result<Expr> {
         while self.cur == Token::Or {
             Self::reject_tuple_expr(&e, self.line)?;
             self.bump(true)?;
@@ -984,7 +1066,11 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_and(&mut self, regex_mode: bool, re_pat: bool) -> Result<Expr> {
-        let mut e = self.parse_array(regex_mode, re_pat)?;
+        let e = self.parse_array(regex_mode, re_pat)?;
+        self.parse_and_rest(e, re_pat)
+    }
+
+    fn parse_and_rest(&mut self, mut e: Expr, re_pat: bool) -> Result<Expr> {
         while self.cur == Token::And {
             Self::reject_tuple_expr(&e, self.line)?;
             self.bump(true)?;
@@ -1004,7 +1090,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_cmp(&mut self, regex_mode: bool, re_pat: bool) -> Result<Expr> {
-        let mut e = self.parse_concat(regex_mode, re_pat)?;
+        let e = self.parse_concat(regex_mode, re_pat)?;
         if self.in_print_arg
             && matches!(
                 self.cur,
@@ -1013,6 +1099,10 @@ impl<'a> Parser<'a> {
         {
             return Ok(e);
         }
+        self.parse_cmp_rest(e, re_pat)
+    }
+
+    fn parse_cmp_rest(&mut self, mut e: Expr, _re_pat: bool) -> Result<Expr> {
         loop {
             if self.cur == Token::In {
                 self.bump(false)?;

@@ -89,6 +89,7 @@
 
 use crate::ast::{BinOp, IncDecOp};
 use crate::bytecode::{CompiledProgram, GetlineSource, Op, SubTarget};
+use crate::vm::{JIT_FIELD_SENTINEL_FNR, JIT_FIELD_SENTINEL_NF, JIT_FIELD_SENTINEL_NR};
 use cranelift_codegen::ir::FuncRef;
 use cranelift_codegen::ir::{types, AbiParam, Block, InstBuilder, MemFlags, UserFuncName};
 use cranelift_codegen::settings::{self, Configurable};
@@ -2968,7 +2969,7 @@ pub fn try_compile_with_options(
                     }
                 }
                 Op::GetNR => {
-                    let arg = builder.ins().iconst(types::I32, -1i64);
+                    let arg = builder.ins().iconst(types::I32, JIT_FIELD_SENTINEL_NR as i64);
                     let result = emit_field_call(
                         &mut builder,
                         field_sig_ir,
@@ -2980,7 +2981,7 @@ pub fn try_compile_with_options(
                     stack.push(result);
                 }
                 Op::GetFNR => {
-                    let arg = builder.ins().iconst(types::I32, -2i64);
+                    let arg = builder.ins().iconst(types::I32, JIT_FIELD_SENTINEL_FNR as i64);
                     let result = emit_field_call(
                         &mut builder,
                         field_sig_ir,
@@ -2992,7 +2993,7 @@ pub fn try_compile_with_options(
                     stack.push(result);
                 }
                 Op::GetNF => {
-                    let arg = builder.ins().iconst(types::I32, -3i64);
+                    let arg = builder.ins().iconst(types::I32, JIT_FIELD_SENTINEL_NF as i64);
                     let result = emit_field_call(
                         &mut builder,
                         field_sig_ir,
@@ -4758,9 +4759,9 @@ mod tests {
             1 => 10.0,
             2 => 20.0,
             3 => 30.0,
-            -1 => 100.0, // NR
-            -2 => 50.0,  // FNR
-            -3 => 3.0,   // NF
+            JIT_FIELD_SENTINEL_NR => 100.0,
+            JIT_FIELD_SENTINEL_FNR => 50.0,
+            JIT_FIELD_SENTINEL_NF => 3.0,
             _ => 0.0,
         }
     }
@@ -4791,7 +4792,7 @@ mod tests {
                 1 => 100.0,
                 2 => 200.0,
                 3 => 300.0,
-                -3 => 3.0, // NF (unused here; limit is explicit)
+                JIT_FIELD_SENTINEL_NF => 3.0, // NF (unused here; limit is explicit)
                 _ => 0.0,
             }
         }
@@ -5109,7 +5110,7 @@ mod tests {
                 1 => 100.0,
                 2 => 200.0,
                 3 => 300.0,
-                -3 => 3.0, // NF = 3
+                JIT_FIELD_SENTINEL_NF => 3.0, // NF = 3
                 _ => 0.0,
             }
         }

@@ -129,6 +129,63 @@ fn print_concat_array_scalar_is_fatal() {
 }
 
 #[test]
+fn record_pattern_regex_may_start_compound_expression() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"/foo/ && NR > 1 { print $0 }"#,
+        "foo\nfoo\nbar\n",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "foo\n");
+}
+
+#[test]
+fn negative_field_access_is_fatal_like_gawk() {
+    let (c, o, e) = run_awkrs_stdin(r#"BEGIN { print $(-1) }"#, "");
+    assert_ne!(c, 0, "out={o:?}");
+    assert!(
+        e.contains("attempt to access field number -1"),
+        "stderr={e:?}"
+    );
+}
+
+#[test]
+fn nf_negative_assignment_is_fatal_like_gawk() {
+    let (c, o, e) = run_awkrs_stdin(r#"BEGIN { NF = -1 }"#, "");
+    assert_ne!(c, 0, "out={o:?}");
+    assert!(e.contains("NF set to negative value"), "stderr={e:?}");
+}
+
+#[test]
+fn whole_array_in_addition_is_fatal() {
+    let (c, _, e) = run_awkrs_stdin(r#"BEGIN { a[1]=1; print a + 1 }"#, "");
+    assert_ne!(c, 0);
+    assert!(
+        e.contains("attempt to use an array in a scalar context"),
+        "stderr={e:?}"
+    );
+}
+
+#[test]
+fn whole_array_in_equality_compare_is_fatal() {
+    let (c, _, e) = run_awkrs_stdin(r#"BEGIN { a[1]=1; print (a == 0) }"#, "");
+    assert_ne!(c, 0);
+    assert!(
+        e.contains("attempt to use an array in a scalar context"),
+        "stderr={e:?}"
+    );
+}
+
+#[test]
+fn whole_array_in_if_condition_is_fatal() {
+    let (c, _, e) = run_awkrs_stdin(r#"BEGIN { a[1]=1; if (a) print 1 }"#, "");
+    assert_ne!(c, 0);
+    assert!(
+        e.contains("attempt to use an array in a scalar context"),
+        "stderr={e:?}"
+    );
+}
+
+#[test]
 fn division_by_zero_is_fatal_like_gawk() {
     let (c, o, e) = run_awkrs_stdin(r#"BEGIN { print 1/0 }"#, "");
     assert_ne!(c, 0, "stderr={e:?}");
@@ -272,10 +329,13 @@ fn regexp_bracket_class() {
 }
 
 #[test]
-fn field_reference_negative_uses_empty() {
-    let (c, o, _) = run_awkrs_stdin("{ print $-1 }", "a b\n");
-    assert_eq!(c, 0);
-    assert_eq!(o, "\n");
+fn field_reference_negative_is_fatal_like_gawk() {
+    let (c, o, e) = run_awkrs_stdin("{ print $-1 }", "a b\n");
+    assert_ne!(c, 0, "out={o:?} stderr={e:?}");
+    assert!(
+        e.contains("attempt to access field number -1"),
+        "stderr={e:?}"
+    );
 }
 
 #[test]

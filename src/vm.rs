@@ -196,22 +196,22 @@ impl<'a> VmCtx<'a> {
         }
     }
 
-    fn set_var(&mut self, name: &str, val: Value) {
+    fn set_var(&mut self, name: &str, val: Value) -> Result<()> {
         for frame in self.locals.iter_mut().rev() {
             if let Some(v) = frame.get_mut(name) {
                 *v = val;
-                return;
+                return Ok(());
             }
         }
         if name == "NF" {
             let n = val.as_number() as i32;
-            self.rt.set_nf(n);
-            return;
+            self.rt.set_nf(n)?;
+            return Ok(());
         }
         // Check slots
         if let Some(&slot) = self.cp.slot_map.get(name) {
             self.rt.slots[slot as usize] = val;
-            return;
+            return Ok(());
         }
         // Update cached OFS/ORS bytes when those vars change.
         match name {
@@ -226,24 +226,24 @@ impl<'a> VmCtx<'a> {
                 self.rt.vars.insert(name.to_string(), val);
             }
         }
+        Ok(())
     }
 
     /// Resolve variable name from the string pool without a heap `String` when the
     /// identifier is short (see [`POOL_NAME_STACK_MAX`]), e.g. `for (k in a)`.
-    fn set_var_interned(&mut self, var_idx: u32, val: Value) {
-        self.with_short_pool_name_mut(var_idx, |ctx, name| {
-            ctx.set_var(name, val);
-        });
+    fn set_var_interned(&mut self, var_idx: u32, val: Value) -> Result<()> {
+        self.with_short_pool_name_mut(var_idx, |ctx, name| ctx.set_var(name, val))
     }
 
     /// Same as [`set_var_interned`](Self::set_var_interned) plus JIT slot sync for compiled loops.
-    fn set_var_interned_jit_sync(&mut self, var_idx: u32, val: Value) {
+    fn set_var_interned_jit_sync(&mut self, var_idx: u32, val: Value) -> Result<()> {
         self.with_short_pool_name_mut(var_idx, |ctx, name| {
-            ctx.set_var(name, val);
+            ctx.set_var(name, val)?;
             if let Some(&slot) = ctx.cp.slot_map.get(name) {
                 sync_jit_slot_value(ctx, slot);
             }
-        });
+            Ok(())
+        })
     }
 
     #[inline]
@@ -401,7 +401,7 @@ pub fn vm_pattern_matches(
         CompiledPattern::Expr(chunk) => {
             let mut ctx = VmCtx::new(cp, rt);
             let r = execute(chunk, &mut ctx)?;
-            let val = truthy(&ctx.pop());
+            let val = truthy(&ctx.pop())?;
             // Drop VmSignal — Expr patterns can't produce Next/Exit
             let _ = r;
             ctx.recycle();
@@ -435,7 +435,7 @@ pub fn vm_match_range_endpoint(
         CompiledRangeEndpoint::Expr(chunk) => {
             let mut ctx = VmCtx::new(cp, rt);
             let r = execute(chunk, &mut ctx)?;
-            let val = truthy(&ctx.pop());
+            let val = truthy(&ctx.pop())?;
             let _ = r;
             ctx.recycle();
             Ok(val)
@@ -733,20 +733,43 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
         MIXED_POS => jit_f64_to_value(ctx, a2).as_number(),
         MIXED_NOT => {
             let v = jit_f64_to_value(ctx, a2);
-            Value::Num(if truthy(&v) { 0.0 } else { 1.0 }).as_number()
+            match truthy(&v) {
+                Ok(t) => Value::Num(if t { 0.0 } else { 1.0 }).as_number(),
+                Err(e) => {
+                    JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+                    0.0
+                }
+            }
         }
         MIXED_TO_BOOL => {
             let v = jit_f64_to_value(ctx, a2);
-            Value::Num(if truthy(&v) { 1.0 } else { 0.0 }).as_number()
+            match truthy(&v) {
+                Ok(t) => Value::Num(if t { 1.0 } else { 0.0 }).as_number(),
+                Err(e) => {
+                    JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+                    0.0
+                }
+            }
         }
         MIXED_TRUTHINESS => {
             let v = jit_f64_to_value(ctx, a2);
-            Value::Num(if truthy(&v) { 1.0 } else { 0.0 }).as_number()
+            match truthy(&v) {
+                Ok(t) => Value::Num(if t { 1.0 } else { 0.0 }).as_number(),
+                Err(e) => {
+                    JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+                    0.0
+                }
+            }
         }
         MIXED_GET_FIELD => {
             let i = a2 as i32;
-            let v = ctx.rt.field(i);
-            value_to_jit_f64(ctx, v)
+            match ctx.rt.field(i) {
+                Ok(v) => value_to_jit_f64(ctx, v),
+                Err(e) => {
+                    JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+                    0.0
+                }
+            }
         }
         MIXED_GET_VAR => {
             let name = ctx.str_ref(a1).to_string();
@@ -756,7 +779,9 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
         MIXED_SET_VAR => {
             let name = ctx.str_ref(a1).to_string();
             let val = jit_f64_to_value(ctx, a2);
-            ctx.set_var(&name, val);
+            if let Err(e) = ctx.set_var(&name, val) {
+                JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+            }
             0.0
         }
         MIXED_GET_SLOT => {
@@ -1086,7 +1111,13 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
         MIXED_ADD_FIELD_TO_SLOT => {
             let field = (a1 & 0xffff) as i32;
             let slot = ((a1 >> 16) & 0xffff) as usize;
-            let field_val = ctx.rt.field_as_number(field);
+            let field_val = match ctx.rt.field_as_number(field) {
+                Ok(n) => n,
+                Err(e) => {
+                    JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+                    return 0.0;
+                }
+            };
             let old = jit_f64_to_value(ctx, jit_scratch_slot_raw(ctx, slot)).as_number();
             jit_scratch_slot_store_num(ctx, slot, old + field_val);
             0.0
@@ -1102,7 +1133,21 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
             let f1 = (a1 & 0xffff) as i32;
             let f2 = ((a1 >> 16) & 0xffff) as i32;
             let slot = a2 as usize;
-            let p = ctx.rt.field_as_number(f1) * ctx.rt.field_as_number(f2);
+            let n1 = match ctx.rt.field_as_number(f1) {
+                Ok(n) => n,
+                Err(e) => {
+                    JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+                    return 0.0;
+                }
+            };
+            let n2 = match ctx.rt.field_as_number(f2) {
+                Ok(n) => n,
+                Err(e) => {
+                    JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+                    return 0.0;
+                }
+            };
+            let p = n1 * n2;
             let old = jit_f64_to_value(ctx, jit_scratch_slot_raw(ctx, slot)).as_number();
             jit_scratch_slot_store_num(ctx, slot, old + p);
             0.0
@@ -1122,7 +1167,10 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
             let field_idx = a1 as i32;
             let val = jit_f64_to_value(ctx, a2);
             let s = val.as_str();
-            ctx.rt.set_field(field_idx, &s);
+            if let Err(e) = ctx.rt.set_field(field_idx, &s) {
+                JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+                return 0.0;
+            }
             value_to_jit_f64(ctx, val)
         }
         MIXED_COMPOUND_ASSIGN_FIELD => {
@@ -1136,7 +1184,13 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
             };
             let idx = jit_f64_to_value(ctx, a2).as_number() as i32;
             let rhs = jit_f64_to_value(ctx, a3);
-            let old = ctx.rt.field(idx);
+            let old = match ctx.rt.field(idx) {
+                Ok(v) => v,
+                Err(e) => {
+                    JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+                    return 0.0;
+                }
+            };
             let new_val = match apply_binop(bop, &old, &rhs, false, ctx.rt) {
                 Ok(v) => v,
                 Err(e) => {
@@ -1145,7 +1199,10 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
                 }
             };
             let s = new_val.as_str();
-            ctx.rt.set_field(idx, &s);
+            if let Err(e) = ctx.rt.set_field(idx, &s) {
+                JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+                return 0.0;
+            }
             value_to_jit_f64(ctx, new_val)
         }
         MIXED_JOIN_KEY_ARG => {
@@ -1328,7 +1385,11 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
                 Some(a1)
             };
             match ctx.rt.read_line_primary() {
-                Ok(line) => apply_getline_line(ctx, var, GetlineSource::Primary, line),
+                Ok(line) => {
+                    if let Err(e) = apply_getline_line(ctx, var, GetlineSource::Primary, line) {
+                        JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+                    }
+                }
                 Err(e) => {
                     JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
                 }
@@ -1343,7 +1404,11 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
             };
             let path = jit_f64_to_value(ctx, a2).into_string();
             match ctx.rt.read_line_file(path.as_str()) {
-                Ok(line) => apply_getline_line(ctx, var, GetlineSource::File, line),
+                Ok(line) => {
+                    if let Err(e) = apply_getline_line(ctx, var, GetlineSource::File, line) {
+                        JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+                    }
+                }
                 Err(e) => {
                     JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
                 }
@@ -1358,7 +1423,11 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
             };
             let path = jit_f64_to_value(ctx, a2).into_string();
             match ctx.rt.read_line_coproc(path.as_str()) {
-                Ok(line) => apply_getline_line(ctx, var, GetlineSource::Coproc, line),
+                Ok(line) => {
+                    if let Err(e) = apply_getline_line(ctx, var, GetlineSource::Coproc, line) {
+                        JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+                    }
+                }
                 Err(e) => {
                     JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
                 }
@@ -1624,9 +1693,15 @@ fn sync_jit_slot_for_scalar_name(ctx: &mut VmCtx<'_>, name: &str) {
     }
 }
 
+/// Sentinels passed to [`jit_field_callback`] for NR / FNR / NF so they never collide with
+/// negative field indices like `$(-1)` (POSIX fatal).
+pub(crate) const JIT_FIELD_SENTINEL_NR: i32 = i32::MIN;
+pub(crate) const JIT_FIELD_SENTINEL_FNR: i32 = i32::MIN + 1;
+pub(crate) const JIT_FIELD_SENTINEL_NF: i32 = i32::MIN + 2;
+
 /// Field callback passed to JIT-compiled code.
 /// Positive i → field $i as f64.
-/// Negative i → special: -1=NR, -2=FNR, -3=NF.
+/// [`JIT_FIELD_SENTINEL_NR`] / [`JIT_FIELD_SENTINEL_FNR`] / [`JIT_FIELD_SENTINEL_NF`] → NR / FNR / NF.
 /// Field reads for JIT (`PushFieldNum`, `GetField`, NR/FNR/NF). Exposed for colocated calls.
 pub(crate) extern "C" fn jit_field_callback(vmctx: *mut c_void, i: i32) -> f64 {
     if vmctx.is_null() {
@@ -1635,10 +1710,16 @@ pub(crate) extern "C" fn jit_field_callback(vmctx: *mut c_void, i: i32) -> f64 {
     let ctx = unsafe { &mut *vmctx.cast::<VmCtx<'static>>() };
     let rt = &mut *ctx.rt;
     match i {
-        -1 => rt.nr,
-        -2 => rt.fnr,
-        -3 => rt.nf() as f64,
-        _ => rt.field_as_number(i),
+        JIT_FIELD_SENTINEL_NR => rt.nr,
+        JIT_FIELD_SENTINEL_FNR => rt.fnr,
+        JIT_FIELD_SENTINEL_NF => rt.nf() as f64,
+        _ => match rt.field_as_number(i) {
+            Ok(n) => n,
+            Err(e) => {
+                JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+                0.0
+            }
+        },
     }
 }
 
@@ -1672,19 +1753,28 @@ extern "C" fn jit_var_dispatch(vmctx: *mut c_void, op: u32, name_idx: u32, arg: 
                 value_to_jit_f64(ctx, v)
             }
             JIT_VAR_OP_SET => {
-                ctx.set_var(name_owned.as_str(), Value::Num(arg));
+                if let Err(e) = ctx.set_var(name_owned.as_str(), Value::Num(arg)) {
+                    JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+                    return 0.0;
+                }
                 sync_jit_slot_if_scalar(ctx, name_owned.as_str());
                 arg
             }
             JIT_VAR_OP_INCR => {
                 let n = ctx.get_var(name_owned.as_str()).as_number();
-                ctx.set_var(name_owned.as_str(), Value::Num(n + 1.0));
+                if let Err(e) = ctx.set_var(name_owned.as_str(), Value::Num(n + 1.0)) {
+                    JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+                    return 0.0;
+                }
                 sync_jit_slot_if_scalar(ctx, name_owned.as_str());
                 0.0
             }
             JIT_VAR_OP_DECR => {
                 let n = ctx.get_var(name_owned.as_str()).as_number();
-                ctx.set_var(name_owned.as_str(), Value::Num(n - 1.0));
+                if let Err(e) = ctx.set_var(name_owned.as_str(), Value::Num(n - 1.0)) {
+                    JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+                    return 0.0;
+                }
                 sync_jit_slot_if_scalar(ctx, name_owned.as_str());
                 0.0
             }
@@ -1711,7 +1801,10 @@ extern "C" fn jit_var_dispatch(vmctx: *mut c_void, op: u32, name_idx: u32, arg: 
                     }
                 };
                 let n = new_val.as_number();
-                ctx.set_var(name_owned.as_str(), new_val);
+                if let Err(e) = ctx.set_var(name_owned.as_str(), new_val) {
+                    JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+                    return 0.0;
+                }
                 sync_jit_slot_if_scalar(ctx, name_owned.as_str());
                 n
             }
@@ -1730,7 +1823,10 @@ extern "C" fn jit_var_dispatch(vmctx: *mut c_void, op: u32, name_idx: u32, arg: 
                 let old_n = old.as_number();
                 let delta = incdec_delta(kind);
                 let new_n = old_n + delta;
-                ctx.set_var(name_owned.as_str(), Value::Num(new_n));
+                if let Err(e) = ctx.set_var(name_owned.as_str(), Value::Num(new_n)) {
+                    JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+                    return 0.0;
+                }
                 sync_jit_slot_if_scalar(ctx, name_owned.as_str());
                 incdec_push(kind, old_n, new_n)
             }
@@ -1756,7 +1852,10 @@ extern "C" fn jit_field_dispatch(vmctx: *mut c_void, op: u32, field_idx: i32, ar
         match op {
             JIT_FIELD_OP_SET_NUM => {
                 let s = Value::Num(arg).as_str();
-                ctx.rt.set_field(field_idx, &s);
+                if let Err(e) = ctx.rt.set_field(field_idx, &s) {
+                    JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+                    return 0.0;
+                }
                 arg
             }
             JIT_VAR_OP_COMPOUND_ADD
@@ -1772,7 +1871,13 @@ extern "C" fn jit_field_dispatch(vmctx: *mut c_void, op: u32, field_idx: i32, ar
                     JIT_VAR_OP_COMPOUND_MOD => BinOp::Mod,
                     _ => unreachable!(),
                 };
-                let old = ctx.rt.field(field_idx);
+                let old = match ctx.rt.field(field_idx) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+                        return 0.0;
+                    }
+                };
                 let new_val = match apply_binop(bop, &old, &Value::Num(arg), false, ctx.rt) {
                     Ok(v) => v,
                     Err(e) => {
@@ -1781,7 +1886,10 @@ extern "C" fn jit_field_dispatch(vmctx: *mut c_void, op: u32, field_idx: i32, ar
                     }
                 };
                 let s = new_val.as_str();
-                ctx.rt.set_field(field_idx, &s);
+                if let Err(e) = ctx.rt.set_field(field_idx, &s) {
+                    JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+                    return 0.0;
+                }
                 new_val.as_number()
             }
             JIT_VAR_OP_INCDEC_PRE_INC
@@ -1795,11 +1903,20 @@ extern "C" fn jit_field_dispatch(vmctx: *mut c_void, op: u32, field_idx: i32, ar
                     JIT_VAR_OP_INCDEC_POST_DEC => IncDecOp::PostDec,
                     _ => unreachable!(),
                 };
-                let old = ctx.rt.field(field_idx);
+                let old = match ctx.rt.field(field_idx) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+                        return 0.0;
+                    }
+                };
                 let old_n = old.as_number();
                 let delta = incdec_delta(kind);
                 let new_n = old_n + delta;
-                ctx.rt.set_field_num(field_idx, new_n);
+                if let Err(e) = ctx.rt.set_field_num(field_idx, new_n) {
+                    JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+                    return 0.0;
+                }
                 incdec_push(kind, old_n, new_n)
             }
             _ => 0.0,
@@ -1823,7 +1940,13 @@ extern "C" fn jit_io_dispatch(vmctx: *mut c_void, op: u32, a1: i32, a2: i32, a3:
             JIT_IO_PRINT_FIELD => {
                 let field = a1 as u16;
                 if let Some(ref mut buf) = ctx.print_out {
-                    let val = ctx.rt.field(field as i32);
+                    let val = match ctx.rt.field(field as i32) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+                            return;
+                        }
+                    };
                     let ors = String::from_utf8_lossy(&ctx.rt.ors_bytes).into_owned();
                     buf.push(format!("{}{}", val.as_str(), ors));
                 } else {
@@ -1839,8 +1962,20 @@ extern "C" fn jit_io_dispatch(vmctx: *mut c_void, op: u32, a1: i32, a2: i32, a3:
                 let sep_s = ctx.str_ref(sep_idx).to_string();
                 if let Some(ref mut buf) = ctx.print_out {
                     let ors = String::from_utf8_lossy(&ctx.rt.ors_bytes).into_owned();
-                    let v1 = ctx.rt.field(f1 as i32).as_str();
-                    let v2 = ctx.rt.field(f2 as i32).as_str();
+                    let v1 = match ctx.rt.field(f1 as i32) {
+                        Ok(v) => v.as_str(),
+                        Err(e) => {
+                            JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+                            return;
+                        }
+                    };
+                    let v2 = match ctx.rt.field(f2 as i32) {
+                        Ok(v) => v.as_str(),
+                        Err(e) => {
+                            JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+                            return;
+                        }
+                    };
                     buf.push(format!("{v1}{sep_s}{v2}{ors}"));
                 } else {
                     ctx.rt.print_field_to_buf(f1 as usize);
@@ -1856,9 +1991,27 @@ extern "C" fn jit_io_dispatch(vmctx: *mut c_void, op: u32, a1: i32, a2: i32, a3:
                 if let Some(ref mut buf) = ctx.print_out {
                     let ofs = String::from_utf8_lossy(&ctx.rt.ofs_bytes).into_owned();
                     let ors = String::from_utf8_lossy(&ctx.rt.ors_bytes).into_owned();
-                    let v1 = ctx.rt.field(f1 as i32).as_str();
-                    let v2 = ctx.rt.field(f2 as i32).as_str();
-                    let v3 = ctx.rt.field(f3 as i32).as_str();
+                    let v1 = match ctx.rt.field(f1 as i32) {
+                        Ok(v) => v.as_str(),
+                        Err(e) => {
+                            JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+                            return;
+                        }
+                    };
+                    let v2 = match ctx.rt.field(f2 as i32) {
+                        Ok(v) => v.as_str(),
+                        Err(e) => {
+                            JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+                            return;
+                        }
+                    };
+                    let v3 = match ctx.rt.field(f3 as i32) {
+                        Ok(v) => v.as_str(),
+                        Err(e) => {
+                            JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+                            return;
+                        }
+                    };
                     buf.push(format!("{v1}{ofs}{v2}{ofs}{v3}{ors}"));
                 } else {
                     let mut ofs_local = [0u8; 64];
@@ -2059,7 +2212,12 @@ extern "C" fn jit_val_dispatch(vmctx: *mut c_void, op: u32, a1: u32, a2: f64, a3
                     } else {
                         let key = mem::take(&mut state.keys[state.index]);
                         state.index += 1;
-                        ctx.set_var_interned_jit_sync(var_idx, Value::Str(key));
+                        if let Err(e) =
+                            ctx.set_var_interned_jit_sync(var_idx, Value::Str(key))
+                        {
+                            JIT_CHUNK_ERR.with(|ce| *ce.borrow_mut() = Some(e));
+                            return 0.0;
+                        }
                         1.0 // has next
                     }
                 })
@@ -2374,7 +2532,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             }
             Op::SetVar(idx) => {
                 let val = ctx.peek().clone();
-                ctx.set_var_interned(idx, val);
+                ctx.set_var_interned(idx, val)?;
             }
             Op::GetSlot(slot) => {
                 let v = match &ctx.rt.slots[slot as usize] {
@@ -2388,14 +2546,14 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             }
             Op::GetField => {
                 let i = ctx.pop().as_number() as i32;
-                let v = ctx.rt.field(i);
+                let v = ctx.rt.field(i)?;
                 ctx.push(v);
             }
             Op::SetField => {
                 let val = ctx.pop();
                 let idx = ctx.pop().as_number() as i32;
                 let s = val.as_str();
-                ctx.rt.set_field(idx, &s);
+                ctx.rt.set_field(idx, &s)?;
                 ctx.push(val);
             }
             Op::GetArrayElem(arr) => {
@@ -2431,6 +2589,11 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             }
             Op::TypeofField => {
                 let i = ctx.pop().as_number() as i32;
+                if i < 0 {
+                    return Err(Error::Runtime(
+                        "attempt to access field number -1".into(),
+                    ));
+                }
                 let t = if ctx.rt.field_is_unassigned(i) {
                     "uninitialized"
                 } else {
@@ -2459,7 +2622,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                     |ctx, name| -> crate::error::Result<Value> {
                         let old = ctx.get_var(name);
                         let new_val = apply_binop(bop, &old, &rhs, ctx.rt.bignum, ctx.rt)?;
-                        ctx.set_var(name, new_val.clone());
+                        ctx.set_var(name, new_val.clone())?;
                         Ok(new_val)
                     },
                 )?;
@@ -2480,10 +2643,10 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             Op::CompoundAssignField(bop) => {
                 let rhs = ctx.pop();
                 let idx = ctx.pop().as_number() as i32;
-                let old = ctx.rt.field(idx);
+                let old = ctx.rt.field(idx)?;
                 let new_val = apply_binop(bop, &old, &rhs, ctx.rt.bignum, ctx.rt)?;
                 let s = new_val.as_str();
-                ctx.rt.set_field(idx, &s);
+                ctx.rt.set_field(idx, &s)?;
                 ctx.push(new_val);
             }
             Op::CompoundAssignIndex(arr, bop) => {
@@ -2505,26 +2668,26 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 if ctx.rt.bignum {
                     let prec = ctx.rt.mpfr_prec_bits();
                     let round = ctx.rt.mpfr_round();
-                    let pushed = ctx.with_short_pool_name_mut(idx, |ctx, name| {
+                    let pushed = ctx.with_short_pool_name_mut(idx, |ctx, name| -> Result<Value> {
                         let old = ctx.get_var(name);
                         let old_f = value_to_float(&old, prec, round);
                         let d = Float::with_val(prec, delta);
                         let new_f = Float::with_val_round(prec, &old_f + &d, round).0;
-                        ctx.set_var(name, Value::Mpfr(new_f.clone()));
-                        match kind {
+                        ctx.set_var(name, Value::Mpfr(new_f.clone()))?;
+                        Ok(match kind {
                             IncDecOp::PreInc | IncDecOp::PreDec => Value::Mpfr(new_f),
                             IncDecOp::PostInc | IncDecOp::PostDec => Value::Mpfr(old_f),
-                        }
-                    });
+                        })
+                    })?;
                     ctx.push(pushed);
                 } else {
-                    let (old_n, new_n) = ctx.with_short_pool_name_mut(idx, |ctx, name| {
+                    let (old_n, new_n) = ctx.with_short_pool_name_mut(idx, |ctx, name| -> Result<(f64, f64)> {
                         let old = ctx.get_var(name);
                         let old_n = old.as_number();
                         let new_n = old_n + delta;
-                        ctx.set_var(name, Value::Num(new_n));
-                        (old_n, new_n)
-                    });
+                        ctx.set_var(name, Value::Num(new_n))?;
+                        Ok((old_n, new_n))
+                    })?;
                     ctx.push(Value::Num(incdec_push(kind, old_n, new_n)));
                 }
             }
@@ -2532,36 +2695,40 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 if ctx.rt.bignum {
                     let prec = ctx.rt.mpfr_prec_bits();
                     let round = ctx.rt.mpfr_round();
-                    ctx.with_short_pool_name_mut(idx, |ctx, name| {
+                    ctx.with_short_pool_name_mut(idx, |ctx, name| -> Result<()> {
                         let old = ctx.get_var(name);
                         let old_f = value_to_float(&old, prec, round);
                         let d = Float::with_val(prec, 1.0);
                         let new_f = Float::with_val_round(prec, &old_f + &d, round).0;
-                        ctx.set_var(name, Value::Mpfr(new_f));
-                    });
+                        ctx.set_var(name, Value::Mpfr(new_f))?;
+                        Ok(())
+                    })?;
                 } else {
-                    ctx.with_short_pool_name_mut(idx, |ctx, name| {
+                    ctx.with_short_pool_name_mut(idx, |ctx, name| -> Result<()> {
                         let n = ctx.get_var(name).as_number();
-                        ctx.set_var(name, Value::Num(n + 1.0));
-                    });
+                        ctx.set_var(name, Value::Num(n + 1.0))?;
+                        Ok(())
+                    })?;
                 }
             }
             Op::DecrVar(idx) => {
                 if ctx.rt.bignum {
                     let prec = ctx.rt.mpfr_prec_bits();
                     let round = ctx.rt.mpfr_round();
-                    ctx.with_short_pool_name_mut(idx, |ctx, name| {
+                    ctx.with_short_pool_name_mut(idx, |ctx, name| -> Result<()> {
                         let old = ctx.get_var(name);
                         let old_f = value_to_float(&old, prec, round);
                         let d = Float::with_val(prec, 1.0);
                         let new_f = Float::with_val_round(prec, &old_f - &d, round).0;
-                        ctx.set_var(name, Value::Mpfr(new_f));
-                    });
+                        ctx.set_var(name, Value::Mpfr(new_f))?;
+                        Ok(())
+                    })?;
                 } else {
-                    ctx.with_short_pool_name_mut(idx, |ctx, name| {
+                    ctx.with_short_pool_name_mut(idx, |ctx, name| -> Result<()> {
                         let n = ctx.get_var(name).as_number();
-                        ctx.set_var(name, Value::Num(n - 1.0));
-                    });
+                        ctx.set_var(name, Value::Num(n - 1.0))?;
+                        Ok(())
+                    })?;
                 }
             }
             Op::IncDecSlot(slot, kind) => {
@@ -2595,7 +2762,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 if ctx.rt.bignum {
                     let prec = ctx.rt.mpfr_prec_bits();
                     let round = ctx.rt.mpfr_round();
-                    let old = ctx.rt.field(idx);
+                    let old = ctx.rt.field(idx)?;
                     let old_f = value_to_float(&old, prec, round);
                     let d = Float::with_val(prec, delta);
                     let new_f = Float::with_val_round(prec, &old_f + &d, round).0;
@@ -2603,12 +2770,12 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                         IncDecOp::PreInc | IncDecOp::PreDec => Value::Mpfr(new_f.clone()),
                         IncDecOp::PostInc | IncDecOp::PostDec => Value::Mpfr(old_f),
                     };
-                    ctx.rt.set_field_from_mpfr(idx, &new_f);
+                    ctx.rt.set_field_from_mpfr(idx, &new_f)?;
                     ctx.push(ret);
                 } else {
-                    let old_n = ctx.rt.field(idx).as_number();
+                    let old_n = ctx.rt.field(idx)?.as_number();
                     let new_n = old_n + delta;
-                    ctx.rt.set_field_num(idx, new_n);
+                    ctx.rt.set_field_num(idx, new_n)?;
                     ctx.push(Value::Num(incdec_push(kind, old_n, new_n)));
                 }
             }
@@ -2642,51 +2809,65 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 if ctx.rt.bignum {
                     let b = ctx.pop();
                     let a = ctx.pop();
+                    a.reject_if_array_scalar()?;
+                    b.reject_if_array_scalar()?;
                     let prec = ctx.rt.mpfr_prec_bits();
                     let round = ctx.rt.mpfr_round();
                     let fa = value_to_float(&a, prec, round);
                     let fb = value_to_float(&b, prec, round);
                     ctx.push(Value::Mpfr(Float::with_val_round(prec, &fa + &fb, round).0));
                 } else {
-                    let b = ctx.pop().as_number();
-                    let a = ctx.pop().as_number();
-                    ctx.push(Value::Num(a + b));
+                    let b = ctx.pop();
+                    let a = ctx.pop();
+                    a.reject_if_array_scalar()?;
+                    b.reject_if_array_scalar()?;
+                    ctx.push(Value::Num(a.as_number() + b.as_number()));
                 }
             }
             Op::Sub => {
                 if ctx.rt.bignum {
                     let b = ctx.pop();
                     let a = ctx.pop();
+                    a.reject_if_array_scalar()?;
+                    b.reject_if_array_scalar()?;
                     let prec = ctx.rt.mpfr_prec_bits();
                     let round = ctx.rt.mpfr_round();
                     let fa = value_to_float(&a, prec, round);
                     let fb = value_to_float(&b, prec, round);
                     ctx.push(Value::Mpfr(Float::with_val_round(prec, &fa - &fb, round).0));
                 } else {
-                    let b = ctx.pop().as_number();
-                    let a = ctx.pop().as_number();
-                    ctx.push(Value::Num(a - b));
+                    let b = ctx.pop();
+                    let a = ctx.pop();
+                    a.reject_if_array_scalar()?;
+                    b.reject_if_array_scalar()?;
+                    ctx.push(Value::Num(a.as_number() - b.as_number()));
                 }
             }
             Op::Mul => {
                 if ctx.rt.bignum {
                     let b = ctx.pop();
                     let a = ctx.pop();
+                    a.reject_if_array_scalar()?;
+                    b.reject_if_array_scalar()?;
                     let prec = ctx.rt.mpfr_prec_bits();
                     let round = ctx.rt.mpfr_round();
                     let fa = value_to_float(&a, prec, round);
                     let fb = value_to_float(&b, prec, round);
                     ctx.push(Value::Mpfr(Float::with_val_round(prec, &fa * &fb, round).0));
                 } else {
-                    let b = ctx.pop().as_number();
-                    let a = ctx.pop().as_number();
-                    ctx.push(Value::Num(a * b));
+                    let b = ctx.pop();
+                    let a = ctx.pop();
+                    a.reject_if_array_scalar()?;
+                    b.reject_if_array_scalar()?;
+                    ctx.push(Value::Num(a.as_number() * b.as_number()));
                 }
             }
             Op::Div => {
                 if ctx.rt.bignum {
                     let b = ctx.pop();
                     let a = ctx.pop();
+                    a.reject_if_array_scalar()?;
+                    b.reject_if_array_scalar()?;
                     let prec = ctx.rt.mpfr_prec_bits();
                     let round = ctx.rt.mpfr_round();
                     let fa = value_to_float(&a, prec, round);
@@ -2696,33 +2877,43 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                     }
                     ctx.push(Value::Mpfr(Float::with_val_round(prec, &fa / &fb, round).0));
                 } else {
-                    let b = ctx.pop().as_number();
-                    let a = ctx.pop().as_number();
-                    if b == 0.0 {
+                    let b = ctx.pop();
+                    let a = ctx.pop();
+                    a.reject_if_array_scalar()?;
+                    b.reject_if_array_scalar()?;
+                    let bn = b.as_number();
+                    let an = a.as_number();
+                    if bn == 0.0 {
                         return Err(Error::Runtime("division by zero attempted".into()));
                     }
-                    ctx.push(Value::Num(a / b));
+                    ctx.push(Value::Num(an / bn));
                 }
             }
             Op::Mod => {
                 if ctx.rt.bignum {
                     let b = ctx.pop();
                     let a = ctx.pop();
+                    a.reject_if_array_scalar()?;
+                    b.reject_if_array_scalar()?;
                     let prec = ctx.rt.mpfr_prec_bits();
                     let round = ctx.rt.mpfr_round();
                     let fa = value_to_float(&a, prec, round);
                     let fb = value_to_float(&b, prec, round);
                     ctx.push(Value::Mpfr(Float::with_val_round(prec, &fa % &fb, round).0));
                 } else {
-                    let b = ctx.pop().as_number();
-                    let a = ctx.pop().as_number();
-                    ctx.push(Value::Num(a % b));
+                    let b = ctx.pop();
+                    let a = ctx.pop();
+                    a.reject_if_array_scalar()?;
+                    b.reject_if_array_scalar()?;
+                    ctx.push(Value::Num(a.as_number() % b.as_number()));
                 }
             }
             Op::Pow => {
                 if ctx.rt.bignum {
                     let b = ctx.pop();
                     let a = ctx.pop();
+                    a.reject_if_array_scalar()?;
+                    b.reject_if_array_scalar()?;
                     let prec = ctx.rt.mpfr_prec_bits();
                     let round = ctx.rt.mpfr_round();
                     let fa = value_to_float(&a, prec, round);
@@ -2731,9 +2922,11 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                         Float::with_val_round(prec, fa.pow(&fb), round).0,
                     ));
                 } else {
-                    let b = ctx.pop().as_number();
-                    let a = ctx.pop().as_number();
-                    ctx.push(Value::Num(a.powf(b)));
+                    let b = ctx.pop();
+                    let a = ctx.pop();
+                    a.reject_if_array_scalar()?;
+                    b.reject_if_array_scalar()?;
+                    ctx.push(Value::Num(a.as_number().powf(b.as_number())));
                 }
             }
 
@@ -2741,12 +2934,16 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             Op::CmpEq => {
                 let b = ctx.pop();
                 let a = ctx.pop();
+                a.reject_if_array_scalar()?;
+                b.reject_if_array_scalar()?;
                 let ic = ctx.rt.ignore_case_flag();
                 ctx.push(awk_cmp_eq(&a, &b, ic, ctx.rt));
             }
             Op::CmpNe => {
                 let b = ctx.pop();
                 let a = ctx.pop();
+                a.reject_if_array_scalar()?;
+                b.reject_if_array_scalar()?;
                 let ic = ctx.rt.ignore_case_flag();
                 let eq = awk_cmp_eq(&a, &b, ic, ctx.rt);
                 ctx.push(Value::Num(if eq.as_number() != 0.0 { 0.0 } else { 1.0 }));
@@ -2754,24 +2951,32 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             Op::CmpLt => {
                 let b = ctx.pop();
                 let a = ctx.pop();
+                a.reject_if_array_scalar()?;
+                b.reject_if_array_scalar()?;
                 let ic = ctx.rt.ignore_case_flag();
                 ctx.push(awk_cmp_rel(BinOp::Lt, &a, &b, ic, ctx.rt));
             }
             Op::CmpLe => {
                 let b = ctx.pop();
                 let a = ctx.pop();
+                a.reject_if_array_scalar()?;
+                b.reject_if_array_scalar()?;
                 let ic = ctx.rt.ignore_case_flag();
                 ctx.push(awk_cmp_rel(BinOp::Le, &a, &b, ic, ctx.rt));
             }
             Op::CmpGt => {
                 let b = ctx.pop();
                 let a = ctx.pop();
+                a.reject_if_array_scalar()?;
+                b.reject_if_array_scalar()?;
                 let ic = ctx.rt.ignore_case_flag();
                 ctx.push(awk_cmp_rel(BinOp::Gt, &a, &b, ic, ctx.rt));
             }
             Op::CmpGe => {
                 let b = ctx.pop();
                 let a = ctx.pop();
+                a.reject_if_array_scalar()?;
+                b.reject_if_array_scalar()?;
                 let ic = ctx.rt.ignore_case_flag();
                 ctx.push(awk_cmp_rel(BinOp::Ge, &a, &b, ic, ctx.rt));
             }
@@ -2843,34 +3048,38 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             Op::Neg => {
                 if ctx.rt.bignum {
                     let v = ctx.pop();
+                    v.reject_if_array_scalar()?;
                     let prec = ctx.rt.mpfr_prec_bits();
                     let round = ctx.rt.mpfr_round();
                     let f = value_to_float(&v, prec, round);
                     ctx.push(Value::Mpfr(Float::with_val_round(prec, -f, round).0));
                 } else {
-                    let v = ctx.pop().as_number();
-                    ctx.push(Value::Num(-v));
+                    let v = ctx.pop();
+                    v.reject_if_array_scalar()?;
+                    ctx.push(Value::Num(-v.as_number()));
                 }
             }
             Op::Pos => {
                 if ctx.rt.bignum {
                     let v = ctx.pop();
+                    v.reject_if_array_scalar()?;
                     let prec = ctx.rt.mpfr_prec_bits();
                     let round = ctx.rt.mpfr_round();
                     let f = value_to_float(&v, prec, round);
                     ctx.push(Value::Mpfr(Float::with_val_round(prec, f, round).0));
                 } else {
-                    let v = ctx.pop().as_number();
-                    ctx.push(Value::Num(v));
+                    let v = ctx.pop();
+                    v.reject_if_array_scalar()?;
+                    ctx.push(Value::Num(v.as_number()));
                 }
             }
             Op::Not => {
                 let v = ctx.pop();
-                ctx.push(Value::Num(if truthy(&v) { 0.0 } else { 1.0 }));
+                ctx.push(Value::Num(if truthy(&v)? { 0.0 } else { 1.0 }));
             }
             Op::ToBool => {
                 let v = ctx.pop();
-                ctx.push(Value::Num(if truthy(&v) { 1.0 } else { 0.0 }));
+                ctx.push(Value::Num(if truthy(&v)? { 1.0 } else { 0.0 }));
             }
 
             // ── Control flow ────────────────────────────────────────────
@@ -2880,14 +3089,14 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             }
             Op::JumpIfFalsePop(target) => {
                 let v = ctx.pop();
-                if !truthy(&v) {
+                if !truthy(&v)? {
                     pc = target;
                     continue;
                 }
             }
             Op::JumpIfTruePop(target) => {
                 let v = ctx.pop();
-                if truthy(&v) {
+                if truthy(&v)? {
                     pc = target;
                     continue;
                 }
@@ -3045,7 +3254,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 // Move key out of the snapshot vec — avoids cloning each `String`.
                 let key = mem::take(&mut state.keys[state.index]);
                 state.index += 1;
-                ctx.set_var_interned(var, Value::Str(key));
+                ctx.set_var_interned(var, Value::Str(key))?;
             }
             Op::ForInEnd => {
                 ctx.for_in_iters.pop();
@@ -3097,11 +3306,11 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 ctx.push(Value::Num(nf));
             }
             Op::PushFieldNum(field) => {
-                let n = ctx.rt.field_as_number(field as i32);
+                let n = ctx.rt.field_as_number(field as i32)?;
                 ctx.push(Value::Num(n));
             }
             Op::AddFieldToSlot { field, slot } => {
-                let field_val = ctx.rt.field_as_number(field as i32);
+                let field_val = ctx.rt.field_as_number(field as i32)?;
                 let old = match &ctx.rt.slots[slot as usize] {
                     Value::Num(v) => *v,
                     other => other.as_number(),
@@ -3111,7 +3320,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             Op::PrintFieldStdout(field) => {
                 if let Some(ref mut buf) = ctx.print_out {
                     // Parallel capture path: build string, push to capture buffer.
-                    let val = ctx.rt.field(field as i32);
+                    let val = ctx.rt.field(field as i32)?;
                     let ors = String::from_utf8_lossy(&ctx.rt.ors_bytes).into_owned();
                     let s = format!("{}{}", val.as_str(), ors);
                     buf.push(s);
@@ -3171,7 +3380,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 ctx.rt.slots[dst as usize] = Value::Num(dv + sv);
             }
             Op::AddMulFieldsToSlot { f1, f2, slot } => {
-                let p = ctx.rt.field_as_number(f1 as i32) * ctx.rt.field_as_number(f2 as i32);
+                let p = ctx.rt.field_as_number(f1 as i32)? * ctx.rt.field_as_number(f2 as i32)?;
                 let old = match &ctx.rt.slots[slot as usize] {
                     Value::Num(v) => *v,
                     other => other.as_number(),
@@ -3186,8 +3395,8 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 let sep_s = ctx.str_ref(sep).to_string();
                 if let Some(ref mut buf) = ctx.print_out {
                     let ors_b = ctx.rt.ors_bytes.clone();
-                    let v1 = ctx.rt.field(f1 as i32).as_str();
-                    let v2 = ctx.rt.field(f2 as i32).as_str();
+                    let v1 = ctx.rt.field(f1 as i32)?.as_str();
+                    let v2 = ctx.rt.field(f2 as i32)?.as_str();
                     let ors = String::from_utf8_lossy(&ors_b);
                     buf.push(format!("{v1}{sep_s}{v2}{ors}"));
                 } else {
@@ -3204,9 +3413,9 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 if let Some(ref mut buf) = ctx.print_out {
                     let ofs_b = ctx.rt.ofs_bytes.clone();
                     let ors_b = ctx.rt.ors_bytes.clone();
-                    let v1 = ctx.rt.field(f1 as i32).as_str();
-                    let v2 = ctx.rt.field(f2 as i32).as_str();
-                    let v3 = ctx.rt.field(f3 as i32).as_str();
+                    let v1 = ctx.rt.field(f1 as i32)?.as_str();
+                    let v2 = ctx.rt.field(f2 as i32)?.as_str();
+                    let v3 = ctx.rt.field(f3 as i32)?.as_str();
                     let ofs = String::from_utf8_lossy(&ofs_b);
                     let ors = String::from_utf8_lossy(&ors_b);
                     buf.push(format!("{v1}{ofs}{v2}{ofs}{v3}{ors}"));
@@ -3257,8 +3466,8 @@ pub fn flush_print_buf(buf: &mut Vec<u8>) -> Result<()> {
     Ok(())
 }
 
-fn truthy(v: &Value) -> bool {
-    v.truthy()
+fn truthy(v: &Value) -> Result<bool> {
+    v.truthy_cond()
 }
 
 fn incdec_delta(kind: IncDecOp) -> f64 {
@@ -3528,13 +3737,13 @@ fn apply_getline_line(
     var: Option<u32>,
     source: GetlineSource,
     line: Option<String>,
-) {
+) -> Result<()> {
     if let Some(l) = line {
         let trimmed = l.trim_end_matches(['\n', '\r']).to_string();
         if let Some(var_idx) = var {
             // getline var — read into variable only, do NOT touch $0/fields/NF.
             let name = ctx.str_ref(var_idx).to_string();
-            ctx.set_var(&name, Value::Str(trimmed));
+            ctx.set_var(&name, Value::Str(trimmed))?;
             // Mixed-mode JIT writeback copies `jit_slots` → `rt.slots`; mirror slot updates into
             // the scratch buffer so string slot assignments survive the writeback.
             if let Some(&slot) = ctx.cp.slot_map.get(name.as_str()) {
@@ -3558,6 +3767,7 @@ fn apply_getline_line(
             ctx.rt.fnr += 1.0;
         }
     }
+    Ok(())
 }
 
 fn exec_getline(
@@ -3592,7 +3802,7 @@ fn exec_getline(
     match line_res {
         Ok(line) => {
             let has = line.is_some();
-            apply_getline_line(ctx, var, source, line);
+            apply_getline_line(ctx, var, source, line)?;
             if push_result {
                 ctx.push(Value::Num(if has { 1.0 } else { 0.0 }));
             }
@@ -3641,7 +3851,7 @@ pub(crate) fn exec_sub_from_values(
             } else {
                 builtins::sub_fn(ctx.rt, re.as_ref(), repl.as_ref(), Some(&mut s))?
             };
-            ctx.set_var(&name, Value::Str(s));
+            ctx.set_var(&name, Value::Str(s))?;
             sync_jit_slot_for_scalar_name(ctx, name.as_str());
             n
         }
@@ -3658,13 +3868,13 @@ pub(crate) fn exec_sub_from_values(
         }
         SubTarget::Field => {
             let i = extra_field_idx.expect("field index for SubTarget::Field");
-            let mut s = ctx.rt.field(i).as_str();
+            let mut s = ctx.rt.field(i)?.as_str();
             let n = if is_global {
                 builtins::gsub(ctx.rt, re.as_ref(), repl.as_ref(), Some(&mut s))?
             } else {
                 builtins::sub_fn(ctx.rt, re.as_ref(), repl.as_ref(), Some(&mut s))?
             };
-            ctx.rt.set_field(i, &s);
+            ctx.rt.set_field(i, &s)?;
             n
         }
         SubTarget::Index(arr_idx) => {
@@ -3821,7 +4031,7 @@ pub(crate) fn exec_builtin_dispatch(
             if argc != 1 {
                 return Err(Error::Runtime("`mkbool` expects one argument".into()));
             }
-            Value::Num(if truthy(&args[0]) { 1.0 } else { 0.0 })
+            Value::Num(if truthy(&args[0])? { 1.0 } else { 0.0 })
         }
         "sqrt" => {
             if argc != 1 {

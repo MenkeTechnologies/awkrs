@@ -96,17 +96,17 @@ impl<'a> ExecCtx<'a> {
             })
     }
 
-    fn set_var(&mut self, name: &str, val: Value) {
+    fn set_var(&mut self, name: &str, val: Value) -> Result<()> {
         for frame in self.locals.iter_mut().rev() {
             if let Some(v) = frame.get_mut(name) {
                 *v = val;
-                return;
+                return Ok(());
             }
         }
         if name == "NF" {
             let n = val.as_number() as i32;
-            self.rt.set_nf(n);
-            return;
+            self.rt.set_nf(n)?;
+            return Ok(());
         }
         match self.rt.vars.get_mut(name) {
             Some(v) => *v = val,
@@ -114,6 +114,7 @@ impl<'a> ExecCtx<'a> {
                 self.rt.vars.insert(name.to_string(), val);
             }
         }
+        Ok(())
     }
 }
 
@@ -247,7 +248,7 @@ pub fn pattern_matches(pat: &Pattern, rt: &mut Runtime, prog: &Program) -> Resul
             let r = Regex::new(re).map_err(|e| Error::Runtime(e.to_string()))?;
             r.is_match(&ctx.rt.record)
         }
-        Pattern::Expr(e) => truthy(&eval_expr(e, &mut ctx)?),
+        Pattern::Expr(e) => truthy(&eval_expr(e, &mut ctx)?)?,
     })
 }
 
@@ -261,21 +262,21 @@ pub fn match_pattern(pat: &Pattern, rt: &mut Runtime, prog: &Program) -> Result<
             let r = Regex::new(re).map_err(|e| Error::Runtime(e.to_string()))?;
             r.is_match(&rt.record)
         }
-        Pattern::Expr(e) => truthy(&eval_expr(e, &mut ctx)?),
+        Pattern::Expr(e) => truthy(&eval_expr(e, &mut ctx)?)?,
         Pattern::Range(_, _) => {
             return Err(Error::Runtime("nested range pattern".into()));
         }
     })
 }
 
-fn truthy(v: &Value) -> bool {
-    v.truthy()
+fn truthy(v: &Value) -> crate::error::Result<bool> {
+    v.truthy_cond()
 }
 
 fn exec_stmt(s: &Stmt, ctx: &mut ExecCtx<'_>) -> Result<Flow> {
     match s {
         Stmt::If { cond, then_, else_ } => {
-            if truthy(&eval_expr(cond, ctx)?) {
+            if truthy(&eval_expr(cond, ctx)?)? {
                 for t in then_ {
                     match exec_stmt(t, ctx)? {
                         Flow::Normal => {}
@@ -292,7 +293,7 @@ fn exec_stmt(s: &Stmt, ctx: &mut ExecCtx<'_>) -> Result<Flow> {
             }
         }
         Stmt::While { cond, body } => {
-            'outer: while truthy(&eval_expr(cond, ctx)?) {
+            'outer: while truthy(&eval_expr(cond, ctx)?)? {
                 for t in body {
                     match exec_stmt(t, ctx)? {
                         Flow::Normal => {}
@@ -311,7 +312,7 @@ fn exec_stmt(s: &Stmt, ctx: &mut ExecCtx<'_>) -> Result<Flow> {
                     Flow::Normal => {}
                     Flow::Break => break 'outer,
                     Flow::Continue => {
-                        if !truthy(&eval_expr(cond, ctx)?) {
+                        if !truthy(&eval_expr(cond, ctx)?)? {
                             break 'outer;
                         }
                         continue 'outer;
@@ -321,7 +322,7 @@ fn exec_stmt(s: &Stmt, ctx: &mut ExecCtx<'_>) -> Result<Flow> {
                     }
                 }
             }
-            if !truthy(&eval_expr(cond, ctx)?) {
+            if !truthy(&eval_expr(cond, ctx)?)? {
                 break;
             }
         },
@@ -336,7 +337,7 @@ fn exec_stmt(s: &Stmt, ctx: &mut ExecCtx<'_>) -> Result<Flow> {
             }
             'outer: loop {
                 if let Some(c) = cond {
-                    if !truthy(&eval_expr(c, ctx)?) {
+                    if !truthy(&eval_expr(c, ctx)?)? {
                         break 'outer;
                     }
                 }
@@ -363,7 +364,7 @@ fn exec_stmt(s: &Stmt, ctx: &mut ExecCtx<'_>) -> Result<Flow> {
         Stmt::ForIn { var, arr, body } => {
             let keys = interp_for_in_keys(ctx, arr)?;
             'outer: for k in keys {
-                ctx.set_var(var, Value::Str(k));
+                ctx.set_var(var, Value::Str(k))?;
                 for t in body {
                     match exec_stmt(t, ctx)? {
                         Flow::Normal => {}
@@ -569,7 +570,7 @@ fn exec_stmt(s: &Stmt, ctx: &mut ExecCtx<'_>) -> Result<Flow> {
             if let Some(l) = line {
                 let trimmed = l.trim_end_matches(['\n', '\r']).to_string();
                 if let Some(ref name) = var {
-                    ctx.set_var(name, Value::Str(trimmed));
+                    ctx.set_var(name, Value::Str(trimmed))?;
                 } else {
                     let fs = ctx
                         .rt
@@ -639,10 +640,10 @@ pub fn eval_expr(e: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {
     if let Expr::Binary { op, left, right } = e {
         if *op == BinOp::And {
             let lv = eval_expr(left, ctx)?;
-            if !truthy(&lv) {
+            if !truthy(&lv)? {
                 return Ok(Value::Num(0.0));
             }
-            return Ok(Value::Num(if truthy(&eval_expr(right, ctx)?) {
+            return Ok(Value::Num(if truthy(&eval_expr(right, ctx)?)? {
                 1.0
             } else {
                 0.0
@@ -650,10 +651,10 @@ pub fn eval_expr(e: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {
         }
         if *op == BinOp::Or {
             let lv = eval_expr(left, ctx)?;
-            if truthy(&lv) {
+            if truthy(&lv)? {
                 return Ok(Value::Num(1.0));
             }
-            return Ok(Value::Num(if truthy(&eval_expr(right, ctx)?) {
+            return Ok(Value::Num(if truthy(&eval_expr(right, ctx)?)? {
                 1.0
             } else {
                 0.0
@@ -681,7 +682,7 @@ pub fn eval_expr(e: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {
         }
         Expr::Field(inner) => {
             let i = eval_expr(inner, ctx)?.as_number() as i32;
-            ctx.rt.field(i)
+            ctx.rt.field(i)?
         }
         Expr::Binary { op, left, right } => eval_binary(*op, left, right, ctx)?,
         Expr::Unary { op, expr } => eval_unary(*op, expr, ctx)?,
@@ -693,20 +694,20 @@ pub fn eval_expr(e: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {
             } else {
                 v
             };
-            ctx.set_var(name, newv.clone());
+            ctx.set_var(name, newv.clone())?;
             newv
         }
         Expr::AssignField { field, op, rhs } => {
             let idx = eval_expr(field, ctx)?.as_number() as i32;
             let v = eval_expr(rhs, ctx)?;
             let newv = if let Some(bop) = op {
-                let old = Value::Str(ctx.rt.field(idx).as_str());
+                let old = Value::Str(ctx.rt.field(idx)?.as_str());
                 apply_binop(*bop, &old, &v, ctx.rt.bignum, ctx.rt)?
             } else {
                 v
             };
             let s = newv.as_str();
-            ctx.rt.set_field(idx, &s);
+            ctx.rt.set_field(idx, &s)?;
             newv
         }
         Expr::AssignIndex {
@@ -734,7 +735,7 @@ pub fn eval_expr(e: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {
             eval_call(&fname, args, ctx)?
         }
         Expr::Ternary { cond, then_, else_ } => {
-            if truthy(&eval_expr(cond, ctx)?) {
+            if truthy(&eval_expr(cond, ctx)?)? {
                 eval_expr(then_, ctx)?
             } else {
                 eval_expr(else_, ctx)?
@@ -790,7 +791,7 @@ pub fn eval_expr(e: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {
                     if let Some(l) = line {
                         let trimmed = l.trim_end_matches(['\n', '\r']).to_string();
                         if let Some(ref name) = var {
-                            ctx.set_var(name, Value::Str(trimmed));
+                            ctx.set_var(name, Value::Str(trimmed))?;
                         } else {
                             let fs = ctx
                                 .rt
@@ -831,7 +832,7 @@ fn eval_inc_dec(op: IncDecOp, target: &IncDecTarget, ctx: &mut ExecCtx<'_>) -> R
                 let old_f = value_to_float(&old, prec, round);
                 let d = Float::with_val(prec, delta);
                 let new_f = Float::with_val_round(prec, &old_f + &d, round).0;
-                ctx.set_var(name, Value::Mpfr(new_f.clone()));
+                ctx.set_var(name, Value::Mpfr(new_f.clone()))?;
                 let ret = match op {
                     IncDecOp::PreInc | IncDecOp::PreDec => Value::Mpfr(new_f),
                     IncDecOp::PostInc | IncDecOp::PostDec => Value::Mpfr(old_f),
@@ -840,11 +841,11 @@ fn eval_inc_dec(op: IncDecOp, target: &IncDecTarget, ctx: &mut ExecCtx<'_>) -> R
             }
             IncDecTarget::Field(field) => {
                 let idx = eval_expr(field, ctx)?.as_number() as i32;
-                let old = ctx.rt.field(idx);
+                let old = ctx.rt.field(idx)?;
                 let old_f = value_to_float(&old, prec, round);
                 let d = Float::with_val(prec, delta);
                 let new_f = Float::with_val_round(prec, &old_f + &d, round).0;
-                ctx.rt.set_field_from_mpfr(idx, &new_f);
+                ctx.rt.set_field_from_mpfr(idx, &new_f)?;
                 let ret = match op {
                     IncDecOp::PreInc | IncDecOp::PreDec => Value::Mpfr(new_f),
                     IncDecOp::PostInc | IncDecOp::PostDec => Value::Mpfr(old_f),
@@ -870,15 +871,15 @@ fn eval_inc_dec(op: IncDecOp, target: &IncDecTarget, ctx: &mut ExecCtx<'_>) -> R
             IncDecTarget::Var(name) => {
                 let old_n = ctx.get_var(name).as_number();
                 let new_n = old_n + delta;
-                ctx.set_var(name, Value::Num(new_n));
+                ctx.set_var(name, Value::Num(new_n))?;
                 Ok(Value::Num(if ret_old { old_n } else { new_n }))
             }
             IncDecTarget::Field(field) => {
                 let idx = eval_expr(field, ctx)?.as_number() as i32;
-                let old_n = ctx.rt.field(idx).as_number();
+                let old_n = ctx.rt.field(idx)?.as_number();
                 let new_n = old_n + delta;
                 let s = Value::Num(new_n).as_str();
-                ctx.rt.set_field(idx, &s);
+                ctx.rt.set_field(idx, &s)?;
                 Ok(Value::Num(if ret_old { old_n } else { new_n }))
             }
             IncDecTarget::Index { name, indices } => {
@@ -932,8 +933,12 @@ fn eval_binary(op: BinOp, left: &Expr, right: &Expr, ctx: &mut ExecCtx<'_>) -> R
         let bv = eval_expr(right, ctx)?;
         return crate::runtime::awk_binop_values(op, &av, &bv, true, ctx.rt);
     }
-    let a = eval_expr(left, ctx)?.as_number();
-    let b = eval_expr(right, ctx)?.as_number();
+    let av = eval_expr(left, ctx)?;
+    let bv = eval_expr(right, ctx)?;
+    av.reject_if_array_scalar()?;
+    bv.reject_if_array_scalar()?;
+    let a = av.as_number();
+    let b = bv.as_number();
     let n = match op {
         BinOp::Add => a + b,
         BinOp::Sub => a - b,
@@ -985,6 +990,8 @@ fn locale_str_cmp(a: &str, b: &str) -> Ordering {
 fn awk_eq(left: &Expr, right: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {
     let lv = eval_expr(left, ctx)?;
     let rv = eval_expr(right, ctx)?;
+    lv.reject_if_array_scalar()?;
+    rv.reject_if_array_scalar()?;
     if ctx.rt.bignum && lv.is_numeric_str() && rv.is_numeric_str() {
         let prec = ctx.rt.mpfr_prec_bits();
         let round = ctx.rt.mpfr_round();
@@ -1035,6 +1042,8 @@ fn awk_ne(left: &Expr, right: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {
 fn awk_rel(op: BinOp, left: &Expr, right: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {
     let lv = eval_expr(left, ctx)?;
     let rv = eval_expr(right, ctx)?;
+    lv.reject_if_array_scalar()?;
+    rv.reject_if_array_scalar()?;
     if ctx.rt.bignum && lv.is_numeric_str() && rv.is_numeric_str() {
         let prec = ctx.rt.mpfr_prec_bits();
         let round = ctx.rt.mpfr_round();
@@ -1098,7 +1107,7 @@ fn eval_unary(op: UnaryOp, expr: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> 
                 Value::Num(v.as_number())
             }
         }
-        UnaryOp::Not => Value::Num(if truthy(&v) { 0.0 } else { 1.0 }),
+        UnaryOp::Not => Value::Num(if truthy(&v)? { 0.0 } else { 1.0 }),
     })
 }
 
@@ -1323,14 +1332,14 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
                     Expr::Var(name) => {
                         let mut s = ctx.get_var(name).as_str();
                         let n = builtins::gsub(ctx.rt, &re, &rep, Some(&mut s))?;
-                        ctx.set_var(name, Value::Str(s));
+                        ctx.set_var(name, Value::Str(s))?;
                         return Ok(Value::Num(n));
                     }
                     Expr::Field(inner) => {
                         let i = eval_expr(inner, ctx)?.as_number() as i32;
-                        let mut s = ctx.rt.field(i).as_str();
+                        let mut s = ctx.rt.field(i)?.as_str();
                         let n = builtins::gsub(ctx.rt, &re, &rep, Some(&mut s))?;
-                        ctx.rt.set_field(i, &s);
+                        ctx.rt.set_field(i, &s)?;
                         return Ok(Value::Num(n));
                     }
                     Expr::Index { name, indices } => {
@@ -1358,14 +1367,14 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
                     Expr::Var(name) => {
                         let mut s = ctx.get_var(name).as_str();
                         let n = builtins::sub_fn(ctx.rt, &re, &rep, Some(&mut s))?;
-                        ctx.set_var(name, Value::Str(s));
+                        ctx.set_var(name, Value::Str(s))?;
                         return Ok(Value::Num(n));
                     }
                     Expr::Field(inner) => {
                         let i = eval_expr(inner, ctx)?.as_number() as i32;
-                        let mut s = ctx.rt.field(i).as_str();
+                        let mut s = ctx.rt.field(i)?.as_str();
                         let n = builtins::sub_fn(ctx.rt, &re, &rep, Some(&mut s))?;
-                        ctx.rt.set_field(i, &s);
+                        ctx.rt.set_field(i, &s)?;
                         return Ok(Value::Num(n));
                     }
                     Expr::Index { name, indices } => {
@@ -1417,7 +1426,7 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
         }
         "mkbool" if args.len() == 1 => {
             let v = eval_expr(&args[0], ctx)?;
-            Ok(Value::Num(if truthy(&v) { 1.0 } else { 0.0 }))
+            Ok(Value::Num(if truthy(&v)? { 1.0 } else { 0.0 }))
         }
         "sqrt" if args.len() == 1 => {
             let v = eval_expr(&args[0], ctx)?;

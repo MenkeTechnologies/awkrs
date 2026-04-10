@@ -266,6 +266,8 @@ pub fn awk_binop_values(
 ) -> crate::error::Result<Value> {
     use crate::ast::BinOp;
     use crate::error::Error;
+    old.reject_if_array_scalar()?;
+    rhs.reject_if_array_scalar()?;
     if !use_mpfr {
         let a = old.as_number();
         let b = rhs.as_number();
@@ -502,6 +504,21 @@ impl Value {
             Value::Mpfr(f) => !f.is_zero(),
             Value::Array(a) => !a.is_empty(),
         }
+    }
+
+    /// Boolean tests in `if` / `while` / `for` / `?:` — whole arrays are a fatal error (gawk).
+    pub fn truthy_cond(&self) -> crate::error::Result<bool> {
+        self.reject_if_array_scalar()?;
+        Ok(match self {
+            Value::Uninit => false,
+            Value::Num(n) => *n != 0.0,
+            Value::Str(s) | Value::StrLit(s) => {
+                !s.is_empty() && s.parse::<f64>().map(|n| n != 0.0).unwrap_or(true)
+            }
+            Value::Regexp(s) => !s.is_empty(),
+            Value::Mpfr(f) => !f.is_zero(),
+            Value::Array(_) => unreachable!(),
+        })
     }
 
     /// Take ownership of the inner String, converting numbers to string form.
@@ -1784,9 +1801,9 @@ impl Runtime {
     }
 
     /// Write `$n` from an MPFR using **`CONVFMT`**-style string (field materialization).
-    pub fn set_field_from_mpfr(&mut self, i: i32, f: &Float) {
+    pub fn set_field_from_mpfr(&mut self, i: i32, f: &Float) -> crate::error::Result<()> {
         let s = self.mpfr_to_string_convfmt(f);
-        self.set_field(i, &s);
+        self.set_field(i, &s)
     }
 
     /// Next **record** from the primary input stream (respects `RS`), used by `getline` with no redirection.
@@ -2100,50 +2117,58 @@ impl Runtime {
         }
     }
 
-    pub fn field(&mut self, i: i32) -> Value {
+    pub fn field(&mut self, i: i32) -> crate::error::Result<Value> {
         if i < 0 {
-            return Value::Str(String::new());
+            return Err(crate::error::Error::Runtime(
+                "attempt to access field number -1".into(),
+            ));
         }
         let idx = i as usize;
         if idx == 0 {
-            return Value::Str(self.record.clone());
+            return Ok(Value::Str(self.record.clone()));
         }
         self.ensure_fields_split();
         if self.fields_dirty {
-            self.fields
+            Ok(self
+                .fields
                 .get(idx - 1)
                 .cloned()
                 .map(Value::Str)
-                .unwrap_or_else(|| Value::Str(String::new()))
+                .unwrap_or_else(|| Value::Str(String::new())))
         } else {
-            self.field_ranges
+            Ok(self
+                .field_ranges
                 .get(idx - 1)
                 .map(|&(s, e)| Value::Str(self.record[s as usize..e as usize].to_string()))
-                .unwrap_or_else(|| Value::Str(String::new()))
+                .unwrap_or_else(|| Value::Str(String::new())))
         }
     }
 
     /// Get field value as f64 directly without allocating a String.
     #[inline]
-    pub fn field_as_number(&mut self, i: i32) -> f64 {
+    pub fn field_as_number(&mut self, i: i32) -> crate::error::Result<f64> {
         if i < 0 {
-            return 0.0;
+            return Err(crate::error::Error::Runtime(
+                "attempt to access field number -1".into(),
+            ));
         }
         let idx = i as usize;
         if idx == 0 {
-            return parse_number(&self.record);
+            return Ok(parse_number(&self.record));
         }
         self.ensure_fields_split();
         if self.fields_dirty {
-            self.fields
+            Ok(self
+                .fields
                 .get(idx - 1)
                 .map(|s| parse_number(s))
-                .unwrap_or(0.0)
+                .unwrap_or(0.0))
         } else {
-            self.field_ranges
+            Ok(self
+                .field_ranges
                 .get(idx - 1)
                 .map(|&(s, e)| parse_number(&self.record[s as usize..e as usize]))
-                .unwrap_or(0.0)
+                .unwrap_or(0.0))
         }
     }
 
@@ -2216,9 +2241,11 @@ impl Runtime {
     }
 
     /// Assign `NF` — truncate or extend fields and rebuild `$0` with `OFS`.
-    pub fn set_nf(&mut self, n: i32) {
+    pub fn set_nf(&mut self, n: i32) -> crate::error::Result<()> {
         if n < 0 {
-            return;
+            return Err(crate::error::Error::Runtime(
+                "NF set to negative value".into(),
+            ));
         }
         let nf = n as usize;
         self.ensure_fields_split();
@@ -2237,15 +2264,18 @@ impl Runtime {
         }
         self.rebuild_record();
         self.vars.insert("NF".into(), Value::Num(nf as f64));
+        Ok(())
     }
 
-    pub fn set_field(&mut self, i: i32, val: &str) {
+    pub fn set_field(&mut self, i: i32, val: &str) -> crate::error::Result<()> {
         if i == 0 {
             self.set_record_str(val);
-            return;
+            return Ok(());
         }
         if i < 1 {
-            return;
+            return Err(crate::error::Error::Runtime(
+                "attempt to access field number -1".into(),
+            ));
         }
         // Materialize owned fields from ranges if needed
         if !self.fields_dirty {
@@ -2264,11 +2294,12 @@ impl Runtime {
         self.rebuild_record();
         let nf = self.fields.len() as f64;
         self.vars.insert("NF".into(), Value::Num(nf));
+        Ok(())
     }
 
     /// Set a field to a numeric value directly, formatting in-place without
     /// allocating a temporary `Value::Num` and round-tripping through `as_str()`.
-    pub fn set_field_num(&mut self, i: i32, n: f64) {
+    pub fn set_field_num(&mut self, i: i32, n: f64) -> crate::error::Result<()> {
         if i == 0 {
             let s = if n.fract() == 0.0 && n.abs() < 1e15 {
                 format!("{}", n as i64)
@@ -2276,10 +2307,12 @@ impl Runtime {
                 format!("{n}")
             };
             self.set_record_str(&s);
-            return;
+            return Ok(());
         }
         if i < 1 {
-            return;
+            return Err(crate::error::Error::Runtime(
+                "attempt to access field number -1".into(),
+            ));
         }
         if !self.fields_dirty {
             self.fields.clear();
@@ -2305,6 +2338,7 @@ impl Runtime {
         self.rebuild_record();
         let nf = self.fields.len() as f64;
         self.vars.insert("NF".into(), Value::Num(nf));
+        Ok(())
     }
 
     fn rebuild_record(&mut self) {
@@ -2807,10 +2841,12 @@ mod value_tests {
     }
 
     #[test]
-    fn value_truthy_nonempty_array() {
+    fn value_truthy_cond_rejects_whole_array() {
         let mut m = super::AwkMap::default();
         m.insert("k".into(), Value::Num(1.0));
-        assert!(Value::Array(m).truthy());
+        let v = Value::Array(m);
+        assert!(v.truthy_cond().is_err());
+        assert!(v.truthy());
     }
 
     #[test]
@@ -2841,7 +2877,7 @@ mod value_tests {
         let mut rt = super::Runtime::new();
         rt.set_field_sep_split(" ", "a b c d e");
         rt.ensure_fields_split();
-        rt.set_nf(3);
+        rt.set_nf(3).unwrap();
         assert_eq!(rt.record, "a b c");
         assert_eq!(rt.nf(), 3);
     }
@@ -2916,9 +2952,9 @@ mod value_tests {
         rt.set_field_sep_split(",", r#"a,"b,c",d"#);
         rt.ensure_fields_split();
         assert_eq!(rt.nf(), 3);
-        assert_eq!(rt.field(1).as_str(), "a");
-        assert_eq!(rt.field(2).as_str(), "b,c");
-        assert_eq!(rt.field(3).as_str(), "d");
+        assert_eq!(rt.field(1).unwrap().as_str(), "a");
+        assert_eq!(rt.field(2).unwrap().as_str(), "b,c");
+        assert_eq!(rt.field(3).unwrap().as_str(), "d");
     }
 
     #[test]
@@ -2927,7 +2963,7 @@ mod value_tests {
         rt.csv_mode = true;
         rt.set_field_sep_split(",", "\"a\"\"b\"");
         rt.ensure_fields_split();
-        assert_eq!(rt.field(1).as_str(), "a\"b");
+        assert_eq!(rt.field(1).unwrap().as_str(), "a\"b");
     }
 
     #[test]
@@ -2937,7 +2973,7 @@ mod value_tests {
         rt.set_field_sep_split(",", "a,");
         rt.ensure_fields_split();
         assert_eq!(rt.nf(), 2);
-        assert_eq!(rt.field(1).as_str(), "a");
-        assert_eq!(rt.field(2).as_str(), "");
+        assert_eq!(rt.field(1).unwrap().as_str(), "a");
+        assert_eq!(rt.field(2).unwrap().as_str(), "");
     }
 }

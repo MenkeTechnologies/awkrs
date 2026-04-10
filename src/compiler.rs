@@ -2120,6 +2120,24 @@ mod tests {
     }
 
     #[test]
+    fn vm_begin_negative_field_errors_with_init_slots_and_jit_enabled() {
+        use crate::runtime::Runtime;
+        use crate::vm::vm_run_begin;
+        let prog = parse_program("BEGIN { print $(-1) }\n").unwrap();
+        let cp = Compiler::compile_program(&prog).unwrap();
+        let mut rt = Runtime::new();
+        rt.slots = cp.init_slots(&rt.vars);
+        rt.jit_enabled = true;
+        let r = vm_run_begin(&cp, &mut rt);
+        assert!(
+            r.is_err(),
+            "expected runtime error, got {:?} print_buf={:?}",
+            r,
+            rt.print_buf
+        );
+    }
+
+    #[test]
     fn compile_record_rule_field_access() {
         let prog = parse_program("{ print $1 + $2 }").unwrap();
         let cp = Compiler::compile_program(&prog).unwrap();
