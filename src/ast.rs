@@ -146,6 +146,8 @@ pub enum GetlineRedir {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     Number(f64),
+    /// Decimal integer from source with no `.` — preserved as digits for **`-M`** (see [`crate::bytecode::Op::PushNumDecimalStr`]).
+    IntegerLiteral(String),
     Str(String),
     /// gawk-style regexp constant: `@/pattern/` — value type is **regexp**, not string (`typeof` is **`"regexp"`**).
     RegexpLiteral(String),

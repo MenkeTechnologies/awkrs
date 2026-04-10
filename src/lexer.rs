@@ -28,6 +28,8 @@ pub enum Token {
     Default,
     Ident(String),
     Number(f64),
+    /// Decimal integer with no `.` in source — exact under **`-M`** (not rounded through `f64`).
+    IntegerLiteral(String),
     String(String),
     Regexp(String),
 
@@ -103,6 +105,14 @@ impl<'a> Lexer<'a> {
 
     pub fn line(&self) -> usize {
         self.line
+    }
+
+    /// Rewind one byte so a `/` that was lexed as [`Token::Slash`] can be re-read with
+    /// [`next_token`](Self::next_token)(`true`) as a `/regex/` literal.
+    pub(crate) fn rewind_slash_token(&mut self) {
+        if self.pos > 0 && self.input.as_bytes().get(self.pos - 1) == Some(&b'/') {
+            self.pos -= 1;
+        }
     }
 
     fn peek(&self) -> Option<char> {
@@ -229,7 +239,7 @@ impl<'a> Lexer<'a> {
             });
         }
 
-        // number
+        // number — integer literals without `.' stay as decimal text so **`-M`** does not lose bits to `f64`.
         if c.is_ascii_digit() || (c == '.' && self.lookahead_digit()) {
             let start = self.pos;
             while let Some(d) = self.peek() {
@@ -239,7 +249,9 @@ impl<'a> Lexer<'a> {
                     break;
                 }
             }
+            let mut had_dot = false;
             if self.peek() == Some('.') {
+                had_dot = true;
                 self.bump();
                 while let Some(d) = self.peek() {
                     if d.is_ascii_digit() {
@@ -250,6 +262,9 @@ impl<'a> Lexer<'a> {
                 }
             }
             let slice = &self.input[start..self.pos];
+            if !had_dot {
+                return Ok(Token::IntegerLiteral(slice.to_string()));
+            }
             let n: f64 = slice.parse().map_err(|_| Error::Parse {
                 line: self.line,
                 msg: format!("bad number {slice:?}"),
@@ -550,12 +565,21 @@ mod tests {
     }
 
     #[test]
+    fn lex_i64_max_stays_integer_literal_not_f64() {
+        let mut l = Lexer::new("9223372036854775807");
+        assert_eq!(
+            l.next_token(false).unwrap(),
+            Token::IntegerLiteral("9223372036854775807".into())
+        );
+    }
+
+    #[test]
     fn lex_numbers_int_and_float() {
         assert_eq!(
             tokens_no_regex("0 42 2.25 .5"),
             vec![
-                Token::Number(0.0),
-                Token::Number(42.0),
+                Token::IntegerLiteral("0".into()),
+                Token::IntegerLiteral("42".into()),
                 Token::Number(2.25),
                 Token::Number(0.5),
             ]

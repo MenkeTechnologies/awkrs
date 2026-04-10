@@ -233,4 +233,25 @@ mod tests {
         assert_eq!(s, "1267650600228229401496703205376");
         assert!(!s.contains('.'));
     }
+
+    /// `i64::MAX + 1` must not round the augend through `f64` (would become 2^63 then +1 → 2^63+1).
+    #[test]
+    fn numeric_string_i64_max_plus_one_adds_exactly() {
+        let mut rt = Runtime::new();
+        rt.bignum = true;
+        let prec = rt.mpfr_prec_bits();
+        let round = rt.mpfr_round();
+        let a = numeric_string_to_mpfr("9223372036854775807", prec, round);
+        let one = Float::with_val(prec, 1);
+        let sum = Float::with_val_round(prec, &a + &one, round).0;
+        let s = awk_sprintf_with_decimal(
+            "%d",
+            &[Value::Mpfr(sum)],
+            '.',
+            Some(','),
+            Some((prec, round)),
+        )
+        .unwrap();
+        assert_eq!(s, "9223372036854775808");
+    }
 }

@@ -2301,6 +2301,17 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                     ctx.push(Value::Num(n));
                 }
             }
+            Op::PushNumDecimalStr(idx) => {
+                let s = ctx.str_ref(idx);
+                if ctx.rt.bignum {
+                    let prec = ctx.rt.mpfr_prec_bits();
+                    let round = ctx.rt.mpfr_round();
+                    let f = crate::bignum::numeric_string_to_mpfr(s, prec, round);
+                    ctx.push(Value::Mpfr(f));
+                } else {
+                    ctx.push(Value::Num(s.parse().unwrap_or(0.0)));
+                }
+            }
             Op::PushStr(idx) => ctx.push(Value::Str(ctx.str_ref(idx).to_string())),
             Op::PushRegexp(idx) => ctx.push(Value::Regexp(ctx.str_ref(idx).to_string())),
 
@@ -4288,6 +4299,16 @@ mod tests {
         let mut rt = runtime_with_slots(&cp);
         vm_run_begin(&cp, &mut rt).unwrap();
         assert_eq!(String::from_utf8_lossy(&rt.print_buf), "14\n");
+    }
+
+    /// `-M`: integer literals must not round through `f64` before `+` / `sprintf %d`.
+    #[test]
+    fn vm_begin_bignum_sprintf_i64_max_plus_one() {
+        let cp = compile(r#"BEGIN { print sprintf("%d", 9223372036854775807 + 1) }"#);
+        let mut rt = runtime_with_slots(&cp);
+        rt.bignum = true;
+        vm_run_begin(&cp, &mut rt).unwrap();
+        assert_eq!(String::from_utf8_lossy(&rt.print_buf), "9223372036854775808\n");
     }
 
     /// Mirrors CLI `-v a=1 -v b=2 -v c=3` (`apply_assigns` stores string values).

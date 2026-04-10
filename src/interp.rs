@@ -638,6 +638,16 @@ pub fn eval_expr(e: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {
     }
     Ok(match e {
         Expr::Number(n) => Value::Num(*n),
+        Expr::IntegerLiteral(s) => {
+            if ctx.rt.bignum {
+                let prec = ctx.rt.mpfr_prec_bits();
+                let round = ctx.rt.mpfr_round();
+                let f = crate::bignum::numeric_string_to_mpfr(s, prec, round);
+                Value::Mpfr(f)
+            } else {
+                Value::Num(s.parse().unwrap_or(0.0))
+            }
+        }
         Expr::Str(s) => Value::Str(s.clone()),
         Expr::RegexpLiteral(s) => Value::Regexp(s.clone()),
         Expr::Var(name) => ctx.get_var(name),

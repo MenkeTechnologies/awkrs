@@ -715,10 +715,10 @@ fn assign_flag_v_visible_in_begin() {
 
 #[test]
 fn bignum_sprintf_integer_beyond_i64_without_double_rounding() {
-    // Avoid `9223372036854775807 + 1`: the literal may round through `f64` before **`-M`** sees it.
+    // Decimal integer literals without `.` are kept as digit strings so **`-M`** does not round through `f64`.
     let (c, o, _) = run_awkrs_stdin_args(
         ["-M"],
-        r#"BEGIN { print sprintf("%d", 2 * 4611686018427387904) }"#,
+        r#"BEGIN { print sprintf("%d", 9223372036854775807 + 1) }"#,
         "",
     );
     assert_eq!(c, 0);

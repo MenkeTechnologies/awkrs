@@ -21,21 +21,57 @@
 
 > *"Pattern. Action. Domination."*
 
+`awkrs` runs **pattern → action** programs over input records like POSIX `awk` / GNU `gawk` / `mawk`, with a Cranelift-JIT bytecode VM, parallel record processing, and a CLI that accepts the union of POSIX, gawk, and mawk options.
+
+---
+
+## TABLE OF CONTENTS
+
+- [\[0x00\] SYSTEM SCAN](#0x00-system-scan)
+- [\[0x01\] SYSTEM REQUIREMENTS](#0x01-system-requirements)
+- [\[0x02\] INSTALLATION](#0x02-installation)
+- [\[0x03\] LANGUAGE COVERAGE](#0x03-language-coverage)
+- [\[0x04\] MULTITHREADING](#0x04-multithreading--parallel-execution-grid)
+- [\[0x05\] BYTECODE VM](#0x05-bytecode-vm--execution-core)
+- [\[0x06\] BENCHMARKS](#0x06-benchmarks--combat-metrics-vs-awk--gawk--mawk)
+- [\[0x07\] BUILD](#0x07-build--compile-the-payload)
+- [\[0x08\] TEST](#0x08-test--integrity-verification)
+- [\[0xFF\] LICENSE](#0xff-license)
+
 ---
 
 ## [0x00] SYSTEM SCAN
 
-`awkrs` runs **pattern → action** programs over input records (lines by default), similar to POSIX `awk`, GNU `gawk`, and `mawk`. The CLI accepts a **union** of common options from those implementations so scripts can pass flags through; see `--help` for which options affect behavior. **GNU-style flags** are implemented as follows (where they differ from gawk, awkrs documents the gap): **`-d`**/`--dump-variables` dumps globals after the run (stdout, **`-`**, or a file); **`-D`**/`--debug` emits a **static** rule/function listing (stderr or file)—**not** gawk’s interactive debugger; **`-p`**/`--profile` writes wall-clock timing and, when **`-j 1`**, **per-record-rule invocation counts** (stderr or file)—**not** gawk’s full profiler (no per-line or per-function execution counts); **`-o`**/`--pretty-print` prints **awk-like** source from the internal AST—**not** gawk’s `--pretty-print` canonical reformatting; **`-g`**/`--gen-pot` prints and exits before execution; **`-L`**/**`-t`** or a truthy **`LINT`** after **`BEGIN`** run **static** lint (gawk extension rules, best-effort uninitialized-variable warnings, simple regex-literal and literal **`printf`**/**`sprintf`** format checks; not full gawk **`--lint`** parity); **`-S`**/`--sandbox` blocks `system()`, file redirects, pipes, coprocesses, and inet I/O; **`-l`** loads **`name.awk`** from **`AWKPATH`** (default `.`); **`-b`** uses byte length for **`length`**/**`substr`**; **`-n`** enables **`strtonum`**-style string→number coercion; **`-s`**/`--no-optimize` disables the Cranelift JIT; **`-c`**/**`-P`** are stored on the runtime for future dialect checks (minimal effect today). **Parallel file mode** (**`-j`** with a regular file) splits mmap input with the same **`RS`** rules as **`record_io::split_input_into_records`** (paragraph, regex, literal, newline); **stdin** parallel chunks still read **newline-delimited** lines. **`PROCINFO`** / **`FUNCTAB`** are refreshed before **`BEGIN`** (so **`BEGIN`** can introspect **`PROCINFO`**) and again after **`BEGIN`** (existing **`PROCINFO`** entries are merged so keys like **`sorted_in`**, **`prec`**, **`roundmode`**, and **`READ_TIMEOUT`** set in **`BEGIN`** persist; **`PROCINFO["sorted_in"]`** controls **`for (k in arr)`** key order using gawk’s **`@ind_*`** / **`@val_*`** tokens; **`prec`** / **`roundmode`** drive **`-M`** MPFR precision and rounding; **`READ_TIMEOUT`** is a millisecond cap on blocking **`getline < file`** and **`/inet/tcp`** / **`/inet/udp`** reads where the implementation can **`poll`** / **`set_read_timeout`** — primary stdin **`getline`** does not consult it yet); **`SYMTAB`** supports gawk-style assignment to globals (`SYMTAB["x"] = v` updates **`x`**; **`for (k in SYMTAB)`** / **`length(SYMTAB)`** use a merged dynamic key set). **`@load "x.awk"`** inlines Awk source like **`@include`**; **`bindtextdomain`** loads **`.mo`** catalogs when present under **`locale/.../LC_MESSAGES/`** for **`dcgettext`** / **`dcngettext`**. **`/inet/tcp/lport/host/rport`** supports any local port (including **`0`** for ephemeral); **`/inet/udp/...`** uses connected UDP (one datagram per **`getline`** / **`print`**).
+**Positioning:** POSIX awk + the gawk extensions that show up in real scripts (`BEGINFILE`/`ENDFILE`, coprocess `|&`, CSV mode, `PROCINFO`/`SYMTAB`/`FUNCTAB`, `@include`/`@load`/`@namespace`, `/inet/tcp|udp`, MPFR via `-M`). Performance goal: beat `awk`/`mawk`/`gawk` on supported workloads — see [§0x06](#0x06-benchmarks--combat-metrics-vs-awk--gawk--mawk).
 
-**Positioning:** The implementation targets **POSIX awk** plus **practical gawk extensions** that show up in everyday scripts (e.g. `BEGINFILE` / `ENDFILE`, coprocess `|&`, CSV mode, many builtins). The **performance** goal is to beat typical `awk` / `mawk` / `gawk` on **supported** workloads (see benchmarks below)—**not** to claim parity with every dialect or extension.
+**Implemented gawk-style CLI flags** (where they differ from gawk, the gap is documented):
 
-**Not “all awks”:** Calling this “all functionality of all awk variants” would be inaccurate. **Gaps you hit early** when porting GNU awk scripts include:
+| Flag | Behavior |
+|---|---|
+| `-d`/`--dump-variables` | Dump globals after run (stdout, `-`, or file) |
+| `-D`/`--debug` | Static rule/function listing — **not** gawk's interactive debugger |
+| `-p`/`--profile` | Wall-clock summary + per-record-rule hit counts (`-j 1` only) — **not** gawk's per-line profiler |
+| `-o`/`--pretty-print` | AST pretty-print — **not** gawk's canonical reformatter |
+| `-g`/`--gen-pot` | Print and exit before execution |
+| `-L`/`-t`/`LINT` | Static lint (extension rules, uninit-var hints, `printf` format checks) |
+| `-S`/`--sandbox` | Block `system()`, file redirects, pipes, coprocesses, inet I/O |
+| `-l name` | Load `name.awk` from `AWKPATH` (default `.`) |
+| `-b` | Byte length for `length`/`substr`/`index` |
+| `-n` | `strtonum`-style hex/octal coercion |
+| `-s`/`--no-optimize` | Disable Cranelift JIT |
+| `-c`/`-P` | Stored on runtime; minimal effect today |
+| `-r`/`--re-interval` | Parsed; no runtime effect (regex crate already supports `{m,n}`) |
+| `-N`/`--use-lc-numeric` | Locale decimal radix and `%'` grouping in `sprintf`/`printf`/`print`. Does **not** affect string→number parsing |
 
-- **`RS`** — default newline; **one character** (including one UTF-8 character) uses a literal byte/char delimiter; **`RS=""`** is paragraph mode; **more than one character** uses **gawk-style regex** record boundaries ( **`RT`** is the matched text). **`FIELDWIDTHS`** selects fixed-width fields when non-empty.
-- **`-r` / `--re-interval`** — Parsed for script compatibility; **no runtime effect**. The **`regex`** crate already supports **`{m,n}`** quantifiers (gawk historically used **`-r`** to allow intervals where POSIX disallowed them).
-- **`-o` / `--pretty-print`** and **`-p` / `--profile`** — Emit **awkrs**-specific text (AST pretty-print; wall-clock summary and, with **`-j 1`**, per-record-rule invocation counts). **`-o`** prepends **`#`** comment lines stating this is not gawk’s reformatted source; **`-p`** comments state the layout is not gawk’s profiler. **Not** byte-for-byte compatible with gawk’s **`-o`** or **`-p`** output formats.
-- **`-N` / `--use-lc-numeric`** — Applies **`LC_NUMERIC`** to **`sprintf`** / **`printf`** and to **`CONVFMT`** / **`OFMT`** / **`print`** number→string formatting, and to gawk **`%'`** integer grouping (see **Locale & pipes**). **String→number** coercion from fields and user text still parses with **`.`** as the decimal point (locale-aware **input** parsing is **not** implemented).
-- **Gawk depth:** **`PROCINFO`** — refreshed **before** **`BEGIN`** and again **after** (so **`BEGIN`** sees pid, platform, etc.): gawk-style **`platform`** (**`posix`** on Unix, **`mingw`** on Windows, **`vms`** when built for that target—not Rust’s **`macos`/`linux`** names); **`version`**, ids, **`errno`** (numeric mirror of the last I/O **`ERRNO`** when available), **`api_major`/`api_minor`**, **`argv`** (full process command line), **`identifiers`** (builtins / scalars / arrays / user functions), **`FS`** (active split mode: **`FS`**, **`FPAT`**, **`FIELDWIDTHS`**, or **`API`** when **`-k`** CSV), default **`strftime`** format **`%c`**, **`pgrpid`**, supplementary **`groupN`**, **`mb_cur_max`** (best-effort; **Linux** uses **`sysconf`**), **`pma`** when awkrs is built with gawk-style PMA (otherwise omitted), per-input **`READ_TIMEOUT`/`RETRY`** composite keys for **`ARGV`** paths and **`"-"`** (stdin) with fallback from per-input → global **`PROCINFO["READ_TIMEOUT"]`** → **`GAWK_READ_TIMEOUT`** env (milliseconds); Unix primary record reads **`poll`** when a timeout applies; with **`-M`**, **`gmp_version`**, **`mpfr_version`**, **`prec_min`**, **`prec_max`**; user-set keys are merged. **`FUNCTAB`** (user functions + arity) is refreshed with **`PROCINFO`**; **`SYMTAB`** assignment/`for-in`/`length` behave like gawk’s global introspection (not GNU’s internal variable-object references). **`PROCINFO["sorted_in"]`** supports the documented **`@ind_*`** / **`@val_*`** modes, and a **user function name** (ASCII identifier): **two parameters** → compare **indices** only; **four parameters** → **`(i1, v1, i2, v2)`** for **value-based** ordering (same shape as gawk). Return **negative / zero / positive** like **`qsort`**. Unknown **`@…`** tokens get a one-time stderr warning. **`@include "file"`** and **`@load "x.awk"`** expand before parse (relative paths resolve from the working directory or the including file’s directory; cycles are errors). Non-**`.awk`** **`@load`** is accepted only for **gawk’s bundled extension names** (e.g. **`@load "filefuncs"`**, **`"readdir"`**, **`"time"`**) as a no-op—those builtins are native. Other **`@load`** paths (arbitrary third-party **`.so`** / **gawkapi** modules) error at parse time. **`@namespace "name"`** applies a default namespace prefix to unqualified identifiers (built-ins and special globals exempt); **`ns::id`** is accepted in the lexer. **Indirect calls** (`@expr(…)`), **`/inet/tcp/…`** (including non-zero local bind) and **`/inet/udp/…`**, and **`bindtextdomain`** / **`dcgettext`** / **`dcngettext`** (GNU **`.mo`** via the Rust **`gettext`** crate when catalogs exist under the bound directory) are implemented. **`-M` / `--bignum`** enables **MPFR** floating-point via the **`rug`** crate (default precision 256 bits; overridable via **`PROCINFO["prec"]`** / **`["roundmode"]`**; Cranelift JIT is disabled in this mode). String→number coercion for comparisons, **`++`/`--`**, bitwise builtins, and **`sprintf`** uses MPFR parsing (not `f64`); bare **`Value::Mpfr`** string forms use default **CONVFMT**-style **`%.6g`** when a runtime is unavailable. **Unicode vs bytes:** **`-b`** is honored for **`length`** / **`substr`** / **`index`**; full multibyte field-splitting parity with gawk is not audited. See **Language coverage** for **`IGNORECASE`**, **`ARGIND`**, **`ERRNO`**, **`BINMODE`**, **`LINT`**, **`TEXTDOMAIN`**, etc.
+**Gawk parity gaps to know:**
+
+- **`RS`** — newline by default; one (UTF-8) char = literal delimiter; `RS=""` = paragraph mode; multi-char = gawk regex (`RT` is the matched text). `FIELDWIDTHS` selects fixed-width when non-empty.
+- **`PROCINFO`** — refreshed before and after `BEGIN`. Includes gawk-style `platform` (`posix`/`mingw`/`vms`, **not** Rust's `macos`/`linux`), `version`, ids, `errno`, `api_major`/`api_minor`, `argv`, `identifiers`, `FS` (active split mode), `strftime`, `pgrpid`, `groupN`, `mb_cur_max` (Linux `sysconf`), per-input `READ_TIMEOUT`/`RETRY` composite keys with fallback chain → global `PROCINFO["READ_TIMEOUT"]` → `GAWK_READ_TIMEOUT` env. Unix primary record reads `poll` when a timeout applies. With `-M`: `gmp_version`, `mpfr_version`, `prec_min`, `prec_max`. User-set keys persist across the post-`BEGIN` refresh.
+- **`PROCINFO["sorted_in"]`** — `@ind_*`/`@val_*` modes, plus user comparator function (2-arg = index sort, 4-arg `(i1, v1, i2, v2)` = value sort). Returns negative/zero/positive like `qsort`.
+- **`SYMTAB`** — assignment, `for-in`, `length(SYMTAB)` like gawk's global introspection (not GNU's variable-object references).
+- **`@load`** — non-`.awk` paths only accepted for **gawk's bundled extension names** (`filefuncs`, `readdir`, `time`, …) as no-ops; the builtins are native. Arbitrary `.so`/gawkapi modules error at parse time.
+- **`-M`/`--bignum`** — MPFR via `rug` (default 256 bits, `PROCINFO["prec"]`/`["roundmode"]` apply). Arithmetic, `sprintf`/`printf` integer formats (no f64/i64 clamp), `int`/`intdiv`/`strtonum`/`++`/`--`, bit ops, transcendentals, `srand` (low 32 bits of previous seed), `CONVFMT`/`OFMT`/`%s`/concat/regex coercion all use MPFR. JIT is disabled in `-M` mode.
+- **Unicode vs bytes:** `-b` honored for `length`/`substr`/`index`. Full multibyte field-splitting parity is not audited.
 
 #### HELP // SYSTEM INTERFACE
 <img src="assets/awkrs-help.png" alt="awkrs -h cyberpunk help (termshot)" width="100%">
@@ -44,31 +80,25 @@
 
 ## [0x01] SYSTEM REQUIREMENTS
 
-- Rust toolchain // `rustc` + `cargo`
-- A **C compiler** and **Make** for **`gmp-mpfr-sys`** (pulled in by **`rug`** for **`-M`** / MPFR); typical macOS/Linux setups already satisfy this.
+- Rust toolchain (`rustc` + `cargo`)
+- A C compiler and `make` for `gmp-mpfr-sys` (pulled in by `rug` for `-M`); typical macOS/Linux setups already satisfy this.
+
+---
 
 ## [0x02] INSTALLATION
 
-#### DOWNLOADING PAYLOAD FROM CRATES.IO
-
 ```sh
-cargo install awkrs
-```
+cargo install awkrs                                    # from crates.io
 
-#### COMPILING FROM SOURCE
-
-```sh
-git clone https://github.com/MenkeTechnologies/awkrs
-cd awkrs
-cargo build --release
+git clone https://github.com/MenkeTechnologies/awkrs   # from source
+cd awkrs && cargo build --release
 ```
 
 [awkrs on Crates.io](https://crates.io/crates/awkrs)
 
-#### ZSH COMPLETION // TAB-COMPLETE ALL THE THINGS
+**Zsh completion:**
 
 ```sh
-# add the completions directory to fpath in your .zshrc
 fpath=(/path/to/awkrs/completions $fpath)
 autoload -Uz compinit && compinit
 ```
@@ -81,18 +111,18 @@ autoload -Uz compinit && compinit
  │ SUBSYSTEM: LEXER ████ PARSER ████ COMPILER ████ VM ████     │
  └──────────────────────────────────────────────────────────────┘
 
-Implemented end-to-end:
-
-- **Rules:** `BEGIN`, `END`, **`BEGINFILE`** / **`ENDFILE`** (gawk-style, per input file), empty pattern, `/regex/`, expression patterns, **range patterns** (`/a/,/b/` or `NR==1,NR==5`).
-- **Statements:** `if` / `while` / **`do … while`** / `for` (C-style and `for (i in arr)`), blocks, **`switch`** / **`case`** / **`default`** (gawk-style: no fall-through; **`case /regex/`** regex match; **`break`** exits the **`switch`** only), **`print`** (with no expressions, prints **`$0`**; **`print … >`** / **`>>`** / **`|`** / **`|&`** redirection), **`printf fmt, expr…`** (statement form, same redirections as **`print`**; no automatic newline—add **`\n`** in the format), `break`, `continue`, **`next`**, **`nextfile`** (skip the rest of the current input file, then continue with the next file—like **`next`** but per file; invalid in **`BEGIN`** / **`END`** / **`BEGINFILE`** / **`ENDFILE`**), **`exit`**, **`delete`**, **`return`** (inside functions), **`getline`** (primary input, **`getline < file`**, **`getline <& cmd`** for two-way / coprocess reads, and **`expr | getline [var]`** for one line from a **`sh -c`** subprocess stdout). **`getline`** is also an **expression** with value **`1`** (line read), **`0`** (EOF), **`-1`** (error), or **`-2`** (gawk: retryable I/O when **`PROCINFO[input,"RETRY"]`** is set)—e.g. **`if ((getline x) > 0)`** (bytecode / tree interpreter; experimental **JIT** **`getline`** failures abort the JIT chunk instead of returning **`-1`**/**`-2`**).
-- **Operators:** **`^`** and **`**`** for exponentiation (right-associative); unary **`+`** / **`-`** / **`!`** bind **looser** than **`^`** (e.g. **`-2^2`** is **`-(2^2)`**). **gawk regexp constants:** **`@/pattern/`** yields a **regexp** value (not a plain string); **`typeof`** reports **`regexp`**; **`~`** uses the pattern like a regex.
-- **Data:** fields (`$n`, `$NF`), scalars, **associative arrays** (`a[k]`, **`a[i,j]`** with **`SUBSEP`**), **`ARGC`** / **`ARGV`** (initialized before **`BEGIN`**: **`ARGV[0]`** is the executable name, **`ARGV[1]`** … are input file paths—none when reading stdin only), **`expr in array`** (membership: right-hand side is the array name), **`FS`** (field separator) and **`FPAT`** (gawk-style: non-empty **FPAT** splits `$0` by regex matches—each match is one field; empty **FPAT** uses **FS**), **`split`** (third argument and **`FS`** support **regex** when multi-character, per POSIX), **`patsplit`** (2–4 args; optional fourth array **`seps`** holds text between successive fields), string/number/**regexp** values. **Increment/decrement** (gawk-style): **`++` / `--`** as prefix or postfix on variables, **`$n`**, and **`a[k]`** (numeric coercion per awk rules).
-- **Records & env:** **`RS`** / **`RT`** as above. **`ENVIRON`** from the process environment at startup. **`CONVFMT`** for number→string coercion; **`OFMT`** for **`print`** of numbers. **`FIELDWIDTHS`**: non-empty → fixed-width **`$n`** (overrides **FPAT**/**FS** for that record). **`IGNORECASE`**: truthy → case-insensitive regex cache (**`~`**, **`match`**, **`gsub`**, multi-char **`FS`**/**`FPAT`**, **`split`**), and case-insensitive string **`==`** / **`!=`** / ordering (ordering uses lowercase + **`strcoll`**). **`ARGIND`**: index into **`ARGV`** for the current file ( **`0`** on stdin-only). **`ERRNO`**: set on some failed **`open`** / **`mmap`** paths; cleared on success. **`LINT`**: truthy after **`BEGIN`** (or **`-L`**) enables extension lint diagnostics. **`TEXTDOMAIN`** / **`BINMODE`**: variables present; **`PROCINFO["awkrs_binmode"]`** mirrors **`BINMODE`** (Unix text mode is unchanged). **`PROCINFO`**, **`FUNCTAB`**, **`SYMTAB`**: **`PROCINFO`** / **`FUNCTAB`** are filled before **`BEGIN`** (and refreshed after); **`SYMTAB`** also supports assignment and dynamic **`for-in`** / **`length(SYMTAB)`** as in gawk (see **SYSTEM SCAN** above).
-- **CLI (gawk-style):** **`-k`** / **`--csv`** enables **CSV mode** (comma-separated records, double-quoted fields, **`""`** for a literal **`"`** in a field): sets **`FS`** and **`FPAT`** like GNU awk’s introspection, and splits records with a dedicated CSV parser aligned with **`gawk --csv`** (quoted commas do not start a new field). Applied after **`-v`** / **`-F`** so it can override those for CSV workflows.
-- **Functions:** builtins (`length`, `index`, `substr`, **`intdiv`**, **`mkbool`**, **`split`**, **`sprintf`** / **`printf`** (flags; **`*`** and **`%n$`** for width/precision/value, including forms like **`%*2$d`**; gawk **`%'`** groups integer conversions with the locale thousands separator; common conversions `%s` `%d` `%i` `%u` `%o` `%x` `%X` `%f` `%e` `%E` `%g` `%G` `%c` `%%` — **`%g`** / **`%G`** follow C-style short float rules, not `%f`-only), **`gsub`** / **`sub`** / **`match`**, **`gensub`** (gawk-style 3–4 args), **`isarray`**, `tolower` / `toupper`, `int`, POSIX math (**`sin`**, **`cos`**, **`atan2`**, **`exp`**, **`log`**), `sqrt`, `rand` / `srand`, **`systime()`**, **`strftime`** (0–3 args, gawk-style), **`mktime`** (string datespec), `system`, `close`, **`fflush`** (stdout, empty string, open **`>`/`>>`** files, open **`|`** pipes, or open **`|&`** coprocesses), gawk-style bitwise **`and`** / **`or`** / **`xor`** / **`lshift`** / **`rshift`** / **`compl`**, **`strtonum`** (hex **`0x…`**, leading-zero octal, else decimal), **`asort`** / **`asorti`** (sort an array by value or by key into **`"1"`…`"n"`** indices, optional second destination array)), and **user-defined `function`** with parameters and locals (parameters are local; other names assign to globals, matching classic awk).
-- **I/O model:** The main record loop and **`getline` with no redirection** share one **`BufReader`** on stdin or the current input file so line order matches POSIX expectations. **`exit`** sets the process status; **`END` rules still run** after `exit` from `BEGIN` or a pattern action (POSIX-style), then the process exits with the requested code.
-- **Locale & pipes:** On Unix, string **`==`**, **`!=`**, and relational ordering use **`strcoll`** (honors **`LC_COLLATE`** / **`LC_ALL`**). **`|&`** / **`getline … <&`** run the command under **`sh -c`** with stdin and stdout connected; mixing **`|`** and **`|&`** on the same command string is an error. **`system(cmd)`** runs **`cmd`** via **`sh -c`**. With **`-N`** / **`--use-lc-numeric`**, **`LC_NUMERIC`** is applied: **`sprintf`** / **`printf`** use the locale decimal radix for float conversions (**`%f`** / **`%e`** / **`%g`** / **`%E`** / **`%F`** / **`%G`**), and the locale thousands separator for gawk **`%'`** on integer conversions; without **`-N`**, float conversions use **`.`** and **`%'`** still uses **`localeconv()`**’s grouping character when available (fallback **`,`**). **`-N`** does **not** affect parsing of numeric strings from **`$n`**, **`$0`**, or comparisons—those still expect **`.`** as the decimal separator.
-- **Gawk extras:** Source directives (**`@include`**, **`@load "*.awk"`**, **`@namespace "…"`** with default identifier prefixing), **indirect calls** (**`@name()`** / **`@(expr)(…)`**), **`/inet/tcp/…`** and **`/inet/udp/…`** client sockets (gawk-style paths), **gettext-style** builtins (**`bindtextdomain`**, **`dcgettext`**, **`dcngettext`** with **`.mo`** catalogs), and **`-M` / `--bignum`** (**MPFR** arbitrary precision: arithmetic, **`sprintf`/`printf`** conversions (integer formats use full integers, not an **`f64`**/`i64` clamp), **`int`** / **`intdiv`** / **`strtonum`** / **`++`/`--`**, bitwise builtins, transcendentals, **`srand`** (truncates the seed to an integer then uses the low **32** bits of the previous seed as the return value—seed magnitude uses **MPFR** integer truncation to **u64**, not **`f64`**/**`u32`**), **`CONVFMT`/`OFMT`** / **`%s`** / **`concat`** / regex coercion; string operands for numeric contexts use the same MPFR materialization as **`strtonum`**; Cranelift JIT is disabled; **`PROCINFO["prec"]`** / **`["roundmode"]`** apply—see **SYSTEM SCAN**).
+- **Rules:** `BEGIN`, `END`, `BEGINFILE`/`ENDFILE`, empty pattern, `/regex/`, expression patterns, range patterns (`/a/,/b/` or `NR==1,NR==5`).
+- **Statements:** `if`/`while`/`do…while`/`for` (C-style and `for (i in arr)`), `switch`/`case`/`default` (gawk-style: no fall-through, regex `case /re/`), `print`/`printf` (with `>`, `>>`, `|`, `|&` redirection), `break`, `continue`, `next`, `nextfile`, `exit`, `delete`, `return`, `getline` (primary, `< file`, `<& cmd`, `expr | getline [var]`).
+- **`getline` as expression:** value `1` (read), `0` (EOF), `-1` (error), `-2` (gawk retryable I/O when `PROCINFO[input,"RETRY"]` is set). JIT `getline` failures abort the JIT chunk instead of returning `-1`/`-2`.
+- **Operators:** arithmetic, comparison, string concat, ternary, `in`, `~`/`!~`, `++`/`--` (prefix/postfix on vars, `$n`, `a[k]`), `^`/`**` (right-associative; unary `+`/`-`/`!` bind looser, so `-2^2` = `-(2^2)`).
+- **gawk regexp constants:** `@/pattern/` yields a **regexp** value (`typeof` reports `regexp`); `~` uses the pattern as a regex.
+- **Data:** fields, scalars, associative arrays (`a[k]`, `a[i,j]` with `SUBSEP`), `ARGC`/`ARGV` (set before `BEGIN`; `ARGV[0]` is the executable, `ARGV[1..]` are file paths). `FS` (regex when multi-char), `FPAT` (gawk-style: non-empty splits by regex match), `split`/`patsplit` (3rd arg accepts regex; `patsplit` 4-arg form populates `seps`).
+- **Records & env:** `RS`/`RT` as documented above. `ENVIRON`, `CONVFMT`, `OFMT`, `FIELDWIDTHS`, `IGNORECASE` (case-insensitive regex + `==`/`!=`/ordering via `strcoll`), `ARGIND`, `ERRNO`, `LINT`, `TEXTDOMAIN`, `BINMODE`. `PROCINFO`/`FUNCTAB`/`SYMTAB` as in [§0x00](#0x00-system-scan).
+- **CLI extensions:** `-k`/`--csv` enables CSV mode (RFC-style quoting, `""` escape) — sets `FS`/`FPAT` and uses a dedicated parser aligned with `gawk --csv`.
+- **Builtins:** `length`, `index`, `substr`, `intdiv`, `mkbool`, `split`, `sprintf`/`printf` (flags, `*` and `%n$` positional, gawk `%'`, conversions `%s %d %i %u %o %x %X %f %e %E %g %G %c %%`), `gsub`/`sub`/`match`, `gensub`, `isarray`, `tolower`/`toupper`, `int`, math (`sin` `cos` `atan2` `exp` `log` `sqrt`), `rand`/`srand`, `systime`, `strftime` (0–3 args), `mktime`, `system`, `close`, `fflush`, bit ops (`and` `or` `xor` `lshift` `rshift` `compl`), `strtonum`, `asort`/`asorti`. User-defined `function` with parameter locals.
+- **I/O model:** main record loop and unredirected `getline` share one `BufReader` so line order matches POSIX. `exit` from `BEGIN` or a pattern action still runs `END` rules, then exits with the requested code.
+- **Locale & pipes:** Unix string compare/order uses `strcoll` (`LC_COLLATE`/`LC_ALL`). `|&` and `<&` run under `sh -c` (mixing `|` and `|&` on the same command is an error). With `-N`, `LC_NUMERIC` applies to `sprintf`/`printf` floats and `%'` grouping; without `-N`, `%'` still uses `localeconv()`'s thousands separator (fallback `,`). `-N` does **not** affect parsing of numeric strings from input.
+- **Gawk extras:** `@include`, `@load "*.awk"`, `@namespace "…"` (default identifier prefixing; built-ins exempt), indirect calls (`@name(…)` / `@(expr)(…)`), `/inet/tcp/…` and `/inet/udp/…` client sockets, gettext builtins (`bindtextdomain`, `dcgettext`, `dcngettext` with `.mo` catalogs via the `gettext` crate), `-M`/`--bignum` MPFR.
 
 ---
 
@@ -107,11 +137,13 @@ Implemented end-to-end:
  └─────────────────────────────────────────────┘
 ```
 
-By default **`-j`** / **`--threads`** is **1**. Pass a higher value when the program is **parallel-safe** (static check: no range patterns, no `exit`, no **`nextfile`**, no primary `getline`, no **`expr | getline`** (pipe), no **`getline <&`** coprocess, no `delete`, no **`asort`** / **`asorti`**, no indirect function calls (**`@…`**), no **`print`/`printf` redirection** to files, pipes, or coprocesses, no cross-record assignments or other mutating expressions in record rules or user functions); then **records are processed in parallel** with **rayon** and `print` / `printf` output is **reordered to input order** within each batch so pipelines stay deterministic. Programs that use **primary** `getline` (including in **`BEGIN`**) also run **sequentially** for **file** input: parallel mode would not share one input stream with **`getline`** the way the single-threaded path does. **Regular files** are **memory-mapped** (`memmap2`) and scanned into per-record `String`s for workers—no extra `read()` copy of the whole file into a heap `Vec<u8>`, with the OS paging large inputs. **Stdin-only** input uses **chunked streaming**: up to **`--read-ahead`** lines (default **1024**) are buffered, that batch is dispatched to workers, output is emitted in order, then the next batch is read—so parallel speedups apply to piped input without loading all of stdin. Parallel workers execute the **same bytecode VM** as the sequential path (`vm_pattern_matches` / `vm_run_rule`); the compiled program is shared via **`Arc<CompiledProgram>`** (one compile, cheap refcount per worker) with **per-worker** runtime state (slots, VM stack, field buffers, captured print lines).
+Default `-j`/`--threads` is **1**. Pass a higher value when the program is **parallel-safe** (static check: no range patterns, no `exit`/`nextfile`/`delete`, no primary `getline`, no pipe/coproc `getline`, no `asort`/`asorti`, no indirect calls, no `print`/`printf` redirection, no cross-record assignments). Records are processed in parallel via **rayon** and output is **reordered to input order** within each batch so pipelines stay deterministic.
 
-If the program is not parallel-safe, the engine **falls back to sequential** processing and prints a **warning** when **`-j`** is greater than **1** (use a **single thread** to silence the warning). **`END`** still sees only **post-`BEGIN`** global state (record-rule mutations from parallel workers are not merged into the main runtime).
+**Regular files** are memory-mapped (`memmap2`) and scanned with the same `RS` rules as the sequential path — no `read()` copy of the whole file. **Stdin** parallel chunks up to `--read-ahead` lines (default 1024) per batch, dispatches to workers, emits in order, then refills.
 
-**Tradeoff:** Parallel mode still builds one **`String` per record** for workers; the **file bytes** are mapped read-only, not duplicated in a heap buffer. Stdin parallel mode buffers **`--read-ahead`** lines at a time (not the full stream).
+Workers run the same bytecode VM as the sequential path. The compiled program is shared via `Arc<CompiledProgram>` (one compile, cheap refcount per worker) with per-worker runtime state.
+
+**Fallback:** non-parallel-safe programs run sequentially with a warning when `-j > 1`. Programs that use primary `getline` (including in `BEGIN`) also run sequentially for file input. `END` only sees post-`BEGIN` global state — record-rule mutations from parallel workers are not merged.
 
 ---
 
@@ -121,37 +153,35 @@ If the program is not parallel-safe, the engine **falls back to sequential** pro
  │ ARCHITECTURE: STACK VM &nbsp;&nbsp; OPTIMIZATION: PEEPHOLE FUSED     │
  └──────────────────────────────────────────────────────────────┘
 
-The engine compiles AWK programs into a flat bytecode instruction stream, then runs them on a stack-based virtual machine. This eliminates the recursive AST-walking overhead of a tree interpreter — no per-node pattern matching, no heap pointer chasing through `Box<Expr>`, and better CPU cache locality from contiguous instruction arrays. Short-circuit `&&`/`||` and all control flow (loops, break/continue, if/else) are resolved to jump-patched offsets at compile time. **Range patterns** (`/a/,/b/` or expression endpoints) compile both endpoints to the same bytecode forms as ordinary patterns (regex / literal / expr chunk / always / never); record matching uses **`vm_range_step`** on the VM, not AST walks. The string pool interns all variable names and string constants so the VM refers to them by cheap `u32` index.
+awkrs compiles AWK programs into a flat bytecode instruction stream and runs them on a stack VM. Short-circuit `&&`/`||`, control flow, and range patterns resolve to jump-patched offsets at compile time. The string pool interns variable names and string constants for cheap `u32` indexing.
 
-**Cranelift JIT (experimental):** The **`jit`** module uses **Cranelift** + **`cranelift-jit`** with ISA flag **`opt_level = speed`** (Cranelift’s default is **`none`**; **`speed`** improves register allocation, instruction selection, and DCE on emitted code) to compile eligible bytecode chunks into native code with ABI **`(vmctx, slots, field_fn, array_field_add, var_dispatch, field_dispatch, io_dispatch, val_dispatch) -> f64`** — an opaque **`vmctx`** pointer (`*mut c_void` to the active interpreter context) plus seven **`extern "C"`** callback pointers covering field reads, fused array updates, HashMap-path scalar ops, dynamic-field mutations, print side-effects, and multiplexed match/signal/iterator operations. Callers pass a **`JitRuntimeState`** (opaque **`vmctx`**, mutable **`f64`** slot slice + those seven callbacks); every callback receives **`vmctx`** as its first argument so the runtime does not rely on thread-local storage to find **`VmCtx`** / **`Runtime`**. **Tiered compilation:** each chunk counts **`Chunk::jit_invocation_count`**; the VM only attempts JIT after **`AWKRS_JIT_MIN_INVOCATIONS`** entries (default **3**; set **1** to compile on the first entry). **`try_compile_with_options`** with **`JitCompileOptions::vm_default`** emits a direct **`call`** to the **`jit_field_callback`** symbol for field reads (not **`call_indirect`** through the **`field_fn` parameter); field *values* are still parsed from record text (**`field_as_number`**), not a single memory load. In mixed chunks, fused **`AddFieldToSlot`** / **`AddMulFieldsToSlot`** emit that field callback first, then **`val_dispatch`** opcodes that only coerce/update the slot (**`MIXED_ADD_FIELDNUM_TO_SLOT`** / **`MIXED_ADD_MUL_FIELDNUMS_TO_SLOT`**), avoiding a second field parse for the same **`$n`**. Eligible ops include constants, slot and HashMap-path scalar ops (when numeric; **`GetVar`** forces mixed mode for the whole chunk so locals/globals and **`return`** preserve full **`Value`** semantics on the JIT stack), arithmetic and comparisons, jumps and fused loop tests, field access (constant **`PushFieldNum`** — always **field callback** semantics like **`field_as_number`**, including in mixed chunks; dynamic **`GetField`**, NR/FNR/NF, fused **`AddFieldToSlot`** / **`AddMulFieldsToSlot`**), fused **`ArrayFieldAddConst`** (numeric field index only), general array subscripts and string ops in **mixed mode** (NaN-boxed string handles on the stack; **`val_dispatch`** opcodes ≥ 100 **`MIXED_*`** — including fused **`IncrSlot`** / **`AddFieldToSlot`** / **`JumpIfSlotGeNum`** / related slot peepholes when the chunk is mixed, so numeric-string slots coerce like **`Value::as_number`**; dynamic **`$i = …`** / **`$i += …`** use the same **`MIXED_*`** path when the chunk is mixed; multidimensional **`a[i,j]`** keys use **`JoinArrayKey`** → **`MIXED_JOIN_*`** with **`SUBSEP`**), **`typeof`** on scalars, fields, array elements, and arbitrary expressions (**`MIXED_TYPEOF_*`**), a **whitelist** of builtins via **`Op::CallBuiltin`** (**`MIXED_BUILTIN_ARG`** / **`MIXED_BUILTIN_CALL`** — math/string helpers, **`sprintf`** / **`printf`**, **`strftime`**, **`fflush`** / **`close`** / **`system`**, **`typeof`**, with a capped arg count), **`split(s, arr [, fs])`** (**`Op::Split`** — **`MIXED_SPLIT`** / **`MIXED_SPLIT_WITH_FS`**), **`patsplit`** (**`Op::Patsplit`** — multiple **`MIXED_PATSPLIT_*`**; FPAT + **`seps`** packs two pool indices in **`a1`** when both are &lt; 65536, otherwise stash + **`MIXED_PATSPLIT_FP_SEP_WIDE`**), **`match(s, re [, arr])`** (**`Op::MatchBuiltin`**), **`$n`** compound / **`++$n`** / **`$n++`**, **fused print opcodes** (**`PrintFieldStdout`**, **`PrintFieldSepField`**, **`PrintThreeFieldsStdout`**, bare **`print`**, **`print`** / **`printf`** with arguments on stdout in mixed mode — **`printf`** uses **`MIXED_PRINTF_FLUSH`**; redirects (`>`, `>>`, `|`, `|&`) use **`MIXED_PRINT_FLUSH_REDIR`** / **`MIXED_PRINTF_FLUSH_REDIR`** with **`pack_print_redir`**), **`MatchRegexp`** pattern tests, **flow signals** (**`Next`**, **`NextFile`**, **`ExitDefault`**, **`ExitWithCode`**, **`ReturnVal`**, **`ReturnEmpty`**), **`for`-`in` iteration** (**`ForInStart`** / **`ForInNext`** / **`ForInEnd`** — iterator state in thread-local, key stored in variable via callback), and **`asort`** / **`asorti`** (array sorting via callback, returning count), **`CallUser`** (**`MIXED_CALL_USER_ARG`** / **`MIXED_CALL_USER_CALL`**), and **`sub`**/**`gsub`** (**`MIXED_SUB_*`** / **`MIXED_GSUB_*`** — record, slot/var, field, or array index). The **`io_dispatch`** callback handles fused print opcodes that only touch fields as void side-effects. The **`val_dispatch`** callback multiplexes **`MatchRegexp`** (regex tested against `$0`), mixed-mode string/array/regex/print-arg operations (**`MIXED_*`**), flow signals (set a thread-local flag; the VM translates to **`VmSignal::Next`** / **`ExitPending`** / **`Return`** etc. after JIT returns), **`ForIn`** iteration (collecting array keys, advancing the iterator, storing the current key in the loop variable), and **`asort`** / **`asorti`**. The VM tries the JIT for whole chunks that pass **`is_jit_eligible`**; set **`AWKRS_JIT=0`** to force the bytecode interpreter (e.g. JIT vs VM benchmarks) — the variable is read on each dispatch, not cached at startup. Non-mixed chunks without early flow signals may keep scalar slots in Cranelift SSA (φ-nodes at loop headers and joins); values are written back to the slot buffer before return. (Mixed chunks mirror **`Value`** in slots via NaN-boxing — **`Value::Uninit`** uses a dedicated quiet-NaN tag, not raw **`0.0`**; flow **`ReturnVal`** decodes the returned **`f64` as a full **`Value`** (including dynamic strings) before clearing thread-local string storage.) **`CallUser`** and **`sub`**/**`gsub`** compile in mixed mode when **`jit_call_builtins_ok`** and stack rules pass; nested JIT passes the inner context as **`vmctx`** in the native frame. Unsupported opcodes still fall back to the bytecode loop. **`getline`** (primary input, **`getline < file`**, **`getline <&` coproc**) compiles via **`MIXED_GETLINE_*`** when the chunk is otherwise eligible. The library-only legacy helpers **`try_compile_numeric_expr`** / **`is_numeric_stack_eligible`** accept straight-line constant stack math (no jumps — excludes **`Jump`**, **`JumpIf*`**, **`JumpIfSlotGeNum`**, …) including **`%`**, comparisons (**`Cmp*`**), **`Not`** / **`ToBool`**, unary **`+`**, **`Dup`**, **`GetField`**, **`GetSlot`** / **`SetSlot`** / **`CompoundAssignSlot`**, fused **`IncrSlot`** / **`DecrSlot`** / **`AddSlotToSlot`** / **`AddFieldToSlot`** / **`AddMulFieldsToSlot`**, **`PushFieldNum`**, and **`GetNR`** / **`GetFNR`** / **`GetNF`** — same ops the full JIT already compiled; slot storage is sized by **`numeric_stack_slot_words`**; **`call_f64`** still uses stub callbacks (fields/NR return `0.0`; use the VM for real I/O and specials).
+**Cranelift JIT (experimental):** the `jit` module compiles eligible bytecode chunks to native code using Cranelift with `opt_level=speed`. The ABI is `(vmctx, slots, field_fn, array_field_add, var_dispatch, field_dispatch, io_dispatch, val_dispatch) -> f64` — opaque `vmctx` plus seven `extern "C"` callbacks (no thread-local lookups). **Tiered compilation:** chunks count entries and only compile after `AWKRS_JIT_MIN_INVOCATIONS` (default 3; set 1 for first-entry compile). Set `AWKRS_JIT=0` to force the bytecode interpreter.
 
-**Peephole optimizer:** a post-compilation pass fuses common multi-op sequences into single opcodes — `print $N` becomes `PrintFieldStdout` (writes field bytes directly to the output buffer, zero allocations), `s += $N` becomes `AddFieldToSlot` (parses the field as a number in-place without creating an intermediate `String`), `i = i + 1` / `i++` / `++i` becomes `IncrSlot` and `i--` / `--i` becomes `DecrSlot` (one numeric add instead of push+pop stack traffic — **`f64`** when not **`-M`**, **MPFR** when **`-M`** so slotted **`x++`** cannot collapse to **`f64`**), `s += i` between slot variables becomes `AddSlotToSlot` (two f64 reads + one write, no stack traffic), `$1 "," $2` string literal concatenation becomes `ConcatPoolStr` (appends the interned string directly to the TOS buffer — no clone from the string pool), and HashMap-path `NR++` / `NR--` statements fuse to `IncrVar` / `DecrVar` (skip pushing a result that's immediately discarded). Jump targets are adjusted automatically after fusion.
+**Eligible JIT ops:** constants, arithmetic/comparisons, jumps and fused loop tests, slot and HashMap-path scalar ops, field reads (including dynamic `$i` writes in mixed mode), `for-in`, `asort`/`asorti`, `match`, `sub`/`gsub`, `split`/`patsplit`, `getline` (primary, file, coproc), `CallUser`, fused print opcodes (including redirects), `typeof`, and a whitelist of builtins (math, `sprintf`/`printf`, `strftime`, `fflush`/`close`/`system`). Mixed-mode chunks NaN-box `Value` in slots; non-mixed chunks keep slots in Cranelift SSA. Unsupported opcodes fall back to the bytecode loop.
 
-**Inline fast path:** single-rule programs with one fused opcode (e.g. `{ print $1 }`, `{ s += $1 }`) bypass VmCtx creation, pattern dispatch, and the bytecode execute loop entirely — the operation runs as a direct function call in the record loop. Memory-mapped **regular files** also recognize `{ gsub("lit", "repl"); print }` on `$0` with a literal pattern and simple replacement: when the needle is absent, the loop writes each line from the mapped buffer with **ORS** and skips VM + field split.
+**Peephole fusion** combines common sequences into single opcodes:
+- `print $N` → `PrintFieldStdout` (zero-alloc field write)
+- `s += $N` → `AddFieldToSlot` (in-place numeric parse)
+- `i = i + 1` / `i++` / `++i` → `IncrSlot` (one numeric add, no stack traffic)
+- `s += i` between slots → `AddSlotToSlot`
+- `$1 "," $2` literal concat → `ConcatPoolStr`
+- `NR++` HashMap-path → `IncrVar`
 
-**Raw byte field extraction:** for `print $N` with default FS, the throughput path skips record copy, field splitting, and UTF-8 validation entirely — it scans raw bytes in the mapped file buffer to find the Nth whitespace-delimited field, writes it to the output buffer, then appends **`ORS`** from the same cached **`Runtime::ors_bytes`** as the VM (not a hardcoded newline). Slurp inline paths append full **`OFS`** / **`ORS`** byte slices — no length cap.
+**Inline fast paths** bypass `VmCtx` entirely for single-rule programs with one fused opcode (`{ print $1 }`, `{ s += $1 }`). Memory-mapped files also recognize `{ gsub("lit", "repl"); print }` with literal pattern: when the needle is absent, the loop writes each line from the mapped buffer with `ORS` and skips the VM.
 
-**Indexed variable slots:** scalar variables are assigned `u16` slot indices at compile time and stored in a flat `Vec<Value>` — variable reads and writes are direct array indexing instead of `HashMap` lookups. Special awk variables (`NR`, `FS`, `OFS`, …) and array names remain on the HashMap path.
+**Raw byte field extraction:** `print $N` with default `FS` scans raw bytes in the mapped file buffer to find the Nth whitespace field, writes it to the output buffer, and appends `Runtime::ors_bytes` — no record copy, no UTF-8 validation.
 
-**Zero-copy field splitting:** fields are stored as `(u32, u32)` byte-range pairs into the record string instead of per-field `String` allocations. Owned `String`s are only materialized when a field is modified via `set_field`.
-
-**Direct-to-buffer print:** the stdout print path writes `Value::write_to()` directly into a persistent 64 KB `Vec<u8>` buffer (flushed at file boundaries), eliminating per-record `String` allocations, `format!()` calls, and stdout locking.
-
-**Cached separators:** OFS/ORS bytes are cached on the runtime and updated only when assigned, eliminating per-`print` HashMap lookups.
-
-**Byte-level input:** records are read with `read_until(b'\n')` into a reusable `Vec<u8>` buffer, skipping per-line UTF-8 validation and `String` allocation.
-
-**Regex cache:** compiled `Regex` objects are cached in a `HashMap<String, Regex>` so patterns are compiled once, not per-record.
-
-**Field split (lazy path):** `ensure_fields_split` reads **`FS`** / **`FPAT`** when splitting (or uses the CSV scanner when **`-k`** / **`--csv`** set `Runtime::csv_mode`); `cached_fs` is still updated when the record is set for bookkeeping.
-
-**`sub` / `gsub`:** when the target is `$0`, the engine applies the new record in one step (no restore-then-overwrite of the old string). Literal patterns with zero matches skip `set_field_sep_split`; literal needles reuse a cached **`memmem::Finder`** for the scan (no `str::contains` per line). `sub`/`gsub` VM opcodes pass pattern/replacement `&str` via `Cow` so constant string operands do not allocate per call.
-
-**Numeric fields:** `parse_number` fast-paths plain decimal integer field text (common for `seq`-style data) before falling back to `str::parse::<f64>()`.
-
-**Slurped input:** newline scanning in the file fast paths uses the `memchr` crate for byte search.
-
-**Parallel** mode shares the compiled program via **`Arc`** across rayon workers (zero-copy); each worker gets its own stack, slots, and runtime overlay.
+**Other optimizations:**
+- **Indexed slots:** scalars get `u16` slot indices; reads/writes are flat-array indexing instead of `HashMap` lookups (specials like `NR`/`FS`/`OFS` and array names stay on the HashMap path).
+- **Zero-copy fields:** fields stored as `(u32, u32)` byte ranges into the record string; owned `String`s only on `set_field`.
+- **Direct-to-buffer print:** stdout writes go straight into a 64 KB `Vec<u8>` (flushed at file boundaries) — no per-record `String`, `format!()`, or stdout locking.
+- **Cached separators:** `OFS`/`ORS` bytes cached on the runtime, updated only on assignment.
+- **Byte-level input:** `read_until(b'\n')` into a reusable `Vec<u8>` skips per-line UTF-8 validation.
+- **Regex cache:** compiled `Regex` objects cached in a `HashMap<String, Regex>`.
+- **`sub`/`gsub`:** when target is `$0`, applies the new record in one step. Literal needles reuse a cached `memmem::Finder`. Constant string operands pass via `Cow` (no per-call alloc).
+- **`parse_number`:** fast-paths plain decimal integer field text before falling back to `str::parse::<f64>()`.
+- **Slurped input:** newline scanning uses `memchr`.
+- **Parallel:** compiled program shared via `Arc` across rayon workers (zero-copy).
 
 ---
 
@@ -161,7 +191,7 @@ The engine compiles AWK programs into a flat bytecode instruction stream, then r
  │ HARDWARE: APPLE M5 MAX &nbsp;&nbsp; OS: macOS &nbsp;&nbsp; ARCH: arm64         │
  └──────────────────────────────────────────────────────────────┘
 
-Measured with [hyperfine](https://github.com/sharkdp/hyperfine). BSD awk (`/usr/bin/awk`), GNU gawk 5.4.0, mawk 1.3.4, awkrs **0.1.26**. **Relative** = mean time ÷ **fastest** mean in that table. **awkrs** has two rows: default (**JIT** attempted) vs **`AWKRS_JIT=0`** (**bytecode** only). **Every §N table below is a single `hyperfine` invocation** with all five commands on the same **1 M-line** input, generated **2026-04-10** UTC by `./scripts/benchmark-vs-awk.sh` and taken verbatim from [`benchmarks/benchmark-results.md`](benchmarks/benchmark-results.md) — the *Relative* column is apples-to-apples within each table (earlier revisions of this README stitched awkrs rows from one run with mawk/gawk rows from another; that is no longer the case). 1 M lines was chosen to lift every workload above hyperfine's ~5 ms shell-startup noise floor; re-run with `AWKRS_BENCH_LINES=500000 ./scripts/benchmark-vs-awk.sh` for a faster sweep or larger values for throughput-limit checks. For the awkrs-only JIT-vs-bytecode A/B at a tighter focus, see [`benchmarks/benchmark-readme-jit.md`](benchmarks/benchmark-readme-jit.md) from `./scripts/benchmark-readme-jit-vs-vm.sh`.
+Measured with [hyperfine](https://github.com/sharkdp/hyperfine). BSD awk (`/usr/bin/awk`), GNU gawk 5.4.0, mawk 1.3.4, awkrs **0.1.26**. **Relative** = mean ÷ fastest mean in that table. awkrs has two rows: default (JIT attempted) vs `AWKRS_JIT=0` (bytecode only). Each table is one `hyperfine` invocation across all five commands on the same 1 M-line input, generated 2026-04-10 UTC by `./scripts/benchmark-vs-awk.sh` and copied verbatim from [`benchmarks/benchmark-results.md`](benchmarks/benchmark-results.md). For the awkrs-only JIT-vs-bytecode A/B see [`benchmarks/benchmark-readme-jit.md`](benchmarks/benchmark-readme-jit.md).
 
 ### 1. Throughput: `{ print $1 }` over 1 M lines
 
@@ -187,7 +217,7 @@ Measured with [hyperfine](https://github.com/sharkdp/hyperfine). BSD awk (`/usr/
 
 ### 3. Sum first column (`{ s += $1 } END { print s }`, 1 M lines)
 
-Cross-record state is not parallel-safe, so awkrs stays **single-threaded** (default) here. On regular-file input, awkrs uses a **raw byte** path: parses the Nth whitespace-delimited field as a number directly from the mmap'd buffer — no record copy, no field splitting, no String allocation.
+Cross-record state is not parallel-safe, so awkrs stays single-threaded here. On regular-file input, awkrs uses a **raw byte** path: parses the Nth whitespace field directly from the mmap'd buffer.
 
 | Command | Mean | Min | Max | Relative |
 |:---|---:|---:|---:|---:|
@@ -239,7 +269,7 @@ Cross-record state is not parallel-safe, so awkrs stays **single-threaded** (def
 
 ### 8. Field computation (`{ sum += $1 * $2 } END { print sum }`, 1 M lines, 2 fields/line)
 
-On regular-file input with default FS, awkrs uses a **raw byte** path: extracts both fields in a single byte scan and parses them as numbers directly from the mmap'd buffer.
+On regular-file input with default FS, awkrs extracts both fields in a single byte scan and parses them as numbers directly from the mmap'd buffer.
 
 | Command | Mean | Min | Max | Relative |
 |:---|---:|---:|---:|---:|
@@ -261,7 +291,7 @@ On regular-file input with default FS, awkrs uses a **raw byte** path: extracts 
 
 ### 10. gsub (`{ gsub("alpha", "ALPHA"); print }`, 1 M lines, no matches)
 
-Input lines do not contain `alpha`, so this measures **no-match** `gsub` plus `print` (still scans each line for the literal). On **regular file** input, awkrs uses a **slurp inline** path: byte `memmem` scan + `print` without VM or per-line `set_field_sep_split` when the literal is absent.
+Lines do not contain `alpha`, so this measures **no-match** `gsub` plus `print`. On regular-file input, awkrs uses a **slurp inline** path: byte `memmem` scan + `print` with no VM or per-line `set_field_sep_split` when the literal is absent.
 
 | Command | Mean | Min | Max | Relative |
 |:---|---:|---:|---:|---:|
@@ -271,12 +301,11 @@ Input lines do not contain `alpha`, so this measures **no-match** `gsub` plus `p
 | awkrs (JIT) | 13.8 ms | 12.8 ms | 16.2 ms | **1.00×** |
 | awkrs (bytecode) | 13.9 ms | 12.7 ms | 17.6 ms | 1.01× |
 
-> Regenerate after `cargo build --release` (requires `hyperfine`; `gawk`/`mawk` optional — missing engines are simply omitted from the tables). Each §N run above is one hyperfine invocation across all five commands, so every *Relative* column compares apples-to-apples. Override input size with `AWKRS_BENCH_LINES=…` to sweep throughput.
-> ```bash
-> ./scripts/benchmark-vs-awk.sh                    # cross-engine §1–§10 (1 M lines)
-> AWKRS_BENCH_LINES=5000000 ./scripts/benchmark-vs-awk.sh   # 5 M line sweep
-> ./scripts/benchmark-readme-jit-vs-vm.sh           # awkrs-only JIT vs bytecode A/B
-> ```
+```bash
+./scripts/benchmark-vs-awk.sh                              # cross-engine §1–§10 (1 M lines)
+AWKRS_BENCH_LINES=5000000 ./scripts/benchmark-vs-awk.sh    # 5 M line sweep
+./scripts/benchmark-readme-jit-vs-vm.sh                    # awkrs-only JIT vs bytecode A/B
+```
 
 ---
 
@@ -286,9 +315,9 @@ Input lines do not contain `alpha`, so this measures **no-match** `gsub` plus `p
 cargo build --release
 ```
 
-`awkrs --help` / `-h` prints a **cyberpunk HUD** (ASCII banner, status box, taglines, footer) in the style of MenkeTechnologies `tp -h`. ANSI colors apply when stdout is a TTY; set `NO_COLOR` to force plain text.
+`awkrs --help` / `-h` prints a cyberpunk HUD (ASCII banner, status box, taglines, footer) in the style of MenkeTechnologies `tp -h`. ANSI colors apply when stdout is a TTY; set `NO_COLOR` to force plain text.
 
-Regenerate the screenshot after UI changes: `./scripts/gen-help-screenshot.sh` (needs [termshot](https://github.com/homeport/termshot) on `PATH` and a prior `cargo build`). The capture runs `awkrs -h` on a PTY with `NO_COLOR` unset so ANSI matches a normal TTY (many shells export `NO_COLOR=1`, which would otherwise strip color). [termshot](https://github.com/homeport/termshot) renders the raw capture at 256 columns so long lines are not wrapped.
+Regenerate the help screenshot after UI changes: `./scripts/gen-help-screenshot.sh` (needs [termshot](https://github.com/homeport/termshot) on `PATH` and a prior `cargo build`). The capture runs on a PTY with `NO_COLOR` unset and renders at 256 columns.
 
 ---
 
@@ -298,9 +327,9 @@ Regenerate the screenshot after UI changes: `./scripts/gen-help-screenshot.sh` (
 cargo test
 ```
 
-On pushes and pull requests to `main`, [GitHub Actions](.github/workflows/ci.yml) runs one Ubuntu **lint** job (`cargo fmt --check`, `cargo clippy` with warnings denied, `cargo doc` with `RUSTDOCFLAGS=-D warnings`) and a **test** matrix on Ubuntu and macOS (`cargo build` / `cargo test`).
+CI runs on pushes and pull requests to `main` via [GitHub Actions](.github/workflows/ci.yml): one Ubuntu lint job (`cargo fmt --check`, `cargo clippy -D warnings`, `cargo doc` with `RUSTDOCFLAGS=-D warnings`) plus a build/test matrix on Ubuntu and macOS.
 
-Library unit tests cover `format` (including locale decimal radix for float conversions), the lexer, the parser (including error paths), **`Error` diagnostics**, **`cli::Args`** (including **`-W`** / **`mawk` compatibility**), **`builtins`** (`gsub`, `sub`, `match`, `patsplit`, literal-pattern helpers), **`interp`** (pattern matching, range steps, `BEGIN` execution), **`vm`** (BEGIN/END, pattern evaluation, rule actions with print capture, user calls), **`jit`** (Cranelift codegen: numeric, print, array, match, signals), **`lib`** helpers used by the file reader and fast paths (`read_all_lines`, `uses_primary_getline`, NR-mod pattern detection, float compare), **`cyber_help`** layout strings, `locale_numeric` on non-Unix targets, parallel-record static safety in `ast::parallel`, bytecode (`StringPool`, slot init), compiler smoke checks (including `BEGINFILE`/`ENDFILE`, `while`/`if`, deletes, multiple functions), and `runtime::Value` helpers. Integration tests live in `tests/integration.rs`, `tests/more_integration.rs`, `tests/extra_integration.rs`, `tests/batch_integration.rs`, and `tests/new_features_integration.rs`, with shared helpers in `tests/common.rs` (including **file-argument** runs that exercise the slurped-input path). The **`new_features_integration`** suite targets gawk-style additions end-to-end: **`PROCINFO`** (argv, FUNCTAB, composite **`READ_TIMEOUT`** / **`RETRY`** keys, extra **`sorted_in`** modes including **`@val_num_asc`**), **`IGNORECASE`**, **`SYMTAB`** global assignment, **`FIELDWIDTHS`**, **`RS=""`** paragraph records, **`-v`**, **`-L`/`--lint`**, **`-S`/`--sandbox`** (including **`system`**, **`chdir`**, and file redirects), **`-k`/`--csv`**, **`-n`**, **`-b`**, **`-d`/`-D`/`-o`/`-p`** (dump / debug / pretty-print / profile), concatenated **`-e`** fragments, **`-N`** with **`printf`** **`%'`** grouping, native **filefuncs**/time-style builtins (**`chdir`**, **`stat`**, **`statvfs`**, **`fts`**, **`readfile`**, **`rename`**, **`writea`/`reada`**, **`ord`/`chr`**, **`gettimeofday`**, **`sleep`**, **`revoutput`**), failed I/O + **`ERRNO`**, **`@namespace`**, **`gsub`** with regexp values, **BEGINFILE** / **ENDFILE**, **`^`** exponentiation vs unary **`-`**, **`@/regex/`** regexp constants with **`split`**, **`gensub`**, and **`match`**, bundled **`@load`** no-ops, and **`-M`** (large integer **`sprintf`** and four-argument **`sorted_in`** comparators). End-to-end coverage elsewhere includes the **`in`** operator, **`-F` / `--field-separator`** (including **regex FS** like `[,:]`), **`split()` with regex third argument**, **regex literal escaped-backslash** edge cases, **`getline var` NF preservation**, **`-f` / `-i` program sources**, **`-N` / `--use-lc-numeric`** with `LC_NUMERIC`, **`-v` / `--assign`**, **`--version`** / **`-V`**, **`-C`**, coprocess and pipe I/O, and **stdin vs. file** parallel record behavior.
+Coverage spans library unit tests for every module (lexer, parser, format, builtins, interp, vm, jit, compiler, runtime, locale, cli, cyber_help) and integration suites under `tests/` that exercise the gawk-style additions, the slurped-input path, parallel record behavior, and the full CLI surface.
 
 ---
 

@@ -58,6 +58,8 @@ pub enum SubTarget {
 pub enum Op {
     // ── Constants ────────────────────────────────────────────────────────
     PushNum(f64),
+    /// Decimal integer literal (source had no `.`) — pool index of digit string; exact in **`-M`**.
+    PushNumDecimalStr(u32),
     /// Push interned string by pool index.
     PushStr(u32),
     /// Push gawk-style regexp constant (`@/…/`) — [`crate::runtime::Value::Regexp`] with interned pattern.

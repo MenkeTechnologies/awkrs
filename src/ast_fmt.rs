@@ -8,6 +8,9 @@ use crate::ast::{
 
 fn format_field_expr(inner: &Expr) -> String {
     match inner {
+        Expr::IntegerLiteral(s) if !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()) => {
+            format!("${s}")
+        }
         Expr::Number(n) if n.is_finite() && n.fract() == 0.0 && *n >= 0.0 => {
             format!("${}", *n as i64)
         }
@@ -313,6 +316,7 @@ pub(crate) fn format_expr(e: &Expr) -> String {
                 "0".into()
             }
         }
+        Expr::IntegerLiteral(s) => s.clone(),
         Expr::Str(s) => format_string_literal(s),
         Expr::RegexpLiteral(s) => format!("@/{}/", escape_regex_slash(s)),
         Expr::Var(v) => v.clone(),

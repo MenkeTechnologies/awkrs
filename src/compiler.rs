@@ -579,6 +579,10 @@ impl Compiler {
     fn compile_expr(&mut self, expr: &Expr, ops: &mut Vec<Op>) {
         match expr {
             Expr::Number(n) => ops.push(Op::PushNum(*n)),
+            Expr::IntegerLiteral(s) => {
+                let idx = self.strings.intern(s);
+                ops.push(Op::PushNumDecimalStr(idx));
+            }
             Expr::Str(s) => {
                 let idx = self.strings.intern(s);
                 ops.push(Op::PushStr(idx));
@@ -1329,7 +1333,7 @@ fn collect_array_names_expr(e: &Expr, names: &mut HashSet<String>) {
                 GetlineRedir::Primary => {}
             }
         }
-        Expr::Number(_) | Expr::Str(_) | Expr::RegexpLiteral(_) | Expr::Var(_) => {}
+        Expr::Number(_) | Expr::IntegerLiteral(_) | Expr::Str(_) | Expr::RegexpLiteral(_) | Expr::Var(_) => {}
     }
 }
 
@@ -1772,7 +1776,24 @@ fn is_literal_regex(pat: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bytecode::Op;
     use crate::parser::parse_program;
+
+    #[test]
+    fn compile_bignum_literal_add_uses_push_num_decimal_str_not_f64() {
+        let prog = parse_program(r#"BEGIN { print sprintf("%d", 9223372036854775807 + 1) }"#).unwrap();
+        let cp = Compiler::compile_program(&prog);
+        let ops = &cp.begin_chunks[0].ops;
+        assert!(
+            ops.iter().any(|o| matches!(o, Op::PushNumDecimalStr(_))),
+            "expected PushNumDecimalStr for integer literals, ops={ops:?}"
+        );
+        assert!(
+            !ops.iter().any(|o| matches!(o, Op::PushNum(n) if *n == 9223372036854775807.0
+                || *n == 9223372036854775808.0)),
+            "must not push i64 max through f64, ops={ops:?}"
+        );
+    }
 
     #[test]
     fn compile_begin_print_constant() {

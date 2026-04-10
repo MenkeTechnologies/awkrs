@@ -184,22 +184,36 @@ impl<'a> Parser<'a> {
     fn parse_rule(&mut self) -> Result<Rule> {
         let pattern = self.parse_pattern()?;
         self.skip_newlines()?;
-        if self.cur != Token::LBrace {
-            return Err(Error::Parse {
-                line: self.line,
-                msg: "expected `{` after pattern".into(),
-            });
-        }
-        self.bump(false)?;
-        let stmts = self.parse_stmt_list()?;
-        if self.cur != Token::RBrace {
-            return Err(Error::Parse {
-                line: self.line,
-                msg: "expected `}`".into(),
-            });
-        }
-        self.bump(true)?;
+        let stmts = if self.cur == Token::LBrace {
+            self.bump(false)?;
+            let stmts = self.parse_stmt_list()?;
+            if self.cur != Token::RBrace {
+                return Err(Error::Parse {
+                    line: self.line,
+                    msg: "expected `}`".into(),
+                });
+            }
+            self.bump(true)?;
+            stmts
+        } else {
+            // Pattern with no `{ … }` — POSIX default action `{ print $0 }` (bare `print` prints `$0`).
+            vec![Stmt::Print {
+                args: vec![],
+                redir: None,
+            }]
+        };
         Ok(Rule { pattern, stmts })
+    }
+
+    /// `/` was lexed as division [`Token::Slash`]; rewind and re-read as `/regex/` when it must
+    /// start an expression (e.g. implicit concat in `print a /re/`).
+    fn rescan_slash_as_regexp(&mut self) -> Result<()> {
+        if self.cur == Token::Slash {
+            self.lexer.rewind_slash_token();
+            self.cur = self.lexer.next_token(true)?;
+            self.line = self.lexer.line();
+        }
+        Ok(())
     }
 
     fn parse_pattern(&mut self) -> Result<Pattern> {
@@ -268,7 +282,7 @@ impl<'a> Parser<'a> {
                         msg: "expected `(` after `if`".into(),
                     });
                 }
-                self.bump(false)?;
+                self.bump(true)?;
                 let cond = self.parse_expr(false)?;
                 if self.cur != Token::RParen {
                     return Err(Error::Parse {
@@ -294,7 +308,7 @@ impl<'a> Parser<'a> {
                         msg: "expected `(` after `while`".into(),
                     });
                 }
-                self.bump(false)?;
+                self.bump(true)?;
                 let cond = self.parse_expr(false)?;
                 if self.cur != Token::RParen {
                     return Err(Error::Parse {
@@ -322,7 +336,7 @@ impl<'a> Parser<'a> {
                         msg: "expected `(` after `while`".into(),
                     });
                 }
-                self.bump(false)?;
+                self.bump(true)?;
                 let cond = self.parse_expr(false)?;
                 if self.cur != Token::RParen {
                     return Err(Error::Parse {
@@ -344,7 +358,7 @@ impl<'a> Parser<'a> {
                         msg: "expected `(` after `for`".into(),
                     });
                 }
-                self.bump(false)?;
+                self.bump(true)?;
                 if let Token::Ident(var) = &self.cur.clone() {
                     let mut peek = self.lexer.clone();
                     if peek.next_token(false)? == Token::In {
@@ -381,7 +395,7 @@ impl<'a> Parser<'a> {
                             msg: "expected `;` in `for`".into(),
                         });
                     }
-                    self.bump(false)?;
+                    self.bump(true)?;
                     Some(e)
                 };
                 let cond = if self.cur == Token::Semi {
@@ -395,7 +409,7 @@ impl<'a> Parser<'a> {
                             msg: "expected `;` in `for`".into(),
                         });
                     }
-                    self.bump(false)?;
+                    self.bump(true)?;
                     Some(e)
                 };
                 let iter = if self.cur == Token::RParen {
@@ -427,7 +441,7 @@ impl<'a> Parser<'a> {
                         msg: "expected `(` after `switch`".into(),
                     });
                 }
-                self.bump(false)?;
+                self.bump(true)?;
                 let expr = self.parse_expr(false)?;
                 if self.cur != Token::RParen {
                     return Err(Error::Parse {
@@ -556,7 +570,7 @@ impl<'a> Parser<'a> {
                 let name = name.clone();
                 self.bump(false)?;
                 if self.cur == Token::LBracket {
-                    self.bump(false)?;
+                    self.bump(true)?;
                     let indices = self.parse_index_list()?;
                     if self.cur != Token::RBracket {
                         return Err(Error::Parse {
@@ -627,7 +641,7 @@ impl<'a> Parser<'a> {
                 Ok(Stmt::Block(b))
             }
             Token::Print => {
-                self.bump(false)?;
+                self.bump(true)?;
                 let mut args = Vec::new();
                 if matches!(
                     self.cur,
@@ -638,7 +652,7 @@ impl<'a> Parser<'a> {
                     loop {
                         args.push(self.parse_print_expr()?);
                         if self.cur == Token::Comma {
-                            self.bump(false)?;
+                            self.bump(true)?;
                             continue;
                         }
                         break;
@@ -649,7 +663,7 @@ impl<'a> Parser<'a> {
                 Ok(Stmt::Print { args, redir })
             }
             Token::Printf => {
-                self.bump(false)?;
+                self.bump(true)?;
                 let mut args = Vec::new();
                 if matches!(
                     self.cur,
@@ -663,7 +677,7 @@ impl<'a> Parser<'a> {
                 loop {
                     args.push(self.parse_print_expr()?);
                     if self.cur == Token::Comma {
-                        self.bump(false)?;
+                        self.bump(true)?;
                         continue;
                     }
                     break;
@@ -846,7 +860,7 @@ impl<'a> Parser<'a> {
     fn parse_cond(&mut self, regex_mode: bool) -> Result<Expr> {
         let e = self.parse_or(regex_mode)?;
         if self.cur == Token::Question {
-            self.bump(false)?;
+            self.bump(true)?;
             let t = self.parse_expr(false)?;
             if self.cur != Token::Colon {
                 return Err(Error::Parse {
@@ -854,7 +868,7 @@ impl<'a> Parser<'a> {
                     msg: "expected `:` in ternary".into(),
                 });
             }
-            self.bump(false)?;
+            self.bump(true)?;
             let f = self.parse_cond(false)?;
             return Ok(Expr::Ternary {
                 cond: Box::new(e),
@@ -868,7 +882,7 @@ impl<'a> Parser<'a> {
     fn parse_or(&mut self, regex_mode: bool) -> Result<Expr> {
         let mut e = self.parse_and(regex_mode)?;
         while self.cur == Token::Or {
-            self.bump(false)?;
+            self.bump(true)?;
             let r = self.parse_and(false)?;
             e = Expr::Binary {
                 op: BinOp::Or,
@@ -882,7 +896,7 @@ impl<'a> Parser<'a> {
     fn parse_and(&mut self, regex_mode: bool) -> Result<Expr> {
         let mut e = self.parse_array(regex_mode)?;
         while self.cur == Token::And {
-            self.bump(false)?;
+            self.bump(true)?;
             let r = self.parse_array(false)?;
             e = Expr::Binary {
                 op: BinOp::And,
@@ -995,6 +1009,9 @@ impl<'a> Parser<'a> {
             ) {
                 break;
             }
+            if self.in_print_arg {
+                self.rescan_slash_as_regexp()?;
+            }
             let r = self.parse_additive(false)?;
             e = Expr::Binary {
                 op: BinOp::Concat,
@@ -1014,7 +1031,7 @@ impl<'a> Parser<'a> {
                 _ => None,
             };
             let Some(op) = op else { break };
-            self.bump(false)?;
+            self.bump(true)?;
             let r = self.parse_multiplicative(false)?;
             e = Expr::Binary {
                 op,
@@ -1035,7 +1052,7 @@ impl<'a> Parser<'a> {
                 _ => None,
             };
             let Some(op) = op else { break };
-            self.bump(false)?;
+            self.bump(true)?;
             let r = self.parse_unary(false)?;
             e = Expr::Binary {
                 op,
@@ -1070,7 +1087,7 @@ impl<'a> Parser<'a> {
         let mut e = self.parse_prefix_unary(regex_mode)?;
         e = self.parse_postfix_on_expr(e)?;
         if matches!(self.cur, Token::Caret | Token::StarStar) {
-            self.bump(false)?;
+            self.bump(true)?;
             let rhs = self.parse_power(false)?;
             return Ok(Expr::Binary {
                 op: BinOp::Pow,
@@ -1095,7 +1112,7 @@ impl<'a> Parser<'a> {
                 Self::wrap_prefix_incdec(inner, IncDecOp::PreDec, self.line)
             }
             Token::Bang => {
-                self.bump(false)?;
+                self.bump(true)?;
                 let e = self.parse_power(false)?;
                 Ok(Expr::Unary {
                     op: UnaryOp::Not,
@@ -1103,7 +1120,7 @@ impl<'a> Parser<'a> {
                 })
             }
             Token::Minus => {
-                self.bump(false)?;
+                self.bump(true)?;
                 let e = self.parse_power(false)?;
                 Ok(Expr::Unary {
                     op: UnaryOp::Neg,
@@ -1111,7 +1128,7 @@ impl<'a> Parser<'a> {
                 })
             }
             Token::Plus => {
-                self.bump(false)?;
+                self.bump(true)?;
                 let e = self.parse_power(false)?;
                 Ok(Expr::Unary {
                     op: UnaryOp::Pos,
@@ -1128,8 +1145,10 @@ impl<'a> Parser<'a> {
         // Prefix (including unary `-` for `$-1`) then postfix; bare `$1++` uses the error path in
         // `Token::Dollar` to attach `++` to the field, not to the integer.
         let e = self.parse_prefix_unary(false)?;
-        if matches!(e, Expr::Number(_) | Expr::Str(_))
-            && matches!(self.cur, Token::PlusPlus | Token::MinusMinus)
+        if matches!(
+            e,
+            Expr::Number(_) | Expr::IntegerLiteral(_) | Expr::Str(_)
+        ) && matches!(self.cur, Token::PlusPlus | Token::MinusMinus)
         {
             return Err(Error::Parse {
                 line: self.line,
@@ -1185,7 +1204,7 @@ impl<'a> Parser<'a> {
         let mut v = Vec::new();
         v.push(self.parse_expr_allow_gt(false)?);
         while self.cur == Token::Comma {
-            self.bump(false)?;
+            self.bump(true)?;
             v.push(self.parse_expr_allow_gt(false)?);
         }
         Ok(v)
@@ -1197,6 +1216,11 @@ impl<'a> Parser<'a> {
                 let n = *n;
                 self.bump(false)?;
                 Ok(Expr::Number(n))
+            }
+            Token::IntegerLiteral(s) => {
+                let s = s.clone();
+                self.bump(false)?;
+                Ok(Expr::IntegerLiteral(s))
             }
             Token::String(s) => {
                 let s = s.clone();
@@ -1226,13 +1250,13 @@ impl<'a> Parser<'a> {
                         msg: "expected `(` after `@` expression for indirect call".into(),
                     });
                 }
-                self.bump(false)?;
+                self.bump(true)?;
                 let mut args = Vec::new();
                 if self.cur != Token::RParen {
                     loop {
                         args.push(self.parse_expr_allow_gt(false)?);
                         if self.cur == Token::Comma {
-                            self.bump(false)?;
+                            self.bump(true)?;
                             continue;
                         }
                         break;
@@ -1254,7 +1278,7 @@ impl<'a> Parser<'a> {
                 let name = name.clone();
                 self.bump(false)?;
                 if self.cur == Token::LBracket {
-                    self.bump(false)?;
+                    self.bump(true)?;
                     let indices = self.parse_index_list()?;
                     if self.cur != Token::RBracket {
                         return Err(Error::Parse {
@@ -1265,13 +1289,13 @@ impl<'a> Parser<'a> {
                     self.bump(false)?;
                     Ok(Expr::Index { name, indices })
                 } else if self.cur == Token::LParen {
-                    self.bump(false)?;
+                    self.bump(true)?;
                     let mut args = Vec::new();
                     if self.cur != Token::RParen {
                         loop {
                             args.push(self.parse_expr_allow_gt(false)?);
                             if self.cur == Token::Comma {
-                                self.bump(false)?;
+                                self.bump(true)?;
                                 continue;
                             }
                             break;
@@ -1292,7 +1316,7 @@ impl<'a> Parser<'a> {
             Token::Dollar => {
                 self.bump(false)?;
                 if self.cur == Token::LParen {
-                    self.bump(false)?;
+                    self.bump(true)?;
                     let e = self.parse_expr_allow_gt(false)?;
                     if self.cur != Token::RParen {
                         return Err(Error::Parse {
@@ -1317,7 +1341,7 @@ impl<'a> Parser<'a> {
                 }
             }
             Token::LParen => {
-                self.bump(false)?;
+                self.bump(true)?;
                 let e = self.parse_expr_allow_gt(false)?;
                 if self.cur != Token::RParen {
                     return Err(Error::Parse {
@@ -1373,7 +1397,7 @@ impl<'a> Parser<'a> {
 mod tests {
     use super::*;
     use crate::ast::{
-        Expr, GetlineRedir, IncDecOp, IncDecTarget, Pattern, PrintRedir, Stmt, SwitchArm,
+        BinOp, Expr, GetlineRedir, IncDecOp, IncDecTarget, Pattern, PrintRedir, Stmt, SwitchArm,
         SwitchLabel,
     };
 
@@ -1386,6 +1410,36 @@ mod tests {
         rule.stmts.first().expect("stmt")
     }
 
+    /// Decimal integers without `.` become [`Expr::IntegerLiteral`]; tests that used to expect [`Expr::Number`] accept both.
+    fn expr_is_int(e: &Expr, v: i64) -> bool {
+        match e {
+            Expr::IntegerLiteral(s) => s.parse::<i64>().ok() == Some(v),
+            Expr::Number(n) => *n == v as f64,
+            _ => false,
+        }
+    }
+
+    #[test]
+    fn sprintf_bignum_add_parses_integer_literals_not_f64_rounding() {
+        let p = parse_program(r#"BEGIN { print sprintf("%d", 9223372036854775807 + 1) }"#).unwrap();
+        let stmt = first_begin_stmt(&p);
+        let Stmt::Print { args, .. } = stmt else {
+            panic!("expected print");
+        };
+        let Expr::Call { name, args: cargs } = &args[0] else {
+            panic!("expected sprintf call");
+        };
+        assert_eq!(name, "sprintf");
+        let Expr::Binary { op, left, .. } = &cargs[1] else {
+            panic!("expected binary +");
+        };
+        assert_eq!(*op, BinOp::Add);
+        assert!(
+            matches!(left.as_ref(), Expr::IntegerLiteral(s) if s == "9223372036854775807"),
+            "left={left:?}"
+        );
+    }
+
     #[test]
     fn parses_switch_numeric_and_regex_case_labels() {
         let p = parse_program(
@@ -1394,14 +1448,14 @@ mod tests {
         .unwrap();
         match first_begin_stmt(&p) {
             Stmt::Switch { expr, arms } => {
-                assert!(matches!(expr, Expr::Number(n) if *n == 2.0));
+                assert!(expr_is_int(expr, 2));
                 assert_eq!(arms.len(), 3);
                 assert!(matches!(
                     &arms[0],
                     SwitchArm::Case {
-                        label: SwitchLabel::Expr(Expr::Number(n)),
+                        label: SwitchLabel::Expr(e),
                         ..
-                    } if *n == 1.0
+                    } if expr_is_int(e, 1)
                 ));
                 assert!(matches!(
                     &arms[1],
@@ -1676,7 +1730,7 @@ mod tests {
                 assert_eq!(*op, IncDecOp::PostInc);
                 match target {
                     IncDecTarget::Field(inner) => {
-                        assert!(matches!(inner.as_ref(), Expr::Number(n) if *n == 1.0));
+                        assert!(expr_is_int(inner.as_ref(), 1));
                     }
                     t => panic!("expected $1++, target={t:?}"),
                 }
@@ -1707,7 +1761,7 @@ mod tests {
                     IncDecTarget::Index { name, indices } => {
                         assert_eq!(name, "a");
                         assert_eq!(indices.len(), 1);
-                        assert!(matches!(&indices[0], Expr::Number(n) if *n == 1.0));
+                        assert!(expr_is_int(&indices[0], 1));
                     }
                     t => panic!("expected a[1]--, got {t:?}"),
                 }
@@ -1721,7 +1775,7 @@ mod tests {
         let p = parse_program("BEGIN { do { print 1 } while (0) }").unwrap();
         match first_begin_stmt(&p) {
             Stmt::DoWhile { body, cond } => {
-                assert!(matches!(cond, Expr::Number(n) if *n == 0.0));
+                assert!(expr_is_int(cond, 0));
                 assert_eq!(body.len(), 1);
             }
             s => panic!("expected do-while, got {s:?}"),
@@ -1749,8 +1803,8 @@ mod tests {
                 assert_eq!(name, "a");
                 let ix = indices.as_ref().expect("indexed delete");
                 assert_eq!(ix.len(), 2);
-                assert!(matches!(&ix[0], Expr::Number(n) if *n == 1.0));
-                assert!(matches!(&ix[1], Expr::Number(n) if *n == 2.0));
+                assert!(expr_is_int(&ix[0], 1));
+                assert!(expr_is_int(&ix[1], 2));
             }
             s => panic!("expected delete a[1,2], got {s:?}"),
         }
