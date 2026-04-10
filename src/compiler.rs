@@ -37,6 +37,13 @@ const SPECIAL_VARS: &[&str] = &[
     "TEXTDOMAIN",
 ];
 
+fn flatten_print_args(e: &Expr) -> Vec<&Expr> {
+    match e {
+        Expr::Tuple(parts) => parts.iter().flat_map(|p| flatten_print_args(p)).collect(),
+        _ => vec![e],
+    }
+}
+
 /// Loop or `switch` — both support `break`; only loops support `continue`.
 enum StructuralKind {
     Loop {
@@ -542,10 +549,22 @@ impl Compiler {
         is_printf: bool,
         ops: &mut Vec<Op>,
     ) {
-        for a in args {
-            self.compile_expr(a, ops);
-        }
-        let argc = args.len() as u16;
+        let argc = if is_printf {
+            for a in args {
+                self.compile_expr(a, ops);
+            }
+            args.len() as u16
+        } else {
+            let mut n = 0usize;
+            for a in args {
+                let flat = flatten_print_args(a);
+                n += flat.len();
+                for fe in flat {
+                    self.compile_expr(fe, ops);
+                }
+            }
+            u16::try_from(n).unwrap_or(u16::MAX)
+        };
 
         let rk = match redir {
             None => RedirKind::Stdout,
@@ -758,8 +777,15 @@ impl Compiler {
 
             Expr::In { key, arr } => {
                 let arr_idx = self.strings.intern(arr);
-                self.compile_expr(key, ops);
+                match key.as_ref() {
+                    Expr::Tuple(parts) => self.compile_array_key(parts, ops),
+                    _ => self.compile_expr(key, ops),
+                }
                 ops.push(Op::InArray(arr_idx));
+            }
+
+            Expr::Tuple(_) => {
+                panic!("internal error: Tuple must appear only in `print` or as `(… ) in arr` key");
             }
 
             Expr::IncDec { op, target } => match target {
@@ -1331,6 +1357,11 @@ fn collect_array_names_expr(e: &Expr, names: &mut HashSet<String>) {
                     collect_array_names_expr(e, names)
                 }
                 GetlineRedir::Primary => {}
+            }
+        }
+        Expr::Tuple(parts) => {
+            for p in parts {
+                collect_array_names_expr(p, names);
             }
         }
         Expr::Number(_)

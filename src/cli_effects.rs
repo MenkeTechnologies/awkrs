@@ -251,6 +251,11 @@ fn collect_expr_strings(e: &Expr, out: &mut BTreeMap<String, usize>) {
             collect_expr_strings(else_, out);
         }
         Expr::In { key, .. } => collect_expr_strings(key, out),
+        Expr::Tuple(parts) => {
+            for p in parts {
+                collect_expr_strings(p, out);
+            }
+        }
         Expr::IncDec { target, .. } => match target {
             crate::ast::IncDecTarget::Field(inner) => collect_expr_strings(inner, out),
             crate::ast::IncDecTarget::Index { indices, .. } => {
@@ -719,6 +724,11 @@ fn expr_collect_defines(e: &Expr, out: &mut FxHashSet<String>) {
             expr_collect_defines(else_, out);
         }
         Expr::In { key, .. } => expr_collect_defines(key, out),
+        Expr::Tuple(parts) => {
+            for p in parts {
+                expr_collect_defines(p, out);
+            }
+        }
         Expr::IncDec { target, .. } => match target {
             IncDecTarget::Var(n) => {
                 out.insert(n.clone());
@@ -984,6 +994,11 @@ fn expr_lint_reads(
             expr_lint_reads(else_, global_def, params, warned, w);
         }
         Expr::In { key, .. } => expr_lint_reads(key, global_def, params, warned, w),
+        Expr::Tuple(parts) => {
+            for p in parts {
+                expr_lint_reads(p, global_def, params, warned, w);
+            }
+        }
         Expr::IncDec { target, .. } => match target {
             IncDecTarget::Var(n) => warn_uninit_var(n, global_def, params, warned, w),
             IncDecTarget::Field(inner) => expr_lint_reads(inner, global_def, params, warned, w),
@@ -1150,6 +1165,11 @@ fn lint_expr_printf_deep(w: &impl Fn(&str), e: &Expr) {
             lint_expr_printf_deep(w, else_);
         }
         Expr::In { key, .. } => lint_expr_printf_deep(w, key),
+        Expr::Tuple(parts) => {
+            for p in parts {
+                lint_expr_printf_deep(w, p);
+            }
+        }
         Expr::IncDec { target, .. } => match target {
             IncDecTarget::Field(inner) => lint_expr_printf_deep(w, inner),
             IncDecTarget::Index { indices, .. } => {

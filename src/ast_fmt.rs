@@ -382,6 +382,10 @@ pub(crate) fn format_expr(e: &Expr) -> String {
             format_expr(else_)
         ),
         Expr::In { key, arr } => format!("{} in {}", format_expr(key), arr),
+        Expr::Tuple(parts) => {
+            let p: Vec<_> = parts.iter().map(format_expr).collect();
+            format!("({})", p.join(", "))
+        }
         Expr::IncDec { op, target } => match target {
             IncDecTarget::Var(n) => format_incdec_var(op, n),
             IncDecTarget::Field(inner) => format_incdec_field(op, inner),

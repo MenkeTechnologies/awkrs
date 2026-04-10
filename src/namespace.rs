@@ -157,6 +157,11 @@ fn qualify_expr(e: &mut Expr, ns: &str, locals: &FxHashSet<String>) {
             qualify_expr(key, ns, locals);
             *arr = qualify_name(arr, ns, locals);
         }
+        Expr::Tuple(parts) => {
+            for p in parts {
+                qualify_expr(p, ns, locals);
+            }
+        }
         Expr::Field(inner) => qualify_expr(inner, ns, locals),
         Expr::Binary { left, right, .. } => {
             qualify_expr(left, ns, locals);

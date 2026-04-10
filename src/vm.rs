@@ -3694,7 +3694,7 @@ pub(crate) fn exec_builtin_dispatch(
             let hay = args[0].as_str();
             let needle = args[1].as_str();
             if needle.is_empty() {
-                Value::Num(0.0)
+                Value::Num(1.0)
             } else if let Some(b) = hay.find(needle.as_str()) {
                 let pos = if ctx.rt.characters_as_bytes {
                     b + 1
@@ -3708,18 +3708,34 @@ pub(crate) fn exec_builtin_dispatch(
         }
         "substr" => {
             let s = args[0].as_str();
-            let start = args[1].as_number() as usize;
-            let len = args
-                .get(2)
-                .map(|v| v.as_number() as usize)
-                .unwrap_or(usize::MAX);
-            if start < 1 {
-                Value::Str(String::new())
-            } else if ctx.rt.characters_as_bytes {
+            let start_raw = args[1].as_number();
+            let m0 = start_raw as i64;
+            let mut m = m0;
+            let mut len_opt = if let Some(v) = args.get(2) {
+                let l = v.as_number() as i64;
+                if l <= 0 {
+                    return Ok(Value::Str(String::new()));
+                }
+                Some(l)
+            } else {
+                None
+            };
+            if m < 1 {
+                let deficit = 1 - m0;
+                m = 1;
+                if let Some(ref mut ln) = len_opt {
+                    *ln = (*ln).saturating_sub(deficit);
+                    if *ln <= 0 {
+                        return Ok(Value::Str(String::new()));
+                    }
+                }
+            }
+            let len = len_opt.map(|l| l as usize).unwrap_or(usize::MAX);
+            let start0 = (m as usize).saturating_sub(1);
+            if ctx.rt.characters_as_bytes {
                 let b = s.as_bytes();
-                let s0 = start - 1;
                 let slice = b
-                    .get(s0..)
+                    .get(start0..)
                     .map(|rest| {
                         let take = len.min(rest.len());
                         String::from_utf8_lossy(&rest[..take]).into_owned()
@@ -3727,8 +3743,7 @@ pub(crate) fn exec_builtin_dispatch(
                     .unwrap_or_default();
                 Value::Str(slice)
             } else {
-                let s0 = start - 1;
-                let slice: String = s.chars().skip(s0).take(len).collect();
+                let slice: String = s.chars().skip(start0).take(len).collect();
                 Value::Str(slice)
             }
         }

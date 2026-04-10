@@ -364,10 +364,10 @@ fn index_found() {
 }
 
 #[test]
-fn index_empty_needle() {
+fn index_empty_needle_is_one_like_gawk() {
     let (c, o, _) = run_awkrs_stdin("BEGIN { print index(\"abc\", \"\") }", "");
     assert_eq!(c, 0);
-    assert_eq!(o, "0\n");
+    assert_eq!(o, "1\n");
 }
 
 #[test]

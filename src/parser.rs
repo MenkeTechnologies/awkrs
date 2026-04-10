@@ -21,6 +21,10 @@ fn assign_expr(lhs: Expr, op: Option<BinOp>, rhs: Expr, line: usize) -> Result<E
             op,
             rhs: Box::new(rhs),
         }),
+        Expr::Tuple(_) => Err(Error::Parse {
+            line,
+            msg: "invalid assignment target".into(),
+        }),
         _ => Err(Error::Parse {
             line,
             msg: "invalid assignment target".into(),
@@ -42,6 +46,8 @@ struct Parser<'a> {
     line: usize,
     /// When true, `>` / `>>` stay available for `print` redirection (not `a > b` comparison).
     in_print_arg: bool,
+    /// When parsing `printf` argument list — parenthesized comma lists are invalid (gawk).
+    in_printf_args: bool,
 }
 
 struct ParserCheckpoint<'a> {
@@ -62,7 +68,18 @@ impl<'a> Parser<'a> {
             cur,
             line,
             in_print_arg: false,
+            in_printf_args: false,
         }
+    }
+
+    fn reject_tuple_expr(e: &Expr, line: usize) -> Result<()> {
+        if matches!(e, Expr::Tuple(_)) {
+            return Err(Error::Parse {
+                line,
+                msg: "invalid use of parenthesized comma list".into(),
+            });
+        }
+        Ok(())
     }
 
     fn parse_expr_allow_gt(&mut self, regex_mode: bool) -> Result<Expr> {
@@ -248,9 +265,21 @@ impl<'a> Parser<'a> {
             Token::LBrace => Ok(Pattern::Empty),
             _ => {
                 let e = self.parse_expr(false)?;
+                if matches!(e, Expr::Tuple(_)) {
+                    return Err(Error::Parse {
+                        line: self.line,
+                        msg: "parenthesized comma list cannot be a pattern".into(),
+                    });
+                }
                 if self.cur == Token::Comma {
                     self.bump(true)?;
                     let e2 = self.parse_expr(false)?;
+                    if matches!(e2, Expr::Tuple(_)) {
+                        return Err(Error::Parse {
+                            line: self.line,
+                            msg: "parenthesized comma list cannot be a pattern".into(),
+                        });
+                    }
                     Ok(Pattern::Range(
                         Box::new(Pattern::Expr(e)),
                         Box::new(Pattern::Expr(e2)),
@@ -650,7 +679,16 @@ impl<'a> Parser<'a> {
                     // empty print
                 } else {
                     loop {
-                        args.push(self.parse_print_expr()?);
+                        let arg = self.parse_print_expr()?;
+                        if matches!(arg, Expr::Tuple(_)) && self.cur == Token::Comma {
+                            return Err(Error::Parse {
+                                line: self.line,
+                                msg:
+                                    "parenthesized comma list may not be followed by `,` in `print`"
+                                        .into(),
+                            });
+                        }
+                        args.push(arg);
                         if self.cur == Token::Comma {
                             self.bump(true)?;
                             continue;
@@ -674,14 +712,26 @@ impl<'a> Parser<'a> {
                         msg: "`printf` requires at least a format string".into(),
                     });
                 }
-                loop {
-                    args.push(self.parse_print_expr()?);
+                let saved_pf = self.in_printf_args;
+                self.in_printf_args = true;
+                let pf_res = loop {
+                    let arg = self.parse_print_expr()?;
+                    if matches!(arg, Expr::Tuple(_)) {
+                        break Err(Error::Parse {
+                            line: self.line,
+                            msg: "parenthesized comma list is not allowed in `printf` arguments"
+                                .into(),
+                        });
+                    }
+                    args.push(arg);
                     if self.cur == Token::Comma {
                         self.bump(true)?;
                         continue;
                     }
-                    break;
-                }
+                    break Ok(());
+                };
+                self.in_printf_args = saved_pf;
+                pf_res?;
                 let redir = self.parse_print_redir()?;
                 self.consume_stmt_end()?;
                 Ok(Stmt::Printf { args, redir })
@@ -860,8 +910,10 @@ impl<'a> Parser<'a> {
     fn parse_cond(&mut self, regex_mode: bool) -> Result<Expr> {
         let e = self.parse_or(regex_mode)?;
         if self.cur == Token::Question {
+            Self::reject_tuple_expr(&e, self.line)?;
             self.bump(true)?;
             let t = self.parse_expr(false)?;
+            Self::reject_tuple_expr(&t, self.line)?;
             if self.cur != Token::Colon {
                 return Err(Error::Parse {
                     line: self.line,
@@ -870,6 +922,7 @@ impl<'a> Parser<'a> {
             }
             self.bump(true)?;
             let f = self.parse_cond(false)?;
+            Self::reject_tuple_expr(&f, self.line)?;
             return Ok(Expr::Ternary {
                 cond: Box::new(e),
                 then_: Box::new(t),
@@ -882,8 +935,10 @@ impl<'a> Parser<'a> {
     fn parse_or(&mut self, regex_mode: bool) -> Result<Expr> {
         let mut e = self.parse_and(regex_mode)?;
         while self.cur == Token::Or {
+            Self::reject_tuple_expr(&e, self.line)?;
             self.bump(true)?;
             let r = self.parse_and(false)?;
+            Self::reject_tuple_expr(&r, self.line)?;
             e = Expr::Binary {
                 op: BinOp::Or,
                 left: Box::new(e),
@@ -896,8 +951,10 @@ impl<'a> Parser<'a> {
     fn parse_and(&mut self, regex_mode: bool) -> Result<Expr> {
         let mut e = self.parse_array(regex_mode)?;
         while self.cur == Token::And {
+            Self::reject_tuple_expr(&e, self.line)?;
             self.bump(true)?;
             let r = self.parse_array(false)?;
+            Self::reject_tuple_expr(&r, self.line)?;
             e = Expr::Binary {
                 op: BinOp::And,
                 left: Box::new(e),
@@ -950,10 +1007,12 @@ impl<'a> Parser<'a> {
                 _ => None,
             };
             let Some(op) = op else { break };
+            Self::reject_tuple_expr(&e, self.line)?;
             // RHS of `~` / `!~` may be `/regex/`; lexer must use regex mode for the next token.
             let regex_rhs = matches!(op, BinOp::Match | BinOp::NotMatch);
             self.bump(regex_rhs)?;
             let r = self.parse_concat(false)?;
+            Self::reject_tuple_expr(&r, self.line)?;
             e = Expr::Binary {
                 op,
                 left: Box::new(e),
@@ -1010,6 +1069,8 @@ impl<'a> Parser<'a> {
                 break;
             }
             let r = self.parse_additive(false)?;
+            Self::reject_tuple_expr(&e, self.line)?;
+            Self::reject_tuple_expr(&r, self.line)?;
             e = Expr::Binary {
                 op: BinOp::Concat,
                 left: Box::new(e),
@@ -1028,8 +1089,10 @@ impl<'a> Parser<'a> {
                 _ => None,
             };
             let Some(op) = op else { break };
+            Self::reject_tuple_expr(&e, self.line)?;
             self.bump(true)?;
             let r = self.parse_multiplicative(false)?;
+            Self::reject_tuple_expr(&r, self.line)?;
             e = Expr::Binary {
                 op,
                 left: Box::new(e),
@@ -1049,8 +1112,10 @@ impl<'a> Parser<'a> {
                 _ => None,
             };
             let Some(op) = op else { break };
+            Self::reject_tuple_expr(&e, self.line)?;
             self.bump(true)?;
             let r = self.parse_unary(false)?;
+            Self::reject_tuple_expr(&r, self.line)?;
             e = Expr::Binary {
                 op,
                 left: Box::new(e),
@@ -1084,8 +1149,10 @@ impl<'a> Parser<'a> {
         let mut e = self.parse_prefix_unary(regex_mode)?;
         e = self.parse_postfix_on_expr(e)?;
         if matches!(self.cur, Token::Caret | Token::StarStar) {
+            Self::reject_tuple_expr(&e, self.line)?;
             self.bump(true)?;
             let rhs = self.parse_power(false)?;
+            Self::reject_tuple_expr(&rhs, self.line)?;
             return Ok(Expr::Binary {
                 op: BinOp::Pow,
                 left: Box::new(e),
@@ -1111,6 +1178,7 @@ impl<'a> Parser<'a> {
             Token::Bang => {
                 self.bump(true)?;
                 let e = self.parse_power(false)?;
+                Self::reject_tuple_expr(&e, self.line)?;
                 Ok(Expr::Unary {
                     op: UnaryOp::Not,
                     expr: Box::new(e),
@@ -1119,6 +1187,7 @@ impl<'a> Parser<'a> {
             Token::Minus => {
                 self.bump(true)?;
                 let e = self.parse_power(false)?;
+                Self::reject_tuple_expr(&e, self.line)?;
                 Ok(Expr::Unary {
                     op: UnaryOp::Neg,
                     expr: Box::new(e),
@@ -1127,6 +1196,7 @@ impl<'a> Parser<'a> {
             Token::Plus => {
                 self.bump(true)?;
                 let e = self.parse_power(false)?;
+                Self::reject_tuple_expr(&e, self.line)?;
                 Ok(Expr::Unary {
                     op: UnaryOp::Pos,
                     expr: Box::new(e),
@@ -1343,7 +1413,37 @@ impl<'a> Parser<'a> {
             }
             Token::LParen => {
                 self.bump(true)?;
-                let e = self.parse_expr_allow_gt(false)?;
+                let first = self.parse_expr_allow_gt(false)?;
+                if self.cur == Token::Comma {
+                    if self.in_printf_args {
+                        return Err(Error::Parse {
+                            line: self.line,
+                            msg: "parenthesized comma list is not allowed in `printf` arguments"
+                                .into(),
+                        });
+                    }
+                    let mut parts = vec![first];
+                    while self.cur == Token::Comma {
+                        self.bump(true)?;
+                        parts.push(self.parse_expr_allow_gt(false)?);
+                    }
+                    if self.cur != Token::RParen {
+                        return Err(Error::Parse {
+                            line: self.line,
+                            msg: "expected `)`".into(),
+                        });
+                    }
+                    self.bump(false)?;
+                    for p in &parts {
+                        if matches!(p, Expr::Tuple(_)) {
+                            return Err(Error::Parse {
+                                line: self.line,
+                                msg: "nested parenthesized comma lists are not allowed".into(),
+                            });
+                        }
+                    }
+                    return Ok(Expr::Tuple(parts));
+                }
                 if self.cur != Token::RParen {
                     return Err(Error::Parse {
                         line: self.line,
@@ -1351,7 +1451,7 @@ impl<'a> Parser<'a> {
                     });
                 }
                 self.bump(false)?;
-                Ok(e)
+                Ok(first)
             }
             Token::Getline => {
                 self.bump(false)?;
@@ -1572,6 +1672,33 @@ mod tests {
                     _ => panic!("expected `in` expr"),
                 }
             }
+            _ => panic!("expected print"),
+        }
+    }
+
+    #[test]
+    fn parses_parenthesized_comma_list_in_multidim_in() {
+        let p = parse_program("BEGIN { print ((1, 2) in a) }").unwrap();
+        let rule = p
+            .rules
+            .iter()
+            .find(|r| matches!(r.pattern, Pattern::Begin))
+            .unwrap();
+        match rule.stmts.first() {
+            Some(Stmt::Print { args, .. }) => match &args[0] {
+                Expr::In { key, arr } => {
+                    assert_eq!(arr, "a");
+                    match key.as_ref() {
+                        Expr::Tuple(parts) => {
+                            assert_eq!(parts.len(), 2);
+                            assert!(expr_is_int(&parts[0], 1));
+                            assert!(expr_is_int(&parts[1], 2));
+                        }
+                        _ => panic!("expected tuple key"),
+                    }
+                }
+                _ => panic!("expected `in`"),
+            },
             _ => panic!("expected print"),
         }
     }

@@ -202,6 +202,8 @@ pub enum Expr {
         key: Box<Expr>,
         arr: String,
     },
+    /// Parenthesized comma list `(e1, e2, …)` — gawk: multidimensional `in` key and lone `print` arg.
+    Tuple(Vec<Expr>),
     /// `++` / `--` on a scalar, field, or array element (gawk-style).
     IncDec {
         op: IncDecOp,

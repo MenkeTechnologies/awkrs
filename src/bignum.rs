@@ -18,7 +18,15 @@ pub fn numeric_string_to_mpfr(s: &str, prec: u32, round: Round) -> Float {
             Err(_) => Float::with_val_round(prec, 0, round).0,
         };
     }
-    if t.len() > 1 && t.starts_with('0') && !t.contains('.') && !t.contains('e') && !t.contains('E')
+    // gawk-style: octal only if no `8`/`9` in the digit run (else decimal, e.g. `01238`).
+    if t.len() > 1
+        && t.starts_with('0')
+        && !t.starts_with("0x")
+        && !t.starts_with("0X")
+        && !t.contains('.')
+        && !t.contains('e')
+        && !t.contains('E')
+        && t.bytes().all(|b| (b'0'..=b'7').contains(&b))
     {
         return match Integer::from_str_radix(t, 8) {
             Ok(i) => Float::with_val_round(prec, i, round).0,

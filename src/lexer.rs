@@ -1,4 +1,5 @@
 use crate::error::{Error, Result};
+use rug::Integer;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
@@ -240,8 +241,38 @@ impl<'a> Lexer<'a> {
         }
 
         // number — integer literals without `.' stay as decimal text so **`-M`** does not lose bits to `f64`.
+        // gawk: `0x`/`0X` hex; leading `0` octal if all digits are `0`–`7`, else decimal (`01238` → 1238);
+        // a `.` in the token forces a decimal float (`077.5` → 77.5).
         if c.is_ascii_digit() || (c == '.' && self.lookahead_digit()) {
             let start = self.pos;
+            if c == '0' {
+                let rest = &self.input[self.pos.saturating_add(1)..];
+                if rest.starts_with('x') || rest.starts_with('X') {
+                    self.bump();
+                    self.bump();
+                    let hx = self.pos;
+                    while let Some(d) = self.peek() {
+                        if d.is_ascii_hexdigit() {
+                            self.bump();
+                        } else {
+                            break;
+                        }
+                    }
+                    if self.pos == hx {
+                        return Err(Error::Parse {
+                            line: self.line,
+                            msg: "empty hex literal".into(),
+                        });
+                    }
+                    let hex_digits = &self.input[hx..self.pos];
+                    let dec =
+                        Integer::from_str_radix(hex_digits, 16).map_err(|_| Error::Parse {
+                            line: self.line,
+                            msg: format!("bad hex literal {hex_digits:?}"),
+                        })?;
+                    return Ok(Token::IntegerLiteral(dec.to_string()));
+                }
+            }
             while let Some(d) = self.peek() {
                 if d.is_ascii_digit() {
                     self.bump();
@@ -263,6 +294,16 @@ impl<'a> Lexer<'a> {
             }
             let slice = &self.input[start..self.pos];
             if !had_dot {
+                if slice.len() > 1
+                    && slice.starts_with('0')
+                    && slice.bytes().all(|b| (b'0'..=b'7').contains(&b))
+                {
+                    let v = Integer::from_str_radix(slice, 8).map_err(|_| Error::Parse {
+                        line: self.line,
+                        msg: format!("bad octal literal {slice:?}"),
+                    })?;
+                    return Ok(Token::IntegerLiteral(v.to_string()));
+                }
                 return Ok(Token::IntegerLiteral(slice.to_string()));
             }
             let n: f64 = slice.parse().map_err(|_| Error::Parse {

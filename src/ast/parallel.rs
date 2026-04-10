@@ -102,6 +102,7 @@ fn expr_blocks_parallel(e: &Expr) -> bool {
             expr_blocks_parallel(cond) || expr_blocks_parallel(then_) || expr_blocks_parallel(else_)
         }
         Expr::In { key, .. } => expr_blocks_parallel(key),
+        Expr::Tuple(parts) => parts.iter().any(expr_blocks_parallel),
         Expr::GetLine {
             pipe_cmd: Some(_), ..
         } => true,

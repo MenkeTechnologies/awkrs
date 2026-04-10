@@ -402,7 +402,9 @@ fn exec_stmt(s: &Stmt, ctx: &mut ExecCtx<'_>) -> Result<Flow> {
                 .unwrap_or_else(|| "\n".into());
             let mut parts = Vec::new();
             for a in args {
-                parts.push(eval_expr(a, ctx)?.as_str());
+                for fe in flatten_print_exprs(a) {
+                    parts.push(eval_expr(fe, ctx)?.as_str());
+                }
             }
             let line = if parts.is_empty() {
                 ctx.rt.record.clone()
@@ -601,6 +603,13 @@ fn exec_stmt(s: &Stmt, ctx: &mut ExecCtx<'_>) -> Result<Flow> {
     Ok(Flow::Normal)
 }
 
+fn flatten_print_exprs(e: &Expr) -> Vec<&Expr> {
+    match e {
+        Expr::Tuple(parts) => parts.iter().flat_map(|p| flatten_print_exprs(p)).collect(),
+        _ => vec![e],
+    }
+}
+
 fn array_key(ctx: &mut ExecCtx<'_>, indices: &[Expr]) -> Result<String> {
     if indices.is_empty() {
         return Err(Error::Runtime("empty array index".into()));
@@ -723,8 +732,16 @@ pub fn eval_expr(e: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {
             }
         }
         Expr::In { key, arr } => {
-            let k = eval_expr(key, ctx)?.as_str();
+            let k = match key.as_ref() {
+                Expr::Tuple(parts) => array_key(ctx, parts)?,
+                _ => eval_expr(key, ctx)?.as_str(),
+            };
             Value::Num(if ctx.rt.array_has(arr, &k) { 1.0 } else { 0.0 })
+        }
+        Expr::Tuple(_) => {
+            return Err(Error::Runtime(
+                "invalid use of parenthesized comma list".into(),
+            ));
         }
         Expr::IncDec { op, target } => eval_inc_dec(*op, target, ctx)?,
         Expr::GetLine {
@@ -1225,7 +1242,7 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
             let hay = eval_expr(&args[0], ctx)?.as_str();
             let needle = eval_expr(&args[1], ctx)?.as_str();
             if needle.is_empty() {
-                return Ok(Value::Num(0.0));
+                return Ok(Value::Num(1.0));
             }
             let pos = if let Some(b) = hay.find(&needle) {
                 if ctx.rt.characters_as_bytes {
@@ -1245,20 +1262,34 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
                 ctx,
             )?
             .as_str();
-            let start = eval_expr(
+            let start_raw = eval_expr(
                 args.get(1).ok_or_else(|| Error::Runtime("substr".into()))?,
                 ctx,
             )?
-            .as_number() as usize;
-            let len = if let Some(e) = args.get(2) {
-                eval_expr(e, ctx)?.as_number() as usize
+            .as_number();
+            let m0 = start_raw as i64;
+            let mut m = m0;
+            let mut len_opt = if let Some(e) = args.get(2) {
+                let l = eval_expr(e, ctx)?.as_number() as i64;
+                if l <= 0 {
+                    return Ok(Value::Str(String::new()));
+                }
+                Some(l)
             } else {
-                usize::MAX
+                None
             };
-            if start < 1 {
-                return Ok(Value::Str(String::new()));
+            if m < 1 {
+                let deficit = 1 - m0;
+                m = 1;
+                if let Some(ref mut ln) = len_opt {
+                    *ln = (*ln).saturating_sub(deficit);
+                    if *ln <= 0 {
+                        return Ok(Value::Str(String::new()));
+                    }
+                }
             }
-            let start0 = start - 1;
+            let len = len_opt.map(|l| l as usize).unwrap_or(usize::MAX);
+            let start0 = (m as usize).saturating_sub(1);
             let slice = if ctx.rt.characters_as_bytes {
                 s.as_bytes()
                     .get(start0..)

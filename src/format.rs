@@ -264,18 +264,59 @@ fn trim_trailing_zero_fraction(s: &str) -> String {
     t
 }
 
-/// After `%e`/`%E` formatting for `%g`, trim zeros in the mantissa only (leave exponent intact).
+/// POSIX / awk exponent: `e`/`E` then sign and at least two magnitude digits (`e+03`).
+fn format_sprintf_exponent(exp: i32, upper_e: bool) -> String {
+    let ec = if upper_e { 'E' } else { 'e' };
+    let sign = if exp < 0 { '-' } else { '+' };
+    let mag = exp.unsigned_abs();
+    let w = if mag == 0 {
+        2usize
+    } else {
+        (mag.ilog10() as usize + 1).max(2)
+    };
+    format!("{ec}{sign}{mag:0w$}", w = w)
+}
+
+/// Rewrite `…e±digits` / `…E±digits` to awk-style exponent (always signed, min 2 magnitude digits).
+fn normalize_sprintf_scientific_exponent(s: &str) -> String {
+    let Some(pos) = s.find(['e', 'E']) else {
+        return s.to_string();
+    };
+    let (mant, rest) = s.split_at(pos);
+    let upper = rest.starts_with('E');
+    let exp: i32 = rest[1..].parse().unwrap_or(0);
+    format!("{}{}", mant, format_sprintf_exponent(exp, upper))
+}
+
+/// After `%e`/`%E` formatting for `%g`, trim zeros in the mantissa only, then normalize exponent.
 fn trim_sprintf_g_scientific(s: &str) -> String {
     let Some(pos) = s.find(['e', 'E']) else {
         return trim_trailing_zero_fraction(s);
     };
-    let (mant, exp_part) = s.split_at(pos);
-    let exp_char = exp_part.chars().next().unwrap();
-    let exp_digits = &exp_part[1..];
+    let (mant, exp_with_e) = s.split_at(pos);
+    let upper = exp_with_e.starts_with('E');
+    let exp: i32 = exp_with_e[1..].parse().unwrap_or(0);
     format!(
-        "{}{exp_char}{exp_digits}",
-        trim_trailing_zero_fraction(mant)
+        "{}{}",
+        trim_trailing_zero_fraction(mant),
+        format_sprintf_exponent(exp, upper)
     )
+}
+
+fn sprintf_c_char(v: &Value) -> String {
+    match v {
+        Value::Str(s) | Value::StrLit(s) | Value::Regexp(s) => {
+            s.chars().next().map(|c| c.to_string()).unwrap_or_default()
+        }
+        Value::Mpfr(f) => {
+            let code = float_trunc_integer(f).to_u32_wrapping();
+            char::from_u32(code).unwrap_or('\u{fffd}').to_string()
+        }
+        _ => {
+            let code = v.as_number() as u32;
+            char::from_u32(code).unwrap_or('\u{fffd}').to_string()
+        }
+    }
 }
 
 fn parse_width_or_star(
@@ -447,24 +488,26 @@ fn format_one(
         }
         'e' | 'E' => {
             let p = prec.unwrap_or(6);
-            let s = if let Some((pr, rd)) = mpfr_mode {
+            let raw = if let Some((pr, rd)) = mpfr_mode {
                 let fsrc = match v {
                     Value::Mpfr(f) => f.clone(),
                     _ => value_to_mpfr(v, pr, rd),
                 };
                 if conv == 'e' {
-                    localize_float_radix(format!("{:.*e}", p, fsrc), decimal)
+                    format!("{:.*e}", p, fsrc)
                 } else {
-                    localize_float_radix(format!("{:.*E}", p, fsrc), decimal)
+                    format!("{:.*E}", p, fsrc)
                 }
             } else {
                 let n = v.as_number();
                 if conv == 'e' {
-                    localize_float_radix(format!("{:.*e}", p, n), decimal)
+                    format!("{:.*e}", p, n)
                 } else {
-                    localize_float_radix(format!("{:.*E}", p, n), decimal)
+                    format!("{:.*E}", p, n)
                 }
             };
+            let localized = localize_float_radix(raw, decimal);
+            let s = normalize_sprintf_scientific_exponent(&localized);
             pad_numeric(&s, w, left, pad_char)
         }
         'g' | 'G' => {
@@ -535,17 +578,7 @@ fn format_one(
             pad_numeric(&s, w, left, pad_char)
         }
         'c' => {
-            let code = if let Some((pr, rd)) = mpfr_mode {
-                let f = match v {
-                    Value::Mpfr(f) => f.clone(),
-                    _ => value_to_mpfr(v, pr, rd),
-                };
-                float_trunc_integer(&f).to_u32_wrapping()
-            } else {
-                v.as_number() as u32
-            };
-            let ch = char::from_u32(code).unwrap_or('\u{fffd}');
-            let s = ch.to_string();
+            let s = sprintf_c_char(v);
             pad_string(&s, w, left, pad_char)
         }
         _ => Err(format!("unsupported conversion %{conv}")),
@@ -792,5 +825,17 @@ mod tests {
     fn float_negative_precision_two() {
         let s = awk_sprintf("%.2f", &[Value::Num(-1.234)]).unwrap();
         assert_eq!(s, "-1.23");
+    }
+
+    #[test]
+    fn percent_e_signed_two_digit_exponent() {
+        let s = awk_sprintf("%e\n", &[Value::Num(1234.5)]).unwrap();
+        assert_eq!(s, "1.234500e+03\n");
+    }
+
+    #[test]
+    fn percent_c_string_first_char() {
+        let s = awk_sprintf("[%c]\n", &[Value::Str("Z".into())]).unwrap();
+        assert_eq!(s, "[Z]\n");
     }
 }

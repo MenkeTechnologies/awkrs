@@ -1088,3 +1088,34 @@ fn jit_getline_from_file() {
     assert_eq!(c, 0, "stderr: {e}");
     assert_eq!(o, "fromfile\n");
 }
+
+#[test]
+fn gawk_style_paren_list_in_and_literals_printf_substr_index() {
+    let (c, o, e) = run_awkrs_stdin(
+        r#"BEGIN {
+  a[1, 2] = 1
+  print ((1,2) in a), 0x10, 010, 01238
+  printf "%e\n", 1234.5
+  printf "[%c]\n", "Z"
+  print substr("hi", -1, 5)
+  print index("hello", "")
+}"#,
+        "",
+    );
+    assert_eq!(c, 0, "stderr={e:?}");
+    assert_eq!(
+        o,
+        "1 16 8 1238\n\
+1.234500e+03\n\
+[Z]\n\
+hi\n\
+1\n"
+    );
+}
+
+#[test]
+fn print_paren_list_emits_multiple_fields() {
+    let (c, o, e) = run_awkrs_stdin(r#"BEGIN { OFS=","; print (1, 2) }"#, "");
+    assert_eq!(c, 0, "stderr={e:?}");
+    assert_eq!(o, "1,2\n");
+}
