@@ -842,6 +842,8 @@ pub struct Runtime {
     pub profile_record_hits: Vec<u64>,
     /// One-shot: warn once when `PROCINFO["sorted_in"]` is set to an unsupported custom comparator name.
     pub sorted_in_warned: Cell<bool>,
+    /// Last OS errno from [`Self::set_errno_io`] (gawk **`PROCINFO["errno"]`** numeric mirror).
+    pub errno_code: i32,
 }
 
 impl Runtime {
@@ -927,6 +929,7 @@ impl Runtime {
             symtab_slot_map: HashMap::new(),
             profile_record_hits: Vec::new(),
             sorted_in_warned: Cell::new(false),
+            errno_code: 0,
         }
     }
 
@@ -982,12 +985,12 @@ impl Runtime {
 
     /// Refresh **`PROCINFO`**, **`FUNCTAB`**, and a **`SYMTAB`** mirror of globals (best-effort vs gawk introspection).
     pub fn refresh_special_arrays(&mut self, cp: &CompiledProgram, bin_name: &str) {
-        self.procinfo_refresh(bin_name);
+        self.procinfo_refresh(cp, bin_name);
         self.functab_refresh(cp);
         self.symtab_mirror_refresh(cp);
     }
 
-    fn procinfo_refresh(&mut self, bin_name: &str) {
+    fn procinfo_refresh(&mut self, cp: &CompiledProgram, bin_name: &str) {
         let mut p = AwkMap::default();
         if let Some(Value::Array(old)) = self.vars.get("PROCINFO") {
             for (k, v) in old.iter() {
@@ -999,9 +1002,15 @@ impl Runtime {
             Value::Str(env!("CARGO_PKG_VERSION").into()),
         );
         p.insert("api".into(), Value::Str("awkrs".into()));
+        p.insert("api_major".into(), Value::Num(4.0));
+        p.insert("api_minor".into(), Value::Num(1.0));
         p.insert("program".into(), Value::Str(bin_name.into()));
-        p.insert("platform".into(), Value::Str(std::env::consts::OS.into()));
+        p.insert(
+            "platform".into(),
+            Value::Str(crate::procinfo::gawk_platform_string().into()),
+        );
         p.insert("pid".into(), Value::Num(std::process::id() as f64));
+        p.insert("errno".into(), Value::Num(self.errno_code as f64));
         #[cfg(unix)]
         {
             unsafe {
@@ -1010,8 +1019,29 @@ impl Runtime {
                 p.insert("euid".into(), Value::Num(libc::geteuid() as f64));
                 p.insert("gid".into(), Value::Num(libc::getgid() as f64));
                 p.insert("egid".into(), Value::Num(libc::getegid() as f64));
+                p.insert("pgrpid".into(), Value::Num(libc::getpgrp() as f64));
+            }
+            for (k, v) in crate::procinfo::supplementary_group_entries() {
+                p.insert(k, Value::Num(v));
             }
         }
+        p.insert(
+            "FS".into(),
+            Value::Str(crate::procinfo::field_split_mode(self).into()),
+        );
+        p.insert("strftime".into(), Value::Str("%c".into()));
+
+        let mut argv_proc = AwkMap::default();
+        for (i, a) in std::env::args().enumerate() {
+            argv_proc.insert(i.to_string(), Value::Str(a));
+        }
+        p.insert("argv".into(), Value::Array(argv_proc));
+
+        p.insert(
+            "mb_cur_max".into(),
+            Value::Num(crate::procinfo::mb_cur_max_value()),
+        );
+
         if self.bignum && !p.contains_key("prec") {
             p.insert("prec".into(), Value::Num(MPFR_PREC as f64));
         }
@@ -1021,11 +1051,64 @@ impl Runtime {
         if !p.contains_key("READ_TIMEOUT") {
             p.insert("READ_TIMEOUT".into(), Value::Num(0.0));
         }
+        if self.bignum {
+            p.insert(
+                "gmp_version".into(),
+                Value::Str(crate::procinfo::gmp_version_string()),
+            );
+            p.insert(
+                "mpfr_version".into(),
+                Value::Str(crate::procinfo::mpfr_version_string()),
+            );
+            p.insert(
+                "prec_min".into(),
+                Value::Num(gmp_mpfr_sys::mpfr::PREC_MIN as f64),
+            );
+            p.insert(
+                "prec_max".into(),
+                Value::Num(gmp_mpfr_sys::mpfr::PREC_MAX as f64),
+            );
+        }
         let binmode = self
             .get_global_var("BINMODE")
             .map(|v| v.as_number())
             .unwrap_or(0.0);
         p.insert("awkrs_binmode".into(), Value::Num(binmode));
+
+        crate::procinfo::merge_procinfo_identifiers(&mut p, cp);
+
+        let sep = self
+            .get_global_var("SUBSEP")
+            .map(|v| v.as_str().to_string())
+            .unwrap_or_else(|| "\x1c".into());
+        let global_to = p
+            .get("READ_TIMEOUT")
+            .map(|v| v.as_number())
+            .unwrap_or(0.0);
+        let mut paths: Vec<String> = Vec::new();
+        if let Some(Value::Array(argv)) = self.get_global_var("ARGV") {
+            let argc = self
+                .get_global_var("ARGC")
+                .map(|v| v.as_number() as i64)
+                .unwrap_or(0);
+            for i in 1..argc {
+                if let Some(v) = argv.get(&i.to_string()) {
+                    paths.push(v.as_str().to_string());
+                }
+            }
+        }
+        paths.push("-".into());
+        for path in paths {
+            let k_rt = format!("{path}{sep}READ_TIMEOUT");
+            if !p.contains_key(&k_rt) {
+                p.insert(k_rt, Value::Num(global_to));
+            }
+            let k_retry = format!("{path}{sep}RETRY");
+            if !p.contains_key(&k_retry) {
+                p.insert(k_retry, Value::Num(0.0));
+            }
+        }
+
         self.vars.insert("PROCINFO".into(), Value::Array(p));
     }
 
@@ -1141,6 +1224,7 @@ impl Runtime {
             symtab_slot_map: HashMap::new(),
             profile_record_hits: Vec::new(),
             sorted_in_warned: Cell::new(false),
+            errno_code: 0,
         }
     }
 
@@ -1184,14 +1268,17 @@ impl Runtime {
     }
 
     pub fn clear_errno(&mut self) {
+        self.errno_code = 0;
         self.vars.insert("ERRNO".into(), Value::Str(String::new()));
     }
 
     pub fn set_errno_io(&mut self, e: &std::io::Error) {
+        self.errno_code = e.raw_os_error().unwrap_or(0);
         self.vars.insert("ERRNO".into(), Value::Str(e.to_string()));
     }
 
     pub fn set_errno_str(&mut self, msg: impl Into<String>) {
+        self.errno_code = 0;
         self.vars.insert("ERRNO".into(), Value::Str(msg.into()));
     }
 
@@ -2418,6 +2505,7 @@ impl Clone for Runtime {
             symtab_slot_map: self.symtab_slot_map.clone(),
             profile_record_hits: Vec::new(),
             sorted_in_warned: Cell::new(self.sorted_in_warned.get()),
+            errno_code: self.errno_code,
         }
     }
 }

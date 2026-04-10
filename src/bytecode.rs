@@ -420,6 +420,8 @@ pub struct CompiledProgram {
     pub slot_names: Vec<String>,
     /// Reverse map: variable name → slot index (used by cold-path `get_var`/`set_var`).
     pub slot_map: HashMap<String, u16>,
+    /// Names used as arrays anywhere in the program (for **`PROCINFO["identifiers"]`**).
+    pub array_var_names: Vec<String>,
 }
 
 impl CompiledProgram {
@@ -518,6 +520,7 @@ mod tests {
             slot_count: 1,
             slot_names: vec!["x".into()],
             slot_map: HashMap::from([("x".into(), 0u16)]),
+            array_var_names: vec![],
         };
         let slots = cp.init_slots(&vars);
         assert_eq!(slots.len(), 1);
@@ -561,6 +564,7 @@ mod tests {
             slot_count: 2,
             slot_names: vec!["x".into(), "y".into()],
             slot_map: HashMap::from([("x".into(), 0u16), ("y".into(), 1u16)]),
+            array_var_names: vec![],
         };
         let mut vars = AwkMap::default();
         vars.insert("x".into(), Value::Num(1.0));

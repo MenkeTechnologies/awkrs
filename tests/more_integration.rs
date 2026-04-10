@@ -166,6 +166,55 @@ fn procinfo_populated_before_begin() {
 }
 
 #[test]
+fn procinfo_pid_non_empty_begin_matches_end() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { bp = PROCINFO["pid"] } END { print bp == PROCINFO["pid"]; print (bp + 0 > 0) }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "1\n1\n");
+}
+
+#[test]
+fn procinfo_platform_posix_on_unix() {
+    if !cfg!(unix) {
+        return;
+    }
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { print PROCINFO["platform"] }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o.trim_end(), "posix");
+}
+
+#[test]
+fn procinfo_bignum_keys_when_dash_m() {
+    let (c, o, _) = run_awkrs_stdin_args(
+        ["-M"],
+        r#"BEGIN {
+  print (PROCINFO["gmp_version"] != "")
+  print (PROCINFO["mpfr_version"] != "")
+  print (PROCINFO["prec_min"] + 0 > 0)
+  print (PROCINFO["prec_max"] + 0 > 0)
+}"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "1\n1\n1\n1\n");
+}
+
+#[test]
+fn procinfo_identifiers_has_split_builtin() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { id = PROCINFO["identifiers"]; print id["split"] }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o.trim_end(), "builtin");
+}
+
+#[test]
 fn bignum_string_xor_not_f64_truncated() {
     let (c, o, _) = run_awkrs_stdin_args(
         ["-M"],

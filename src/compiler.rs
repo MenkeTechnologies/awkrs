@@ -121,6 +121,9 @@ impl Compiler {
             slot_map.insert(name.clone(), idx);
         }
 
+        let mut array_var_names: Vec<String> = c.array_names.iter().cloned().collect();
+        array_var_names.sort();
+
         CompiledProgram {
             begin_chunks,
             end_chunks,
@@ -132,6 +135,7 @@ impl Compiler {
             slot_count,
             slot_names,
             slot_map,
+            array_var_names,
         }
     }
 

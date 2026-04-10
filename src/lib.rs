@@ -26,6 +26,7 @@ mod lexer;
 mod locale_numeric;
 mod namespace;
 mod parser;
+mod procinfo;
 mod record_io;
 mod runtime;
 mod source_expand;
@@ -170,6 +171,7 @@ pub fn run(bin_name: &str) -> Result<()> {
     let worker_jit_enabled = rt.jit_enabled;
 
     attach_primary_input_before_begin_for_getline(cp.as_ref(), &files, &mut rt)?;
+    // `PROCINFO` / `FUNCTAB` must exist during `BEGIN` (gawk scripts branch on pid, platform, …).
     rt.refresh_special_arrays(cp.as_ref(), bin_name);
     vm_run_begin(cp.as_ref(), &mut rt)?;
     rt.refresh_special_arrays(cp.as_ref(), bin_name);
