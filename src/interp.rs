@@ -1435,10 +1435,19 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
         }
         "rand" if args.is_empty() => Ok(Value::Num(ctx.rt.rand())),
         "srand" => {
-            let n = if let Some(e) = args.first() {
-                Some(eval_expr(e, ctx)?.as_number() as u32)
-            } else {
-                None
+            let n = match args.first() {
+                None => None,
+                Some(e) => {
+                    let v = eval_expr(e, ctx)?;
+                    if ctx.rt.bignum {
+                        let prec = ctx.rt.mpfr_prec_bits();
+                        let round = ctx.rt.mpfr_round();
+                        let f = value_to_float(&v, prec, round);
+                        Some(bignum::float_trunc_integer(&f).to_u64_wrapping())
+                    } else {
+                        Some(v.as_number() as u32 as u64)
+                    }
+                }
             };
             Ok(Value::Num(ctx.rt.srand(n)))
         }

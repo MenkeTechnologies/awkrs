@@ -3716,6 +3716,9 @@ pub(crate) fn exec_builtin_dispatch(
             Value::Num(if truthy(&args[0]) { 1.0 } else { 0.0 })
         }
         "sqrt" => {
+            if argc != 1 {
+                return Err(Error::Runtime("`sqrt` expects one argument".into()));
+            }
             if ctx.rt.bignum {
                 let prec = ctx.rt.mpfr_prec_bits();
                 let round = ctx.rt.mpfr_round();
@@ -3806,7 +3809,19 @@ pub(crate) fn exec_builtin_dispatch(
         }
         "rand" => Value::Num(ctx.rt.rand()),
         "srand" => {
-            let n = args.first().map(|v| v.as_number() as u32);
+            let n = match args.first() {
+                None => None,
+                Some(v) => {
+                    if ctx.rt.bignum {
+                        let prec = ctx.rt.mpfr_prec_bits();
+                        let round = ctx.rt.mpfr_round();
+                        let f = value_to_float(v, prec, round);
+                        Some(bignum::float_trunc_integer(&f).to_u64_wrapping())
+                    } else {
+                        Some(v.as_number() as u32 as u64)
+                    }
+                }
+            };
             Value::Num(ctx.rt.srand(n))
         }
         "system" => {

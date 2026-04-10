@@ -1698,14 +1698,15 @@ impl Runtime {
         f64::from((self.rand_seed >> 16) as u32 & 0x7fff) / 32768.0
     }
 
-    pub fn srand(&mut self, n: Option<u32>) -> f64 {
+    /// Seed PRNG; **`n`** is the full **`u64`** seed (POSIX/gawk-style **`srand(x)`** truncates **`x`** to an integer first).
+    pub fn srand(&mut self, n: Option<u64>) -> f64 {
         let prev = self.rand_seed;
-        self.rand_seed = n.map(|x| x as u64).unwrap_or(
+        self.rand_seed = n.unwrap_or_else(|| {
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs() ^ (d.subsec_nanos() as u64))
-                .unwrap_or(1),
-        );
+                .unwrap_or(1)
+        });
         (prev & 0xffff_ffff) as f64
     }
 
