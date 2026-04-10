@@ -223,7 +223,8 @@ fn division_by_zero_yields_inf_or_nan_printable() {
 fn relop_numeric_when_both_operands_are_numeric_strings() {
     let (c, o, _) = run_awkrs_stdin("BEGIN { print (\"10\" < \"2\"), (10 < 2) }", "");
     assert_eq!(c, 0);
-    assert_eq!(o, "0 0\n");
+    // String constants compare lexicographically; numeric constants compare as numbers (matches gawk).
+    assert_eq!(o, "1 0\n");
 }
 
 #[test]
@@ -277,7 +278,8 @@ fn concat_numbers_coerces_to_string() {
 fn equality_string_vs_number() {
     let (c, o, _) = run_awkrs_stdin("BEGIN { print (\"00\" == 0) }", "");
     assert_eq!(c, 0);
-    assert_eq!(o, "1\n");
+    // Literal "00" is not a numeric string for == against a number; falls through to string cmp vs "0" (gawk: 0).
+    assert_eq!(o, "0\n");
 }
 
 #[test]

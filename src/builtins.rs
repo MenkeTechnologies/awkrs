@@ -280,7 +280,7 @@ pub fn awk_gensub(
     let s_ref = s.as_str();
     let repl_has_special = repl.contains('&') || repl.contains('\\');
     match how {
-        Value::Str(h) => {
+        Value::Str(h) | Value::StrLit(h) => {
             let h = h.trim();
             if h.is_empty() {
                 return Err(Error::Runtime(
@@ -632,7 +632,7 @@ pub fn awk_typeof_value(v: &Value) -> &'static str {
         Value::Uninit => "uninitialized",
         Value::Num(_) => "number",
         Value::Mpfr(_) => "number",
-        Value::Str(_) => "string",
+        Value::Str(_) | Value::StrLit(_) => "string",
         Value::Regexp(_) => "regexp",
         Value::Array(_) => "array",
     }

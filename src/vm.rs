@@ -96,7 +96,7 @@ impl<'a> VmCtx<'a> {
         Ok(())
     }
 
-    fn get_var(&self, name: &str) -> Value {
+    fn get_var(&mut self, name: &str) -> Value {
         for frame in self.locals.iter().rev() {
             if let Some(v) = frame.get(name) {
                 return v.clone();
@@ -106,17 +106,17 @@ impl<'a> VmCtx<'a> {
         if let Some(&slot) = self.cp.slot_map.get(name) {
             return self.rt.slots[slot as usize].clone();
         }
+        if name == "NF" {
+            let n = self.rt.nf() as f64;
+            return Value::Num(n);
+        }
         self.rt
             .get_global_var(name)
             .cloned()
             .unwrap_or_else(|| match name {
                 "NR" => Value::Num(self.rt.nr),
                 "FNR" => Value::Num(self.rt.fnr),
-                "NF" => Value::Num(if self.rt.fields_dirty {
-                    self.rt.fields.len()
-                } else {
-                    self.rt.field_ranges.len()
-                } as f64),
+                "NF" => Value::Num(self.rt.nf() as f64),
                 "FILENAME" => Value::Str(self.rt.filename.clone()),
                 _ => Value::Uninit,
             })
@@ -202,6 +202,11 @@ impl<'a> VmCtx<'a> {
                 *v = val;
                 return;
             }
+        }
+        if name == "NF" {
+            let n = val.as_number() as i32;
+            self.rt.set_nf(n);
+            return;
         }
         // Check slots
         if let Some(&slot) = self.cp.slot_map.get(name) {
@@ -577,7 +582,7 @@ fn value_to_jit_f64(_ctx: &mut VmCtx<'_>, v: Value) -> f64 {
     match v {
         Value::Num(n) => n,
         Value::Uninit => nan_uninit(),
-        Value::Str(s) | Value::Regexp(s) => {
+        Value::Str(s) | Value::StrLit(s) | Value::Regexp(s) => {
             let idx = JIT_DYN_STRINGS.with(|c| {
                 let mut c = c.borrow_mut();
                 let idx = c.len();
@@ -2312,13 +2317,13 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                     ctx.push(Value::Num(s.parse().unwrap_or(0.0)));
                 }
             }
-            Op::PushStr(idx) => ctx.push(Value::Str(ctx.str_ref(idx).to_string())),
+            Op::PushStr(idx) => ctx.push(Value::StrLit(ctx.str_ref(idx).to_string())),
             Op::PushRegexp(idx) => ctx.push(Value::Regexp(ctx.str_ref(idx).to_string())),
 
             // ── Variable access ─────────────────────────────────────────
             Op::GetVar(idx) => {
-                let name = ctx.str_ref(idx);
-                let v = ctx.get_var(name);
+                let name = ctx.str_ref(idx).to_string();
+                let v = ctx.get_var(name.as_str());
                 ctx.push(v);
             }
             Op::SetVar(idx) => {
@@ -2723,8 +2728,10 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             Op::Concat => {
                 let b = ctx.pop();
                 let a = ctx.pop();
+                let both_lit = matches!(&a, Value::StrLit(_)) && matches!(&b, Value::StrLit(_));
                 let mut s = match a {
                     Value::Str(s) => s,
+                    Value::StrLit(s) => s,
                     Value::Regexp(s) => s,
                     Value::Num(n) => ctx.rt.num_to_string_convfmt(n),
                     Value::Mpfr(f) => ctx.rt.mpfr_to_string_convfmt(&f),
@@ -2733,13 +2740,19 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 };
                 match b {
                     Value::Str(ref t) => s.push_str(t),
+                    Value::StrLit(ref t) => s.push_str(t),
                     Value::Regexp(ref t) => s.push_str(t),
                     Value::Num(n) => s.push_str(&ctx.rt.num_to_string_convfmt(n)),
                     Value::Mpfr(f) => s.push_str(&ctx.rt.mpfr_to_string_convfmt(&f)),
                     Value::Uninit => {}
                     Value::Array(_) => {}
                 }
-                ctx.push(Value::Str(s));
+                let out = if both_lit {
+                    Value::StrLit(s)
+                } else {
+                    Value::Str(s)
+                };
+                ctx.push(out);
             }
             Op::RegexMatch => {
                 let pat = ctx.pop().as_str();
@@ -3011,9 +3024,11 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             Op::ConcatPoolStr(idx) => {
                 let pool_str = ctx.cp.strings.get(idx);
                 // Reuse the TOS String allocation: pop, append, push back.
-                let mut s = ctx.pop().into_string();
+                let v = ctx.pop();
+                let lit = matches!(v, Value::StrLit(_));
+                let mut s = v.into_string();
                 s.push_str(pool_str);
-                ctx.push(Value::Str(s));
+                ctx.push(if lit { Value::StrLit(s) } else { Value::Str(s) });
             }
             Op::GetNR => ctx.push(Value::Num(ctx.rt.nr)),
             Op::GetFNR => ctx.push(Value::Num(ctx.rt.fnr)),

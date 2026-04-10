@@ -796,7 +796,9 @@ fn default_ofmt_prints_number() {
 fn relop_string_vs_number_mixed() {
     let (c, o, _) = run_awkrs_stdin("BEGIN { print (\"10\" < 9), (\"10\" < \"9\") }", "");
     assert_eq!(c, 0);
-    assert_eq!(o, "0 0\n");
+    // String constant vs number: string comparison after CONVFMT-style conversion of the number;
+    // two string constants: lexicographic (matches gawk).
+    assert_eq!(o, "1 1\n");
 }
 
 #[test]

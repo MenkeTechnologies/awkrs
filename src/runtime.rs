@@ -155,7 +155,7 @@ fn val_type_rank(v: &Value) -> u8 {
     match v {
         Value::Uninit => 0,
         Value::Num(_) | Value::Mpfr(_) => 1,
-        Value::Str(_) | Value::Regexp(_) => 2,
+        Value::Str(_) | Value::StrLit(_) | Value::Regexp(_) => 2,
         Value::Array(_) => 3,
     }
 }
@@ -357,7 +357,10 @@ pub enum Value {
     /// Never assigned (missing global, missing function argument, or fresh slot).
     /// String/number contexts treat this like `""` / `0` (same as gawk *untyped*).
     Uninit,
+    /// Dynamic string (fields, concat, I/O, etc.) — may be a POSIX *numeric string* in comparisons.
     Str(String),
+    /// String literal from program text (`"..."`) — not a numeric string for relational ops (POSIX).
+    StrLit(String),
     /// gawk: `@/regex/` regexp constant — distinct from [`Value::Str`] for `typeof` and typed `~`.
     Regexp(String),
     Num(f64),
@@ -379,11 +382,26 @@ fn mpfr_value_default_display(f: &Float) -> String {
     .unwrap_or_else(|_| crate::bignum::mpfr_string_trim_trailing_zeros(f.to_string()))
 }
 
+/// Longest leading substring of `s` that `f64::from_str` accepts (POSIX awk string→number prefix rule).
+/// Parseability is not monotonic in prefix length (e.g. `1` ok, `1e` err, `1e2` ok), so we scan downward.
+#[inline]
+pub(crate) fn longest_f64_prefix(s: &str) -> Option<&str> {
+    if s.is_empty() {
+        return None;
+    }
+    for end in (1..=s.len()).rev() {
+        if s[..end].parse::<f64>().is_ok() {
+            return Some(&s[..end]);
+        }
+    }
+    None
+}
+
 impl Value {
     pub fn as_str(&self) -> String {
         match self {
             Value::Uninit => String::new(),
-            Value::Str(s) => s.clone(),
+            Value::Str(s) | Value::StrLit(s) => s.clone(),
             Value::Regexp(s) => s.clone(),
             Value::Num(n) => format_number(*n),
             Value::Mpfr(f) => mpfr_value_default_display(f),
@@ -396,7 +414,7 @@ impl Value {
     pub fn as_str_cow(&self) -> Cow<'_, str> {
         match self {
             Value::Uninit => Cow::Borrowed(""),
-            Value::Str(s) => Cow::Borrowed(s.as_str()),
+            Value::Str(s) | Value::StrLit(s) => Cow::Borrowed(s.as_str()),
             Value::Regexp(s) => Cow::Borrowed(s.as_str()),
             Value::Num(n) => Cow::Owned(format_number(*n)),
             Value::Mpfr(f) => Cow::Owned(mpfr_value_default_display(f)),
@@ -409,7 +427,7 @@ impl Value {
     #[allow(dead_code)]
     pub fn str_ref(&self) -> Option<&str> {
         match self {
-            Value::Str(s) => Some(s),
+            Value::Str(s) | Value::StrLit(s) => Some(s),
             Value::Regexp(s) => Some(s),
             _ => None,
         }
@@ -420,7 +438,7 @@ impl Value {
     pub fn write_to(&self, buf: &mut Vec<u8>) {
         match self {
             Value::Uninit => {}
-            Value::Str(s) => buf.extend_from_slice(s.as_bytes()),
+            Value::Str(s) | Value::StrLit(s) => buf.extend_from_slice(s.as_bytes()),
             Value::Regexp(s) => buf.extend_from_slice(s.as_bytes()),
             Value::Num(n) => {
                 use std::io::Write;
@@ -440,7 +458,7 @@ impl Value {
         match self {
             Value::Uninit => 0.0,
             Value::Num(n) => *n,
-            Value::Str(s) => parse_number(s),
+            Value::Str(s) | Value::StrLit(s) => parse_number(s),
             Value::Regexp(s) => parse_number(s),
             Value::Mpfr(f) => f.to_f64(),
             Value::Array(_) => 0.0,
@@ -451,7 +469,9 @@ impl Value {
         match self {
             Value::Uninit => false,
             Value::Num(n) => *n != 0.0,
-            Value::Str(s) => !s.is_empty() && s.parse::<f64>().map(|n| n != 0.0).unwrap_or(true),
+            Value::Str(s) | Value::StrLit(s) => {
+                !s.is_empty() && s.parse::<f64>().map(|n| n != 0.0).unwrap_or(true)
+            }
             Value::Regexp(s) => !s.is_empty(),
             Value::Mpfr(f) => !f.is_zero(),
             Value::Array(a) => !a.is_empty(),
@@ -464,7 +484,7 @@ impl Value {
     pub fn into_string(self) -> String {
         match self {
             Value::Uninit => String::new(),
-            Value::Str(s) => s,
+            Value::Str(s) | Value::StrLit(s) => s,
             Value::Regexp(s) => s,
             Value::Num(n) => format_number(n),
             Value::Mpfr(f) => mpfr_value_default_display(&f),
@@ -478,7 +498,7 @@ impl Value {
     pub fn append_to_string(&self, buf: &mut String) {
         match self {
             Value::Uninit => {}
-            Value::Str(s) => buf.push_str(s),
+            Value::Str(s) | Value::StrLit(s) => buf.push_str(s),
             Value::Regexp(s) => buf.push_str(s),
             Value::Num(n) => {
                 use std::fmt::Write;
@@ -497,12 +517,14 @@ impl Value {
     /// POSIX-style: true if the value is numeric (including string that looks like number).
     pub fn is_numeric_str(&self) -> bool {
         match self {
-            Value::Uninit => false,
+            // Uninitialized scalar has dual 0 / "" — participates in numeric comparisons like 0.
+            Value::Uninit => true,
             Value::Num(_) => true,
             Value::Mpfr(_) => true,
+            Value::StrLit(_) => false,
             Value::Str(s) => {
                 let t = s.trim();
-                !t.is_empty() && t.parse::<f64>().is_ok()
+                !t.is_empty() && longest_f64_prefix(t).is_some()
             }
             Value::Regexp(_) => false,
             Value::Array(_) => false,
@@ -536,7 +558,9 @@ fn parse_number_strtonum(s: &str) -> f64 {
     {
         return i64::from_str_radix(t, 8).map(|v| v as f64).unwrap_or(0.0);
     }
-    t.parse::<f64>().unwrap_or(0.0)
+    longest_f64_prefix(t)
+        .and_then(|p| p.parse::<f64>().ok())
+        .unwrap_or(0.0)
 }
 
 /// Parse a string to f64, returning 0.0 for non-numeric. Handles leading/trailing whitespace.
@@ -556,7 +580,9 @@ fn parse_number(s: &str) -> f64 {
     if let Some(n) = parse_ascii_integer(s) {
         return n as f64;
     }
-    s.parse().unwrap_or(0.0)
+    longest_f64_prefix(s)
+        .and_then(|p| p.parse::<f64>().ok())
+        .unwrap_or(0.0)
 }
 
 /// Returns `Some(n)` only for strings that are exactly an optional sign + ASCII digits (awk-style int).
@@ -1994,7 +2020,7 @@ impl Runtime {
         let has_fpat = self
             .get_global_var("FPAT")
             .map(|v| match v {
-                Value::Str(s) => !s.trim().is_empty(),
+                Value::Str(s) | Value::StrLit(s) => !s.trim().is_empty(),
                 _ => false,
             })
             .unwrap_or(false);
@@ -2143,7 +2169,47 @@ impl Runtime {
         (i as usize) > self.nf()
     }
 
+    /// Assign `$0` — replace the record and re-split fields / `NF` per POSIX.
+    pub fn set_record_str(&mut self, val: &str) {
+        let fs = self
+            .get_global_var("FS")
+            .map(|v| v.as_str())
+            .unwrap_or_else(|| " ".into());
+        self.set_field_sep_split(&fs, val);
+        self.ensure_fields_split();
+        let nf = self.nf() as f64;
+        self.vars.insert("NF".into(), Value::Num(nf));
+    }
+
+    /// Assign `NF` — truncate or extend fields and rebuild `$0` with `OFS`.
+    pub fn set_nf(&mut self, n: i32) {
+        if n < 0 {
+            return;
+        }
+        let nf = n as usize;
+        self.ensure_fields_split();
+        if !self.fields_dirty {
+            self.fields.clear();
+            for &(s, e) in &self.field_ranges {
+                self.fields
+                    .push(self.record[s as usize..e as usize].to_string());
+            }
+            self.fields_dirty = true;
+        }
+        if self.fields.len() > nf {
+            self.fields.truncate(nf);
+        } else {
+            self.fields.resize(nf, String::new());
+        }
+        self.rebuild_record();
+        self.vars.insert("NF".into(), Value::Num(nf as f64));
+    }
+
     pub fn set_field(&mut self, i: i32, val: &str) {
+        if i == 0 {
+            self.set_record_str(val);
+            return;
+        }
         if i < 1 {
             return;
         }
@@ -2169,6 +2235,15 @@ impl Runtime {
     /// Set a field to a numeric value directly, formatting in-place without
     /// allocating a temporary `Value::Num` and round-tripping through `as_str()`.
     pub fn set_field_num(&mut self, i: i32, n: f64) {
+        if i == 0 {
+            let s = if n.fract() == 0.0 && n.abs() < 1e15 {
+                format!("{}", n as i64)
+            } else {
+                format!("{n}")
+            };
+            self.set_record_str(&s);
+            return;
+        }
         if i < 1 {
             return;
         }
@@ -2239,11 +2314,15 @@ impl Runtime {
         }
         // Sync cached_fs from vars (non-allocating check; only copies when changed).
         let fs_changed = match self.vars.get("FS") {
-            Some(Value::Str(s)) => s.as_str() != self.cached_fs,
+            Some(Value::Str(s)) | Some(Value::StrLit(s)) | Some(Value::Regexp(s)) => {
+                s.as_str() != self.cached_fs.as_str()
+            }
             _ => false,
         };
         if fs_changed {
-            if let Some(Value::Str(s)) = self.vars.get("FS") {
+            if let Some(Value::Str(s)) | Some(Value::StrLit(s)) | Some(Value::Regexp(s)) =
+                self.vars.get("FS")
+            {
                 self.cached_fs.clear();
                 self.cached_fs.push_str(s);
             }
@@ -2253,6 +2332,8 @@ impl Runtime {
         self.fields.clear();
         self.field_ranges.clear();
         self.split_record_fields();
+        let nf = self.nf() as f64;
+        self.vars.insert("NF".into(), Value::Num(nf));
     }
 
     /// `SYMTAB[name]` — live global / slot value (gawk introspection).
@@ -2556,6 +2637,9 @@ impl Runtime {
 
 /// Field-splitting for `split(s, a [, fs])` — same algorithm as [`crate::bytecode::Op::Split`].
 pub fn split_string_by_field_separator(s: &str, fs: &str, ignore_case: bool) -> Vec<String> {
+    if s.is_empty() {
+        return Vec::new();
+    }
     if fs.is_empty() {
         s.chars().map(|c| c.to_string()).collect()
     } else if fs == " " {
@@ -2699,6 +2783,43 @@ mod value_tests {
     fn value_is_numeric_str_detects_decimal() {
         assert!(Value::Str("3.14".into()).is_numeric_str());
         assert!(!Value::Str("x".into()).is_numeric_str());
+    }
+
+    #[test]
+    fn str_lit_not_numeric_string_for_relops() {
+        assert!(!Value::StrLit("10".into()).is_numeric_str());
+        assert!(Value::Uninit.is_numeric_str());
+    }
+
+    #[test]
+    fn as_number_longest_numeric_prefix() {
+        assert_eq!(Value::StrLit("42trailing".into()).as_number(), 42.0);
+    }
+
+    #[test]
+    fn split_empty_source_zero_fields() {
+        let v = super::split_string_by_field_separator("", ",", false);
+        assert!(v.is_empty());
+    }
+
+    #[test]
+    fn set_nf_truncates_and_rebuilds_record() {
+        let mut rt = super::Runtime::new();
+        rt.set_field_sep_split(" ", "a b c d e");
+        rt.ensure_fields_split();
+        rt.set_nf(3);
+        assert_eq!(rt.record, "a b c");
+        assert_eq!(rt.nf(), 3);
+    }
+
+    #[test]
+    fn set_record_str_resplits_nf() {
+        let mut rt = super::Runtime::new();
+        rt.vars.insert("FS".into(), Value::Str(" ".into()));
+        rt.set_field_sep_split(" ", "a b c");
+        rt.ensure_fields_split();
+        rt.set_record_str("x y");
+        assert_eq!(rt.nf(), 2);
     }
 
     #[test]

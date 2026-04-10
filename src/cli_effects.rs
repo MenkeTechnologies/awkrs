@@ -323,7 +323,7 @@ fn dump_value(out: &mut dyn Write, name: &str, v: &Value, tag: &str) -> Result<(
 fn value_dump_scalar(v: &Value) -> String {
     match v {
         Value::Uninit => "(uninitialized)".to_string(),
-        Value::Str(s) => format!("{s:?}"),
+        Value::Str(s) | Value::StrLit(s) => format!("{s:?}"),
         Value::Regexp(s) => format!("@/{s}/ (regexp)"),
         Value::Num(n) => format!("{n}"),
         Value::Mpfr(f) => f.to_string(),

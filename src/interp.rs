@@ -75,11 +75,14 @@ impl<'a> ExecCtx<'a> {
         Ok(())
     }
 
-    fn get_var(&self, name: &str) -> Value {
+    fn get_var(&mut self, name: &str) -> Value {
         for frame in self.locals.iter().rev() {
             if let Some(v) = frame.get(name) {
                 return v.clone();
             }
+        }
+        if name == "NF" {
+            return Value::Num(self.rt.nf() as f64);
         }
         self.rt
             .get_global_var(name)
@@ -87,7 +90,7 @@ impl<'a> ExecCtx<'a> {
             .unwrap_or_else(|| match name {
                 "NR" => Value::Num(self.rt.nr),
                 "FNR" => Value::Num(self.rt.fnr),
-                "NF" => Value::Num(self.rt.fields.len() as f64),
+                "NF" => Value::Num(self.rt.nf() as f64),
                 "FILENAME" => Value::Str(self.rt.filename.clone()),
                 _ => Value::Uninit,
             })
@@ -99,6 +102,11 @@ impl<'a> ExecCtx<'a> {
                 *v = val;
                 return;
             }
+        }
+        if name == "NF" {
+            let n = val.as_number() as i32;
+            self.rt.set_nf(n);
+            return;
         }
         match self.rt.vars.get_mut(name) {
             Some(v) => *v = val,

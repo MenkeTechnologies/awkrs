@@ -1,7 +1,7 @@
 //! MPFR / `-M` helpers: integer truncation, strtonum, intdiv, and string forms without f64 loss.
 
 use crate::error::{Error, Result};
-use crate::runtime::{Runtime, Value};
+use crate::runtime::{longest_f64_prefix, Runtime, Value};
 use rug::float::Round;
 use rug::Float;
 use rug::Integer;
@@ -25,7 +25,11 @@ pub fn numeric_string_to_mpfr(s: &str, prec: u32, round: Round) -> Float {
             Err(_) => Float::with_val_round(prec, 0, round).0,
         };
     }
-    match Float::parse(t) {
+    let dec = longest_f64_prefix(t).unwrap_or("");
+    if dec.is_empty() {
+        return Float::with_val_round(prec, 0, round).0;
+    }
+    match Float::parse(dec) {
         Ok(ic) => Float::with_val_round(prec, ic, round).0,
         Err(_) => Float::with_val_round(prec, 0, round).0,
     }
@@ -36,7 +40,7 @@ pub fn value_to_mpfr(v: &Value, prec: u32, round: Round) -> Float {
     match v {
         Value::Mpfr(f) => f.clone(),
         Value::Num(n) => Float::with_val(prec, *n),
-        Value::Str(s) => numeric_string_to_mpfr(s, prec, round),
+        Value::Str(s) | Value::StrLit(s) => numeric_string_to_mpfr(s, prec, round),
         Value::Regexp(s) => numeric_string_to_mpfr(s, prec, round),
         Value::Uninit => Float::with_val_round(prec, 0, round).0,
         Value::Array(_) => Float::with_val_round(prec, 0, round).0,
