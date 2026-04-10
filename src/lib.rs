@@ -102,7 +102,7 @@ pub fn run(bin_name: &str) -> Result<()> {
     let parallel_ok = parallel::record_rules_parallel_safe(&prog);
 
     if let Some(ref p) = args.pretty_print {
-        let s = cli_effects::pretty_print_ast(&prog);
+        let s = cli_effects::pretty_print_ast(bin_name, &prog);
         if p.is_empty() || p == "-" {
             print!("{s}");
         } else {

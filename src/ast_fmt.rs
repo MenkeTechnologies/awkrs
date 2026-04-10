@@ -1,4 +1,5 @@
 //! Reformatted awk-like source from the AST (`-o` / `--pretty-print`), not `Debug` dumps.
+//! [`crate::cli_effects::pretty_print_ast`] prepends `#` comment lines so output is not mistaken for gawk’s `--pretty-print`.
 
 use crate::ast::{
     BinOp, Expr, FunctionDef, IncDecOp, IncDecTarget, Pattern, PrintRedir, Program, Rule, Stmt,

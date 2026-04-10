@@ -378,8 +378,20 @@ pub fn write_debug_listing(prog: &Program, out: &mut dyn Write, bin_name: &str) 
 
 /// Pretty-print program as awk-like source from the AST ([`ast_fmt::format_program`]), not `Debug` output
 /// and not gawk’s canonical `--pretty-print` source reformatter.
-pub fn pretty_print_ast(prog: &Program) -> String {
-    ast_fmt::format_program(prog)
+///
+/// Prepends `#` comment lines so stdout/file output is obviously awkrs-specific (diffs against gawk are
+/// not meaningful for format parity).
+pub fn pretty_print_ast(bin_name: &str, prog: &Program) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "# {bin_name} — awkrs --pretty-print: AST-derived awk-like listing (NOT gawk’s --pretty-print output).\n"
+    ));
+    out.push_str(
+        "# Do not expect byte-for-byte or structural parity with GNU awk when diffing this output.\n",
+    );
+    out.push('\n');
+    out.push_str(&ast_fmt::format_program(prog));
+    out
 }
 
 /// Emit lint warnings for gawk extensions when `-L`, `-t`, or a truthy **`LINT`** variable is set.
@@ -1344,6 +1356,11 @@ pub fn write_profile_summary(
     .map_err(Error::Io)?;
     writeln!(
         w,
+        "# Output layout is awkrs-specific (key/value style); diffing against gawk --profile will not match."
+    )
+    .map_err(Error::Io)?;
+    writeln!(
+        w,
         "# This is not gawk’s annotated profile output (no per-statement execution counts in the canonical profile format)."
     )
     .map_err(Error::Io)?;
@@ -1414,5 +1431,26 @@ mod lint_tests {
     fn lint_empty_regex_pattern() {
         let msgs = lint_msgs("// { print }");
         assert!(msgs.iter().any(|m| m.contains("empty regex")), "{msgs:?}");
+    }
+}
+
+#[cfg(test)]
+mod pretty_print_tests {
+    use super::pretty_print_ast;
+    use crate::parser::parse_program;
+
+    #[test]
+    fn pretty_print_starts_with_gawk_disclaimer() {
+        let prog = parse_program("BEGIN { print 1 }").unwrap();
+        let s = pretty_print_ast("awkrs", &prog);
+        assert!(
+            s.starts_with("# awkrs — awkrs --pretty-print:"),
+            "unexpected prefix: {:?}",
+            s.lines().take(3).collect::<Vec<_>>()
+        );
+        assert!(
+            s.contains("NOT gawk"),
+            "expected NOT gawk disclaimer in {s:?}"
+        );
     }
 }

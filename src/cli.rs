@@ -93,12 +93,14 @@ pub struct Args {
     #[arg(short = 'M', long = "bignum")]
     pub bignum: bool,
 
+    /// Apply `LC_NUMERIC` to `sprintf`/`printf`/`print` and `%'` grouping; `$n` / `$0` string→number still uses `.`.
     #[arg(short = 'N', long = "use-lc-numeric")]
     pub use_lc_numeric: bool,
 
     #[arg(short = 'n', long = "non-decimal-data")]
     pub non_decimal_data: bool,
 
+    /// Awk-like listing from the AST (awkrs format; not gawk `--pretty-print` output).
     #[arg(
         short = 'o',
         long = "pretty-print",
@@ -111,6 +113,7 @@ pub struct Args {
     #[arg(short = 'O', long = "optimize")]
     pub optimize: bool,
 
+    /// Wall-clock summary and per-record-rule hits (awkrs format; not gawk `--profile` output).
     #[arg(
         short = 'p',
         long = "profile",
@@ -123,6 +126,7 @@ pub struct Args {
     #[arg(short = 'P', long = "posix")]
     pub posix: bool,
 
+    /// Accepted for script compatibility; no-op (`{m,n}` intervals are always enabled).
     #[arg(short = 'r', long = "re-interval")]
     pub re_interval: bool,
 

@@ -1,6 +1,9 @@
 //! `LC_NUMERIC` setup for `-N` / `--use-lc-numeric` (Unix): C `localeconv()` decimal point and
-//! thousands separator for sprintf/printf/`%'` — string→number parsing of user data still uses **`.`**
-//! (see README **Not “all awks”** / **`-N`**).
+//! thousands separator for `sprintf` / `printf` / `print` / `CONVFMT` / `OFMT` and gawk **`%'`**.
+//!
+//! **Not affected:** Coercing field strings and other input text to numbers (e.g. `$1` compared as
+//! number, `strtonum`) still treats **`.`** as the decimal radix—locale-aware numeric **input** is not
+//! implemented (same as README **`-N`** / **Locale & pipes**).
 
 #[cfg(unix)]
 pub fn set_locale_numeric_from_env() {
