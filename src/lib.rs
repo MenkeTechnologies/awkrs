@@ -84,6 +84,11 @@ pub fn run(bin_name: &str) -> Result<()> {
         );
         return Ok(());
     }
+    if args.bignum {
+        eprintln!(
+            "{bin_name}: warning: -M/--bignum is not implemented; arithmetic uses double precision (f64)"
+        );
+    }
     if args.dump_variables.is_some() {
         eprintln!("{bin_name}: warning: --dump-variables is not fully implemented");
     }

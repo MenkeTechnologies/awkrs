@@ -32,7 +32,7 @@
 **Not “all awks”:** Calling this “all functionality of all awk variants” would be inaccurate. **Gaps you hit early** when porting GNU awk scripts include:
 
 - **`RS`** — default newline; **one character** (including one UTF-8 character) uses a literal byte/char delimiter; **`RS=""`** is paragraph mode; **more than one character** uses **gawk-style regex** record boundaries ( **`RT`** is the matched text). **`FIELDWIDTHS`** selects fixed-width fields when non-empty.
-- **Gawk depth:** **`PROCINFO`**, **`SYMTAB`**, **`FUNCTAB`** are still stubs. **`@include`**, indirect calls, `/inet/…`, locale **`dcgettext`**, and **`-M` / MPFR** are not implemented. See **Language coverage** for **`IGNORECASE`**, **`ARGIND`**, **`ERRNO`**, **`BINMODE`**, **`LINT`**, **`TEXTDOMAIN`**, etc.
+- **Gawk depth:** **`PROCINFO`**, **`SYMTAB`**, **`FUNCTAB`** are still stubs. **`@include`**, indirect calls, `/inet/…`, and locale **`dcgettext`** are not implemented. **`-M` / `--bignum`** is accepted for CLI compatibility but only prints a warning (no MPFR/GMP). See **Language coverage** for **`IGNORECASE`**, **`ARGIND`**, **`ERRNO`**, **`BINMODE`**, **`LINT`**, **`TEXTDOMAIN`**, etc.
 
 #### HELP // SYSTEM INTERFACE
 <img src="assets/awkrs-help.png" alt="awkrs -h cyberpunk help (termshot)" width="100%">
