@@ -153,7 +153,7 @@ impl<'a> VmCtx<'a> {
                 if self.rt.posix {
                     return Ok(keys);
                 }
-                sort_keys_with_custom_cmp(self, &mut keys, fname.as_str())?;
+                sort_keys_with_custom_cmp(self, &mut keys, fname.as_str(), name)?;
                 return Ok(keys);
             }
             let Some(Value::Array(a)) = self.rt.get_global_var(name) else {
@@ -163,7 +163,7 @@ impl<'a> VmCtx<'a> {
             if self.rt.posix {
                 return Ok(keys);
             }
-            sort_keys_with_custom_cmp(self, &mut keys, fname.as_str())?;
+            sort_keys_with_custom_cmp(self, &mut keys, fname.as_str(), name)?;
             return Ok(keys);
         }
         Ok(self.rt.array_keys(name))
@@ -3765,22 +3765,45 @@ pub(crate) fn exec_builtin_dispatch(
     Ok(result)
 }
 
-fn sort_keys_with_custom_cmp(ctx: &mut VmCtx<'_>, keys: &mut [String], fname: &str) -> Result<()> {
-    if !ctx.cp.functions.contains_key(fname) {
+fn sort_keys_with_custom_cmp(
+    ctx: &mut VmCtx<'_>,
+    keys: &mut [String],
+    fname: &str,
+    arr_name: &str,
+) -> Result<()> {
+    let Some(func) = ctx.cp.functions.get(fname) else {
         return Err(Error::Runtime(format!(
             "sorted_in: unknown function `{fname}`"
         )));
+    };
+    let argc = func.params.len();
+    if !(argc == 2 || argc == 4) {
+        return Err(Error::Runtime(format!(
+            "sorted_in: comparison function `{fname}` must have 2 or 4 parameters (has {argc})"
+        )));
     }
+
     let err: RefCell<Option<Error>> = RefCell::new(None);
     keys.sort_by(|a, b| {
         if err.borrow().is_some() {
             return Ordering::Equal;
         }
-        match exec_call_user_inner(
-            ctx,
-            fname,
-            vec![Value::Str(a.clone()), Value::Str(b.clone())],
-        ) {
+        let vals = if argc == 2 {
+            vec![Value::Str(a.clone()), Value::Str(b.clone())]
+        } else {
+            let va = if arr_name == "SYMTAB" {
+                ctx.rt.symtab_elem_get(a.as_str())
+            } else {
+                ctx.rt.array_get(arr_name, a.as_str())
+            };
+            let vb = if arr_name == "SYMTAB" {
+                ctx.rt.symtab_elem_get(b.as_str())
+            } else {
+                ctx.rt.array_get(arr_name, b.as_str())
+            };
+            vec![Value::Str(a.clone()), va, Value::Str(b.clone()), vb]
+        };
+        match exec_call_user_inner(ctx, fname, vals) {
             Ok(v) => {
                 let n = v.as_number();
                 if n < 0.0 {

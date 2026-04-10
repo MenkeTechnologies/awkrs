@@ -1480,10 +1480,21 @@ fn call_user(fd: &FunctionDef, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<V
     call_user_with_values(&fd.name, vals, ctx)
 }
 
-fn interp_sort_keys_custom(ctx: &mut ExecCtx<'_>, keys: &mut [String], fname: &str) -> Result<()> {
-    if !ctx.prog.funcs.contains_key(fname) {
+fn interp_sort_keys_custom(
+    ctx: &mut ExecCtx<'_>,
+    keys: &mut [String],
+    fname: &str,
+    arr_name: &str,
+) -> Result<()> {
+    let Some(fd) = ctx.prog.funcs.get(fname) else {
         return Err(Error::Runtime(format!(
             "sorted_in: unknown function `{fname}`"
+        )));
+    };
+    let argc = fd.params.len();
+    if !(argc == 2 || argc == 4) {
+        return Err(Error::Runtime(format!(
+            "sorted_in: comparison function `{fname}` must have 2 or 4 parameters (has {argc})"
         )));
     }
     let err: RefCell<Option<Error>> = RefCell::new(None);
@@ -1491,11 +1502,22 @@ fn interp_sort_keys_custom(ctx: &mut ExecCtx<'_>, keys: &mut [String], fname: &s
         if err.borrow().is_some() {
             return Ordering::Equal;
         }
-        match call_user_with_values(
-            fname,
-            vec![Value::Str(a.clone()), Value::Str(b.clone())],
-            ctx,
-        ) {
+        let vals = if argc == 2 {
+            vec![Value::Str(a.clone()), Value::Str(b.clone())]
+        } else {
+            let va = if arr_name == "SYMTAB" {
+                ctx.rt.symtab_elem_get(a.as_str())
+            } else {
+                ctx.rt.array_get(arr_name, a.as_str())
+            };
+            let vb = if arr_name == "SYMTAB" {
+                ctx.rt.symtab_elem_get(b.as_str())
+            } else {
+                ctx.rt.array_get(arr_name, b.as_str())
+            };
+            vec![Value::Str(a.clone()), va, Value::Str(b.clone()), vb]
+        };
+        match call_user_with_values(fname, vals, ctx) {
             Ok(v) => {
                 let n = v.as_number();
                 if n < 0.0 {
@@ -1525,7 +1547,7 @@ fn interp_for_in_keys(ctx: &mut ExecCtx<'_>, arr_name: &str) -> Result<Vec<Strin
             if ctx.rt.posix {
                 return Ok(keys);
             }
-            interp_sort_keys_custom(ctx, &mut keys, fname.as_str())?;
+            interp_sort_keys_custom(ctx, &mut keys, fname.as_str(), arr_name)?;
             return Ok(keys);
         }
         let Some(Value::Array(a)) = ctx.rt.get_global_var(arr_name) else {
@@ -1535,7 +1557,7 @@ fn interp_for_in_keys(ctx: &mut ExecCtx<'_>, arr_name: &str) -> Result<Vec<Strin
         if ctx.rt.posix {
             return Ok(keys);
         }
-        interp_sort_keys_custom(ctx, &mut keys, fname.as_str())?;
+        interp_sort_keys_custom(ctx, &mut keys, fname.as_str(), arr_name)?;
         return Ok(keys);
     }
     Ok(ctx.rt.array_keys(arr_name))

@@ -143,6 +143,19 @@ BEGIN { a["z"]=1; a["m"]=1; a["a"]=1; PROCINFO["sorted_in"]="cmp"; for (k in a) 
 }
 
 #[test]
+fn procinfo_sorted_in_custom_four_arg_value_order() {
+    let prog = r#"function vcmp(i1,v1,i2,v2) {
+  if (v1 < v2) return -1
+  if (v1 > v2) return 1
+  return 0
+}
+BEGIN { a["b"]=2; a["a"]=1; PROCINFO["sorted_in"]="vcmp"; for (k in a) print k }"#;
+    let (c, o, _) = run_awkrs_stdin(prog, "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "a\nb\n");
+}
+
+#[test]
 fn intdiv_and_mkbool_builtins() {
     let (c, o, _) = run_awkrs_stdin(
         r#"BEGIN { print intdiv(7, 3), intdiv(-7, 3); print mkbool(0), mkbool("x"), mkbool("") }"#,
