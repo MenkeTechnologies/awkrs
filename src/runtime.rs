@@ -1446,6 +1446,7 @@ impl Runtime {
             &[Value::Num(n)],
             self.numeric_decimal,
             self.numeric_thousands_sep,
+            None,
         )
         .unwrap_or_else(|_| format_number(n))
     }
@@ -1461,8 +1462,47 @@ impl Runtime {
             &[Value::Num(n)],
             self.numeric_decimal,
             self.numeric_thousands_sep,
+            None,
         )
         .unwrap_or_else(|_| format_number(n))
+    }
+
+    /// `CONVFMT` formatting for an MPFR value (`-M`).
+    pub fn mpfr_to_string_convfmt(&self, f: &Float) -> String {
+        let fmt = self
+            .get_global_var("CONVFMT")
+            .map(|v| v.as_str())
+            .unwrap_or_else(|| "%.6g".to_string());
+        crate::format::awk_sprintf_with_decimal(
+            &fmt,
+            &[Value::Mpfr(f.clone())],
+            self.numeric_decimal,
+            self.numeric_thousands_sep,
+            Some((self.mpfr_prec_bits(), self.mpfr_round())),
+        )
+        .unwrap_or_else(|_| f.to_string())
+    }
+
+    /// `OFMT` formatting for an MPFR value (`-M`).
+    pub fn mpfr_to_string_ofmt(&self, f: &Float) -> String {
+        let fmt = self
+            .get_global_var("OFMT")
+            .map(|v| v.as_str())
+            .unwrap_or_else(|| "%.6g".to_string());
+        crate::format::awk_sprintf_with_decimal(
+            &fmt,
+            &[Value::Mpfr(f.clone())],
+            self.numeric_decimal,
+            self.numeric_thousands_sep,
+            Some((self.mpfr_prec_bits(), self.mpfr_round())),
+        )
+        .unwrap_or_else(|_| f.to_string())
+    }
+
+    /// Write `$n` from an MPFR using **`CONVFMT`**-style string (field materialization).
+    pub fn set_field_from_mpfr(&mut self, i: i32, f: &Float) {
+        let s = self.mpfr_to_string_convfmt(f);
+        self.set_field(i, &s);
     }
 
     /// Next **record** from the primary input stream (respects `RS`), used by `getline` with no redirection.

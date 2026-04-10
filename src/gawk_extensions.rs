@@ -361,16 +361,19 @@ pub(crate) fn reada(rt: &mut Runtime, path: &str, arr_name: &str) -> Result<Valu
 }
 
 /// `intdiv0(a,b)` — like **`intdiv`** but returns 0 when **`b == 0`** (no error).
-pub(crate) fn intdiv0(_rt: &mut Runtime, a: f64, b: f64) -> Result<Value> {
-    if b == 0.0 {
-        return Ok(Value::Num(0.0));
+pub(crate) fn intdiv0(rt: &mut Runtime, a: &Value, b: &Value) -> Result<Value> {
+    match crate::bignum::awk_intdiv_values(a, b, rt) {
+        Ok(v) => Ok(v),
+        Err(_) => {
+            if rt.bignum {
+                let prec = rt.mpfr_prec_bits();
+                let round = rt.mpfr_round();
+                Ok(Value::Mpfr(rug::Float::with_val_round(prec, 0, round).0))
+            } else {
+                Ok(Value::Num(0.0))
+            }
+        }
     }
-    let ai = a as i64;
-    let bi = b as i64;
-    if bi == 0 {
-        return Ok(Value::Num(0.0));
-    }
-    Ok(Value::Num((ai / bi) as f64))
 }
 
 #[cfg(test)]
@@ -390,7 +393,12 @@ mod tests {
     #[test]
     fn intdiv0_zero_divisor() {
         let mut rt = Runtime::new();
-        let v = intdiv0(&mut rt, 10.0, 0.0).unwrap();
+        let v = intdiv0(
+            &mut rt,
+            &Value::Num(10.0),
+            &Value::Num(0.0),
+        )
+        .unwrap();
         assert_eq!(v.as_number(), 0.0);
     }
 

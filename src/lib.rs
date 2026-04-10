@@ -2,6 +2,7 @@
 
 mod ast;
 mod ast_fmt;
+mod bignum;
 mod builtins;
 mod bytecode;
 mod cli;

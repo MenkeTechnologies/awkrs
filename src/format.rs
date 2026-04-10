@@ -1,10 +1,12 @@
 //! `sprintf` / `printf` formatting (POSIX-ish; common awk conversions).
 
-use crate::runtime::Value;
+use crate::bignum::{float_trunc_integer, mpfr_string_trim_trailing_zeros};
+use crate::runtime::{value_to_float, Value};
+use rug::float::Round;
 
 /// Default C-locale radix (`.`). Use [`awk_sprintf_with_decimal`] when `-N` applies.
 pub fn awk_sprintf(fmt: &str, vals: &[Value]) -> Result<String, String> {
-    awk_sprintf_with_decimal(fmt, vals, '.', Some(','))
+    awk_sprintf_with_decimal(fmt, vals, '.', Some(','), None)
 }
 
 pub fn awk_sprintf_with_decimal(
@@ -12,6 +14,7 @@ pub fn awk_sprintf_with_decimal(
     vals: &[Value],
     decimal: char,
     thousands_sep: Option<char>,
+    mpfr_mode: Option<(u32, Round)>,
 ) -> Result<String, String> {
     let chars: Vec<char> = fmt.chars().collect();
     let mut out = String::new();
@@ -46,8 +49,16 @@ pub fn awk_sprintf_with_decimal(
             i = start_after_pct;
             None
         };
-        let (piece, new_i) =
-            parse_conversion_rest(&chars, i, vals, &mut vi, val_pos, decimal, thousands_sep)?;
+        let (piece, new_i) = parse_conversion_rest(
+            &chars,
+            i,
+            vals,
+            &mut vi,
+            val_pos,
+            decimal,
+            thousands_sep,
+            mpfr_mode,
+        )?;
         i = new_i;
         out.push_str(&piece);
     }
@@ -94,6 +105,7 @@ fn parse_star_value(
     Ok((v.as_number(), i))
 }
 
+#[allow(clippy::too_many_arguments)] // sprintf flag bundle + mpfr mode
 fn parse_conversion_rest(
     chars: &[char],
     mut i: usize,
@@ -102,6 +114,7 @@ fn parse_conversion_rest(
     val_pos: Option<usize>,
     decimal: char,
     thousands_sep: Option<char>,
+    mpfr_mode: Option<(u32, Round)>,
 ) -> Result<(String, usize), String> {
     let mut left = false;
     let mut sign = false;
@@ -202,6 +215,7 @@ fn parse_conversion_rest(
         prec,
         decimal,
         thousands_sep,
+        mpfr_mode,
     )?;
     Ok((piece, i))
 }
@@ -310,6 +324,7 @@ fn format_one(
     prec: Option<usize>,
     decimal: char,
     thousands_sep: Option<char>,
+    mpfr_mode: Option<(u32, Round)>,
 ) -> Result<String, String> {
     let pad_char = if pad_zero && !left { '0' } else { ' ' };
     let w = width.unwrap_or(0);
@@ -320,47 +335,92 @@ fn format_one(
     };
     match conv {
         's' => {
-            let mut s = v.as_str();
+            let mut s: String = match (mpfr_mode, v) {
+                (Some(_), Value::Mpfr(f)) => mpfr_string_trim_trailing_zeros(f.to_string()),
+                _ => v.as_str(),
+            };
             if let Some(p) = prec {
                 s = s.chars().take(p).collect::<String>();
-            } else {
-                s = s.to_string();
             }
             pad_string(&s, w, left, pad_char)
         }
         'd' | 'i' => {
-            let n = v.as_number() as i64;
-            let mut s = format!("{n}");
-            apply_sign(&mut s, n >= 0, sign, space);
+            let mut s = if let Some((pr, _)) = mpfr_mode {
+                let f = match v {
+                    Value::Mpfr(f) => f.clone(),
+                    _ => value_to_float(v, pr),
+                };
+                format!("{}", float_trunc_integer(&f))
+            } else {
+                let n = v.as_number() as i64;
+                format!("{n}")
+            };
+            let pos = !s.starts_with('-');
+            apply_sign(&mut s, pos, sign, space);
             if group && sep != '\0' {
                 s = insert_thousands_sep(s, sep);
             }
             pad_numeric(&s, w, left, pad_char)
         }
         'u' => {
-            let n = v.as_number().max(0.0) as u64;
-            let mut s = format!("{n}");
+            let mut s = if let Some((pr, _)) = mpfr_mode {
+                let f = match v {
+                    Value::Mpfr(f) => f.clone(),
+                    _ => value_to_float(v, pr),
+                };
+                let int = float_trunc_integer(&f);
+                if int < 0 {
+                    "0".to_string()
+                } else {
+                    format!("{}", int)
+                }
+            } else {
+                let n = v.as_number().max(0.0) as u64;
+                format!("{n}")
+            };
             if group && sep != '\0' {
                 s = insert_thousands_sep(s, sep);
             }
             pad_numeric(&s, w, left, pad_char)
         }
         'o' => {
-            let n = v.as_number() as i64;
-            let un = n as u64;
-            let mut s = format!("{un:o}");
+            let mut s = if let Some((pr, _)) = mpfr_mode {
+                let f = match v {
+                    Value::Mpfr(f) => f.clone(),
+                    _ => value_to_float(v, pr),
+                };
+                let un = float_trunc_integer(&f).to_u64_wrapping();
+                format!("{un:o}")
+            } else {
+                let n = v.as_number() as i64;
+                let un = n as u64;
+                format!("{un:o}")
+            };
             if alt && s != "0" {
                 s = format!("0{s}");
             }
             pad_numeric(&s, w, left, pad_char)
         }
         'x' | 'X' => {
-            let n = v.as_number() as i64;
-            let un = n as u64;
-            let mut s = if conv == 'x' {
-                format!("{un:x}")
+            let mut s = if let Some((pr, _)) = mpfr_mode {
+                let f = match v {
+                    Value::Mpfr(f) => f.clone(),
+                    _ => value_to_float(v, pr),
+                };
+                let un = float_trunc_integer(&f).to_u64_wrapping();
+                if conv == 'x' {
+                    format!("{un:x}")
+                } else {
+                    format!("{un:X}")
+                }
             } else {
-                format!("{un:X}")
+                let n = v.as_number() as i64;
+                let un = n as u64;
+                if conv == 'x' {
+                    format!("{un:x}")
+                } else {
+                    format!("{un:X}")
+                }
             };
             if alt {
                 s = if conv == 'x' {
@@ -372,31 +432,83 @@ fn format_one(
             pad_numeric(&s, w, left, pad_char)
         }
         'f' | 'F' => {
-            let n = v.as_number();
             let p = prec.unwrap_or(6);
-            let s = localize_float_radix(format!("{:.*}", p, n), decimal);
+            let s = if let Some((pr, _rd)) = mpfr_mode {
+                let fsrc = match v {
+                    Value::Mpfr(f) => f.clone(),
+                    _ => value_to_float(v, pr),
+                };
+                localize_float_radix(format!("{:.*}", p, fsrc), decimal)
+            } else {
+                let n = v.as_number();
+                localize_float_radix(format!("{:.*}", p, n), decimal)
+            };
             pad_numeric(&s, w, left, pad_char)
         }
         'e' | 'E' => {
-            let n = v.as_number();
             let p = prec.unwrap_or(6);
-            let s = if conv == 'e' {
-                localize_float_radix(format!("{:.*e}", p, n), decimal)
+            let s = if let Some((pr, _rd)) = mpfr_mode {
+                let fsrc = match v {
+                    Value::Mpfr(f) => f.clone(),
+                    _ => value_to_float(v, pr),
+                };
+                if conv == 'e' {
+                    localize_float_radix(format!("{:.*e}", p, fsrc), decimal)
+                } else {
+                    localize_float_radix(format!("{:.*E}", p, fsrc), decimal)
+                }
             } else {
-                localize_float_radix(format!("{:.*E}", p, n), decimal)
+                let n = v.as_number();
+                if conv == 'e' {
+                    localize_float_radix(format!("{:.*e}", p, n), decimal)
+                } else {
+                    localize_float_radix(format!("{:.*E}", p, n), decimal)
+                }
             };
             pad_numeric(&s, w, left, pad_char)
         }
         'g' | 'G' => {
+            let p = prec.unwrap_or(6).max(1);
+            if let Some((pr, _rd)) = mpfr_mode {
+                let fsrc = match v {
+                    Value::Mpfr(f) => f.clone(),
+                    _ => value_to_float(v, pr),
+                };
+                let n = fsrc.to_f64();
+                if !n.is_finite() {
+                    return Err("sprintf: non-finite value for %g".into());
+                }
+                let abs_n = n.abs();
+                if abs_n == 0.0 {
+                    let raw = format!("{:.*}", p, fsrc);
+                    let localized = localize_float_radix(raw, decimal);
+                    let s = trim_trailing_zero_fraction(&localized);
+                    return pad_numeric(&s, w, left, pad_char);
+                }
+                let exp = abs_n.log10().floor() as i32;
+                let use_e = exp < -4 || exp >= p as i32;
+                let raw = if use_e {
+                    let mantissa_prec = p.saturating_sub(1).max(1);
+                    format!("{:.*e}", mantissa_prec, fsrc)
+                } else {
+                    format!("{:.*}", p, fsrc)
+                };
+                let localized = localize_float_radix(raw, decimal);
+                let mut s = if use_e {
+                    trim_sprintf_g_scientific(&localized)
+                } else {
+                    trim_trailing_zero_fraction(&localized)
+                };
+                if conv == 'G' {
+                    s = s.replace('e', "E");
+                }
+                return pad_numeric(&s, w, left, pad_char);
+            }
             let n = v.as_number();
             if !n.is_finite() {
                 return Err("sprintf: non-finite value for %g".into());
             }
-            // C/POSIX %g: use %e-style if exponent < -4 or >= precision; else fixed with precision `p`,
-            // then strip trailing zeros (was incorrectly using %f-only `{:.*}`).
-            let p = prec.unwrap_or(6).max(1);
             let abs_n = n.abs();
-            // Zero must not take the %e branch (log10(0) is undefined; avoids `0e0`).
             if abs_n == 0.0 {
                 let raw = format!("{:.*}", p, n);
                 let localized = localize_float_radix(raw, decimal);
@@ -423,8 +535,16 @@ fn format_one(
             pad_numeric(&s, w, left, pad_char)
         }
         'c' => {
-            let n = v.as_number() as u32;
-            let ch = char::from_u32(n).unwrap_or('\u{fffd}');
+            let code = if let Some((pr, _)) = mpfr_mode {
+                let f = match v {
+                    Value::Mpfr(f) => f.clone(),
+                    _ => value_to_float(v, pr),
+                };
+                float_trunc_integer(&f).to_u32_wrapping()
+            } else {
+                v.as_number() as u32
+            };
+            let ch = char::from_u32(code).unwrap_or('\u{fffd}');
             let s = ch.to_string();
             pad_string(&s, w, left, pad_char)
         }
@@ -617,33 +737,33 @@ mod tests {
 
     #[test]
     fn lc_numeric_replaces_float_radix() {
-        let s = awk_sprintf_with_decimal("%f", &[Value::Num(1.5)], ',', Some(',')).unwrap();
+        let s = awk_sprintf_with_decimal("%f", &[Value::Num(1.5)], ',', Some(','), None).unwrap();
         assert_eq!(s, "1,500000");
     }
 
     #[test]
     fn lc_numeric_scientific_lowercase_e() {
-        let s = awk_sprintf_with_decimal("%.2e", &[Value::Num(1.0)], ',', Some(',')).unwrap();
+        let s = awk_sprintf_with_decimal("%.2e", &[Value::Num(1.0)], ',', Some(','), None).unwrap();
         assert!(s.contains('e'), "got {s:?}");
         assert!(s.contains(','), "got {s:?}");
     }
 
     #[test]
     fn lc_numeric_scientific_uppercase_e() {
-        let s = awk_sprintf_with_decimal("%.1E", &[Value::Num(1000.0)], ',', Some(',')).unwrap();
+        let s = awk_sprintf_with_decimal("%.1E", &[Value::Num(1000.0)], ',', Some(','), None).unwrap();
         assert!(s.contains('E'), "got {s:?}");
         assert!(s.contains(','), "got {s:?}");
     }
 
     #[test]
     fn lc_numeric_general_g() {
-        let s = awk_sprintf_with_decimal("%.4g", &[Value::Num(PI)], ',', Some(',')).unwrap();
+        let s = awk_sprintf_with_decimal("%.4g", &[Value::Num(PI)], ',', Some(','), None).unwrap();
         assert!(s.contains(','), "got {s:?}");
     }
 
     #[test]
     fn printf_apostrophe_groups_integer() {
-        let s = awk_sprintf_with_decimal("%'d", &[Value::Num(1234567.0)], '.', Some(',')).unwrap();
+        let s = awk_sprintf_with_decimal("%'d", &[Value::Num(1234567.0)], '.', Some(','), None).unwrap();
         assert_eq!(s, "1,234,567");
     }
 

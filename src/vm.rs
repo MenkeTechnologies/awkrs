@@ -1,6 +1,7 @@
 //! Stack-based virtual machine that executes compiled bytecode.
 
 use crate::ast::{BinOp, IncDecOp};
+use crate::bignum;
 use crate::builtins;
 use crate::bytecode::*;
 use crate::error::{Error, Result};
@@ -824,6 +825,7 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
                     vals,
                     ctx.rt.numeric_decimal,
                     ctx.rt.numeric_thousands_sep,
+                    ctx.rt,
                 ) {
                     let s = v.as_str();
                     if let Some(ref mut buf) = ctx.print_out {
@@ -906,6 +908,7 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
                     vals,
                     ctx.rt.numeric_decimal,
                     ctx.rt.numeric_thousands_sep,
+                    ctx.rt,
                 ) {
                     let s = v.as_str();
                     if let Err(e) = emit_with_redir(ctx, s.as_str(), redir, Some(path)) {
@@ -2437,54 +2440,139 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
 
             Op::IncDecVar(idx, kind) => {
                 let delta = incdec_delta(kind);
-                let (old_n, new_n) = ctx.with_short_pool_name_mut(idx, |ctx, name| {
-                    let old = ctx.get_var(name);
-                    let old_n = old.as_number();
-                    let new_n = old_n + delta;
-                    ctx.set_var(name, Value::Num(new_n));
-                    (old_n, new_n)
-                });
-                ctx.push(Value::Num(incdec_push(kind, old_n, new_n)));
+                if ctx.rt.bignum {
+                    let prec = ctx.rt.mpfr_prec_bits();
+                    let round = ctx.rt.mpfr_round();
+                    let pushed = ctx.with_short_pool_name_mut(idx, |ctx, name| {
+                        let old = ctx.get_var(name);
+                        let old_f = value_to_float(&old, prec);
+                        let d = Float::with_val(prec, delta);
+                        let new_f = Float::with_val_round(prec, &old_f + &d, round).0;
+                        ctx.set_var(name, Value::Mpfr(new_f.clone()));
+                        match kind {
+                            IncDecOp::PreInc | IncDecOp::PreDec => Value::Mpfr(new_f),
+                            IncDecOp::PostInc | IncDecOp::PostDec => Value::Mpfr(old_f),
+                        }
+                    });
+                    ctx.push(pushed);
+                } else {
+                    let (old_n, new_n) = ctx.with_short_pool_name_mut(idx, |ctx, name| {
+                        let old = ctx.get_var(name);
+                        let old_n = old.as_number();
+                        let new_n = old_n + delta;
+                        ctx.set_var(name, Value::Num(new_n));
+                        (old_n, new_n)
+                    });
+                    ctx.push(Value::Num(incdec_push(kind, old_n, new_n)));
+                }
             }
             Op::IncrVar(idx) => {
-                ctx.with_short_pool_name_mut(idx, |ctx, name| {
-                    let n = ctx.get_var(name).as_number();
-                    ctx.set_var(name, Value::Num(n + 1.0));
-                });
+                if ctx.rt.bignum {
+                    let prec = ctx.rt.mpfr_prec_bits();
+                    let round = ctx.rt.mpfr_round();
+                    ctx.with_short_pool_name_mut(idx, |ctx, name| {
+                        let old = ctx.get_var(name);
+                        let old_f = value_to_float(&old, prec);
+                        let d = Float::with_val(prec, 1.0);
+                        let new_f = Float::with_val_round(prec, &old_f + &d, round).0;
+                        ctx.set_var(name, Value::Mpfr(new_f));
+                    });
+                } else {
+                    ctx.with_short_pool_name_mut(idx, |ctx, name| {
+                        let n = ctx.get_var(name).as_number();
+                        ctx.set_var(name, Value::Num(n + 1.0));
+                    });
+                }
             }
             Op::DecrVar(idx) => {
-                ctx.with_short_pool_name_mut(idx, |ctx, name| {
-                    let n = ctx.get_var(name).as_number();
-                    ctx.set_var(name, Value::Num(n - 1.0));
-                });
+                if ctx.rt.bignum {
+                    let prec = ctx.rt.mpfr_prec_bits();
+                    let round = ctx.rt.mpfr_round();
+                    ctx.with_short_pool_name_mut(idx, |ctx, name| {
+                        let old = ctx.get_var(name);
+                        let old_f = value_to_float(&old, prec);
+                        let d = Float::with_val(prec, 1.0);
+                        let new_f = Float::with_val_round(prec, &old_f - &d, round).0;
+                        ctx.set_var(name, Value::Mpfr(new_f));
+                    });
+                } else {
+                    ctx.with_short_pool_name_mut(idx, |ctx, name| {
+                        let n = ctx.get_var(name).as_number();
+                        ctx.set_var(name, Value::Num(n - 1.0));
+                    });
+                }
             }
             Op::IncDecSlot(slot, kind) => {
-                let old_n = match &ctx.rt.slots[slot as usize] {
-                    Value::Num(v) => *v,
-                    other => other.as_number(),
-                };
                 let delta = incdec_delta(kind);
-                let new_n = old_n + delta;
-                ctx.rt.slots[slot as usize] = Value::Num(new_n);
-                ctx.push(Value::Num(incdec_push(kind, old_n, new_n)));
+                if ctx.rt.bignum {
+                    let prec = ctx.rt.mpfr_prec_bits();
+                    let round = ctx.rt.mpfr_round();
+                    let old = ctx.rt.slots[slot as usize].clone();
+                    let old_f = value_to_float(&old, prec);
+                    let d = Float::with_val(prec, delta);
+                    let new_f = Float::with_val_round(prec, &old_f + &d, round).0;
+                    let ret = match kind {
+                        IncDecOp::PreInc | IncDecOp::PreDec => Value::Mpfr(new_f.clone()),
+                        IncDecOp::PostInc | IncDecOp::PostDec => Value::Mpfr(old_f),
+                    };
+                    ctx.rt.slots[slot as usize] = Value::Mpfr(new_f);
+                    ctx.push(ret);
+                } else {
+                    let old_n = match &ctx.rt.slots[slot as usize] {
+                        Value::Num(v) => *v,
+                        other => other.as_number(),
+                    };
+                    let new_n = old_n + delta;
+                    ctx.rt.slots[slot as usize] = Value::Num(new_n);
+                    ctx.push(Value::Num(incdec_push(kind, old_n, new_n)));
+                }
             }
             Op::IncDecField(kind) => {
                 let idx = ctx.pop().as_number() as i32;
-                let old = ctx.rt.field(idx);
-                let old_n = old.as_number();
                 let delta = incdec_delta(kind);
-                let new_n = old_n + delta;
-                ctx.rt.set_field_num(idx, new_n);
-                ctx.push(Value::Num(incdec_push(kind, old_n, new_n)));
+                if ctx.rt.bignum {
+                    let prec = ctx.rt.mpfr_prec_bits();
+                    let round = ctx.rt.mpfr_round();
+                    let old = ctx.rt.field(idx);
+                    let old_f = value_to_float(&old, prec);
+                    let d = Float::with_val(prec, delta);
+                    let new_f = Float::with_val_round(prec, &old_f + &d, round).0;
+                    let ret = match kind {
+                        IncDecOp::PreInc | IncDecOp::PreDec => Value::Mpfr(new_f.clone()),
+                        IncDecOp::PostInc | IncDecOp::PostDec => Value::Mpfr(old_f),
+                    };
+                    ctx.rt.set_field_from_mpfr(idx, &new_f);
+                    ctx.push(ret);
+                } else {
+                    let old_n = ctx.rt.field(idx).as_number();
+                    let new_n = old_n + delta;
+                    ctx.rt.set_field_num(idx, new_n);
+                    ctx.push(Value::Num(incdec_push(kind, old_n, new_n)));
+                }
             }
             Op::IncDecIndex(arr, kind) => {
                 let key = ctx.pop().into_string();
                 let name = ctx.cp.strings.get(arr);
-                let old_n = ctx.array_elem_get(name, &key).as_number();
                 let delta = incdec_delta(kind);
-                let new_n = old_n + delta;
-                ctx.array_elem_set(name, key, Value::Num(new_n));
-                ctx.push(Value::Num(incdec_push(kind, old_n, new_n)));
+                if ctx.rt.bignum {
+                    let prec = ctx.rt.mpfr_prec_bits();
+                    let round = ctx.rt.mpfr_round();
+                    let old = ctx.array_elem_get(name, &key);
+                    let old_f = value_to_float(&old, prec);
+                    let d = Float::with_val(prec, delta);
+                    let new_f = Float::with_val_round(prec, &old_f + &d, round).0;
+                    let ret = match kind {
+                        IncDecOp::PreInc | IncDecOp::PreDec => Value::Mpfr(new_f.clone()),
+                        IncDecOp::PostInc | IncDecOp::PostDec => Value::Mpfr(old_f),
+                    };
+                    ctx.array_elem_set(name, key, Value::Mpfr(new_f));
+                    ctx.push(ret);
+                } else {
+                    let old_n = ctx.array_elem_get(name, &key).as_number();
+                    let new_n = old_n + delta;
+                    ctx.array_elem_set(name, key, Value::Num(new_n));
+                    ctx.push(Value::Num(incdec_push(kind, old_n, new_n)));
+                }
             }
 
             // ── Arithmetic ──────────────────────────────────────────────
@@ -2628,7 +2716,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                     Value::Str(s) => s,
                     Value::Regexp(s) => s,
                     Value::Num(n) => ctx.rt.num_to_string_convfmt(n),
-                    Value::Mpfr(f) => f.to_string(),
+                    Value::Mpfr(f) => ctx.rt.mpfr_to_string_convfmt(&f),
                     Value::Uninit => String::new(),
                     Value::Array(_) => String::new(),
                 };
@@ -2636,7 +2724,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                     Value::Str(ref t) => s.push_str(t),
                     Value::Regexp(ref t) => s.push_str(t),
                     Value::Num(n) => s.push_str(&ctx.rt.num_to_string_convfmt(n)),
-                    Value::Mpfr(f) => s.push_str(&f.to_string()),
+                    Value::Mpfr(f) => s.push_str(&ctx.rt.mpfr_to_string_convfmt(&f)),
                     Value::Uninit => {}
                     Value::Array(_) => {}
                 }
@@ -2647,6 +2735,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 let v = ctx.pop();
                 let s = match &v {
                     Value::Num(n) => ctx.rt.num_to_string_convfmt(*n),
+                    Value::Mpfr(f) => ctx.rt.mpfr_to_string_convfmt(f),
                     _ => v.as_str(),
                 };
                 ctx.rt.ensure_regex(&pat).map_err(Error::Runtime)?;
@@ -2658,6 +2747,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 let v = ctx.pop();
                 let s = match &v {
                     Value::Num(n) => ctx.rt.num_to_string_convfmt(*n),
+                    Value::Mpfr(f) => ctx.rt.mpfr_to_string_convfmt(f),
                     _ => v.as_str(),
                 };
                 ctx.rt.ensure_regex(&pat).map_err(Error::Runtime)?;
@@ -3221,6 +3311,7 @@ fn exec_print(ctx: &mut VmCtx<'_>, argc: u16, redir: RedirKind, is_printf: bool)
             vals,
             ctx.rt.numeric_decimal,
             ctx.rt.numeric_thousands_sep,
+            ctx.rt,
         )?;
         let s = out.as_str();
         emit_with_redir(ctx, &s, redir, redir_path.as_deref())?;
@@ -3251,6 +3342,10 @@ fn exec_print(ctx: &mut VmCtx<'_>, argc: u16, redir: RedirKind, is_printf: bool)
                         let t = ctx.rt.num_to_string_ofmt(*n);
                         ctx.rt.print_buf.extend_from_slice(t.as_bytes());
                     }
+                    Value::Mpfr(f) => {
+                        let t = ctx.rt.mpfr_to_string_ofmt(f);
+                        ctx.rt.print_buf.extend_from_slice(t.as_bytes());
+                    }
                     other => other.write_to(&mut ctx.rt.print_buf),
                 }
             }
@@ -3271,6 +3366,7 @@ fn exec_print(ctx: &mut VmCtx<'_>, argc: u16, redir: RedirKind, is_printf: bool)
                 .drain(start..)
                 .map(|v| match v {
                     Value::Num(n) => ctx.rt.num_to_string_ofmt(n),
+                    Value::Mpfr(f) => ctx.rt.mpfr_to_string_ofmt(&f),
                     other => other.as_str(),
                 })
                 .collect();
@@ -3303,8 +3399,10 @@ fn sprintf_simple(
     vals: &[Value],
     dec: char,
     thousands_sep: Option<char>,
+    rt: &Runtime,
 ) -> Result<Value> {
-    format::awk_sprintf_with_decimal(fmt, vals, dec, thousands_sep)
+    let mpfr = rt.bignum.then(|| (rt.mpfr_prec_bits(), rt.mpfr_round()));
+    format::awk_sprintf_with_decimal(fmt, vals, dec, thousands_sep, mpfr)
         .map(Value::Str)
         .map_err(Error::Runtime)
 }
@@ -3582,18 +3680,12 @@ pub(crate) fn exec_builtin_dispatch(
         }
         "tolower" => Value::Str(args[0].as_str().to_lowercase()),
         "toupper" => Value::Str(args[0].as_str().to_uppercase()),
-        "int" => Value::Num(args[0].as_number().trunc()),
+        "int" => bignum::awk_int_value(&args[0], ctx.rt),
         "intdiv" => {
             if argc != 2 {
                 return Err(Error::Runtime("`intdiv` expects two arguments".into()));
             }
-            let b = args[1].as_number();
-            if b == 0.0 {
-                return Err(Error::Runtime("intdiv: division by zero".into()));
-            }
-            let a = args[0].as_number() as i64;
-            let bi = b as i64;
-            Value::Num((a / bi) as f64)
+            bignum::awk_intdiv_values(&args[0], &args[1], ctx.rt)?
         }
         "mkbool" => {
             if argc != 1 {
@@ -3601,36 +3693,81 @@ pub(crate) fn exec_builtin_dispatch(
             }
             Value::Num(if truthy(&args[0]) { 1.0 } else { 0.0 })
         }
-        "sqrt" => Value::Num(args[0].as_number().sqrt()),
+        "sqrt" => {
+            if ctx.rt.bignum {
+                let prec = ctx.rt.mpfr_prec_bits();
+                let round = ctx.rt.mpfr_round();
+                let f = value_to_float(&args[0], prec);
+                Value::Mpfr(Float::with_val_round(prec, f.sqrt(), round).0)
+            } else {
+                Value::Num(args[0].as_number().sqrt())
+            }
+        }
         "sin" => {
             if argc != 1 {
                 return Err(Error::Runtime("`sin` expects one argument".into()));
             }
-            Value::Num(args[0].as_number().sin())
+            if ctx.rt.bignum {
+                let prec = ctx.rt.mpfr_prec_bits();
+                let round = ctx.rt.mpfr_round();
+                let f = value_to_float(&args[0], prec);
+                Value::Mpfr(Float::with_val_round(prec, f.sin(), round).0)
+            } else {
+                Value::Num(args[0].as_number().sin())
+            }
         }
         "cos" => {
             if argc != 1 {
                 return Err(Error::Runtime("`cos` expects one argument".into()));
             }
-            Value::Num(args[0].as_number().cos())
+            if ctx.rt.bignum {
+                let prec = ctx.rt.mpfr_prec_bits();
+                let round = ctx.rt.mpfr_round();
+                let f = value_to_float(&args[0], prec);
+                Value::Mpfr(Float::with_val_round(prec, f.cos(), round).0)
+            } else {
+                Value::Num(args[0].as_number().cos())
+            }
         }
         "atan2" => {
             if argc != 2 {
                 return Err(Error::Runtime("`atan2` expects two arguments".into()));
             }
-            Value::Num(args[0].as_number().atan2(args[1].as_number()))
+            if ctx.rt.bignum {
+                let prec = ctx.rt.mpfr_prec_bits();
+                let round = ctx.rt.mpfr_round();
+                let y = value_to_float(&args[0], prec);
+                let x = value_to_float(&args[1], prec);
+                Value::Mpfr(Float::with_val_round(prec, y.atan2(&x), round).0)
+            } else {
+                Value::Num(args[0].as_number().atan2(args[1].as_number()))
+            }
         }
         "exp" => {
             if argc != 1 {
                 return Err(Error::Runtime("`exp` expects one argument".into()));
             }
-            Value::Num(args[0].as_number().exp())
+            if ctx.rt.bignum {
+                let prec = ctx.rt.mpfr_prec_bits();
+                let round = ctx.rt.mpfr_round();
+                let f = value_to_float(&args[0], prec);
+                Value::Mpfr(Float::with_val_round(prec, f.exp(), round).0)
+            } else {
+                Value::Num(args[0].as_number().exp())
+            }
         }
         "log" => {
             if argc != 1 {
                 return Err(Error::Runtime("`log` expects one argument".into()));
             }
-            Value::Num(args[0].as_number().ln())
+            if ctx.rt.bignum {
+                let prec = ctx.rt.mpfr_prec_bits();
+                let round = ctx.rt.mpfr_round();
+                let f = value_to_float(&args[0], prec);
+                Value::Mpfr(Float::with_val_round(prec, f.ln(), round).0)
+            } else {
+                Value::Num(args[0].as_number().ln())
+            }
         }
         "systime" => {
             if argc != 0 {
@@ -3692,6 +3829,7 @@ pub(crate) fn exec_builtin_dispatch(
                 &args[1..],
                 ctx.rt.numeric_decimal,
                 ctx.rt.numeric_thousands_sep,
+                ctx.rt,
             )?
         }
         "printf" => {
@@ -3704,6 +3842,7 @@ pub(crate) fn exec_builtin_dispatch(
                 &args[1..],
                 ctx.rt.numeric_decimal,
                 ctx.rt.numeric_thousands_sep,
+                ctx.rt,
             )?
             .as_str();
             ctx.emit_print(&s);
@@ -3713,49 +3852,43 @@ pub(crate) fn exec_builtin_dispatch(
             if argc != 2 {
                 return Err(Error::Runtime("`and` expects two arguments".into()));
             }
-            Value::Num(builtins::awk_and(args[0].as_number(), args[1].as_number()))
+            bignum::awk_and_values(&args[0], &args[1], ctx.rt)
         }
         "or" => {
             if argc != 2 {
                 return Err(Error::Runtime("`or` expects two arguments".into()));
             }
-            Value::Num(builtins::awk_or(args[0].as_number(), args[1].as_number()))
+            bignum::awk_or_values(&args[0], &args[1], ctx.rt)
         }
         "xor" => {
             if argc != 2 {
                 return Err(Error::Runtime("`xor` expects two arguments".into()));
             }
-            Value::Num(builtins::awk_xor(args[0].as_number(), args[1].as_number()))
+            bignum::awk_xor_values(&args[0], &args[1], ctx.rt)
         }
         "lshift" => {
             if argc != 2 {
                 return Err(Error::Runtime("`lshift` expects two arguments".into()));
             }
-            Value::Num(builtins::awk_lshift(
-                args[0].as_number(),
-                args[1].as_number(),
-            ))
+            bignum::awk_lshift_values(&args[0], &args[1], ctx.rt)
         }
         "rshift" => {
             if argc != 2 {
                 return Err(Error::Runtime("`rshift` expects two arguments".into()));
             }
-            Value::Num(builtins::awk_rshift(
-                args[0].as_number(),
-                args[1].as_number(),
-            ))
+            bignum::awk_rshift_values(&args[0], &args[1], ctx.rt)
         }
         "compl" => {
             if argc != 1 {
                 return Err(Error::Runtime("`compl` expects one argument".into()));
             }
-            Value::Num(builtins::awk_compl(args[0].as_number()))
+            bignum::awk_compl_values(&args[0], ctx.rt)
         }
         "strtonum" => {
             if argc != 1 {
                 return Err(Error::Runtime("`strtonum` expects one argument".into()));
             }
-            Value::Num(builtins::awk_strtonum(&args[0].as_str()))
+            bignum::awk_strtonum_value(&args[0].as_str(), ctx.rt)
         }
         "typeof" => {
             if argc != 1 {
@@ -3943,7 +4076,7 @@ pub(crate) fn exec_builtin_dispatch(
             if argc != 2 {
                 return Err(Error::Runtime("`intdiv0` expects two arguments".into()));
             }
-            crate::gawk_extensions::intdiv0(ctx.rt, args[0].as_number(), args[1].as_number())?
+            crate::gawk_extensions::intdiv0(ctx.rt, &args[0], &args[1])?
         }
         _ => return Err(Error::Runtime(format!("unknown function `{name}`"))),
     };

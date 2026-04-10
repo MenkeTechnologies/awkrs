@@ -1,8 +1,10 @@
 use crate::ast::{IncDecOp, IncDecTarget, *};
+use crate::bignum;
 use crate::builtins;
 use crate::error::{Error, Result};
 use crate::format;
-use crate::runtime::{sorted_in_mode, Runtime, SortedInMode, Value};
+use crate::runtime::{sorted_in_mode, value_to_float, Runtime, SortedInMode, Value};
+use rug::Float;
 use regex::Regex;
 use std::cell::RefCell;
 use std::cmp::Ordering;
@@ -434,6 +436,7 @@ fn exec_stmt(s: &Stmt, ctx: &mut ExecCtx<'_>) -> Result<Flow> {
                 &vals,
                 ctx.rt.numeric_decimal,
                 ctx.rt.numeric_thousands_sep,
+                ctx.rt,
             )?;
             let s = out.as_str();
             match redir {
@@ -769,28 +772,74 @@ fn eval_inc_dec(op: IncDecOp, target: &IncDecTarget, ctx: &mut ExecCtx<'_>) -> R
         IncDecOp::PreDec | IncDecOp::PostDec => -1.0,
     };
     let ret_old = matches!(op, IncDecOp::PostInc | IncDecOp::PostDec);
-    match target {
-        IncDecTarget::Var(name) => {
-            let old_n = ctx.get_var(name).as_number();
-            let new_n = old_n + delta;
-            ctx.set_var(name, Value::Num(new_n));
-            Ok(Value::Num(if ret_old { old_n } else { new_n }))
+    if ctx.rt.bignum {
+        let prec = ctx.rt.mpfr_prec_bits();
+        let round = ctx.rt.mpfr_round();
+        match target {
+            IncDecTarget::Var(name) => {
+                let old = ctx.get_var(name);
+                let old_f = value_to_float(&old, prec);
+                let d = Float::with_val(prec, delta);
+                let new_f = Float::with_val_round(prec, &old_f + &d, round).0;
+                ctx.set_var(name, Value::Mpfr(new_f.clone()));
+                let ret = match op {
+                    IncDecOp::PreInc | IncDecOp::PreDec => Value::Mpfr(new_f),
+                    IncDecOp::PostInc | IncDecOp::PostDec => Value::Mpfr(old_f),
+                };
+                Ok(ret)
+            }
+            IncDecTarget::Field(field) => {
+                let idx = eval_expr(field, ctx)?.as_number() as i32;
+                let old = ctx.rt.field(idx);
+                let old_f = value_to_float(&old, prec);
+                let d = Float::with_val(prec, delta);
+                let new_f = Float::with_val_round(prec, &old_f + &d, round).0;
+                ctx.rt.set_field_from_mpfr(idx, &new_f);
+                let ret = match op {
+                    IncDecOp::PreInc | IncDecOp::PreDec => Value::Mpfr(new_f),
+                    IncDecOp::PostInc | IncDecOp::PostDec => Value::Mpfr(old_f),
+                };
+                Ok(ret)
+            }
+            IncDecTarget::Index { name, indices } => {
+                let k = array_key(ctx, indices)?;
+                let old = ctx.rt.array_get(name, &k);
+                let old_f = value_to_float(&old, prec);
+                let d = Float::with_val(prec, delta);
+                let new_f = Float::with_val_round(prec, &old_f + &d, round).0;
+                ctx.rt
+                    .array_set(name, k, Value::Mpfr(new_f.clone()));
+                let ret = match op {
+                    IncDecOp::PreInc | IncDecOp::PreDec => Value::Mpfr(new_f),
+                    IncDecOp::PostInc | IncDecOp::PostDec => Value::Mpfr(old_f),
+                };
+                Ok(ret)
+            }
         }
-        IncDecTarget::Field(field) => {
-            let idx = eval_expr(field, ctx)?.as_number() as i32;
-            let old_n = ctx.rt.field(idx).as_number();
-            let new_n = old_n + delta;
-            let s = Value::Num(new_n).as_str();
-            ctx.rt.set_field(idx, &s);
-            Ok(Value::Num(if ret_old { old_n } else { new_n }))
-        }
-        IncDecTarget::Index { name, indices } => {
-            let k = array_key(ctx, indices)?;
-            let old_n = ctx.rt.array_get(name, &k).as_number();
-            let new_n = old_n + delta;
-            let newv = Value::Num(new_n);
-            ctx.rt.array_set(name, k, newv);
-            Ok(Value::Num(if ret_old { old_n } else { new_n }))
+    } else {
+        match target {
+            IncDecTarget::Var(name) => {
+                let old_n = ctx.get_var(name).as_number();
+                let new_n = old_n + delta;
+                ctx.set_var(name, Value::Num(new_n));
+                Ok(Value::Num(if ret_old { old_n } else { new_n }))
+            }
+            IncDecTarget::Field(field) => {
+                let idx = eval_expr(field, ctx)?.as_number() as i32;
+                let old_n = ctx.rt.field(idx).as_number();
+                let new_n = old_n + delta;
+                let s = Value::Num(new_n).as_str();
+                ctx.rt.set_field(idx, &s);
+                Ok(Value::Num(if ret_old { old_n } else { new_n }))
+            }
+            IncDecTarget::Index { name, indices } => {
+                let k = array_key(ctx, indices)?;
+                let old_n = ctx.rt.array_get(name, &k).as_number();
+                let new_n = old_n + delta;
+                let newv = Value::Num(new_n);
+                ctx.rt.array_set(name, k, newv);
+                Ok(Value::Num(if ret_old { old_n } else { new_n }))
+            }
         }
     }
 }
@@ -1118,9 +1167,9 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
             crate::gawk_extensions::inplace_commit(ctx.rt, a.as_ref(), b.as_ref())
         }
         "intdiv0" if args.len() == 2 => {
-            let a = eval_expr(&args[0], ctx)?.as_number();
-            let b = eval_expr(&args[1], ctx)?.as_number();
-            crate::gawk_extensions::intdiv0(ctx.rt, a, b)
+            let a = eval_expr(&args[0], ctx)?;
+            let b = eval_expr(&args[1], ctx)?;
+            crate::gawk_extensions::intdiv0(ctx.rt, &a, &b)
         }
         "length" => {
             if args.is_empty() {
@@ -1289,46 +1338,85 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
             Ok(Value::Str(s.to_uppercase()))
         }
         "int" if args.len() == 1 => {
-            let n = eval_expr(&args[0], ctx)?.as_number();
-            Ok(Value::Num(n.trunc()))
+            let v = eval_expr(&args[0], ctx)?;
+            Ok(bignum::awk_int_value(&v, ctx.rt))
         }
         "intdiv" if args.len() == 2 => {
-            let b = eval_expr(&args[1], ctx)?.as_number();
-            if b == 0.0 {
-                return Err(Error::Runtime("intdiv: division by zero".into()));
-            }
-            let a = eval_expr(&args[0], ctx)?.as_number() as i64;
-            let bi = b as i64;
-            Ok(Value::Num((a / bi) as f64))
+            let a = eval_expr(&args[0], ctx)?;
+            let b = eval_expr(&args[1], ctx)?;
+            bignum::awk_intdiv_values(&a, &b, ctx.rt)
         }
         "mkbool" if args.len() == 1 => {
             let v = eval_expr(&args[0], ctx)?;
             Ok(Value::Num(if truthy(&v) { 1.0 } else { 0.0 }))
         }
         "sqrt" if args.len() == 1 => {
-            let n = eval_expr(&args[0], ctx)?.as_number();
-            Ok(Value::Num(n.sqrt()))
+            let v = eval_expr(&args[0], ctx)?;
+            if ctx.rt.bignum {
+                let prec = ctx.rt.mpfr_prec_bits();
+                let round = ctx.rt.mpfr_round();
+                let f = value_to_float(&v, prec);
+                Ok(Value::Mpfr(Float::with_val_round(prec, f.sqrt(), round).0))
+            } else {
+                Ok(Value::Num(v.as_number().sqrt()))
+            }
         }
         "sin" if args.len() == 1 => {
-            let n = eval_expr(&args[0], ctx)?.as_number();
-            Ok(Value::Num(n.sin()))
+            let v = eval_expr(&args[0], ctx)?;
+            if ctx.rt.bignum {
+                let prec = ctx.rt.mpfr_prec_bits();
+                let round = ctx.rt.mpfr_round();
+                let f = value_to_float(&v, prec);
+                Ok(Value::Mpfr(Float::with_val_round(prec, f.sin(), round).0))
+            } else {
+                Ok(Value::Num(v.as_number().sin()))
+            }
         }
         "cos" if args.len() == 1 => {
-            let n = eval_expr(&args[0], ctx)?.as_number();
-            Ok(Value::Num(n.cos()))
+            let v = eval_expr(&args[0], ctx)?;
+            if ctx.rt.bignum {
+                let prec = ctx.rt.mpfr_prec_bits();
+                let round = ctx.rt.mpfr_round();
+                let f = value_to_float(&v, prec);
+                Ok(Value::Mpfr(Float::with_val_round(prec, f.cos(), round).0))
+            } else {
+                Ok(Value::Num(v.as_number().cos()))
+            }
         }
         "atan2" if args.len() == 2 => {
-            let y = eval_expr(&args[0], ctx)?.as_number();
-            let x = eval_expr(&args[1], ctx)?.as_number();
-            Ok(Value::Num(y.atan2(x)))
+            if ctx.rt.bignum {
+                let prec = ctx.rt.mpfr_prec_bits();
+                let round = ctx.rt.mpfr_round();
+                let y = value_to_float(&eval_expr(&args[0], ctx)?, prec);
+                let x = value_to_float(&eval_expr(&args[1], ctx)?, prec);
+                Ok(Value::Mpfr(Float::with_val_round(prec, y.atan2(&x), round).0))
+            } else {
+                let y = eval_expr(&args[0], ctx)?.as_number();
+                let x = eval_expr(&args[1], ctx)?.as_number();
+                Ok(Value::Num(y.atan2(x)))
+            }
         }
         "exp" if args.len() == 1 => {
-            let n = eval_expr(&args[0], ctx)?.as_number();
-            Ok(Value::Num(n.exp()))
+            let v = eval_expr(&args[0], ctx)?;
+            if ctx.rt.bignum {
+                let prec = ctx.rt.mpfr_prec_bits();
+                let round = ctx.rt.mpfr_round();
+                let f = value_to_float(&v, prec);
+                Ok(Value::Mpfr(Float::with_val_round(prec, f.exp(), round).0))
+            } else {
+                Ok(Value::Num(v.as_number().exp()))
+            }
         }
         "log" if args.len() == 1 => {
-            let n = eval_expr(&args[0], ctx)?.as_number();
-            Ok(Value::Num(n.ln()))
+            let v = eval_expr(&args[0], ctx)?;
+            if ctx.rt.bignum {
+                let prec = ctx.rt.mpfr_prec_bits();
+                let round = ctx.rt.mpfr_round();
+                let f = value_to_float(&v, prec);
+                Ok(Value::Mpfr(Float::with_val_round(prec, f.ln(), round).0))
+            } else {
+                Ok(Value::Num(v.as_number().ln()))
+            }
         }
         "systime" if args.is_empty() => Ok(Value::Num(builtins::awk_systime())),
         "strftime" => {
@@ -1464,40 +1552,41 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
                 &vals,
                 ctx.rt.numeric_decimal,
                 ctx.rt.numeric_thousands_sep,
+                ctx.rt,
             )
         }
         "and" if args.len() == 2 => {
-            let a = eval_expr(&args[0], ctx)?.as_number();
-            let b = eval_expr(&args[1], ctx)?.as_number();
-            Ok(Value::Num(builtins::awk_and(a, b)))
+            let a = eval_expr(&args[0], ctx)?;
+            let b = eval_expr(&args[1], ctx)?;
+            Ok(bignum::awk_and_values(&a, &b, ctx.rt))
         }
         "or" if args.len() == 2 => {
-            let a = eval_expr(&args[0], ctx)?.as_number();
-            let b = eval_expr(&args[1], ctx)?.as_number();
-            Ok(Value::Num(builtins::awk_or(a, b)))
+            let a = eval_expr(&args[0], ctx)?;
+            let b = eval_expr(&args[1], ctx)?;
+            Ok(bignum::awk_or_values(&a, &b, ctx.rt))
         }
         "xor" if args.len() == 2 => {
-            let a = eval_expr(&args[0], ctx)?.as_number();
-            let b = eval_expr(&args[1], ctx)?.as_number();
-            Ok(Value::Num(builtins::awk_xor(a, b)))
+            let a = eval_expr(&args[0], ctx)?;
+            let b = eval_expr(&args[1], ctx)?;
+            Ok(bignum::awk_xor_values(&a, &b, ctx.rt))
         }
         "lshift" if args.len() == 2 => {
-            let a = eval_expr(&args[0], ctx)?.as_number();
-            let b = eval_expr(&args[1], ctx)?.as_number();
-            Ok(Value::Num(builtins::awk_lshift(a, b)))
+            let a = eval_expr(&args[0], ctx)?;
+            let b = eval_expr(&args[1], ctx)?;
+            Ok(bignum::awk_lshift_values(&a, &b, ctx.rt))
         }
         "rshift" if args.len() == 2 => {
-            let a = eval_expr(&args[0], ctx)?.as_number();
-            let b = eval_expr(&args[1], ctx)?.as_number();
-            Ok(Value::Num(builtins::awk_rshift(a, b)))
+            let a = eval_expr(&args[0], ctx)?;
+            let b = eval_expr(&args[1], ctx)?;
+            Ok(bignum::awk_rshift_values(&a, &b, ctx.rt))
         }
         "compl" if args.len() == 1 => {
-            let a = eval_expr(&args[0], ctx)?.as_number();
-            Ok(Value::Num(builtins::awk_compl(a)))
+            let a = eval_expr(&args[0], ctx)?;
+            Ok(bignum::awk_compl_values(&a, ctx.rt))
         }
         "strtonum" if args.len() == 1 => {
             let s = eval_expr(&args[0], ctx)?.as_str();
-            Ok(Value::Num(builtins::awk_strtonum(&s)))
+            Ok(bignum::awk_strtonum_value(&s, ctx.rt))
         }
         "typeof" => {
             if args.len() != 1 {
@@ -1587,6 +1676,7 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
                 &vals,
                 ctx.rt.numeric_decimal,
                 ctx.rt.numeric_thousands_sep,
+                ctx.rt,
             )?
             .as_str();
             ctx.emit_print(&s);
@@ -1601,8 +1691,10 @@ fn sprintf_simple(
     vals: &[Value],
     dec: char,
     thousands_sep: Option<char>,
+    rt: &Runtime,
 ) -> Result<Value> {
-    format::awk_sprintf_with_decimal(fmt, vals, dec, thousands_sep)
+    let mpfr = rt.bignum.then(|| (rt.mpfr_prec_bits(), rt.mpfr_round()));
+    format::awk_sprintf_with_decimal(fmt, vals, dec, thousands_sep, mpfr)
         .map(Value::Str)
         .map_err(Error::Runtime)
 }
