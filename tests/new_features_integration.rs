@@ -1,11 +1,16 @@
 //! End-to-end coverage for recently added gawk-style features: **PROCINFO** (argv, FUNCTAB,
-//! composite READ_TIMEOUT keys), **`-L`/`--lint`**, **`-S`/`--sandbox`**, extension builtins
-//! (**`stat`**, **`readfile`**, **`ord`/`chr`**, **`gettimeofday`**, **`fts`**, **`writea`/`reada`**),
-//! **`@/regex/`** regexp values, and additional **`PROCINFO["sorted_in"]`** modes.
+//! composite READ_TIMEOUT / RETRY keys), **`-L`/`--lint`**, **`-S`/`--sandbox`**, **`-k`/`--csv`**,
+//! **`-d`/`-D`/`-o`/`-p`** CLI effects, extension builtins (**`chdir`**, **`stat`**, **`readfile`**,
+//! **`ord`/`chr`**, **`gettimeofday`**, **`sleep`**, **`revoutput`**, **`fts`**, **`writea`/`reada`**),
+//! **`@/regex/`** regexp values, **`SYMTAB`**, **`FUNCTAB`**, **`IGNORECASE`**, **`FIELDWIDTHS`**, **`RS=""`**
+//! paragraph mode, **`-v`**, **`-M`** / **`-n`** / **`-b`**, **`@namespace`**, **`gsub`** with regexp values,
+//! **BEGINFILE** / **ENDFILE**, failed **`stat`** / **`readfile`** + **`ERRNO`**, and **`-N`** **`printf`** **`%'`**
+//! grouping.
 
 mod common;
 
-use common::{run_awkrs_stdin, run_awkrs_stdin_args};
+use common::{run_awkrs_file, run_awkrs_stdin, run_awkrs_stdin_args, run_awkrs_stdin_args_env};
+use std::ffi::OsString;
 use std::process::{Command, Stdio};
 
 // ── PROCINFO: argv mirror, FUNCTAB, composite keys ──────────────────────────
@@ -52,6 +57,22 @@ BEGIN { m = FUNCTAB["f"]; print m["type"], m["arity"] }"#,
 }
 
 #[test]
+fn functab_lists_two_distinct_user_functions() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"function foo() { return 1 }
+function bar(x, y) { return x + y }
+BEGIN {
+  fa = FUNCTAB["foo"]
+  fb = FUNCTAB["bar"]
+  print fa["arity"], fb["arity"]
+}"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o.trim(), "0 2");
+}
+
+#[test]
 fn procinfo_read_timeout_composite_key_exists_for_stdin_placeholder() {
     let (c, o, _) = run_awkrs_stdin(
         r#"BEGIN {
@@ -65,7 +86,37 @@ fn procinfo_read_timeout_composite_key_exists_for_stdin_placeholder() {
     assert_eq!(o.trim(), "1");
 }
 
+#[test]
+fn procinfo_retry_composite_key_exists_for_stdin_placeholder() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN {
+  sep = SUBSEP
+  k = "-" sep "RETRY"
+  print (k in PROCINFO)
+}"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o.trim(), "1");
+}
+
 // ── PROCINFO sorted_in: additional @… modes and unknown-token warning ───────
+
+#[test]
+fn procinfo_sorted_in_val_num_asc_orders_by_numeric_value() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN {
+  a["x"] = 3
+  a["y"] = 1
+  a["z"] = 2
+  PROCINFO["sorted_in"] = "@val_num_asc"
+  for (k in a) print k
+}"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "y\nz\nx\n");
+}
 
 #[test]
 fn procinfo_sorted_in_val_num_desc_orders_by_numeric_value() {
@@ -81,6 +132,37 @@ fn procinfo_sorted_in_val_num_desc_orders_by_numeric_value() {
     );
     assert_eq!(c, 0);
     assert_eq!(o, "x\nz\ny\n");
+}
+
+#[test]
+fn procinfo_sorted_in_val_str_asc_orders_by_string_value() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN {
+  a["x"] = "b"
+  a["y"] = "a"
+  PROCINFO["sorted_in"] = "@val_str_asc"
+  for (k in a) print k
+}"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "y\nx\n");
+}
+
+#[test]
+fn procinfo_sorted_in_ind_str_desc_reverse_lexicographic() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN {
+  a["a"] = 1
+  a["b"] = 1
+  a["c"] = 1
+  PROCINFO["sorted_in"] = "@ind_str_desc"
+  for (k in a) print k
+}"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "c\nb\na\n");
 }
 
 #[test]
@@ -180,6 +262,20 @@ fn sandbox_rejects_system_call_with_runtime_error() {
     );
 }
 
+#[test]
+fn sandbox_rejects_chdir_builtin() {
+    let (c, _, e) = run_awkrs_stdin_args(["-S"], r#"BEGIN { print chdir("/") }"#, "");
+    assert_ne!(c, 0);
+    assert!(e.contains("sandbox"), "stderr={e:?}");
+}
+
+#[test]
+fn sandbox_rejects_file_redirect() {
+    let (c, _, e) = run_awkrs_stdin_args(["-S"], r#"BEGIN { print "x" > "/dev/null" }"#, "");
+    assert_ne!(c, 0);
+    assert!(e.contains("sandbox"), "stderr={e:?}");
+}
+
 // ── Extension builtins (native; no `@load` required) ─────────────────────────
 
 #[test]
@@ -215,6 +311,47 @@ fn ord_chr_roundtrip_ascii() {
     let (c, o, _) = run_awkrs_stdin(r#"BEGIN { print chr(ord("A")) }"#, "");
     assert_eq!(c, 0);
     assert_eq!(o.trim(), "A");
+}
+
+#[test]
+fn sleep_zero_returns_zero() {
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { print sleep(0) }"#, "");
+    assert_eq!(c, 0);
+    assert_eq!(o.trim(), "0");
+}
+
+#[test]
+fn revoutput_reverses_string() {
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { print revoutput("ab") }"#, "");
+    assert_eq!(c, 0);
+    assert_eq!(o.trim(), "ba");
+}
+
+#[test]
+fn revtwoway_matches_revoutput() {
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { print (revtwoway("x") == revoutput("x")) }"#, "");
+    assert_eq!(c, 0);
+    assert_eq!(o.trim(), "1");
+}
+
+#[test]
+fn chdir_then_readfile_relative_path() {
+    let dir = std::env::temp_dir().join(format!("awkrs_chdir_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let inner = dir.join("inner.txt");
+    std::fs::write(&inner, "inside").unwrap();
+    let d = dir.to_string_lossy().replace('\\', "\\\\");
+    let prog = format!(
+        r#"BEGIN {{
+  if (chdir("{d}") != 0) {{ print "cdfail"; exit 1 }}
+  print readfile("inner.txt")
+}}"#
+    );
+    let (c, o, err) = run_awkrs_stdin(&prog, "");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(c, 0, "stderr={err}");
+    assert_eq!(o.trim(), "inside");
 }
 
 #[test]
@@ -375,6 +512,7 @@ fn debug_flag_emits_static_listing_on_stderr() {
     let bin = env!("CARGO_BIN_EXE_awkrs");
     let out = Command::new(bin)
         .args(["-D", "-", "-e", "BEGIN { print 1 }"])
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
@@ -387,7 +525,142 @@ fn debug_flag_emits_static_listing_on_stderr() {
     );
 }
 
+#[test]
+fn profile_flag_emits_wall_time_on_stderr() {
+    let bin = env!("CARGO_BIN_EXE_awkrs");
+    let out = Command::new(bin)
+        .args(["-p", "-", "-e", "BEGIN { x = 1 }"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("spawn");
+    assert_eq!(out.status.code(), Some(0));
+    let e = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        e.contains("wall_seconds:") || e.contains("wall time"),
+        "stderr={e:?}"
+    );
+}
+
+#[test]
+fn pretty_print_flag_emits_disclaimer_on_stdout() {
+    let bin = env!("CARGO_BIN_EXE_awkrs");
+    let out = Command::new(bin)
+        .args(["-o", "-", "-e", "BEGIN { z = 3 }"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("spawn");
+    assert_eq!(out.status.code(), Some(0));
+    let s = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        s.contains("pretty-print") && s.contains("NOT gawk"),
+        "stdout={s:?}"
+    );
+}
+
+#[test]
+fn dump_variables_flag_includes_user_global() {
+    let bin = env!("CARGO_BIN_EXE_awkrs");
+    let out = Command::new(bin)
+        .args(["-d", "-", "-e", "BEGIN { mydumpvar = 99 }"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("spawn");
+    assert_eq!(out.status.code(), Some(0));
+    let s = String::from_utf8_lossy(&out.stdout);
+    assert!(s.contains("mydumpvar") && s.contains("99"), "stdout={s:?}");
+}
+
 // ── `match` with `@/regex/` regexp value ───────────────────────────────────
+
+#[test]
+fn typeof_regexp_literal_is_regexp() {
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { r = @/foo/; print typeof(r) }"#, "");
+    assert_eq!(c, 0);
+    assert_eq!(o.trim(), "regexp");
+}
+
+#[test]
+fn ignorecase_makes_regex_match_case_insensitive() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN {
+  IGNORECASE = 1
+  print ("abc" ~ /A/)
+}"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o.trim(), "1");
+}
+
+#[test]
+fn csv_mode_splits_quoted_comma_into_single_field() {
+    let (c, o, _) = run_awkrs_stdin_args(["-k"], r#"{ print NF, $2 }"#, "a,\"b,c\"\n");
+    assert_eq!(c, 0);
+    assert_eq!(o.trim(), "2 b,c");
+}
+
+#[test]
+fn multiple_dash_e_sources_concatenate() {
+    let bin = env!("CARGO_BIN_EXE_awkrs");
+    let out = Command::new(bin)
+        .args(["-e", "BEGIN { q = 41 }", "-e", "BEGIN { print q + 1 }"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("spawn");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "42");
+}
+
+#[test]
+fn at_load_time_extension_name_noop() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"@load "time"
+BEGIN { print "t" }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o.trim(), "t");
+}
+
+#[test]
+fn at_load_readdir_extension_name_noop() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"@load "readdir"
+BEGIN { print "r" }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o.trim(), "r");
+}
+
+#[test]
+fn symtab_two_globals_roundtrip() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN {
+  SYMTAB["aa"] = 10
+  SYMTAB["bb"] = 20
+  print aa, bb
+}"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o.trim(), "10 20");
+}
+
+#[test]
+fn exponentiation_unary_minus_binds_looser_than_pow() {
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { print -2^2, (-2)^2 }"#, "");
+    assert_eq!(c, 0);
+    let parts: Vec<&str> = o.split_whitespace().collect();
+    assert_eq!(parts, vec!["-4", "4"]);
+}
 
 #[test]
 fn match_accepts_regexp_constant_as_second_argument() {
@@ -404,4 +677,147 @@ fn match_accepts_regexp_constant_as_second_argument() {
     assert_eq!(parts[0], "4");
     assert_eq!(parts[1], "4");
     assert_eq!(parts[2], "3");
+}
+
+// ── FIELDWIDTHS, RS paragraph, `-v`, **`-M`**, **`-n`**, **`-b`** ───────────
+
+#[test]
+fn fieldwidths_splits_fields_by_widths() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { FIELDWIDTHS = "2 3 1" }
+{ print $1, $2, NF }"#,
+        "abcdef\n",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o.trim(), "ab cde 3");
+}
+
+#[test]
+fn rs_empty_string_is_paragraph_mode() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { RS = "" }
+{ print NF, $1 }"#,
+        "a b\n\nc d\n",
+    );
+    assert_eq!(c, 0);
+    let lines: Vec<&str> = o.lines().collect();
+    assert_eq!(lines.len(), 2);
+    assert_eq!(lines[0].trim(), "2 a");
+    assert_eq!(lines[1].trim(), "2 c");
+}
+
+#[test]
+fn assign_flag_v_visible_in_begin() {
+    let (c, o, _) = run_awkrs_stdin_args(["-v", "qq=42"], "BEGIN { print qq }", "");
+    assert_eq!(c, 0);
+    assert_eq!(o.trim(), "42");
+}
+
+#[test]
+fn bignum_sprintf_integer_beyond_i64_without_double_rounding() {
+    // Avoid `9223372036854775807 + 1`: the literal may round through `f64` before **`-M`** sees it.
+    let (c, o, _) = run_awkrs_stdin_args(
+        ["-M"],
+        r#"BEGIN { print sprintf("%d", 2 * 4611686018427387904) }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o.trim(), "9223372036854775808");
+}
+
+#[test]
+fn non_decimal_flag_n_coerces_hex_in_numeric_context() {
+    let (c, o, _) = run_awkrs_stdin_args(["-n"], r#"BEGIN { x = "0xFF"; print x + 0 }"#, "");
+    assert_eq!(c, 0);
+    assert_eq!(o.trim(), "255");
+}
+
+#[test]
+fn characters_as_bytes_flag_length_counts_utf8_bytes() {
+    let (c, o, _) = run_awkrs_stdin_args(["-b"], r#"BEGIN { print length("α") }"#, "");
+    assert_eq!(c, 0);
+    assert_eq!(o.trim(), "2");
+}
+
+// ── gawk: `@namespace`, regexp **gsub**, **BEGINFILE** / **ENDFILE** ─────────
+
+#[test]
+fn namespace_prefixes_unqualified_identifier() {
+    let (c, o, _) = run_awkrs_stdin(
+        "@namespace \"ns\"\nBEGIN { unqual = 5; print unqual }\n",
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o.trim(), "5");
+}
+
+#[test]
+fn gsub_regexp_constant_replaces_matches() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN {
+  s = "abc"
+  r = @/[a-z]/
+  n = gsub(r, "X", s)
+  print n, s
+}"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o.trim(), "3 XXX");
+}
+
+#[test]
+fn beginfile_endfile_run_around_slurped_file() {
+    let dir = std::env::temp_dir();
+    let path = dir.join(format!("awkrs_bef_{}.txt", std::process::id()));
+    std::fs::write(&path, "row\n").unwrap();
+    let (c, o, e) = run_awkrs_file(
+        r#"BEGINFILE { print "BF" } { print $1 } ENDFILE { print "EF" }"#,
+        &path,
+    );
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(c, 0, "stderr={e}");
+    assert_eq!(o, "BF\nrow\nEF\n");
+}
+
+// ── I/O errors: **stat**, **readfile**, **ERRNO** ───────────────────────────
+
+#[test]
+fn stat_missing_file_returns_minus_one() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { print stat("/no/such/awkrs_stat_missing", a) }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o.trim(), "-1");
+}
+
+#[test]
+fn readfile_missing_file_sets_errno_nonempty() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN {
+  readfile("/no/such/awkrs_rf_missing")
+  print (ERRNO != "")
+}"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o.trim(), "1");
+}
+
+// ── Locale: **`-N`** + **printf** `'` grouping (needs `LC_NUMERIC` set) ──────
+
+#[test]
+fn use_lc_numeric_printf_apostrophe_groups_integer() {
+    let (c, o, e) = run_awkrs_stdin_args_env(
+        ["-N"],
+        r#"BEGIN { printf "%'d\n", 1234567 }"#,
+        "",
+        [(OsString::from("LC_ALL"), OsString::from("C"))],
+    );
+    assert_eq!(c, 0, "stderr={e}");
+    assert!(
+        o.contains("1") && o.contains("234") && o.contains("567"),
+        "stdout={o:?}"
+    );
 }
