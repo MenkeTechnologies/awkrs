@@ -576,7 +576,7 @@ fn value_to_jit_f64(_ctx: &mut VmCtx<'_>, v: Value) -> f64 {
     match v {
         Value::Num(n) => n,
         Value::Uninit => nan_uninit(),
-        Value::Str(s) => {
+        Value::Str(s) | Value::Regexp(s) => {
             let idx = JIT_DYN_STRINGS.with(|c| {
                 let mut c = c.borrow_mut();
                 let idx = c.len();
@@ -819,7 +819,12 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
                 }
                 let fmt = values[0].as_str_cow();
                 let vals = &values[1..];
-                if let Ok(v) = sprintf_simple(fmt.as_ref(), vals, ctx.rt.numeric_decimal) {
+                if let Ok(v) = sprintf_simple(
+                    fmt.as_ref(),
+                    vals,
+                    ctx.rt.numeric_decimal,
+                    ctx.rt.numeric_thousands_sep,
+                ) {
                     let s = v.as_str();
                     if let Some(ref mut buf) = ctx.print_out {
                         buf.push(s.to_string());
@@ -896,7 +901,12 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
                 }
                 let fmt = values[0].as_str_cow();
                 let vals = &values[1..];
-                if let Ok(v) = sprintf_simple(fmt.as_ref(), vals, ctx.rt.numeric_decimal) {
+                if let Ok(v) = sprintf_simple(
+                    fmt.as_ref(),
+                    vals,
+                    ctx.rt.numeric_decimal,
+                    ctx.rt.numeric_thousands_sep,
+                ) {
                     let s = v.as_str();
                     if let Err(e) = emit_with_redir(ctx, s.as_str(), redir, Some(path)) {
                         JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
@@ -2289,6 +2299,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 }
             }
             Op::PushStr(idx) => ctx.push(Value::Str(ctx.str_ref(idx).to_string())),
+            Op::PushRegexp(idx) => ctx.push(Value::Regexp(ctx.str_ref(idx).to_string())),
 
             // ── Variable access ─────────────────────────────────────────
             Op::GetVar(idx) => {
@@ -2613,6 +2624,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 let a = ctx.pop();
                 let mut s = match a {
                     Value::Str(s) => s,
+                    Value::Regexp(s) => s,
                     Value::Num(n) => ctx.rt.num_to_string_convfmt(n),
                     Value::Mpfr(f) => f.to_string(),
                     Value::Uninit => String::new(),
@@ -2620,6 +2632,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 };
                 match b {
                     Value::Str(ref t) => s.push_str(t),
+                    Value::Regexp(ref t) => s.push_str(t),
                     Value::Num(n) => s.push_str(&ctx.rt.num_to_string_convfmt(n)),
                     Value::Mpfr(f) => s.push_str(&f.to_string()),
                     Value::Uninit => {}
@@ -3201,7 +3214,7 @@ fn exec_print(ctx: &mut VmCtx<'_>, argc: u16, redir: RedirKind, is_printf: bool)
         let args: Vec<Value> = ctx.stack.drain(start..).collect();
         let fmt = args[0].as_str();
         let vals = &args[1..];
-        let out = sprintf_simple(&fmt, vals, ctx.rt.numeric_decimal)?;
+        let out = sprintf_simple(&fmt, vals, ctx.rt.numeric_decimal, ctx.rt.numeric_thousands_sep)?;
         let s = out.as_str();
         emit_with_redir(ctx, &s, redir, redir_path.as_deref())?;
     } else if redir == RedirKind::Stdout && ctx.print_out.is_none() {
@@ -3278,13 +3291,15 @@ fn emit_with_redir(
     Ok(())
 }
 
-fn sprintf_simple(fmt: &str, vals: &[Value], dec: char) -> Result<Value> {
-    let s = if dec == '.' {
-        format::awk_sprintf(fmt, vals)
-    } else {
-        format::awk_sprintf_with_decimal(fmt, vals, dec)
-    };
-    s.map(Value::Str).map_err(Error::Runtime)
+fn sprintf_simple(
+    fmt: &str,
+    vals: &[Value],
+    dec: char,
+    thousands_sep: Option<char>,
+) -> Result<Value> {
+    format::awk_sprintf_with_decimal(fmt, vals, dec, thousands_sep)
+        .map(Value::Str)
+        .map_err(Error::Runtime)
 }
 
 // ── Getline ─────────────────────────────────────────────────────────────────
@@ -3663,14 +3678,25 @@ pub(crate) fn exec_builtin_dispatch(
                 return Err(Error::Runtime("sprintf: need format".into()));
             }
             let fmt = args[0].as_str();
-            sprintf_simple(&fmt, &args[1..], ctx.rt.numeric_decimal)?
+            sprintf_simple(
+                &fmt,
+                &args[1..],
+                ctx.rt.numeric_decimal,
+                ctx.rt.numeric_thousands_sep,
+            )?
         }
         "printf" => {
             if args.is_empty() {
                 return Err(Error::Runtime("printf: need format".into()));
             }
             let fmt = args[0].as_str();
-            let s = sprintf_simple(&fmt, &args[1..], ctx.rt.numeric_decimal)?.as_str();
+            let s = sprintf_simple(
+                &fmt,
+                &args[1..],
+                ctx.rt.numeric_decimal,
+                ctx.rt.numeric_thousands_sep,
+            )?
+            .as_str();
             ctx.emit_print(&s);
             Value::Num(0.0)
         }

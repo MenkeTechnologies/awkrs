@@ -9,6 +9,35 @@ pub fn set_locale_numeric_from_env() {
     }
 }
 
+/// Thousands separator from `localeconv()` (gawk **`%'`** integer grouping). Empty means “no separator”
+/// in the C locale; callers may fall back to **`,`** for **`%'`** formatting.
+#[cfg(unix)]
+pub fn thousands_sep_from_locale() -> Option<char> {
+    use std::ffi::CStr;
+    unsafe {
+        let lc = libc::localeconv();
+        if lc.is_null() {
+            return Some(',');
+        }
+        let p = (*lc).thousands_sep;
+        if p.is_null() {
+            return Some(',');
+        }
+        let s = CStr::from_ptr(p);
+        let b = s.to_bytes();
+        if b.is_empty() {
+            None
+        } else {
+            std::str::from_utf8(b).ok().and_then(|t| t.chars().next())
+        }
+    }
+}
+
+#[cfg(not(unix))]
+pub fn thousands_sep_from_locale() -> Option<char> {
+    Some(',')
+}
+
 #[cfg(unix)]
 pub fn decimal_point_from_locale() -> char {
     use std::ffi::CStr;

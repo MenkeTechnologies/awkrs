@@ -210,6 +210,7 @@ fn collect_expr_strings(e: &Expr, out: &mut BTreeMap<String, usize>) {
             *out.entry(s.clone()).or_insert(0) += 1;
         }
         Expr::Str(_) => {}
+        Expr::RegexpLiteral(_) => {}
         Expr::Number(_) | Expr::Var(_) => {}
         Expr::Field(inner) => collect_expr_strings(inner, out),
         Expr::Index { indices, .. } => {
@@ -327,6 +328,7 @@ fn value_dump_scalar(v: &Value) -> String {
     match v {
         Value::Uninit => "(uninitialized)".to_string(),
         Value::Str(s) => format!("{s:?}"),
+        Value::Regexp(s) => format!("@/{s}/ (regexp)"),
         Value::Num(n) => format!("{n}"),
         Value::Mpfr(f) => f.to_string(),
         Value::Array(_) => "(array)".to_string(),
@@ -658,7 +660,7 @@ fn stmt_collect_defines(s: &Stmt, out: &mut FxHashSet<String>) {
 
 fn expr_collect_defines(e: &Expr, out: &mut FxHashSet<String>) {
     match e {
-        Expr::Number(_) | Expr::Str(_) | Expr::Var(_) => {}
+        Expr::Number(_) | Expr::Str(_) | Expr::RegexpLiteral(_) | Expr::Var(_) => {}
         Expr::Field(inner) => expr_collect_defines(inner, out),
         Expr::Index { name, indices } => {
             out.insert(name.clone());
@@ -926,7 +928,7 @@ fn expr_lint_reads(
     w: &impl Fn(&str),
 ) {
     match e {
-        Expr::Number(_) | Expr::Str(_) => {}
+        Expr::Number(_) | Expr::Str(_) | Expr::RegexpLiteral(_) => {}
         Expr::Var(name) => warn_uninit_var(name, global_def, params, warned, w),
         Expr::Field(inner) => expr_lint_reads(inner, global_def, params, warned, w),
         Expr::Index { indices, .. } => {
@@ -1107,7 +1109,7 @@ fn lint_expr_printf_deep(w: &impl Fn(&str), e: &Expr) {
                 lint_expr_printf_deep(w, a);
             }
         }
-        Expr::Number(_) | Expr::Str(_) | Expr::Var(_) => {}
+        Expr::Number(_) | Expr::Str(_) | Expr::RegexpLiteral(_) | Expr::Var(_) => {}
         Expr::Field(inner) => lint_expr_printf_deep(w, inner),
         Expr::Index { indices, .. } => {
             for x in indices {

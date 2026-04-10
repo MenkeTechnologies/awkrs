@@ -154,7 +154,7 @@ fn val_type_rank(v: &Value) -> u8 {
     match v {
         Value::Uninit => 0,
         Value::Num(_) | Value::Mpfr(_) => 1,
-        Value::Str(_) => 2,
+        Value::Str(_) | Value::Regexp(_) => 2,
         Value::Array(_) => 3,
     }
 }
@@ -254,6 +254,7 @@ pub fn value_to_float(v: &Value, prec: u32) -> Float {
         Value::Mpfr(f) => f.clone(),
         Value::Num(n) => Float::with_val(prec, *n),
         Value::Str(s) => Float::with_val(prec, parse_number(s.trim())),
+        Value::Regexp(s) => Float::with_val(prec, parse_number(s.trim())),
         Value::Uninit => Float::with_val(prec, 0),
         Value::Array(_) => Float::with_val(prec, 0),
     }
@@ -361,6 +362,8 @@ pub enum Value {
     /// String/number contexts treat this like `""` / `0` (same as gawk *untyped*).
     Uninit,
     Str(String),
+    /// gawk: `@/regex/` regexp constant — distinct from [`Value::Str`] for `typeof` and typed `~`.
+    Regexp(String),
     Num(f64),
     /// GNU MPFR arbitrary-precision float (`-M` / `--bignum`).
     Mpfr(Float),
@@ -372,6 +375,7 @@ impl Value {
         match self {
             Value::Uninit => String::new(),
             Value::Str(s) => s.clone(),
+            Value::Regexp(s) => s.clone(),
             Value::Num(n) => format_number(*n),
             Value::Mpfr(f) => f.to_string(),
             Value::Array(_) => String::new(),
@@ -384,6 +388,7 @@ impl Value {
         match self {
             Value::Uninit => Cow::Borrowed(""),
             Value::Str(s) => Cow::Borrowed(s.as_str()),
+            Value::Regexp(s) => Cow::Borrowed(s.as_str()),
             Value::Num(n) => Cow::Owned(format_number(*n)),
             Value::Mpfr(f) => Cow::Owned(f.to_string()),
             Value::Array(_) => Cow::Borrowed(""),
@@ -396,6 +401,7 @@ impl Value {
     pub fn str_ref(&self) -> Option<&str> {
         match self {
             Value::Str(s) => Some(s),
+            Value::Regexp(s) => Some(s),
             _ => None,
         }
     }
@@ -406,6 +412,7 @@ impl Value {
         match self {
             Value::Uninit => {}
             Value::Str(s) => buf.extend_from_slice(s.as_bytes()),
+            Value::Regexp(s) => buf.extend_from_slice(s.as_bytes()),
             Value::Num(n) => {
                 use std::io::Write;
                 let n = *n;
@@ -425,6 +432,7 @@ impl Value {
             Value::Uninit => 0.0,
             Value::Num(n) => *n,
             Value::Str(s) => parse_number(s),
+            Value::Regexp(s) => parse_number(s),
             Value::Mpfr(f) => f.to_f64(),
             Value::Array(_) => 0.0,
         }
@@ -435,6 +443,7 @@ impl Value {
             Value::Uninit => false,
             Value::Num(n) => *n != 0.0,
             Value::Str(s) => !s.is_empty() && s.parse::<f64>().map(|n| n != 0.0).unwrap_or(true),
+            Value::Regexp(s) => !s.is_empty(),
             Value::Mpfr(f) => !f.is_zero(),
             Value::Array(a) => !a.is_empty(),
         }
@@ -447,6 +456,7 @@ impl Value {
         match self {
             Value::Uninit => String::new(),
             Value::Str(s) => s,
+            Value::Regexp(s) => s,
             Value::Num(n) => format_number(n),
             Value::Mpfr(f) => f.to_string(),
             Value::Array(_) => String::new(),
@@ -460,6 +470,7 @@ impl Value {
         match self {
             Value::Uninit => {}
             Value::Str(s) => buf.push_str(s),
+            Value::Regexp(s) => buf.push_str(s),
             Value::Num(n) => {
                 use std::fmt::Write;
                 let n = *n;
@@ -484,6 +495,7 @@ impl Value {
                 let t = s.trim();
                 !t.is_empty() && t.parse::<f64>().is_ok()
             }
+            Value::Regexp(_) => false,
             Value::Array(_) => false,
         }
     }
@@ -780,6 +792,8 @@ pub struct Runtime {
     pub rand_seed: u64,
     /// Radix for `%f` / `%g` / etc. and `print` of numbers when `-N` / `--use-lc-numeric` is set (Unix).
     pub numeric_decimal: char,
+    /// Thousands separator for gawk **`%'`** (`printf` / `sprintf` integer grouping), from `localeconv()` when available.
+    pub numeric_thousands_sep: Option<char>,
     /// Indexed variable slots for the bytecode VM (fast Vec access instead of HashMap).
     pub slots: Vec<Value>,
     /// Compiled regex cache — avoids recompiling the same pattern every record.
@@ -883,6 +897,7 @@ impl Runtime {
             coproc_handles: HashMap::new(),
             rand_seed: 1,
             numeric_decimal: '.',
+            numeric_thousands_sep: crate::locale_numeric::thousands_sep_from_locale().or(Some(',')),
             slots: Vec::new(),
             regex_cache: AwkMap::default(),
             memmem_finder_cache: AwkMap::default(),
@@ -1057,6 +1072,7 @@ impl Runtime {
         filename: String,
         rand_seed: u64,
         numeric_decimal: char,
+        numeric_thousands_sep: Option<char>,
         csv_mode: bool,
         bignum: bool,
         sandbox: bool,
@@ -1095,6 +1111,7 @@ impl Runtime {
             coproc_handles: HashMap::new(),
             rand_seed,
             numeric_decimal,
+            numeric_thousands_sep,
             slots: Vec::new(),
             regex_cache: AwkMap::default(),
             memmem_finder_cache: AwkMap::default(),
@@ -1423,7 +1440,12 @@ impl Runtime {
             .get_global_var("CONVFMT")
             .map(|v| v.as_str())
             .unwrap_or_else(|| "%.6g".to_string());
-        crate::format::awk_sprintf_with_decimal(&fmt, &[Value::Num(n)], self.numeric_decimal)
+        crate::format::awk_sprintf_with_decimal(
+            &fmt,
+            &[Value::Num(n)],
+            self.numeric_decimal,
+            self.numeric_thousands_sep,
+        )
             .unwrap_or_else(|_| format_number(n))
     }
 
@@ -1433,7 +1455,12 @@ impl Runtime {
             .get_global_var("OFMT")
             .map(|v| v.as_str())
             .unwrap_or_else(|| "%.6g".to_string());
-        crate::format::awk_sprintf_with_decimal(&fmt, &[Value::Num(n)], self.numeric_decimal)
+        crate::format::awk_sprintf_with_decimal(
+            &fmt,
+            &[Value::Num(n)],
+            self.numeric_decimal,
+            self.numeric_thousands_sep,
+        )
             .unwrap_or_else(|_| format_number(n))
     }
 
@@ -2319,6 +2346,7 @@ impl Clone for Runtime {
             coproc_handles: HashMap::new(),
             rand_seed: self.rand_seed,
             numeric_decimal: self.numeric_decimal,
+            numeric_thousands_sep: self.numeric_thousands_sep,
             slots: self.slots.clone(),
             regex_cache: self.regex_cache.clone(),
             memmem_finder_cache: self.memmem_finder_cache.clone(),

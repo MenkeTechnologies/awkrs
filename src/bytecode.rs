@@ -60,6 +60,8 @@ pub enum Op {
     PushNum(f64),
     /// Push interned string by pool index.
     PushStr(u32),
+    /// Push gawk-style regexp constant (`@/…/`) — [`crate::runtime::Value::Regexp`] with interned pattern.
+    PushRegexp(u32),
 
     // ── Variable access ─────────────────────────────────────────────────
     /// Push variable value (name by pool index) — HashMap path for specials.

@@ -4,13 +4,14 @@ use crate::runtime::Value;
 
 /// Default C-locale radix (`.`). Use [`awk_sprintf_with_decimal`] when `-N` applies.
 pub fn awk_sprintf(fmt: &str, vals: &[Value]) -> Result<String, String> {
-    awk_sprintf_with_decimal(fmt, vals, '.')
+    awk_sprintf_with_decimal(fmt, vals, '.', Some(','))
 }
 
 pub fn awk_sprintf_with_decimal(
     fmt: &str,
     vals: &[Value],
     decimal: char,
+    thousands_sep: Option<char>,
 ) -> Result<String, String> {
     let chars: Vec<char> = fmt.chars().collect();
     let mut out = String::new();
@@ -45,7 +46,8 @@ pub fn awk_sprintf_with_decimal(
             i = start_after_pct;
             None
         };
-        let (piece, new_i) = parse_conversion_rest(&chars, i, vals, &mut vi, val_pos, decimal)?;
+        let (piece, new_i) =
+            parse_conversion_rest(&chars, i, vals, &mut vi, val_pos, decimal, thousands_sep)?;
         i = new_i;
         out.push_str(&piece);
     }
@@ -99,12 +101,14 @@ fn parse_conversion_rest(
     vi: &mut usize,
     val_pos: Option<usize>,
     decimal: char,
+    thousands_sep: Option<char>,
 ) -> Result<(String, usize), String> {
     let mut left = false;
     let mut sign = false;
     let mut space = false;
     let mut alt = false;
     let mut pad_zero = false;
+    let mut group = false;
     while i < chars.len() {
         match chars[i] {
             '-' => {
@@ -121,6 +125,10 @@ fn parse_conversion_rest(
             }
             '#' => {
                 alt = true;
+                i += 1;
+            }
+            '\'' => {
+                group = true;
                 i += 1;
             }
             '0' => {
@@ -182,9 +190,44 @@ fn parse_conversion_rest(
         take_val(vals, vi)?
     };
     let piece = format_one(
-        conv, v, left, sign, space, alt, pad_zero, width, prec, decimal,
+        conv,
+        v,
+        left,
+        sign,
+        space,
+        alt,
+        pad_zero,
+        group,
+        width,
+        prec,
+        decimal,
+        thousands_sep,
     )?;
     Ok((piece, i))
+}
+
+/// Insert thousands separators (gawk **`%'`** flag) for a signed decimal digit string.
+fn insert_thousands_sep(s: String, sep: char) -> String {
+    if sep == '\0' || s.is_empty() {
+        return s;
+    }
+    let neg = s.starts_with('-');
+    let digit_part = if neg { &s[1..] } else { &s[..] };
+    if digit_part.is_empty() {
+        return s;
+    }
+    let mut out = String::new();
+    if neg {
+        out.push('-');
+    }
+    let len = digit_part.len();
+    for (i, c) in digit_part.chars().enumerate() {
+        if i > 0 && (len - i) % 3 == 0 {
+            out.push(sep);
+        }
+        out.push(c);
+    }
+    out
 }
 
 fn localize_float_radix(s: String, decimal: char) -> String {
@@ -262,12 +305,19 @@ fn format_one(
     space: bool,
     alt: bool,
     pad_zero: bool,
+    group: bool,
     width: Option<usize>,
     prec: Option<usize>,
     decimal: char,
+    thousands_sep: Option<char>,
 ) -> Result<String, String> {
     let pad_char = if pad_zero && !left { '0' } else { ' ' };
     let w = width.unwrap_or(0);
+    let sep = if group {
+        thousands_sep.unwrap_or(',')
+    } else {
+        '\0'
+    };
     match conv {
         's' => {
             let mut s = v.as_str();
@@ -282,11 +332,17 @@ fn format_one(
             let n = v.as_number() as i64;
             let mut s = format!("{n}");
             apply_sign(&mut s, n >= 0, sign, space);
+            if group && sep != '\0' {
+                s = insert_thousands_sep(s, sep);
+            }
             pad_numeric(&s, w, left, pad_char)
         }
         'u' => {
             let n = v.as_number().max(0.0) as u64;
-            let s = format!("{n}");
+            let mut s = format!("{n}");
+            if group && sep != '\0' {
+                s = insert_thousands_sep(s, sep);
+            }
             pad_numeric(&s, w, left, pad_char)
         }
         'o' => {
@@ -561,28 +617,34 @@ mod tests {
 
     #[test]
     fn lc_numeric_replaces_float_radix() {
-        let s = awk_sprintf_with_decimal("%f", &[Value::Num(1.5)], ',').unwrap();
+        let s = awk_sprintf_with_decimal("%f", &[Value::Num(1.5)], ',', Some(',')).unwrap();
         assert_eq!(s, "1,500000");
     }
 
     #[test]
     fn lc_numeric_scientific_lowercase_e() {
-        let s = awk_sprintf_with_decimal("%.2e", &[Value::Num(1.0)], ',').unwrap();
+        let s = awk_sprintf_with_decimal("%.2e", &[Value::Num(1.0)], ',', Some(',')).unwrap();
         assert!(s.contains('e'), "got {s:?}");
         assert!(s.contains(','), "got {s:?}");
     }
 
     #[test]
     fn lc_numeric_scientific_uppercase_e() {
-        let s = awk_sprintf_with_decimal("%.1E", &[Value::Num(1000.0)], ',').unwrap();
+        let s = awk_sprintf_with_decimal("%.1E", &[Value::Num(1000.0)], ',', Some(',')).unwrap();
         assert!(s.contains('E'), "got {s:?}");
         assert!(s.contains(','), "got {s:?}");
     }
 
     #[test]
     fn lc_numeric_general_g() {
-        let s = awk_sprintf_with_decimal("%.4g", &[Value::Num(PI)], ',').unwrap();
+        let s = awk_sprintf_with_decimal("%.4g", &[Value::Num(PI)], ',', Some(',')).unwrap();
         assert!(s.contains(','), "got {s:?}");
+    }
+
+    #[test]
+    fn printf_apostrophe_groups_integer() {
+        let s = awk_sprintf_with_decimal("%'d", &[Value::Num(1234567.0)], '.', Some(',')).unwrap();
+        assert_eq!(s, "1,234,567");
     }
 
     #[test]

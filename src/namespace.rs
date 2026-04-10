@@ -196,7 +196,7 @@ fn qualify_expr(e: &mut Expr, ns: &str, locals: &FxHashSet<String>) {
                 GetlineRedir::File(e) | GetlineRedir::Coproc(e) => qualify_expr(e, ns, locals),
             }
         }
-        Expr::Number(_) | Expr::Str(_) => {}
+        Expr::Number(_) | Expr::Str(_) | Expr::RegexpLiteral(_) => {}
     }
 }
 

@@ -313,6 +313,7 @@ pub(crate) fn format_expr(e: &Expr) -> String {
             }
         }
         Expr::Str(s) => format_string_literal(s),
+        Expr::RegexpLiteral(s) => format!("@/{}/", escape_regex_slash(s)),
         Expr::Var(v) => v.clone(),
         Expr::Field(inner) => format_field_expr(inner),
         Expr::Index { name, indices } => {

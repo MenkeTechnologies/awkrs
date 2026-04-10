@@ -1209,6 +1209,15 @@ impl<'a> Parser<'a> {
                 Ok(Expr::Str(s))
             }
             Token::At => {
+                // `@/re/` regexp constant (gawk) vs `@expr(...)` indirect call.
+                let checkpoint = self.checkpoint();
+                self.bump(true)?;
+                if let Token::Regexp(s) = &self.cur {
+                    let s = s.clone();
+                    self.bump(false)?;
+                    return Ok(Expr::RegexpLiteral(s));
+                }
+                self.restore(checkpoint);
                 self.bump(false)?;
                 let callee = self.parse_expr_allow_gt(false)?;
                 if self.cur != Token::LParen {
@@ -1533,6 +1542,21 @@ mod tests {
         let p = parse_program("function sq(x){ return x*x } BEGIN { print sq(3) }").unwrap();
         let f = p.funcs.get("sq").expect("sq");
         assert_eq!(f.params, vec!["x".to_string()]);
+    }
+
+    #[test]
+    fn parses_regexp_literal_at_slash() {
+        let p = parse_program("BEGIN { x = @/foo/ }").unwrap();
+        match first_begin_stmt(&p) {
+            Stmt::Expr(Expr::Assign {
+                rhs,
+                ..
+            }) => match rhs.as_ref() {
+                Expr::RegexpLiteral(s) => assert_eq!(s, "foo"),
+                e => panic!("expected RegexpLiteral, got {e:?}"),
+            },
+            s => panic!("expected assign: {s:?}"),
+        }
     }
 
     #[test]

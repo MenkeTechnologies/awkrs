@@ -579,6 +579,10 @@ impl Compiler {
                 let idx = self.strings.intern(s);
                 ops.push(Op::PushStr(idx));
             }
+            Expr::RegexpLiteral(s) => {
+                let idx = self.strings.intern(s);
+                ops.push(Op::PushRegexp(idx));
+            }
             Expr::Var(name) => {
                 // Direct opcodes for frequently-accessed special variables.
                 match name.as_str() {
@@ -1321,7 +1325,7 @@ fn collect_array_names_expr(e: &Expr, names: &mut HashSet<String>) {
                 GetlineRedir::Primary => {}
             }
         },
-        Expr::Number(_) | Expr::Str(_) | Expr::Var(_) => {}
+            Expr::Number(_) | Expr::Str(_) | Expr::RegexpLiteral(_) | Expr::Var(_) => {}
     }
 }
 

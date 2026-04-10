@@ -80,6 +80,26 @@ fn pipe_getline_reads_from_sh_c_pipeline() {
 }
 
 #[test]
+fn gawk_regexp_constant_typeof_and_match() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { r = @/[0-9]+/; print typeof(r), ("a1b" ~ r) }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "regexp 1\n");
+}
+
+#[test]
+fn printf_group_flag_inserts_separators() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { printf "%'d\n", 1234567 }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "1,234,567\n");
+}
+
+#[test]
 fn substr_start_beyond_string_yields_empty() {
     let (c, o, _) = run_awkrs_stdin(r#"BEGIN { print substr("hi", 99) }"#, "");
     assert_eq!(c, 0);

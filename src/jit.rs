@@ -727,6 +727,7 @@ pub fn needs_mixed_mode(ops: &[Op]) -> bool {
         matches!(
             op,
             Op::PushStr(_)
+                | Op::PushRegexp(_)
                 | Op::Concat
                 | Op::ConcatPoolStr(_)
                 | Op::RegexMatch

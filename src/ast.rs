@@ -147,6 +147,8 @@ pub enum GetlineRedir {
 pub enum Expr {
     Number(f64),
     Str(String),
+    /// gawk-style regexp constant: `@/pattern/` — value type is **regexp**, not string (`typeof` is **`"regexp"`**).
+    RegexpLiteral(String),
     Var(String),
     Field(Box<Expr>),
     Index {

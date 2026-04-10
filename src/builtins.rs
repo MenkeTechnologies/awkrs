@@ -633,6 +633,7 @@ pub fn awk_typeof_value(v: &Value) -> &'static str {
         Value::Num(_) => "number",
         Value::Mpfr(_) => "number",
         Value::Str(_) => "string",
+        Value::Regexp(_) => "regexp",
         Value::Array(_) => "array",
     }
 }

@@ -137,6 +137,7 @@ pub fn run(bin_name: &str) -> Result<()> {
     if args.use_lc_numeric {
         locale_numeric::set_locale_numeric_from_env();
         rt.numeric_decimal = locale_numeric::decimal_point_from_locale();
+        rt.numeric_thousands_sep = locale_numeric::thousands_sep_from_locale().or(Some(','));
     }
     rt.init_argv(&files);
     apply_assigns(&args, &mut rt)?;
@@ -355,6 +356,7 @@ fn process_lines_parallel_chunk(
     shared_slots: Arc<Vec<Value>>,
     seed_base: u64,
     numeric_dec: char,
+    numeric_thousands_sep: Option<char>,
     csv_mode: bool,
     bignum: bool,
     non_decimal_data: bool,
@@ -379,6 +381,7 @@ fn process_lines_parallel_chunk(
                     fname.clone(),
                     seed_base ^ (i as u64).wrapping_mul(0x9e3779b97f4a7c15),
                     numeric_dec,
+                    numeric_thousands_sep,
                     csv_mode,
                     bignum,
                     sandbox,
@@ -524,6 +527,7 @@ fn process_stdin_parallel(
             Arc::clone(&shared_slots),
             seed_base,
             numeric_dec,
+            rt.numeric_thousands_sep,
             csv_mode,
             rt.bignum,
             non_decimal_data,
@@ -665,6 +669,7 @@ fn process_file_parallel(
         shared_slots,
         seed_base,
         numeric_dec,
+        rt.numeric_thousands_sep,
         csv_mode,
         rt.bignum,
         non_decimal_data,

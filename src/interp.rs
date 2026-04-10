@@ -429,7 +429,7 @@ fn exec_stmt(s: &Stmt, ctx: &mut ExecCtx<'_>) -> Result<Flow> {
                 .iter()
                 .map(|e| eval_expr(e, ctx))
                 .collect::<Result<_>>()?;
-            let out = sprintf_simple(&fmt, &vals, ctx.rt.numeric_decimal)?;
+            let out = sprintf_simple(&fmt, &vals, ctx.rt.numeric_decimal, ctx.rt.numeric_thousands_sep)?;
             let s = out.as_str();
             match redir {
                 None => ctx.emit_print(&s),
@@ -634,6 +634,7 @@ pub fn eval_expr(e: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {
     Ok(match e {
         Expr::Number(n) => Value::Num(*n),
         Expr::Str(s) => Value::Str(s.clone()),
+        Expr::RegexpLiteral(s) => Value::Regexp(s.clone()),
         Expr::Var(name) => ctx.get_var(name),
         Expr::Index { name, indices } => {
             let k = array_key(ctx, indices)?;
@@ -1459,7 +1460,7 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
                 .iter()
                 .map(|e| eval_expr(e, ctx))
                 .collect::<Result<_>>()?;
-            sprintf_simple(&fmt, &vals, ctx.rt.numeric_decimal)
+            sprintf_simple(&fmt, &vals, ctx.rt.numeric_decimal, ctx.rt.numeric_thousands_sep)
         }
         "and" if args.len() == 2 => {
             let a = eval_expr(&args[0], ctx)?.as_number();
@@ -1577,7 +1578,7 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
                 .iter()
                 .map(|e| eval_expr(e, ctx))
                 .collect::<Result<_>>()?;
-            let s = sprintf_simple(&fmt, &vals, ctx.rt.numeric_decimal)?.as_str();
+            let s = sprintf_simple(&fmt, &vals, ctx.rt.numeric_decimal, ctx.rt.numeric_thousands_sep)?.as_str();
             ctx.emit_print(&s);
             Ok(Value::Num(0.0))
         }
@@ -1585,13 +1586,15 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
     }
 }
 
-fn sprintf_simple(fmt: &str, vals: &[Value], dec: char) -> Result<Value> {
-    let s = if dec == '.' {
-        format::awk_sprintf(fmt, vals)
-    } else {
-        format::awk_sprintf_with_decimal(fmt, vals, dec)
-    };
-    s.map(Value::Str).map_err(Error::Runtime)
+fn sprintf_simple(
+    fmt: &str,
+    vals: &[Value],
+    dec: char,
+    thousands_sep: Option<char>,
+) -> Result<Value> {
+    format::awk_sprintf_with_decimal(fmt, vals, dec, thousands_sep)
+        .map(Value::Str)
+        .map_err(Error::Runtime)
 }
 
 fn call_user_with_values(name: &str, mut vals: Vec<Value>, ctx: &mut ExecCtx<'_>) -> Result<Value> {
