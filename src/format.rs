@@ -1,7 +1,7 @@
 //! `sprintf` / `printf` formatting (POSIX-ish; common awk conversions).
 
-use crate::bignum::{float_trunc_integer, mpfr_string_trim_trailing_zeros};
-use crate::runtime::{value_to_float, Value};
+use crate::bignum::{float_trunc_integer, mpfr_string_trim_trailing_zeros, value_to_mpfr};
+use crate::runtime::Value;
 use rug::float::Round;
 
 /// Default C-locale radix (`.`). Use [`awk_sprintf_with_decimal`] when `-N` applies.
@@ -345,10 +345,10 @@ fn format_one(
             pad_string(&s, w, left, pad_char)
         }
         'd' | 'i' => {
-            let mut s = if let Some((pr, _)) = mpfr_mode {
+            let mut s = if let Some((pr, rd)) = mpfr_mode {
                 let f = match v {
                     Value::Mpfr(f) => f.clone(),
-                    _ => value_to_float(v, pr),
+                    _ => value_to_mpfr(v, pr, rd),
                 };
                 format!("{}", float_trunc_integer(&f))
             } else {
@@ -363,10 +363,10 @@ fn format_one(
             pad_numeric(&s, w, left, pad_char)
         }
         'u' => {
-            let mut s = if let Some((pr, _)) = mpfr_mode {
+            let mut s = if let Some((pr, rd)) = mpfr_mode {
                 let f = match v {
                     Value::Mpfr(f) => f.clone(),
-                    _ => value_to_float(v, pr),
+                    _ => value_to_mpfr(v, pr, rd),
                 };
                 let int = float_trunc_integer(&f);
                 if int < 0 {
@@ -384,10 +384,10 @@ fn format_one(
             pad_numeric(&s, w, left, pad_char)
         }
         'o' => {
-            let mut s = if let Some((pr, _)) = mpfr_mode {
+            let mut s = if let Some((pr, rd)) = mpfr_mode {
                 let f = match v {
                     Value::Mpfr(f) => f.clone(),
-                    _ => value_to_float(v, pr),
+                    _ => value_to_mpfr(v, pr, rd),
                 };
                 let un = float_trunc_integer(&f).to_u64_wrapping();
                 format!("{un:o}")
@@ -402,10 +402,10 @@ fn format_one(
             pad_numeric(&s, w, left, pad_char)
         }
         'x' | 'X' => {
-            let mut s = if let Some((pr, _)) = mpfr_mode {
+            let mut s = if let Some((pr, rd)) = mpfr_mode {
                 let f = match v {
                     Value::Mpfr(f) => f.clone(),
-                    _ => value_to_float(v, pr),
+                    _ => value_to_mpfr(v, pr, rd),
                 };
                 let un = float_trunc_integer(&f).to_u64_wrapping();
                 if conv == 'x' {
@@ -433,10 +433,10 @@ fn format_one(
         }
         'f' | 'F' => {
             let p = prec.unwrap_or(6);
-            let s = if let Some((pr, _rd)) = mpfr_mode {
+            let s = if let Some((pr, rd)) = mpfr_mode {
                 let fsrc = match v {
                     Value::Mpfr(f) => f.clone(),
-                    _ => value_to_float(v, pr),
+                    _ => value_to_mpfr(v, pr, rd),
                 };
                 localize_float_radix(format!("{:.*}", p, fsrc), decimal)
             } else {
@@ -447,10 +447,10 @@ fn format_one(
         }
         'e' | 'E' => {
             let p = prec.unwrap_or(6);
-            let s = if let Some((pr, _rd)) = mpfr_mode {
+            let s = if let Some((pr, rd)) = mpfr_mode {
                 let fsrc = match v {
                     Value::Mpfr(f) => f.clone(),
-                    _ => value_to_float(v, pr),
+                    _ => value_to_mpfr(v, pr, rd),
                 };
                 if conv == 'e' {
                     localize_float_radix(format!("{:.*e}", p, fsrc), decimal)
@@ -469,10 +469,10 @@ fn format_one(
         }
         'g' | 'G' => {
             let p = prec.unwrap_or(6).max(1);
-            if let Some((pr, _rd)) = mpfr_mode {
+            if let Some((pr, rd)) = mpfr_mode {
                 let fsrc = match v {
                     Value::Mpfr(f) => f.clone(),
-                    _ => value_to_float(v, pr),
+                    _ => value_to_mpfr(v, pr, rd),
                 };
                 let n = fsrc.to_f64();
                 if !n.is_finite() {
@@ -535,10 +535,10 @@ fn format_one(
             pad_numeric(&s, w, left, pad_char)
         }
         'c' => {
-            let code = if let Some((pr, _)) = mpfr_mode {
+            let code = if let Some((pr, rd)) = mpfr_mode {
                 let f = match v {
                     Value::Mpfr(f) => f.clone(),
-                    _ => value_to_float(v, pr),
+                    _ => value_to_mpfr(v, pr, rd),
                 };
                 float_trunc_integer(&f).to_u32_wrapping()
             } else {

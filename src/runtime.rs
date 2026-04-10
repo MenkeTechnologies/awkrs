@@ -15,6 +15,7 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::bignum::value_to_mpfr;
 use crate::bytecode::CompiledProgram;
 use crate::error::{Error, Result};
 use gettext::Catalog;
@@ -249,15 +250,10 @@ fn wait_fd_read_timeout(fd: std::os::unix::io::RawFd, timeout_ms: i32) -> crate:
 }
 
 /// Convert a [`Value`] to a [`Float`] for MPFR arithmetic (`-M`).
-pub fn value_to_float(v: &Value, prec: u32) -> Float {
-    match v {
-        Value::Mpfr(f) => f.clone(),
-        Value::Num(n) => Float::with_val(prec, *n),
-        Value::Str(s) => Float::with_val(prec, parse_number(s.trim())),
-        Value::Regexp(s) => Float::with_val(prec, parse_number(s.trim())),
-        Value::Uninit => Float::with_val(prec, 0),
-        Value::Array(_) => Float::with_val(prec, 0),
-    }
+/// Coerce to MPFR for `-M` (see [`crate::bignum::value_to_mpfr`]).
+#[inline]
+pub fn value_to_float(v: &Value, prec: u32, round: Round) -> Float {
+    value_to_mpfr(v, prec, round)
 }
 
 /// Binary `+=` / `-=` / … for compound assignment; uses MPFR when `use_mpfr` is true.
@@ -286,8 +282,8 @@ pub fn awk_binop_values(
     }
     let prec = rt.mpfr_prec_bits();
     let round = rt.mpfr_round();
-    let a = value_to_float(old, prec);
-    let b = value_to_float(rhs, prec);
+    let a = value_to_mpfr(old, prec, round);
+    let b = value_to_mpfr(rhs, prec, round);
     let r = match op {
         BinOp::Add => Float::with_val_round(prec, &a + &b, round).0,
         BinOp::Sub => Float::with_val_round(prec, &a - &b, round).0,
@@ -370,6 +366,19 @@ pub enum Value {
     Array(AwkMap<String, Value>),
 }
 
+/// Default **`-M`** number→string when no [`Runtime`] is available (POSIX default **CONVFMT** **`%.6g`** at [`MPFR_PREC`]).
+#[inline]
+fn mpfr_value_default_display(f: &Float) -> String {
+    crate::format::awk_sprintf_with_decimal(
+        "%.6g",
+        &[Value::Mpfr(f.clone())],
+        '.',
+        Some(','),
+        Some((MPFR_PREC, Round::Nearest)),
+    )
+    .unwrap_or_else(|_| crate::bignum::mpfr_string_trim_trailing_zeros(f.to_string()))
+}
+
 impl Value {
     pub fn as_str(&self) -> String {
         match self {
@@ -377,7 +386,7 @@ impl Value {
             Value::Str(s) => s.clone(),
             Value::Regexp(s) => s.clone(),
             Value::Num(n) => format_number(*n),
-            Value::Mpfr(f) => f.to_string(),
+            Value::Mpfr(f) => mpfr_value_default_display(f),
             Value::Array(_) => String::new(),
         }
     }
@@ -390,7 +399,7 @@ impl Value {
             Value::Str(s) => Cow::Borrowed(s.as_str()),
             Value::Regexp(s) => Cow::Borrowed(s.as_str()),
             Value::Num(n) => Cow::Owned(format_number(*n)),
-            Value::Mpfr(f) => Cow::Owned(f.to_string()),
+            Value::Mpfr(f) => Cow::Owned(mpfr_value_default_display(f)),
             Value::Array(_) => Cow::Borrowed(""),
         }
     }
@@ -422,7 +431,7 @@ impl Value {
                     let _ = write!(buf, "{n}");
                 }
             }
-            Value::Mpfr(f) => buf.extend_from_slice(f.to_string().as_bytes()),
+            Value::Mpfr(f) => buf.extend_from_slice(mpfr_value_default_display(f).as_bytes()),
             Value::Array(_) => {}
         }
     }
@@ -458,7 +467,7 @@ impl Value {
             Value::Str(s) => s,
             Value::Regexp(s) => s,
             Value::Num(n) => format_number(n),
-            Value::Mpfr(f) => f.to_string(),
+            Value::Mpfr(f) => mpfr_value_default_display(&f),
             Value::Array(_) => String::new(),
         }
     }
@@ -480,7 +489,7 @@ impl Value {
                     let _ = write!(buf, "{n}");
                 }
             }
-            Value::Mpfr(f) => buf.push_str(&f.to_string()),
+            Value::Mpfr(f) => buf.push_str(&mpfr_value_default_display(f)),
             Value::Array(_) => {}
         }
     }

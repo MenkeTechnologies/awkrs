@@ -156,6 +156,38 @@ BEGIN { a["b"]=2; a["a"]=1; PROCINFO["sorted_in"]="vcmp"; for (k in a) print k }
 }
 
 #[test]
+fn procinfo_populated_before_begin() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { print (PROCINFO["version"] != ""); print (PROCINFO["pid"] + 0 > 0) }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "1\n1\n");
+}
+
+#[test]
+fn bignum_string_xor_not_f64_truncated() {
+    let (c, o, _) = run_awkrs_stdin_args(
+        ["-M"],
+        r#"BEGIN { print sprintf("%d", xor("9223372036854775808", "1")) }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "9223372036854775809\n");
+}
+
+#[test]
+fn bignum_sprintf_percent_d_from_numeric_string() {
+    let (c, o, _) = run_awkrs_stdin_args(
+        ["-M"],
+        r#"BEGIN { print sprintf("%d", "9223372036854775808") }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "9223372036854775808\n");
+}
+
+#[test]
 fn intdiv_and_mkbool_builtins() {
     let (c, o, _) = run_awkrs_stdin(
         r#"BEGIN { print intdiv(7, 3), intdiv(-7, 3); print mkbool(0), mkbool("x"), mkbool("") }"#,

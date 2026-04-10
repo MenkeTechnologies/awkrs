@@ -2445,7 +2445,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                     let round = ctx.rt.mpfr_round();
                     let pushed = ctx.with_short_pool_name_mut(idx, |ctx, name| {
                         let old = ctx.get_var(name);
-                        let old_f = value_to_float(&old, prec);
+                        let old_f = value_to_float(&old, prec, round);
                         let d = Float::with_val(prec, delta);
                         let new_f = Float::with_val_round(prec, &old_f + &d, round).0;
                         ctx.set_var(name, Value::Mpfr(new_f.clone()));
@@ -2472,7 +2472,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                     let round = ctx.rt.mpfr_round();
                     ctx.with_short_pool_name_mut(idx, |ctx, name| {
                         let old = ctx.get_var(name);
-                        let old_f = value_to_float(&old, prec);
+                        let old_f = value_to_float(&old, prec, round);
                         let d = Float::with_val(prec, 1.0);
                         let new_f = Float::with_val_round(prec, &old_f + &d, round).0;
                         ctx.set_var(name, Value::Mpfr(new_f));
@@ -2490,7 +2490,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                     let round = ctx.rt.mpfr_round();
                     ctx.with_short_pool_name_mut(idx, |ctx, name| {
                         let old = ctx.get_var(name);
-                        let old_f = value_to_float(&old, prec);
+                        let old_f = value_to_float(&old, prec, round);
                         let d = Float::with_val(prec, 1.0);
                         let new_f = Float::with_val_round(prec, &old_f - &d, round).0;
                         ctx.set_var(name, Value::Mpfr(new_f));
@@ -2508,7 +2508,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                     let prec = ctx.rt.mpfr_prec_bits();
                     let round = ctx.rt.mpfr_round();
                     let old = ctx.rt.slots[slot as usize].clone();
-                    let old_f = value_to_float(&old, prec);
+                    let old_f = value_to_float(&old, prec, round);
                     let d = Float::with_val(prec, delta);
                     let new_f = Float::with_val_round(prec, &old_f + &d, round).0;
                     let ret = match kind {
@@ -2534,7 +2534,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                     let prec = ctx.rt.mpfr_prec_bits();
                     let round = ctx.rt.mpfr_round();
                     let old = ctx.rt.field(idx);
-                    let old_f = value_to_float(&old, prec);
+                    let old_f = value_to_float(&old, prec, round);
                     let d = Float::with_val(prec, delta);
                     let new_f = Float::with_val_round(prec, &old_f + &d, round).0;
                     let ret = match kind {
@@ -2558,7 +2558,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                     let prec = ctx.rt.mpfr_prec_bits();
                     let round = ctx.rt.mpfr_round();
                     let old = ctx.array_elem_get(name, &key);
-                    let old_f = value_to_float(&old, prec);
+                    let old_f = value_to_float(&old, prec, round);
                     let d = Float::with_val(prec, delta);
                     let new_f = Float::with_val_round(prec, &old_f + &d, round).0;
                     let ret = match kind {
@@ -2582,8 +2582,8 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                     let a = ctx.pop();
                     let prec = ctx.rt.mpfr_prec_bits();
                     let round = ctx.rt.mpfr_round();
-                    let fa = value_to_float(&a, prec);
-                    let fb = value_to_float(&b, prec);
+                    let fa = value_to_float(&a, prec, round);
+                    let fb = value_to_float(&b, prec, round);
                     ctx.push(Value::Mpfr(Float::with_val_round(prec, &fa + &fb, round).0));
                 } else {
                     let b = ctx.pop().as_number();
@@ -2597,8 +2597,8 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                     let a = ctx.pop();
                     let prec = ctx.rt.mpfr_prec_bits();
                     let round = ctx.rt.mpfr_round();
-                    let fa = value_to_float(&a, prec);
-                    let fb = value_to_float(&b, prec);
+                    let fa = value_to_float(&a, prec, round);
+                    let fb = value_to_float(&b, prec, round);
                     ctx.push(Value::Mpfr(Float::with_val_round(prec, &fa - &fb, round).0));
                 } else {
                     let b = ctx.pop().as_number();
@@ -2612,8 +2612,8 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                     let a = ctx.pop();
                     let prec = ctx.rt.mpfr_prec_bits();
                     let round = ctx.rt.mpfr_round();
-                    let fa = value_to_float(&a, prec);
-                    let fb = value_to_float(&b, prec);
+                    let fa = value_to_float(&a, prec, round);
+                    let fb = value_to_float(&b, prec, round);
                     ctx.push(Value::Mpfr(Float::with_val_round(prec, &fa * &fb, round).0));
                 } else {
                     let b = ctx.pop().as_number();
@@ -2627,8 +2627,8 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                     let a = ctx.pop();
                     let prec = ctx.rt.mpfr_prec_bits();
                     let round = ctx.rt.mpfr_round();
-                    let fa = value_to_float(&a, prec);
-                    let fb = value_to_float(&b, prec);
+                    let fa = value_to_float(&a, prec, round);
+                    let fb = value_to_float(&b, prec, round);
                     ctx.push(Value::Mpfr(Float::with_val_round(prec, &fa / &fb, round).0));
                 } else {
                     let b = ctx.pop().as_number();
@@ -2642,8 +2642,8 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                     let a = ctx.pop();
                     let prec = ctx.rt.mpfr_prec_bits();
                     let round = ctx.rt.mpfr_round();
-                    let fa = value_to_float(&a, prec);
-                    let fb = value_to_float(&b, prec);
+                    let fa = value_to_float(&a, prec, round);
+                    let fb = value_to_float(&b, prec, round);
                     ctx.push(Value::Mpfr(Float::with_val_round(prec, &fa % &fb, round).0));
                 } else {
                     let b = ctx.pop().as_number();
@@ -2657,8 +2657,8 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                     let a = ctx.pop();
                     let prec = ctx.rt.mpfr_prec_bits();
                     let round = ctx.rt.mpfr_round();
-                    let fa = value_to_float(&a, prec);
-                    let fb = value_to_float(&b, prec);
+                    let fa = value_to_float(&a, prec, round);
+                    let fb = value_to_float(&b, prec, round);
                     ctx.push(Value::Mpfr(
                         Float::with_val_round(prec, fa.pow(&fb), round).0,
                     ));
@@ -2761,7 +2761,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                     let v = ctx.pop();
                     let prec = ctx.rt.mpfr_prec_bits();
                     let round = ctx.rt.mpfr_round();
-                    let f = value_to_float(&v, prec);
+                    let f = value_to_float(&v, prec, round);
                     ctx.push(Value::Mpfr(Float::with_val_round(prec, -f, round).0));
                 } else {
                     let v = ctx.pop().as_number();
@@ -2773,7 +2773,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                     let v = ctx.pop();
                     let prec = ctx.rt.mpfr_prec_bits();
                     let round = ctx.rt.mpfr_round();
-                    let f = value_to_float(&v, prec);
+                    let f = value_to_float(&v, prec, round);
                     ctx.push(Value::Mpfr(Float::with_val_round(prec, f, round).0));
                 } else {
                     let v = ctx.pop().as_number();
@@ -3195,8 +3195,9 @@ fn locale_str_cmp(a: &str, b: &str) -> Ordering {
 fn awk_cmp_eq(a: &Value, b: &Value, ignore_case: bool, rt: &Runtime) -> Value {
     if rt.bignum && a.is_numeric_str() && b.is_numeric_str() {
         let prec = rt.mpfr_prec_bits();
-        let fa = value_to_float(a, prec);
-        let fb = value_to_float(b, prec);
+        let round = rt.mpfr_round();
+        let fa = value_to_float(a, prec, round);
+        let fb = value_to_float(b, prec, round);
         return Value::Num(if fa == fb { 1.0 } else { 0.0 });
     }
     // Fast path: both Num — skip is_numeric_str() entirely.
@@ -3232,8 +3233,9 @@ fn awk_cmp_eq(a: &Value, b: &Value, ignore_case: bool, rt: &Runtime) -> Value {
 fn awk_cmp_rel(op: BinOp, a: &Value, b: &Value, ignore_case: bool, rt: &Runtime) -> Value {
     if rt.bignum && a.is_numeric_str() && b.is_numeric_str() {
         let prec = rt.mpfr_prec_bits();
-        let fa = value_to_float(a, prec);
-        let fb = value_to_float(b, prec);
+        let round = rt.mpfr_round();
+        let fa = value_to_float(a, prec, round);
+        let fb = value_to_float(b, prec, round);
         let ord = fa.partial_cmp(&fb).unwrap_or(Ordering::Equal);
         let ok = match op {
             BinOp::Lt => ord == Ordering::Less,
@@ -3697,7 +3699,7 @@ pub(crate) fn exec_builtin_dispatch(
             if ctx.rt.bignum {
                 let prec = ctx.rt.mpfr_prec_bits();
                 let round = ctx.rt.mpfr_round();
-                let f = value_to_float(&args[0], prec);
+                let f = value_to_float(&args[0], prec, round);
                 Value::Mpfr(Float::with_val_round(prec, f.sqrt(), round).0)
             } else {
                 Value::Num(args[0].as_number().sqrt())
@@ -3710,7 +3712,7 @@ pub(crate) fn exec_builtin_dispatch(
             if ctx.rt.bignum {
                 let prec = ctx.rt.mpfr_prec_bits();
                 let round = ctx.rt.mpfr_round();
-                let f = value_to_float(&args[0], prec);
+                let f = value_to_float(&args[0], prec, round);
                 Value::Mpfr(Float::with_val_round(prec, f.sin(), round).0)
             } else {
                 Value::Num(args[0].as_number().sin())
@@ -3723,7 +3725,7 @@ pub(crate) fn exec_builtin_dispatch(
             if ctx.rt.bignum {
                 let prec = ctx.rt.mpfr_prec_bits();
                 let round = ctx.rt.mpfr_round();
-                let f = value_to_float(&args[0], prec);
+                let f = value_to_float(&args[0], prec, round);
                 Value::Mpfr(Float::with_val_round(prec, f.cos(), round).0)
             } else {
                 Value::Num(args[0].as_number().cos())
@@ -3736,8 +3738,8 @@ pub(crate) fn exec_builtin_dispatch(
             if ctx.rt.bignum {
                 let prec = ctx.rt.mpfr_prec_bits();
                 let round = ctx.rt.mpfr_round();
-                let y = value_to_float(&args[0], prec);
-                let x = value_to_float(&args[1], prec);
+                let y = value_to_float(&args[0], prec, round);
+                let x = value_to_float(&args[1], prec, round);
                 Value::Mpfr(Float::with_val_round(prec, y.atan2(&x), round).0)
             } else {
                 Value::Num(args[0].as_number().atan2(args[1].as_number()))
@@ -3750,7 +3752,7 @@ pub(crate) fn exec_builtin_dispatch(
             if ctx.rt.bignum {
                 let prec = ctx.rt.mpfr_prec_bits();
                 let round = ctx.rt.mpfr_round();
-                let f = value_to_float(&args[0], prec);
+                let f = value_to_float(&args[0], prec, round);
                 Value::Mpfr(Float::with_val_round(prec, f.exp(), round).0)
             } else {
                 Value::Num(args[0].as_number().exp())
@@ -3763,7 +3765,7 @@ pub(crate) fn exec_builtin_dispatch(
             if ctx.rt.bignum {
                 let prec = ctx.rt.mpfr_prec_bits();
                 let round = ctx.rt.mpfr_round();
-                let f = value_to_float(&args[0], prec);
+                let f = value_to_float(&args[0], prec, round);
                 Value::Mpfr(Float::with_val_round(prec, f.ln(), round).0)
             } else {
                 Value::Num(args[0].as_number().ln())

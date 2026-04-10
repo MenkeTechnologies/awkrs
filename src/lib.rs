@@ -170,6 +170,7 @@ pub fn run(bin_name: &str) -> Result<()> {
     let worker_jit_enabled = rt.jit_enabled;
 
     attach_primary_input_before_begin_for_getline(cp.as_ref(), &files, &mut rt)?;
+    rt.refresh_special_arrays(cp.as_ref(), bin_name);
     vm_run_begin(cp.as_ref(), &mut rt)?;
     rt.refresh_special_arrays(cp.as_ref(), bin_name);
     cli_effects::emit_lint_warnings(

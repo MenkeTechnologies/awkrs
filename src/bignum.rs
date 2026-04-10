@@ -1,10 +1,51 @@
 //! MPFR / `-M` helpers: integer truncation, strtonum, intdiv, and string forms without f64 loss.
 
 use crate::error::{Error, Result};
-use crate::runtime::{value_to_float, Runtime, Value};
+use crate::runtime::{Runtime, Value};
 use rug::float::Round;
 use rug::Float;
 use rug::Integer;
+
+/// Parse a numeric string to MPFR without going through `f64` (so large integers and full `-M` paths stay consistent).
+pub fn numeric_string_to_mpfr(s: &str, prec: u32, round: Round) -> Float {
+    let t = s.trim();
+    if t.is_empty() {
+        return Float::with_val_round(prec, 0, round).0;
+    }
+    if t.starts_with("0x") || t.starts_with("0X") {
+        return match Integer::from_str_radix(&t[2..], 16) {
+            Ok(i) => Float::with_val_round(prec, i, round).0,
+            Err(_) => Float::with_val_round(prec, 0, round).0,
+        };
+    }
+    if t.len() > 1
+        && t.starts_with('0')
+        && !t.contains('.')
+        && !t.contains('e')
+        && !t.contains('E')
+    {
+        return match Integer::from_str_radix(t, 8) {
+            Ok(i) => Float::with_val_round(prec, i, round).0,
+            Err(_) => Float::with_val_round(prec, 0, round).0,
+        };
+    }
+    match Float::parse(t) {
+        Ok(ic) => Float::with_val_round(prec, ic, round).0,
+        Err(_) => Float::with_val_round(prec, 0, round).0,
+    }
+}
+
+/// Coerce any [`Value`] to MPFR for `-M` arithmetic / builtins (strings use [`numeric_string_to_mpfr`], not `parse_number`/`f64`).
+pub fn value_to_mpfr(v: &Value, prec: u32, round: Round) -> Float {
+    match v {
+        Value::Mpfr(f) => f.clone(),
+        Value::Num(n) => Float::with_val(prec, *n),
+        Value::Str(s) => numeric_string_to_mpfr(s, prec, round),
+        Value::Regexp(s) => numeric_string_to_mpfr(s, prec, round),
+        Value::Uninit => Float::with_val_round(prec, 0, round).0,
+        Value::Array(_) => Float::with_val_round(prec, 0, round).0,
+    }
+}
 
 /// Truncate toward zero as [`Integer`] (gawk-style integer ops).
 pub fn float_trunc_integer(f: &Float) -> Integer {
@@ -26,7 +67,7 @@ pub fn awk_int_value(v: &Value, rt: &Runtime) -> Value {
     }
     let prec = rt.mpfr_prec_bits();
     let round = rt.mpfr_round();
-    let f = value_to_float(v, prec);
+    let f = value_to_mpfr(v, prec, round);
     Value::Mpfr(Float::with_val_round(prec, f.trunc(), round).0)
 }
 
@@ -42,8 +83,8 @@ pub fn awk_intdiv_values(a: &Value, b: &Value, rt: &Runtime) -> Result<Value> {
     }
     let prec = rt.mpfr_prec_bits();
     let round = rt.mpfr_round();
-    let fa = value_to_float(a, prec);
-    let fb = value_to_float(b, prec);
+    let fa = value_to_mpfr(a, prec, round);
+    let fb = value_to_mpfr(b, prec, round);
     if fb.is_zero() {
         return Err(Error::Runtime("intdiv: division by zero".into()));
     }
@@ -60,33 +101,9 @@ pub fn awk_strtonum_value(s: &str, rt: &Runtime) -> Value {
     if !rt.bignum {
         return Value::Num(crate::builtins::awk_strtonum(s));
     }
-    let t = s.trim();
     let prec = rt.mpfr_prec_bits();
     let round = rt.mpfr_round();
-    if t.is_empty() {
-        return Value::Mpfr(Float::with_val_round(prec, 0, round).0);
-    }
-    if t.starts_with("0x") || t.starts_with("0X") {
-        return match Integer::from_str_radix(&t[2..], 16) {
-            Ok(i) => Value::Mpfr(Float::with_val_round(prec, i, round).0),
-            Err(_) => Value::Mpfr(Float::with_val_round(prec, 0, round).0),
-        };
-    }
-    if t.len() > 1
-        && t.starts_with('0')
-        && !t.contains('.')
-        && !t.contains('e')
-        && !t.contains('E')
-    {
-        return match Integer::from_str_radix(t, 8) {
-            Ok(i) => Value::Mpfr(Float::with_val_round(prec, i, round).0),
-            Err(_) => Value::Mpfr(Float::with_val_round(prec, 0, round).0),
-        };
-    }
-    match Float::parse(t) {
-        Ok(ic) => Value::Mpfr(Float::with_val_round(prec, ic, round).0),
-        Err(_) => Value::Mpfr(Float::with_val_round(prec, 0, round).0),
-    }
+    Value::Mpfr(numeric_string_to_mpfr(s, prec, round))
 }
 
 pub fn awk_and_values(a: &Value, b: &Value, rt: &Runtime) -> Value {
@@ -95,8 +112,8 @@ pub fn awk_and_values(a: &Value, b: &Value, rt: &Runtime) -> Value {
     }
     let prec = rt.mpfr_prec_bits();
     let round = rt.mpfr_round();
-    let ua = float_trunc_u64(&value_to_float(a, prec));
-    let ub = float_trunc_u64(&value_to_float(b, prec));
+    let ua = float_trunc_u64(&value_to_mpfr(a, prec, round));
+    let ub = float_trunc_u64(&value_to_mpfr(b, prec, round));
     let r = ua & ub;
     Value::Mpfr(Float::with_val_round(prec, Integer::from(r), round).0)
 }
@@ -107,8 +124,8 @@ pub fn awk_or_values(a: &Value, b: &Value, rt: &Runtime) -> Value {
     }
     let prec = rt.mpfr_prec_bits();
     let round = rt.mpfr_round();
-    let ua = float_trunc_u64(&value_to_float(a, prec));
-    let ub = float_trunc_u64(&value_to_float(b, prec));
+    let ua = float_trunc_u64(&value_to_mpfr(a, prec, round));
+    let ub = float_trunc_u64(&value_to_mpfr(b, prec, round));
     let r = ua | ub;
     Value::Mpfr(Float::with_val_round(prec, Integer::from(r), round).0)
 }
@@ -119,8 +136,8 @@ pub fn awk_xor_values(a: &Value, b: &Value, rt: &Runtime) -> Value {
     }
     let prec = rt.mpfr_prec_bits();
     let round = rt.mpfr_round();
-    let ua = float_trunc_u64(&value_to_float(a, prec));
-    let ub = float_trunc_u64(&value_to_float(b, prec));
+    let ua = float_trunc_u64(&value_to_mpfr(a, prec, round));
+    let ub = float_trunc_u64(&value_to_mpfr(b, prec, round));
     let r = ua ^ ub;
     Value::Mpfr(Float::with_val_round(prec, Integer::from(r), round).0)
 }
@@ -131,8 +148,8 @@ pub fn awk_lshift_values(a: &Value, b: &Value, rt: &Runtime) -> Value {
     }
     let prec = rt.mpfr_prec_bits();
     let round = rt.mpfr_round();
-    let x = float_trunc_u64(&value_to_float(a, prec));
-    let n = float_trunc_u64(&value_to_float(b, prec)) & 0x3f;
+    let x = float_trunc_u64(&value_to_mpfr(a, prec, round));
+    let n = float_trunc_u64(&value_to_mpfr(b, prec, round)) & 0x3f;
     let r = x << n;
     Value::Mpfr(Float::with_val_round(prec, Integer::from(r), round).0)
 }
@@ -143,8 +160,8 @@ pub fn awk_rshift_values(a: &Value, b: &Value, rt: &Runtime) -> Value {
     }
     let prec = rt.mpfr_prec_bits();
     let round = rt.mpfr_round();
-    let x = float_trunc_u64(&value_to_float(a, prec));
-    let n = float_trunc_u64(&value_to_float(b, prec)) & 0x3f;
+    let x = float_trunc_u64(&value_to_mpfr(a, prec, round));
+    let n = float_trunc_u64(&value_to_mpfr(b, prec, round)) & 0x3f;
     let r = x >> n;
     Value::Mpfr(Float::with_val_round(prec, Integer::from(r), round).0)
 }
@@ -155,7 +172,7 @@ pub fn awk_compl_values(a: &Value, rt: &Runtime) -> Value {
     }
     let prec = rt.mpfr_prec_bits();
     let round = rt.mpfr_round();
-    let ua = float_trunc_u64(&value_to_float(a, prec));
+    let ua = float_trunc_u64(&value_to_mpfr(a, prec, round));
     let r = !ua;
     Value::Mpfr(Float::with_val_round(prec, Integer::from(r), round).0)
 }

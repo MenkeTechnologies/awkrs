@@ -778,7 +778,7 @@ fn eval_inc_dec(op: IncDecOp, target: &IncDecTarget, ctx: &mut ExecCtx<'_>) -> R
         match target {
             IncDecTarget::Var(name) => {
                 let old = ctx.get_var(name);
-                let old_f = value_to_float(&old, prec);
+                let old_f = value_to_float(&old, prec, round);
                 let d = Float::with_val(prec, delta);
                 let new_f = Float::with_val_round(prec, &old_f + &d, round).0;
                 ctx.set_var(name, Value::Mpfr(new_f.clone()));
@@ -791,7 +791,7 @@ fn eval_inc_dec(op: IncDecOp, target: &IncDecTarget, ctx: &mut ExecCtx<'_>) -> R
             IncDecTarget::Field(field) => {
                 let idx = eval_expr(field, ctx)?.as_number() as i32;
                 let old = ctx.rt.field(idx);
-                let old_f = value_to_float(&old, prec);
+                let old_f = value_to_float(&old, prec, round);
                 let d = Float::with_val(prec, delta);
                 let new_f = Float::with_val_round(prec, &old_f + &d, round).0;
                 ctx.rt.set_field_from_mpfr(idx, &new_f);
@@ -804,7 +804,7 @@ fn eval_inc_dec(op: IncDecOp, target: &IncDecTarget, ctx: &mut ExecCtx<'_>) -> R
             IncDecTarget::Index { name, indices } => {
                 let k = array_key(ctx, indices)?;
                 let old = ctx.rt.array_get(name, &k);
-                let old_f = value_to_float(&old, prec);
+                let old_f = value_to_float(&old, prec, round);
                 let d = Float::with_val(prec, delta);
                 let new_f = Float::with_val_round(prec, &old_f + &d, round).0;
                 ctx.rt
@@ -927,8 +927,9 @@ fn awk_eq(left: &Expr, right: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {
     let rv = eval_expr(right, ctx)?;
     if ctx.rt.bignum && lv.is_numeric_str() && rv.is_numeric_str() {
         let prec = ctx.rt.mpfr_prec_bits();
-        let fa = crate::runtime::value_to_float(&lv, prec);
-        let fb = crate::runtime::value_to_float(&rv, prec);
+        let round = ctx.rt.mpfr_round();
+        let fa = crate::runtime::value_to_float(&lv, prec, round);
+        let fb = crate::runtime::value_to_float(&rv, prec, round);
         return Ok(Value::Num(if fa == fb { 1.0 } else { 0.0 }));
     }
     if lv.is_numeric_str() && rv.is_numeric_str() {
@@ -953,8 +954,9 @@ fn awk_eq(left: &Expr, right: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {
 fn switch_value_eq(lv: &Value, rv: &Value, rt: &crate::runtime::Runtime) -> bool {
     if matches!(lv, Value::Mpfr(_)) || matches!(rv, Value::Mpfr(_)) {
         let prec = rt.mpfr_prec_bits();
-        let fa = crate::runtime::value_to_float(lv, prec);
-        let fb = crate::runtime::value_to_float(rv, prec);
+        let round = rt.mpfr_round();
+        let fa = crate::runtime::value_to_float(lv, prec, round);
+        let fb = crate::runtime::value_to_float(rv, prec, round);
         return fa == fb;
     }
     if lv.is_numeric_str() && rv.is_numeric_str() {
@@ -975,8 +977,9 @@ fn awk_rel(op: BinOp, left: &Expr, right: &Expr, ctx: &mut ExecCtx<'_>) -> Resul
     let rv = eval_expr(right, ctx)?;
     if ctx.rt.bignum && lv.is_numeric_str() && rv.is_numeric_str() {
         let prec = ctx.rt.mpfr_prec_bits();
-        let fa = crate::runtime::value_to_float(&lv, prec);
-        let fb = crate::runtime::value_to_float(&rv, prec);
+        let round = ctx.rt.mpfr_round();
+        let fa = crate::runtime::value_to_float(&lv, prec, round);
+        let fb = crate::runtime::value_to_float(&rv, prec, round);
         let ord = fa.partial_cmp(&fb).unwrap_or(Ordering::Equal);
         let ok = match op {
             BinOp::Lt => ord == Ordering::Less,
@@ -1019,7 +1022,7 @@ fn eval_unary(op: UnaryOp, expr: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> 
             if ctx.rt.bignum {
                 let prec = ctx.rt.mpfr_prec_bits();
                 let round = ctx.rt.mpfr_round();
-                let f = crate::runtime::value_to_float(&v, prec);
+                let f = crate::runtime::value_to_float(&v, prec, round);
                 Value::Mpfr(rug::Float::with_val_round(prec, -f, round).0)
             } else {
                 Value::Num(-v.as_number())
@@ -1029,7 +1032,7 @@ fn eval_unary(op: UnaryOp, expr: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> 
             if ctx.rt.bignum {
                 let prec = ctx.rt.mpfr_prec_bits();
                 let round = ctx.rt.mpfr_round();
-                let f = crate::runtime::value_to_float(&v, prec);
+                let f = crate::runtime::value_to_float(&v, prec, round);
                 Value::Mpfr(rug::Float::with_val_round(prec, f, round).0)
             } else {
                 Value::Num(v.as_number())
@@ -1355,7 +1358,7 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
             if ctx.rt.bignum {
                 let prec = ctx.rt.mpfr_prec_bits();
                 let round = ctx.rt.mpfr_round();
-                let f = value_to_float(&v, prec);
+                let f = value_to_float(&v, prec, round);
                 Ok(Value::Mpfr(Float::with_val_round(prec, f.sqrt(), round).0))
             } else {
                 Ok(Value::Num(v.as_number().sqrt()))
@@ -1366,7 +1369,7 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
             if ctx.rt.bignum {
                 let prec = ctx.rt.mpfr_prec_bits();
                 let round = ctx.rt.mpfr_round();
-                let f = value_to_float(&v, prec);
+                let f = value_to_float(&v, prec, round);
                 Ok(Value::Mpfr(Float::with_val_round(prec, f.sin(), round).0))
             } else {
                 Ok(Value::Num(v.as_number().sin()))
@@ -1377,7 +1380,7 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
             if ctx.rt.bignum {
                 let prec = ctx.rt.mpfr_prec_bits();
                 let round = ctx.rt.mpfr_round();
-                let f = value_to_float(&v, prec);
+                let f = value_to_float(&v, prec, round);
                 Ok(Value::Mpfr(Float::with_val_round(prec, f.cos(), round).0))
             } else {
                 Ok(Value::Num(v.as_number().cos()))
@@ -1387,8 +1390,8 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
             if ctx.rt.bignum {
                 let prec = ctx.rt.mpfr_prec_bits();
                 let round = ctx.rt.mpfr_round();
-                let y = value_to_float(&eval_expr(&args[0], ctx)?, prec);
-                let x = value_to_float(&eval_expr(&args[1], ctx)?, prec);
+                let y = value_to_float(&eval_expr(&args[0], ctx)?, prec, round);
+                let x = value_to_float(&eval_expr(&args[1], ctx)?, prec, round);
                 Ok(Value::Mpfr(Float::with_val_round(prec, y.atan2(&x), round).0))
             } else {
                 let y = eval_expr(&args[0], ctx)?.as_number();
@@ -1401,7 +1404,7 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
             if ctx.rt.bignum {
                 let prec = ctx.rt.mpfr_prec_bits();
                 let round = ctx.rt.mpfr_round();
-                let f = value_to_float(&v, prec);
+                let f = value_to_float(&v, prec, round);
                 Ok(Value::Mpfr(Float::with_val_round(prec, f.exp(), round).0))
             } else {
                 Ok(Value::Num(v.as_number().exp()))
@@ -1412,7 +1415,7 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
             if ctx.rt.bignum {
                 let prec = ctx.rt.mpfr_prec_bits();
                 let round = ctx.rt.mpfr_round();
-                let f = value_to_float(&v, prec);
+                let f = value_to_float(&v, prec, round);
                 Ok(Value::Mpfr(Float::with_val_round(prec, f.ln(), round).0))
             } else {
                 Ok(Value::Num(v.as_number().ln()))
