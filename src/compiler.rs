@@ -1795,8 +1795,7 @@ mod tests {
         );
         // Both decimal literals round to the same nearest f64 (2^63); reject that PushNum.
         assert!(
-            !ops
-                .iter()
+            !ops.iter()
                 .any(|o| matches!(o, Op::PushNum(n) if *n == 9223372036854775808.0)),
             "must not push i64 max through f64, ops={ops:?}"
         );

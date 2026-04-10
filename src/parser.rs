@@ -1009,9 +1009,6 @@ impl<'a> Parser<'a> {
             ) {
                 break;
             }
-            if self.in_print_arg {
-                self.rescan_slash_as_regexp()?;
-            }
             let r = self.parse_additive(false)?;
             e = Expr::Binary {
                 op: BinOp::Concat,
@@ -1209,6 +1206,12 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_primary(&mut self, _regex_mode: bool) -> Result<Expr> {
+        // `/` is only lexed as [`Token::Slash`] when `regex_mode` was false (e.g. after `=`).
+        // At the start of a primary, `/` cannot be division — division is handled in
+        // [`Self::parse_multiplicative`]. So reinterpret as `/regex/` (POSIX awk).
+        if self.cur == Token::Slash {
+            self.rescan_slash_as_regexp()?;
+        }
         match &self.cur.clone() {
             Token::Number(n) => {
                 let n = *n;
@@ -1414,6 +1417,19 @@ mod tests {
             Expr::IntegerLiteral(s) => s.parse::<i64>().ok() == Some(v),
             Expr::Number(n) => *n == v as f64,
             _ => false,
+        }
+    }
+
+    #[test]
+    fn gsub_sub_split_accept_regexp_literal_args() {
+        for prog in [
+            r#"BEGIN { gsub(/a/, "X", s) }"#,
+            r#"BEGIN { sub(/a/, "X", s) }"#,
+            r#"BEGIN { split("a1b", a, /[0-9]/) }"#,
+            // RHS of `=` must lex `/` as regexp, not division (see `bump` after `=`).
+            r#"BEGIN { x = /foo/ }"#,
+        ] {
+            parse_program(prog).unwrap_or_else(|e| panic!("parse {prog:?}: {e:?}"));
         }
     }
 
