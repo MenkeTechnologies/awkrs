@@ -3350,24 +3350,22 @@ fn exec_print(ctx: &mut VmCtx<'_>, argc: u16, redir: RedirKind, is_printf: bool)
         emit_with_redir(ctx, &s, redir, redir_path.as_deref())?;
     } else if redir == RedirKind::Stdout && ctx.print_out.is_none() {
         // ── Fast path: write directly into rt.print_buf, zero intermediate allocs ──
-        // Copy separators to stack (typically 1-2 bytes) to avoid borrow conflict with print_buf.
-        let mut ofs_local = [0u8; 64];
-        let ofs_len = ctx.rt.ofs_bytes.len().min(64);
-        ofs_local[..ofs_len].copy_from_slice(&ctx.rt.ofs_bytes[..ofs_len]);
-        let mut ors_local = [0u8; 64];
-        let ors_len = ctx.rt.ors_bytes.len().min(64);
-        ors_local[..ors_len].copy_from_slice(&ctx.rt.ors_bytes[..ors_len]);
+        // Use full OFS/ORS byte slices (may be longer than a few bytes; gawk allows arbitrary ORS).
+        let ofs_len = ctx.rt.ofs_bytes.len();
+        let ors_len = ctx.rt.ors_bytes.len();
 
         if argc == 0 {
             ctx.rt.print_buf.extend_from_slice(ctx.rt.record.as_bytes());
         } else {
             let start = ctx.stack.len() - argc;
-            ctx.rt
-                .print_buf
-                .reserve(argc.saturating_mul(32).saturating_add(ors_len));
+            ctx.rt.print_buf.reserve(
+                argc.saturating_mul(32)
+                    .saturating_add(ofs_len.saturating_mul(argc.saturating_sub(1)))
+                    .saturating_add(ors_len),
+            );
             for i in 0..argc {
                 if i > 0 {
-                    ctx.rt.print_buf.extend_from_slice(&ofs_local[..ofs_len]);
+                    ctx.rt.print_buf.extend_from_slice(&ctx.rt.ofs_bytes);
                 }
                 let idx = start + i;
                 match &ctx.stack[idx] {
@@ -3384,7 +3382,7 @@ fn exec_print(ctx: &mut VmCtx<'_>, argc: u16, redir: RedirKind, is_printf: bool)
             }
             ctx.stack.truncate(start);
         }
-        ctx.rt.print_buf.extend_from_slice(&ors_local[..ors_len]);
+        ctx.rt.print_buf.extend_from_slice(&ctx.rt.ors_bytes);
     } else {
         // ── Redirect / capture path: build String (I/O dominates, alloc is fine) ──
         let ofs = String::from_utf8_lossy(&ctx.rt.ofs_bytes).into_owned();
@@ -4308,7 +4306,10 @@ mod tests {
         let mut rt = runtime_with_slots(&cp);
         rt.bignum = true;
         vm_run_begin(&cp, &mut rt).unwrap();
-        assert_eq!(String::from_utf8_lossy(&rt.print_buf), "9223372036854775808\n");
+        assert_eq!(
+            String::from_utf8_lossy(&rt.print_buf),
+            "9223372036854775808\n"
+        );
     }
 
     /// Mirrors CLI `-v a=1 -v b=2 -v c=3` (`apply_assigns` stores string values).

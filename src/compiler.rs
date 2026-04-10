@@ -1333,7 +1333,11 @@ fn collect_array_names_expr(e: &Expr, names: &mut HashSet<String>) {
                 GetlineRedir::Primary => {}
             }
         }
-        Expr::Number(_) | Expr::IntegerLiteral(_) | Expr::Str(_) | Expr::RegexpLiteral(_) | Expr::Var(_) => {}
+        Expr::Number(_)
+        | Expr::IntegerLiteral(_)
+        | Expr::Str(_)
+        | Expr::RegexpLiteral(_)
+        | Expr::Var(_) => {}
     }
 }
 
@@ -1781,16 +1785,19 @@ mod tests {
 
     #[test]
     fn compile_bignum_literal_add_uses_push_num_decimal_str_not_f64() {
-        let prog = parse_program(r#"BEGIN { print sprintf("%d", 9223372036854775807 + 1) }"#).unwrap();
+        let prog =
+            parse_program(r#"BEGIN { print sprintf("%d", 9223372036854775807 + 1) }"#).unwrap();
         let cp = Compiler::compile_program(&prog);
         let ops = &cp.begin_chunks[0].ops;
         assert!(
             ops.iter().any(|o| matches!(o, Op::PushNumDecimalStr(_))),
             "expected PushNumDecimalStr for integer literals, ops={ops:?}"
         );
+        // Both decimal literals round to the same nearest f64 (2^63); reject that PushNum.
         assert!(
-            !ops.iter().any(|o| matches!(o, Op::PushNum(n) if *n == 9223372036854775807.0
-                || *n == 9223372036854775808.0)),
+            !ops
+                .iter()
+                .any(|o| matches!(o, Op::PushNum(n) if *n == 9223372036854775808.0)),
             "must not push i64 max through f64, ops={ops:?}"
         );
     }

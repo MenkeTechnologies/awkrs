@@ -175,7 +175,7 @@ awkrs compiles AWK programs into a flat bytecode instruction stream and runs the
 - **Indexed slots:** scalars get `u16` slot indices; reads/writes are flat-array indexing instead of `HashMap` lookups (specials like `NR`/`FS`/`OFS` and array names stay on the HashMap path).
 - **Zero-copy fields:** fields stored as `(u32, u32)` byte ranges into the record string; owned `String`s only on `set_field`.
 - **Direct-to-buffer print:** stdout writes go straight into a 64 KB `Vec<u8>` (flushed at file boundaries) — no per-record `String`, `format!()`, or stdout locking.
-- **Cached separators:** `OFS`/`ORS` bytes cached on the runtime, updated only on assignment.
+- **Cached separators:** `OFS`/`ORS` bytes cached on the runtime, updated only on assignment. The direct-to-buffer stdout `print` path uses the full `ofs_bytes`/`ors_bytes` slices (arbitrary length; not capped at 64 bytes).
 - **Byte-level input:** `read_until(b'\n')` into a reusable `Vec<u8>` skips per-line UTF-8 validation.
 - **Regex cache:** compiled `Regex` objects cached in a `HashMap<String, Regex>`.
 - **`sub`/`gsub`:** when target is `$0`, applies the new record in one step. Literal needles reuse a cached `memmem::Finder`. Constant string operands pass via `Cow` (no per-call alloc).

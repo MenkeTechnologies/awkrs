@@ -1145,10 +1145,8 @@ impl<'a> Parser<'a> {
         // Prefix (including unary `-` for `$-1`) then postfix; bare `$1++` uses the error path in
         // `Token::Dollar` to attach `++` to the field, not to the integer.
         let e = self.parse_prefix_unary(false)?;
-        if matches!(
-            e,
-            Expr::Number(_) | Expr::IntegerLiteral(_) | Expr::Str(_)
-        ) && matches!(self.cur, Token::PlusPlus | Token::MinusMinus)
+        if matches!(e, Expr::Number(_) | Expr::IntegerLiteral(_) | Expr::Str(_))
+            && matches!(self.cur, Token::PlusPlus | Token::MinusMinus)
         {
             return Err(Error::Parse {
                 line: self.line,

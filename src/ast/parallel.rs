@@ -115,7 +115,11 @@ fn expr_blocks_parallel(e: &Expr) -> bool {
             ..
         } => true,
         Expr::GetLine { .. } => false,
-        Expr::Number(_) | Expr::IntegerLiteral(_) | Expr::Str(_) | Expr::RegexpLiteral(_) | Expr::Var(_) => false,
+        Expr::Number(_)
+        | Expr::IntegerLiteral(_)
+        | Expr::Str(_)
+        | Expr::RegexpLiteral(_)
+        | Expr::Var(_) => false,
     }
 }
 

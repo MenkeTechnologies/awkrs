@@ -668,7 +668,11 @@ fn stmt_collect_defines(s: &Stmt, out: &mut FxHashSet<String>) {
 
 fn expr_collect_defines(e: &Expr, out: &mut FxHashSet<String>) {
     match e {
-        Expr::Number(_) | Expr::IntegerLiteral(_) | Expr::Str(_) | Expr::RegexpLiteral(_) | Expr::Var(_) => {}
+        Expr::Number(_)
+        | Expr::IntegerLiteral(_)
+        | Expr::Str(_)
+        | Expr::RegexpLiteral(_)
+        | Expr::Var(_) => {}
         Expr::Field(inner) => expr_collect_defines(inner, out),
         Expr::Index { name, indices } => {
             out.insert(name.clone());
@@ -1113,7 +1117,11 @@ fn lint_expr_printf_deep(w: &impl Fn(&str), e: &Expr) {
                 lint_expr_printf_deep(w, a);
             }
         }
-        Expr::Number(_) | Expr::IntegerLiteral(_) | Expr::Str(_) | Expr::RegexpLiteral(_) | Expr::Var(_) => {}
+        Expr::Number(_)
+        | Expr::IntegerLiteral(_)
+        | Expr::Str(_)
+        | Expr::RegexpLiteral(_)
+        | Expr::Var(_) => {}
         Expr::Field(inner) => lint_expr_printf_deep(w, inner),
         Expr::Index { indices, .. } => {
             for x in indices {
