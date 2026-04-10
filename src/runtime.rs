@@ -12,7 +12,8 @@ use std::sync::{Arc, Mutex};
 
 use crate::error::{Error, Result};
 use memchr::memmem;
-use regex::Regex;
+use regex::bytes::Regex as BytesRegex;
+use regex::{Regex, RegexBuilder};
 
 /// Initial capacity for stdout batching (`print` accumulates here until flush).
 /// Large END blocks (e.g. `for (k in a) print …`) grow this heavily; starting larger
@@ -212,9 +213,16 @@ fn parse_ascii_integer(s: &str) -> Option<i64> {
 
 /// Split `record` using gawk-style **FPAT** (each regex match is one field).
 /// Returns `false` if `fpat` is not a valid regex (caller may fall back to FS).
-fn split_fields_fpat(record: &str, fpat: &str, field_ranges: &mut Vec<(u32, u32)>) -> bool {
+fn split_fields_fpat(
+    record: &str,
+    fpat: &str,
+    field_ranges: &mut Vec<(u32, u32)>,
+    ignore_case: bool,
+) -> bool {
     field_ranges.clear();
-    match Regex::new(fpat) {
+    let mut b = RegexBuilder::new(fpat);
+    b.case_insensitive(ignore_case);
+    match b.build() {
         Ok(re) => {
             for m in re.find_iter(record) {
                 field_ranges.push((m.start() as u32, m.end() as u32));
@@ -222,6 +230,29 @@ fn split_fields_fpat(record: &str, fpat: &str, field_ranges: &mut Vec<(u32, u32)
             true
         }
         Err(_) => false,
+    }
+}
+
+fn split_fields_fieldwidths(record: &str, widths: &[usize], field_ranges: &mut Vec<(u32, u32)>) {
+    field_ranges.clear();
+    if widths.is_empty() {
+        return;
+    }
+    let b = record.as_bytes();
+    let n = b.len();
+    let mut pos = 0usize;
+    let len_w = widths.len();
+    for (i, &w) in widths.iter().enumerate() {
+        let end = if i == len_w - 1 {
+            n
+        } else {
+            (pos + w).min(n)
+        };
+        field_ranges.push((pos as u32, end as u32));
+        pos = end;
+        if pos >= n {
+            break;
+        }
     }
 }
 
@@ -273,7 +304,12 @@ fn split_csv_gawk_fields(record: &str, field_ranges: &mut Vec<(u32, u32)>) {
 }
 
 /// Split `record` into `field_ranges` (replaces contents). Shared by lazy split and stdin path.
-fn split_fields_into(record: &str, fs: &str, field_ranges: &mut Vec<(u32, u32)>) {
+fn split_fields_into(
+    record: &str,
+    fs: &str,
+    field_ranges: &mut Vec<(u32, u32)>,
+    ignore_case: bool,
+) {
     field_ranges.clear();
     // Rough NF estimate from record length reduces per-line `Vec` growth for whitespace/FS splits.
     if !record.is_empty() {
@@ -316,7 +352,9 @@ fn split_fields_into(record: &str, fs: &str, field_ranges: &mut Vec<(u32, u32)>)
         field_ranges.push((start as u32, bytes.len() as u32));
     } else {
         // POSIX: multi-character FS is treated as a regular expression.
-        match Regex::new(fs) {
+        let mut b = RegexBuilder::new(fs);
+        b.case_insensitive(ignore_case);
+        match b.build() {
             Ok(re) => {
                 let mut last = 0;
                 for m in re.find_iter(record) {
@@ -394,6 +432,9 @@ pub struct Runtime {
     pub jit_slot_buf: Vec<f64>,
     /// `-k` / `--csv` (gawk-style): use [`split_csv_gawk_fields`] instead of `FPAT` / `FS` for `$n`.
     pub csv_mode: bool,
+    /// gawk: `RS` longer than one character is a regex delimiter (cached here).
+    pub rs_pattern_for_regex: String,
+    pub rs_regex_bytes: Option<BytesRegex>,
 }
 
 impl Runtime {
@@ -424,6 +465,11 @@ impl Runtime {
         vars.insert("SUBSEP".into(), Value::Str("\x1c".into()));
         // Empty FPAT means use FS for field splitting (gawk).
         vars.insert("FPAT".into(), Value::Str(String::new()));
+        vars.insert("FIELDWIDTHS".into(), Value::Str(String::new()));
+        vars.insert("IGNORECASE".into(), Value::Num(0.0));
+        vars.insert("BINMODE".into(), Value::Num(0.0));
+        vars.insert("LINT".into(), Value::Num(0.0));
+        vars.insert("TEXTDOMAIN".into(), Value::Str(String::new()));
         Self {
             vars,
             global_readonly: None,
@@ -456,6 +502,8 @@ impl Runtime {
             vm_stack: Vec::with_capacity(64),
             jit_slot_buf: Vec::new(),
             csv_mode: false,
+            rs_pattern_for_regex: String::new(),
+            rs_regex_bytes: None,
         }
     }
 
@@ -526,21 +574,76 @@ impl Runtime {
             vm_stack: Vec::with_capacity(64),
             jit_slot_buf: Vec::new(),
             csv_mode,
+            rs_pattern_for_regex: String::new(),
+            rs_regex_bytes: None,
         }
     }
 
     /// Ensure a regex is compiled and cached. Call before `regex_ref()`.
     pub fn ensure_regex(&mut self, pat: &str) -> std::result::Result<(), String> {
-        if !self.regex_cache.contains_key(pat) {
-            let re = Regex::new(pat).map_err(|e| e.to_string())?;
-            self.regex_cache.insert(pat.to_string(), re);
+        let ic = self.ignore_case_flag();
+        let key = format!("{ic}\x1c{pat}");
+        if !self.regex_cache.contains_key(&key) {
+            let mut b = RegexBuilder::new(pat);
+            b.case_insensitive(ic);
+            let re = b.build().map_err(|e| e.to_string())?;
+            self.regex_cache.insert(key, re);
         }
         Ok(())
     }
 
     /// Get a cached regex (must call `ensure_regex` first).
     pub fn regex_ref(&self, pat: &str) -> &Regex {
-        &self.regex_cache[pat]
+        let ic = self.ignore_case_flag();
+        let key = format!("{ic}\x1c{pat}");
+        &self.regex_cache[&key]
+    }
+
+    /// gawk **`IGNORECASE`**: truthy value enables case-insensitive regex and string compares.
+    #[inline]
+    pub fn ignore_case_flag(&self) -> bool {
+        self.get_global_var("IGNORECASE")
+            .map(|v| v.truthy())
+            .unwrap_or(false)
+    }
+
+    pub fn clear_errno(&mut self) {
+        self.vars.insert("ERRNO".into(), Value::Str(String::new()));
+    }
+
+    pub fn set_errno_io(&mut self, e: &std::io::Error) {
+        self.vars
+            .insert("ERRNO".into(), Value::Str(e.to_string()));
+    }
+
+    pub fn ensure_rs_regex_bytes(&mut self) -> Result<()> {
+        let rs = self.rs_string();
+        if self.rs_pattern_for_regex == rs {
+            return Ok(());
+        }
+        self.rs_pattern_for_regex.clear();
+        self.rs_pattern_for_regex.push_str(&rs);
+        if rs == "\n" || rs.is_empty() {
+            self.rs_regex_bytes = None;
+            return Ok(());
+        }
+        if rs.chars().count() <= 1 {
+            self.rs_regex_bytes = None;
+            return Ok(());
+        }
+        self.rs_regex_bytes = Some(
+            BytesRegex::new(&rs).map_err(|e| Error::Runtime(format!("invalid RS regex: {e}")))?,
+        );
+        Ok(())
+    }
+
+    pub fn set_rt_from_bytes(&mut self, sep: &[u8]) {
+        let t = if sep.is_empty() {
+            String::new()
+        } else {
+            String::from_utf8_lossy(sep).into_owned()
+        };
+        self.vars.insert("RT".into(), Value::Str(t));
     }
 
     /// Cached [`memmem::Finder`] for a literal pattern string (non-empty).
@@ -727,30 +830,31 @@ impl Runtime {
             .unwrap_or_else(|_| format_number(n))
     }
 
-    /// gawk `RT`: text of the input record separator for the last record read.
-    pub fn set_rt_after_read(&mut self, rs_pat: &str) {
-        let t = if rs_pat == "\n" {
-            "\n".to_string()
-        } else if rs_pat.is_empty() {
-            "\n".to_string()
-        } else {
-            rs_pat.to_string()
-        };
-        self.vars.insert("RT".into(), Value::Str(t));
-    }
-
     /// Next **record** from the primary input stream (respects `RS`), used by `getline` with no redirection.
     pub fn read_line_primary(&mut self) -> Result<Option<String>> {
-        let Some(r) = &self.input_reader else {
+        let Some(reader) = self.input_reader.clone() else {
             return Err(Error::Runtime(
                 "`getline` with no file is only valid during normal input".into(),
             ));
         };
         let rs = self.rs_string();
-        if !crate::record_io::read_next_record(r, &rs, &mut self.line_buf)? {
+        self.ensure_rs_regex_bytes()?;
+        let mut rt_sep = Vec::new();
+        if !crate::record_io::read_next_record(
+            &reader,
+            &rs,
+            &mut self.line_buf,
+            &mut rt_sep,
+            self.rs_regex_bytes.as_ref(),
+        )? {
             return Ok(None);
         }
-        let end = crate::record_io::trim_end_record_bytes(&self.line_buf);
+        self.set_rt_from_bytes(&rt_sep);
+        let end = if rs == "\n" {
+            crate::record_io::trim_end_record_bytes(&self.line_buf)
+        } else {
+            self.line_buf.len()
+        };
         Ok(Some(
             String::from_utf8_lossy(&self.line_buf[..end]).into_owned(),
         ))
@@ -855,6 +959,15 @@ impl Runtime {
             self.fields_dirty = true;
             return;
         }
+        let ic = self.ignore_case_flag();
+        if let Some(fw) = self.fieldwidths_vec() {
+            if !fw.is_empty() {
+                split_fields_fieldwidths(record, &fw, &mut self.field_ranges);
+                self.fields.clear();
+                self.fields_dirty = false;
+                return;
+            }
+        }
         // Check FPAT: use Cow to avoid heap alloc when the value is already a string.
         let has_fpat = self
             .get_global_var("FPAT")
@@ -870,20 +983,38 @@ impl Runtime {
                 .unwrap_or_default();
             let fp_trimmed = fp.trim();
             if !fp_trimmed.is_empty()
-                && split_fields_fpat(record, fp_trimmed, &mut self.field_ranges)
+                && split_fields_fpat(record, fp_trimmed, &mut self.field_ranges, ic)
             {
                 return;
             }
         }
         // Use cached_fs (set by set_field_sep_split) to avoid HashMap lookup + String clone.
         if !self.cached_fs.is_empty() {
-            split_fields_into(record, &self.cached_fs, &mut self.field_ranges);
+            split_fields_into(record, &self.cached_fs, &mut self.field_ranges, ic);
         } else {
             let fs_str = self
                 .get_global_var("FS")
                 .map(|v| v.as_str())
                 .unwrap_or_else(|| " ".to_string());
-            split_fields_into(record, &fs_str, &mut self.field_ranges);
+            split_fields_into(record, &fs_str, &mut self.field_ranges, ic);
+        }
+    }
+
+    fn fieldwidths_vec(&self) -> Option<Vec<usize>> {
+        let t = self.get_global_var("FIELDWIDTHS")?.as_str();
+        let t = t.trim();
+        if t.is_empty() {
+            return None;
+        }
+        let v: Vec<usize> = t
+            .split_whitespace()
+            .filter_map(|w| w.parse::<usize>().ok())
+            .filter(|&w| w > 0)
+            .collect();
+        if v.is_empty() {
+            None
+        } else {
+            Some(v)
         }
     }
 
@@ -1067,10 +1198,12 @@ impl Runtime {
     /// Parse the current `line_buf` as a record. Avoids the borrow-checker conflict
     /// of borrowing `line_buf` and calling `set_field_sep_split` simultaneously.
     pub fn set_record_from_line_buf(&mut self) {
-        // Trim trailing \n\r
+        let rs = self.rs_string();
         let mut end = self.line_buf.len();
-        while end > 0 && (self.line_buf[end - 1] == b'\n' || self.line_buf[end - 1] == b'\r') {
-            end -= 1;
+        if rs == "\n" {
+            while end > 0 && (self.line_buf[end - 1] == b'\n' || self.line_buf[end - 1] == b'\r') {
+                end -= 1;
+            }
         }
         // Copy the trimmed line into record (reuses allocation)
         self.record.clear();
@@ -1272,7 +1405,7 @@ impl Runtime {
 }
 
 /// Field-splitting for `split(s, a [, fs])` — same algorithm as [`crate::bytecode::Op::Split`].
-pub fn split_string_by_field_separator(s: &str, fs: &str) -> Vec<String> {
+pub fn split_string_by_field_separator(s: &str, fs: &str, ignore_case: bool) -> Vec<String> {
     if fs.is_empty() {
         s.chars().map(|c| c.to_string()).collect()
     } else if fs == " " {
@@ -1280,7 +1413,9 @@ pub fn split_string_by_field_separator(s: &str, fs: &str) -> Vec<String> {
     } else if fs.len() == 1 {
         s.split(fs).map(String::from).collect()
     } else {
-        match Regex::new(fs) {
+        let mut b = RegexBuilder::new(fs);
+        b.case_insensitive(ignore_case);
+        match b.build() {
             Ok(re) => re.split(s).map(String::from).collect(),
             Err(_) => s.split(fs).map(String::from).collect(),
         }
@@ -1337,6 +1472,8 @@ impl Clone for Runtime {
             vm_stack: Vec::with_capacity(64),
             jit_slot_buf: Vec::new(),
             csv_mode: self.csv_mode,
+            rs_pattern_for_regex: self.rs_pattern_for_regex.clone(),
+            rs_regex_bytes: self.rs_regex_bytes.clone(),
         }
     }
 }

@@ -145,6 +145,7 @@ pub fn run(bin_name: &str) -> Result<()> {
     let chunk_lines = args.read_ahead.max(1);
 
     if files.is_empty() {
+        rt.vars.insert("ARGIND".into(), Value::Num(0.0));
         rt.filename = "-".into();
         vm_run_beginfile(cp.as_ref(), &mut rt)?;
         if rt.exit_pending {
@@ -159,7 +160,9 @@ pub fn run(bin_name: &str) -> Result<()> {
         }
         vm_run_endfile(cp.as_ref(), &mut rt)?;
     } else {
-        for p in &files {
+        for (arg_idx, p) in files.iter().enumerate() {
+            rt.vars
+                .insert("ARGIND".into(), Value::Num((arg_idx + 1) as f64));
             rt.filename = p.to_string_lossy().into_owned();
             rt.fnr = 0.0;
             vm_run_beginfile(cp.as_ref(), &mut rt)?;
@@ -379,13 +382,25 @@ fn process_stdin_parallel(
     Ok(())
 }
 
-fn mmap_file_readonly(path: &Path) -> Result<Mmap> {
-    let file = File::open(path).map_err(|e| Error::ProgramFile(path.to_path_buf(), e))?;
+fn mmap_file_readonly(path: &Path, rt: &mut Runtime) -> Result<Mmap> {
+    let file = match File::open(path) {
+        Ok(f) => {
+            rt.clear_errno();
+            f
+        }
+        Err(e) => {
+            rt.set_errno_io(&e);
+            return Err(Error::ProgramFile(path.to_path_buf(), e));
+        }
+    };
     // SAFETY: read-only map of a file we opened; no concurrent writes assumed (same as `fs::read`).
     unsafe {
         memmap2::MmapOptions::new()
             .map(&file)
-            .map_err(|e| Error::ProgramFile(path.to_path_buf(), e))
+            .map_err(|e| {
+                rt.set_errno_io(&e);
+                Error::ProgramFile(path.to_path_buf(), e)
+            })
     }
 }
 
@@ -435,7 +450,7 @@ fn process_file_parallel(
     nr_offset: f64,
 ) -> Result<usize> {
     let lines = if let Some(p) = path {
-        let mmap = mmap_file_readonly(p)?;
+        let mmap = mmap_file_readonly(p, rt)?;
         split_bytes_into_owned_lines(mmap.as_ref())
     } else {
         read_all_lines(std::io::stdin())?
@@ -527,8 +542,18 @@ fn process_file(
 
     // Streaming path: stdin or programs using primary getline.
     let reader: Box<dyn Read + Send> = if let Some(p) = path {
-        Box::new(File::open(p).map_err(|e| Error::ProgramFile(p.to_path_buf(), e))?)
+        match File::open(p) {
+            Ok(f) => {
+                rt.clear_errno();
+                Box::new(f)
+            }
+            Err(e) => {
+                rt.set_errno_io(&e);
+                return Err(Error::ProgramFile(p.to_path_buf(), e));
+            }
+        }
     } else {
+        rt.clear_errno();
         Box::new(std::io::stdin())
     };
     let br = Arc::new(std::sync::Mutex::new(BufReader::new(reader)));
@@ -537,10 +562,18 @@ fn process_file(
     let mut count = 0usize;
     loop {
         let rs = rt.rs_string();
-        if !crate::record_io::read_next_record(&br, &rs, &mut rt.line_buf)? {
+        rt.ensure_rs_regex_bytes()?;
+        let mut rt_sep = Vec::new();
+        if !crate::record_io::read_next_record(
+            &br,
+            &rs,
+            &mut rt.line_buf,
+            &mut rt_sep,
+            rt.rs_regex_bytes.as_ref(),
+        )? {
             break;
         }
-        rt.set_rt_after_read(&rs);
+        rt.set_rt_from_bytes(&rt_sep);
         count += 1;
         rt.nr += 1.0;
         rt.fnr += 1.0;
@@ -725,6 +758,22 @@ fn detect_inline_program(cp: &CompiledProgram, rt: &Runtime) -> Option<(InlinePa
     Some((pattern, action))
 }
 
+fn dispatch_slurp_record(
+    cp: &CompiledProgram,
+    range_state: &mut [bool],
+    rt: &mut Runtime,
+    fs: &str,
+    chunk: &[u8],
+    rt_bytes: &[u8],
+) -> Result<bool> {
+    rt.nr += 1.0;
+    rt.fnr += 1.0;
+    rt.set_rt_from_bytes(rt_bytes);
+    let line = String::from_utf8_lossy(chunk);
+    rt.set_field_sep_split(fs, line.as_ref());
+    dispatch_rules(cp, range_state, rt)
+}
+
 /// Fast file processing: read entire file into memory, iterate lines by byte-scanning.
 /// No Mutex, no BufReader, no syscall per line, no per-line buffer allocation.
 fn process_file_slurp(
@@ -733,7 +782,7 @@ fn process_file_slurp(
     range_state: &mut [bool],
     rt: &mut Runtime,
 ) -> Result<usize> {
-    let mmap = mmap_file_readonly(path)?;
+    let mmap = mmap_file_readonly(path, rt)?;
     let data = mmap.as_ref();
     // Cache FS once (only changes if program assigns FS mid-execution, rare).
     let fs = rt
@@ -747,18 +796,42 @@ fn process_file_slurp(
         return process_file_slurp_inline(data, &fs, pattern, action, cp, rt);
     }
 
+    rt.ensure_rs_regex_bytes()?;
     let rs = rt.rs_string();
-    let chunks = crate::record_io::split_input_into_records(data, &rs);
+    let re_owned = rt.rs_regex_bytes.clone();
+
     let mut count = 0usize;
+
+    if let Some(regex) = re_owned.as_ref() {
+        if data.is_empty() {
+            return Ok(0);
+        }
+        let mut last = 0usize;
+        for m in regex.find_iter(data) {
+            let chunk = &data[last..m.start()];
+            last = m.end();
+            count += 1;
+            if dispatch_slurp_record(cp, range_state, rt, &fs, chunk, m.as_bytes())? {
+                return Ok(count);
+            }
+        }
+        let chunk = &data[last..];
+        count += 1;
+        if dispatch_slurp_record(cp, range_state, rt, &fs, chunk, b"")? {
+            return Ok(count);
+        }
+        return Ok(count);
+    }
+
+    let chunks = crate::record_io::split_input_into_records(data, &rs, None);
     for chunk in chunks {
         count += 1;
-        rt.nr += 1.0;
-        rt.fnr += 1.0;
-        rt.set_rt_after_read(&rs);
-        let line = String::from_utf8_lossy(chunk);
-        rt.set_field_sep_split(&fs, line.as_ref());
-
-        if dispatch_rules(cp, range_state, rt)? {
+        let rtb: &[u8] = if rs.is_empty() {
+            b"\n"
+        } else {
+            rs.as_bytes()
+        };
+        if dispatch_slurp_record(cp, range_state, rt, &fs, chunk, rtb)? {
             break;
         }
     }

@@ -8,6 +8,7 @@ use crate::format;
 use crate::interp::Flow;
 use crate::runtime::AwkMap;
 use crate::runtime::{Runtime, Value};
+use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::ffi::c_void;
 use std::io::{self, Write};
@@ -594,14 +595,17 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
             }
         }
         MIXED_CMP_EQ => {
-            let r = awk_cmp_eq(&jit_f64_to_value(ctx, a2), &jit_f64_to_value(ctx, a3));
+            let ic = ctx.rt.ignore_case_flag();
+            let r = awk_cmp_eq(&jit_f64_to_value(ctx, a2), &jit_f64_to_value(ctx, a3), ic);
             r.as_number()
         }
         MIXED_CMP_NE => {
-            let eq = awk_cmp_eq(&jit_f64_to_value(ctx, a2), &jit_f64_to_value(ctx, a3));
+            let ic = ctx.rt.ignore_case_flag();
+            let eq = awk_cmp_eq(&jit_f64_to_value(ctx, a2), &jit_f64_to_value(ctx, a3), ic);
             Value::Num(if eq.as_number() != 0.0 { 0.0 } else { 1.0 }).as_number()
         }
         MIXED_CMP_LT | MIXED_CMP_LE | MIXED_CMP_GT | MIXED_CMP_GE => {
+            let ic = ctx.rt.ignore_case_flag();
             let bop = match op {
                 MIXED_CMP_LT => BinOp::Lt,
                 MIXED_CMP_LE => BinOp::Le,
@@ -609,7 +613,7 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
                 MIXED_CMP_GE => BinOp::Ge,
                 _ => unreachable!(),
             };
-            awk_cmp_rel(bop, &jit_f64_to_value(ctx, a2), &jit_f64_to_value(ctx, a3)).as_number()
+            awk_cmp_rel(bop, &jit_f64_to_value(ctx, a2), &jit_f64_to_value(ctx, a3), ic).as_number()
         }
         MIXED_NEG => {
             let v = jit_f64_to_value(ctx, a2);
@@ -1102,7 +1106,11 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
                 .get("FS")
                 .map(|v| v.as_str())
                 .unwrap_or_else(|| " ".into());
-            let parts = crate::runtime::split_string_by_field_separator(&s, &fs);
+            let parts = crate::runtime::split_string_by_field_separator(
+                &s,
+                &fs,
+                ctx.rt.ignore_case_flag(),
+            );
             let n = parts.len();
             ctx.rt.split_into_array(&name, &parts);
             n as f64
@@ -1111,7 +1119,11 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
             let name = ctx.str_ref(a1).to_string();
             let s = jit_f64_to_value(ctx, a2).as_str();
             let fs = jit_f64_to_value(ctx, a3).as_str();
-            let parts = crate::runtime::split_string_by_field_separator(&s, &fs);
+            let parts = crate::runtime::split_string_by_field_separator(
+                &s,
+                &fs,
+                ctx.rt.ignore_case_flag(),
+            );
             let n = parts.len();
             ctx.rt.split_into_array(&name, &parts);
             n as f64
@@ -2364,33 +2376,39 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             Op::CmpEq => {
                 let b = ctx.pop();
                 let a = ctx.pop();
-                ctx.push(awk_cmp_eq(&a, &b));
+                let ic = ctx.rt.ignore_case_flag();
+                ctx.push(awk_cmp_eq(&a, &b, ic));
             }
             Op::CmpNe => {
                 let b = ctx.pop();
                 let a = ctx.pop();
-                let eq = awk_cmp_eq(&a, &b);
+                let ic = ctx.rt.ignore_case_flag();
+                let eq = awk_cmp_eq(&a, &b, ic);
                 ctx.push(Value::Num(if eq.as_number() != 0.0 { 0.0 } else { 1.0 }));
             }
             Op::CmpLt => {
                 let b = ctx.pop();
                 let a = ctx.pop();
-                ctx.push(awk_cmp_rel(BinOp::Lt, &a, &b));
+                let ic = ctx.rt.ignore_case_flag();
+                ctx.push(awk_cmp_rel(BinOp::Lt, &a, &b, ic));
             }
             Op::CmpLe => {
                 let b = ctx.pop();
                 let a = ctx.pop();
-                ctx.push(awk_cmp_rel(BinOp::Le, &a, &b));
+                let ic = ctx.rt.ignore_case_flag();
+                ctx.push(awk_cmp_rel(BinOp::Le, &a, &b, ic));
             }
             Op::CmpGt => {
                 let b = ctx.pop();
                 let a = ctx.pop();
-                ctx.push(awk_cmp_rel(BinOp::Gt, &a, &b));
+                let ic = ctx.rt.ignore_case_flag();
+                ctx.push(awk_cmp_rel(BinOp::Gt, &a, &b, ic));
             }
             Op::CmpGe => {
                 let b = ctx.pop();
                 let a = ctx.pop();
-                ctx.push(awk_cmp_rel(BinOp::Ge, &a, &b));
+                let ic = ctx.rt.ignore_case_flag();
+                ctx.push(awk_cmp_rel(BinOp::Ge, &a, &b, ic));
             }
 
             // ── String / regex ──────────────────────────────────────────
@@ -2559,7 +2577,11 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 };
                 let s = ctx.pop().as_str();
                 let arr_name = ctx.str_ref(arr).to_string();
-                let parts = crate::runtime::split_string_by_field_separator(&s, &fs);
+                let parts = crate::runtime::split_string_by_field_separator(
+                &s,
+                &fs,
+                ctx.rt.ignore_case_flag(),
+            );
                 let n = parts.len();
                 ctx.rt.split_into_array(&arr_name, &parts);
                 ctx.push(Value::Num(n as f64));
@@ -2845,7 +2867,7 @@ fn locale_str_cmp(a: &str, b: &str) -> Ordering {
     }
 }
 
-fn awk_cmp_eq(a: &Value, b: &Value) -> Value {
+fn awk_cmp_eq(a: &Value, b: &Value, ignore_case: bool) -> Value {
     // Fast path: both Num — skip is_numeric_str() entirely.
     if let (Value::Num(an), Value::Num(bn)) = (a, b) {
         return Value::Num(if (an - bn).abs() < f64::EPSILON {
@@ -2865,11 +2887,18 @@ fn awk_cmp_eq(a: &Value, b: &Value) -> Value {
     }
     let ls = a.as_str_cow();
     let rs = b.as_str_cow();
+    if ignore_case {
+        return Value::Num(if ls.eq_ignore_ascii_case(rs.as_ref()) {
+            1.0
+        } else {
+            0.0
+        });
+    }
     let ord = locale_str_cmp(&ls, &rs);
     Value::Num(if ord == Ordering::Equal { 1.0 } else { 0.0 })
 }
 
-fn awk_cmp_rel(op: BinOp, a: &Value, b: &Value) -> Value {
+fn awk_cmp_rel(op: BinOp, a: &Value, b: &Value, ignore_case: bool) -> Value {
     // Fast path: both Num — skip is_numeric_str() entirely.
     if let (Value::Num(an), Value::Num(bn)) = (a, b) {
         let ok = match op {
@@ -2895,7 +2924,13 @@ fn awk_cmp_rel(op: BinOp, a: &Value, b: &Value) -> Value {
     }
     let ls = a.as_str_cow();
     let rs = b.as_str_cow();
-    let ord = locale_str_cmp(&ls, &rs);
+    let ord = if ignore_case {
+        let la = ls.to_string().to_lowercase();
+        let lb = rs.to_string().to_lowercase();
+        locale_str_cmp(&Cow::Owned(la), &Cow::Owned(lb))
+    } else {
+        locale_str_cmp(&ls, &rs)
+    };
     let ok = match op {
         BinOp::Lt => ord == Ordering::Less,
         BinOp::Le => matches!(ord, Ordering::Less | Ordering::Equal),

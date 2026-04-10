@@ -30,6 +30,11 @@ const SPECIAL_VARS: &[&str] = &[
     "PROCINFO",
     "SYMTAB",
     "FUNCTAB",
+    "FIELDWIDTHS",
+    "IGNORECASE",
+    "BINMODE",
+    "LINT",
+    "TEXTDOMAIN",
 ];
 
 /// Loop or `switch` — both support `break`; only loops support `continue`.
