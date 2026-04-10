@@ -322,6 +322,8 @@ pub const MIXED_NEG: u32 = 105;
 pub const MIXED_POS: u32 = 106;
 pub const MIXED_NOT: u32 = 107;
 pub const MIXED_TO_BOOL: u32 = 108;
+/// `^` / `**` — `a2`/`a3` are NaN-boxed operands.
+pub const MIXED_POW: u32 = 109;
 pub const MIXED_CMP_EQ: u32 = 110;
 pub const MIXED_CMP_NE: u32 = 111;
 pub const MIXED_CMP_LT: u32 = 112;
@@ -773,6 +775,8 @@ pub fn needs_mixed_mode(ops: &[Op]) -> bool {
             // Locals/globals can hold strings; non-mixed JIT would stack plain f64 and break
             // arithmetic (`x*2` when x is a numeric string) and returns (`return x`).
             || matches!(op, Op::GetVar(_))
+            // `pow` uses the mixed val_dispatch path (NaN-boxed operands).
+            || matches!(op, Op::Pow)
     })
 }
 
@@ -867,7 +871,7 @@ pub fn is_jit_eligible(ops: &[Op]) -> bool {
             Op::SetSlot(_) => { /* peek TOS, no depth change */ }
 
             // Arithmetic (pop 2, push 1)
-            Op::Add | Op::Sub | Op::Mul | Op::Div | Op::Mod => {
+            Op::Add | Op::Sub | Op::Mul | Op::Div | Op::Mod | Op::Pow => {
                 if depth < 2 {
                     return false;
                 }
@@ -1198,13 +1202,23 @@ pub fn is_jit_eligible(ops: &[Op]) -> bool {
                 depth -= 1;
             }
 
-            Op::GetLine { source, .. } => match source {
-                GetlineSource::Primary => {}
-                GetlineSource::File | GetlineSource::Coproc => {
-                    if depth < 1 {
-                        return false;
+            Op::GetLine {
+                source,
+                push_result,
+                ..
+            } => {
+                if *push_result {
+                    return false;
+                }
+                match source {
+                    GetlineSource::Primary => {}
+                    GetlineSource::File | GetlineSource::Coproc => {
+                        if depth < 1 {
+                            return false;
+                        }
+                        depth -= 1;
                     }
-                    depth -= 1;
+                    GetlineSource::Pipe => return false,
                 }
             },
 
@@ -1396,7 +1410,7 @@ pub fn try_compile_with_options(
         MIXED_GET_VAR, MIXED_GSUB_FIELD, MIXED_GSUB_INDEX, MIXED_GSUB_INDEX_STASH,
         MIXED_GSUB_RECORD, MIXED_GSUB_SLOT, MIXED_GSUB_VAR, MIXED_INCDEC_SLOT, MIXED_INCR_SLOT,
         MIXED_JOIN_ARRAY_KEY, MIXED_JOIN_KEY_ARG, MIXED_MATCH_BUILTIN, MIXED_MATCH_BUILTIN_ARR,
-        MIXED_MOD, MIXED_MUL, MIXED_NEG, MIXED_NOT, MIXED_PATSPLIT, MIXED_PATSPLIT_FP,
+        MIXED_MOD, MIXED_MUL, MIXED_NEG, MIXED_NOT, MIXED_PATSPLIT, MIXED_PATSPLIT_FP, MIXED_POW,
         MIXED_PATSPLIT_FP_SEP, MIXED_PATSPLIT_FP_SEP_WIDE, MIXED_PATSPLIT_SEP,
         MIXED_PATSPLIT_STASH_SEPS, MIXED_POS, MIXED_PRINTF_FLUSH, MIXED_PRINTF_FLUSH_REDIR,
         MIXED_PRINT_ARG, MIXED_PRINT_FLUSH, MIXED_PRINT_FLUSH_REDIR, MIXED_PUSH_STR,
@@ -1812,7 +1826,12 @@ pub fn try_compile_with_options(
                         stack.push(builder.inst_results(call)[0]);
                     }
                 }
-                Op::GetLine { var, source } => {
+                Op::GetLine {
+                    var,
+                    source,
+                    push_result,
+                } => {
+                    debug_assert!(!push_result, "expression getline is not JIT-compiled");
                     let a1_enc = if let Some(v) = var {
                         builder.ins().iconst(types::I32, i64::from(v))
                     } else {
@@ -1854,6 +1873,7 @@ pub fn try_compile_with_options(
                                 &[vmctx, op_c, a1_enc, path, zf],
                             );
                         }
+                        GetlineSource::Pipe => return None,
                     }
                 }
                 Op::Patsplit { arr, has_fp, seps } => {
@@ -2481,6 +2501,22 @@ pub fn try_compile_with_options(
                         let trunc = builder.ins().trunc(div);
                         let prod = builder.ins().fmul(trunc, b);
                         stack.push(builder.ins().fsub(a, prod));
+                    }
+                }
+                Op::Pow => {
+                    let b = stack.pop().expect("Pow");
+                    let a = stack.pop().expect("Pow");
+                    if mixed {
+                        let op_c = builder.ins().iconst(types::I32, i64::from(MIXED_POW));
+                        let z = builder.ins().iconst(types::I32, 0);
+                        let call = builder.ins().call_indirect(
+                            val_sig_ir,
+                            val_fn_ptr,
+                            &[vmctx, op_c, z, a, b],
+                        );
+                        stack.push(builder.inst_results(call)[0]);
+                    } else {
+                        return None;
                     }
                 }
 
@@ -3835,7 +3871,7 @@ pub fn is_numeric_stack_eligible(ops: &[Op]) -> bool {
     for op in ops {
         match op {
             Op::PushNum(_) => depth += 1,
-            Op::Add | Op::Sub | Op::Mul | Op::Div | Op::Mod => {
+            Op::Add | Op::Sub | Op::Mul | Op::Div | Op::Mod | Op::Pow => {
                 if depth < 2 {
                     return false;
                 }
@@ -5370,6 +5406,7 @@ mod tests {
             Op::GetLine {
                 var: None,
                 source: GetlineSource::Primary,
+                push_result: false,
             },
             Op::ReturnEmpty,
         ];
@@ -5381,6 +5418,7 @@ mod tests {
             Op::GetLine {
                 var: Some(0),
                 source: GetlineSource::File,
+                push_result: false,
             },
             Op::ReturnEmpty,
         ];

@@ -153,8 +153,15 @@ fn collect_stmt_strings(s: &Stmt, out: &mut BTreeMap<String, usize>) {
                 collect_expr_strings(e, out);
             }
         }
-        Stmt::GetLine { redir, .. } => {
+        Stmt::GetLine {
+            pipe_cmd,
+            redir,
+            ..
+        } => {
             use crate::ast::GetlineRedir;
+            if let Some(cmd) = pipe_cmd {
+                collect_expr_strings(cmd, out);
+            }
             match redir {
                 GetlineRedir::Primary => {}
                 GetlineRedir::File(e) | GetlineRedir::Coproc(e) => collect_expr_strings(e, out),
@@ -254,6 +261,20 @@ fn collect_expr_strings(e: &Expr, out: &mut BTreeMap<String, usize>) {
             }
             crate::ast::IncDecTarget::Var(_) => {}
         },
+        Expr::GetLine {
+            pipe_cmd,
+            redir,
+            ..
+        } => {
+            use crate::ast::GetlineRedir;
+            if let Some(cmd) = pipe_cmd {
+                collect_expr_strings(cmd, out);
+            }
+            match redir {
+                GetlineRedir::Primary => {}
+                GetlineRedir::File(e) | GetlineRedir::Coproc(e) => collect_expr_strings(e, out),
+            }
+        }
     }
 }
 
@@ -583,9 +604,16 @@ fn stmt_collect_defines(s: &Stmt, out: &mut FxHashSet<String>) {
                 expr_collect_defines(e, out);
             }
         }
-        Stmt::GetLine { var, redir } => {
+        Stmt::GetLine {
+            pipe_cmd,
+            var,
+            redir,
+        } => {
             if let Some(v) = var {
                 out.insert(v.clone());
+            }
+            if let Some(cmd) = pipe_cmd {
+                expr_collect_defines(cmd, out);
             }
             match redir {
                 GetlineRedir::Primary => {}
@@ -689,6 +717,22 @@ fn expr_collect_defines(e: &Expr, out: &mut FxHashSet<String>) {
                 }
             }
         },
+        Expr::GetLine {
+            pipe_cmd,
+            var,
+            redir,
+        } => {
+            if let Some(v) = var {
+                out.insert(v.clone());
+            }
+            if let Some(cmd) = pipe_cmd {
+                expr_collect_defines(cmd, out);
+            }
+            match redir {
+                GetlineRedir::Primary => {}
+                GetlineRedir::File(e) | GetlineRedir::Coproc(e) => expr_collect_defines(e, out),
+            }
+        }
     }
 }
 
@@ -823,12 +867,21 @@ fn stmt_lint_reads(
                 expr_lint_reads(e, global_def, params, warned, w);
             }
         }
-        Stmt::GetLine { redir, .. } => match redir {
-            GetlineRedir::Primary => {}
-            GetlineRedir::File(e) | GetlineRedir::Coproc(e) => {
-                expr_lint_reads(e, global_def, params, warned, w);
+        Stmt::GetLine {
+            pipe_cmd,
+            redir,
+            ..
+        } => {
+            if let Some(cmd) = pipe_cmd {
+                expr_lint_reads(cmd, global_def, params, warned, w);
             }
-        },
+            match redir {
+                GetlineRedir::Primary => {}
+                GetlineRedir::File(e) | GetlineRedir::Coproc(e) => {
+                    expr_lint_reads(e, global_def, params, warned, w);
+                }
+            }
+        }
         Stmt::Delete { indices, .. } => {
             if let Some(ix) = indices {
                 for e in ix {
@@ -928,6 +981,21 @@ fn expr_lint_reads(
                 }
             }
         },
+        Expr::GetLine {
+            pipe_cmd,
+            redir,
+            ..
+        } => {
+            if let Some(cmd) = pipe_cmd {
+                expr_lint_reads(cmd, global_def, params, warned, w);
+            }
+            match redir {
+                GetlineRedir::Primary => {}
+                GetlineRedir::File(e) | GetlineRedir::Coproc(e) => {
+                    expr_lint_reads(e, global_def, params, warned, w);
+                }
+            }
+        }
     }
 }
 
@@ -1077,6 +1145,19 @@ fn lint_expr_printf_deep(w: &impl Fn(&str), e: &Expr) {
             }
             IncDecTarget::Var(_) => {}
         },
+        Expr::GetLine {
+            pipe_cmd,
+            redir,
+            ..
+        } => {
+            if let Some(cmd) = pipe_cmd {
+                lint_expr_printf_deep(w, cmd);
+            }
+            match redir {
+                GetlineRedir::Primary => {}
+                GetlineRedir::File(e) | GetlineRedir::Coproc(e) => lint_expr_printf_deep(w, e),
+            }
+        }
     }
 }
 
@@ -1183,10 +1264,19 @@ fn lint_stmt_printf_args(w: &impl Fn(&str), stmt: &Stmt) {
                 lint_stmt_printf_args(w, s);
             }
         }
-        Stmt::GetLine { redir, .. } => match redir {
-            GetlineRedir::Primary => {}
-            GetlineRedir::File(e) | GetlineRedir::Coproc(e) => lint_expr_printf_deep(w, e),
-        },
+        Stmt::GetLine {
+            pipe_cmd,
+            redir,
+            ..
+        } => {
+            if let Some(cmd) = pipe_cmd {
+                lint_expr_printf_deep(w, cmd);
+            }
+            match redir {
+                GetlineRedir::Primary => {}
+                GetlineRedir::File(e) | GetlineRedir::Coproc(e) => lint_expr_printf_deep(w, e),
+            }
+        }
         Stmt::Delete { indices, .. } => {
             if let Some(ix) = indices {
                 for e in ix {

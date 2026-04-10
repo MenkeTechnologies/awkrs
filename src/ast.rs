@@ -87,8 +87,10 @@ pub enum Stmt {
         indices: Option<Vec<Expr>>,
     },
     Return(Option<Expr>),
-    /// `getline` / `getline var` / `getline < file` / `getline var < file`
+    /// `getline` / `getline var` / `getline < file` / `expr | getline [var]` / …
     GetLine {
+        /// `expr | getline` — shell command string from `expr` (via `sh -c`).
+        pipe_cmd: Option<Box<Expr>>,
         var: Option<String>,
         redir: GetlineRedir,
     },
@@ -201,6 +203,13 @@ pub enum Expr {
         op: IncDecOp,
         target: IncDecTarget,
     },
+    /// `getline` as an expression — yields `1` (record), `0` (EOF), or `-1` (error).
+    /// Same shape as [`Stmt::GetLine`]; used in `if ((getline x) > 0)` and `expr | getline`.
+    GetLine {
+        pipe_cmd: Option<Box<Expr>>,
+        var: Option<String>,
+        redir: GetlineRedir,
+    },
 }
 
 /// Prefix or postfix `++` / `--`.
@@ -227,6 +236,8 @@ pub enum BinOp {
     Mul,
     Div,
     Mod,
+    /// `^` / `**` — right-associative exponentiation (POSIX awk).
+    Pow,
     Eq,
     Ne,
     Lt,

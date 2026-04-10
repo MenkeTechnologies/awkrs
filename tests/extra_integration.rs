@@ -50,6 +50,36 @@ fn numeric_lt_false_when_comparing_zero_to_negative() {
 }
 
 #[test]
+fn posix_exponentiation_caret_star_star_right_assoc() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { print 2^3, 2**3, 2^3^2, -2^2 }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "8 8 512 -4\n");
+}
+
+#[test]
+fn getline_expr_compares_return_value() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { if ((getline x) > 0) print x }"#,
+        "hello\n",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "hello\n");
+}
+
+#[test]
+fn pipe_getline_reads_from_sh_c_pipeline() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { "echo hi" | getline x; print x }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "hi\n");
+}
+
+#[test]
 fn substr_start_beyond_string_yields_empty() {
     let (c, o, _) = run_awkrs_stdin(r#"BEGIN { print substr("hi", 99) }"#, "");
     assert_eq!(c, 0);

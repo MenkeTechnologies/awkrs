@@ -225,8 +225,17 @@ fn format_stmt(st: &Stmt, depth: usize) -> String {
                 format!("{ind}delete {name}[{}];\n", parts.join(", "))
             }
         },
-        Stmt::GetLine { var, redir } => {
-            let mut s = format!("{ind}getline");
+        Stmt::GetLine {
+            pipe_cmd,
+            var,
+            redir,
+        } => {
+            let mut s = ind.to_string();
+            if let Some(cmd) = pipe_cmd {
+                s.push_str(&format_expr(cmd));
+                s.push_str(" | ");
+            }
+            s.push_str("getline");
             if let Some(v) = var {
                 s.push(' ');
                 s.push_str(v);
@@ -375,6 +384,35 @@ pub(crate) fn format_expr(e: &Expr) -> String {
                 format_incdec_index(op, &format!("{name}[{}]", ix.join(", ")))
             }
         },
+        Expr::GetLine {
+            pipe_cmd,
+            var,
+            redir,
+        } => {
+            let mut s = String::new();
+            if let Some(cmd) = pipe_cmd {
+                s.push_str(&format_expr(cmd));
+                s.push_str(" | ");
+            }
+            s.push_str("getline");
+            if let Some(v) = var {
+                s.push(' ');
+                s.push_str(v);
+            }
+            use crate::ast::GetlineRedir;
+            match redir {
+                GetlineRedir::Primary => {}
+                GetlineRedir::File(e) => {
+                    s.push_str(" < ");
+                    s.push_str(&format_expr(e));
+                }
+                GetlineRedir::Coproc(e) => {
+                    s.push_str(" <& ");
+                    s.push_str(&format_expr(e));
+                }
+            }
+            s
+        }
     }
 }
 
@@ -425,6 +463,7 @@ fn binop_str(op: BinOp) -> &'static str {
         BinOp::Mul => "*",
         BinOp::Div => "/",
         BinOp::Mod => "%",
+        BinOp::Pow => "^",
         BinOp::Eq => "==",
         BinOp::Ne => "!=",
         BinOp::Lt => "<",

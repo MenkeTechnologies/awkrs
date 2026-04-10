@@ -180,6 +180,22 @@ fn qualify_expr(e: &mut Expr, ns: &str, locals: &FxHashSet<String>) {
             qualify_expr(field.as_mut(), ns, locals);
             qualify_expr(rhs.as_mut(), ns, locals);
         }
+        Expr::GetLine {
+            pipe_cmd,
+            var,
+            redir,
+        } => {
+            if let Some(v) = var {
+                *v = qualify_name(v, ns, locals);
+            }
+            if let Some(cmd) = pipe_cmd {
+                qualify_expr(cmd.as_mut(), ns, locals);
+            }
+            match redir {
+                GetlineRedir::Primary => {}
+                GetlineRedir::File(e) | GetlineRedir::Coproc(e) => qualify_expr(e, ns, locals),
+            }
+        }
         Expr::Number(_) | Expr::Str(_) => {}
     }
 }
@@ -298,9 +314,16 @@ fn qualify_stmt(s: &mut Stmt, ns: &str, locals: &FxHashSet<String>) {
                 qualify_expr(x, ns, locals);
             }
         }
-        Stmt::GetLine { var, redir } => {
+        Stmt::GetLine {
+            pipe_cmd,
+            var,
+            redir,
+        } => {
             if let Some(v) = var {
                 *v = qualify_name(v, ns, locals);
+            }
+            if let Some(cmd) = pipe_cmd {
+                qualify_expr(cmd.as_mut(), ns, locals);
             }
             match redir {
                 GetlineRedir::Primary => {}

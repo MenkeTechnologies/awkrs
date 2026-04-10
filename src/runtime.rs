@@ -19,6 +19,7 @@ use crate::bytecode::CompiledProgram;
 use crate::error::{Error, Result};
 use gettext::Catalog;
 use rug::float::Round;
+use rug::ops::Pow as _;
 use rug::Float;
 
 thread_local! {
@@ -277,6 +278,7 @@ pub fn awk_binop_values(
             BinOp::Mul => a * b,
             BinOp::Div => a / b,
             BinOp::Mod => a % b,
+            BinOp::Pow => a.powf(b),
             _ => return Err(Error::Runtime("invalid compound assignment op".into())),
         };
         return Ok(Value::Num(n));
@@ -291,6 +293,7 @@ pub fn awk_binop_values(
         BinOp::Mul => Float::with_val_round(prec, &a * &b, round).0,
         BinOp::Div => Float::with_val_round(prec, &a / &b, round).0,
         BinOp::Mod => Float::with_val_round(prec, &a % &b, round).0,
+        BinOp::Pow => Float::with_val_round(prec, a.pow(&b), round).0,
         _ => return Err(Error::Runtime("invalid compound assignment op".into())),
     };
     Ok(Value::Mpfr(r))
@@ -1296,6 +1299,29 @@ impl Runtime {
             return Ok(None);
         }
         Ok(Some(line))
+    }
+
+    /// `expr | getline` — one line from `sh -c expr` stdout (new subprocess each call).
+    pub fn read_line_pipe(&mut self, cmd: &str) -> Result<Option<String>> {
+        self.require_unsandboxed_io()?;
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg(cmd)
+            .stdout(Stdio::piped())
+            .spawn()
+            .map_err(|e| Error::Runtime(format!("pipe getline `{cmd}`: {e}")))?;
+        let stdout = child.stdout.take().ok_or_else(|| {
+            Error::Runtime(format!("pipe getline `{cmd}`: no stdout"))
+        })?;
+        let mut reader = BufReader::new(stdout);
+        let mut line = String::new();
+        let n = reader.read_line(&mut line).map_err(Error::Io)?;
+        let _ = child.wait();
+        if n == 0 {
+            Ok(None)
+        } else {
+            Ok(Some(line))
+        }
     }
 
     /// Write one `print` line (including `ORS`) to `path`. First open uses truncate (`>`) or

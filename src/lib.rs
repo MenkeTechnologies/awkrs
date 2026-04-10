@@ -167,6 +167,7 @@ pub fn run(bin_name: &str) -> Result<()> {
     let worker_traditional = rt.traditional;
     let worker_jit_enabled = rt.jit_enabled;
 
+    attach_primary_input_before_begin_for_getline(cp.as_ref(), &files, &mut rt)?;
     vm_run_begin(cp.as_ref(), &mut rt)?;
     rt.refresh_special_arrays(cp.as_ref(), bin_name);
     cli_effects::emit_lint_warnings(
@@ -178,6 +179,7 @@ pub fn run(bin_name: &str) -> Result<()> {
     );
     flush_print_buf(&mut rt.print_buf)?;
     if rt.exit_pending {
+        rt.detach_input_reader();
         vm_run_end(cp.as_ref(), &mut rt)?;
         flush_print_buf(&mut rt.print_buf)?;
         finalize_cli_outputs(&args, bin_name, &rt, cp.as_ref(), profile_start, threads)?;
@@ -188,7 +190,12 @@ pub fn run(bin_name: &str) -> Result<()> {
 
     // Parallel record mode: mmap whole files with RS-aware splitting (`record_io::split_input_into_records`).
     // Stdin parallel still chunks on newlines only (see `process_stdin_parallel`).
-    let use_parallel_files = threads > 1 && parallel_ok && !files.is_empty();
+    // Primary `getline` shares the same stream as the record loop; parallel file mode slurps/mmaps
+    // independently and does not advance that stream.
+    let use_parallel_files = threads > 1
+        && parallel_ok
+        && !files.is_empty()
+        && !uses_primary_getline(cp.as_ref());
     let stdin_parallel = files.is_empty()
         && threads > 1
         && parallel_ok
@@ -206,6 +213,7 @@ pub fn run(bin_name: &str) -> Result<()> {
         rt.filename = "-".into();
         vm_run_beginfile(cp.as_ref(), &mut rt)?;
         if rt.exit_pending {
+            rt.detach_input_reader();
             vm_run_endfile(cp.as_ref(), &mut rt)?;
             vm_run_end(cp.as_ref(), &mut rt)?;
             finalize_cli_outputs(&args, bin_name, &rt, cp.as_ref(), profile_start, threads)?;
@@ -236,6 +244,7 @@ pub fn run(bin_name: &str) -> Result<()> {
             rt.fnr = 0.0;
             vm_run_beginfile(cp.as_ref(), &mut rt)?;
             if rt.exit_pending {
+                rt.detach_input_reader();
                 vm_run_endfile(cp.as_ref(), &mut rt)?;
                 vm_run_end(cp.as_ref(), &mut rt)?;
                 finalize_cli_outputs(&args, bin_name, &rt, cp.as_ref(), profile_start, threads)?;
@@ -710,6 +719,37 @@ fn uses_primary_getline(cp: &CompiledProgram) -> bool {
     false
 }
 
+/// Open `stdin` (no operands) or the first input file and attach [`Runtime::input_reader`] before
+/// `BEGIN` when the program uses primary `getline`, so `BEGIN { getline x }` reads the same stream as
+/// the record loop (POSIX).
+fn attach_primary_input_before_begin_for_getline(
+    cp: &CompiledProgram,
+    files: &[PathBuf],
+    rt: &mut Runtime,
+) -> Result<()> {
+    if !uses_primary_getline(cp) {
+        return Ok(());
+    }
+    let reader: Box<dyn Read + Send> = if files.is_empty() {
+        rt.clear_errno();
+        Box::new(std::io::stdin())
+    } else {
+        match File::open(&files[0]) {
+            Ok(f) => {
+                rt.clear_errno();
+                Box::new(f)
+            }
+            Err(e) => {
+                rt.set_errno_io(&e);
+                return Err(Error::ProgramFile(files[0].clone(), e));
+            }
+        }
+    };
+    let br = Arc::new(std::sync::Mutex::new(BufReader::new(reader)));
+    rt.attach_input_reader(Arc::clone(&br));
+    Ok(())
+}
+
 fn process_file(
     path: Option<&Path>,
     cp: &CompiledProgram,
@@ -725,23 +765,28 @@ fn process_file(
     }
 
     // Streaming path: stdin or programs using primary getline.
-    let reader: Box<dyn Read + Send> = if let Some(p) = path {
-        match File::open(p) {
-            Ok(f) => {
-                rt.clear_errno();
-                Box::new(f)
-            }
-            Err(e) => {
-                rt.set_errno_io(&e);
-                return Err(Error::ProgramFile(p.to_path_buf(), e));
-            }
-        }
+    let br = if let Some(existing) = rt.input_reader.clone() {
+        existing
     } else {
-        rt.clear_errno();
-        Box::new(std::io::stdin())
+        let reader: Box<dyn Read + Send> = if let Some(p) = path {
+            match File::open(p) {
+                Ok(f) => {
+                    rt.clear_errno();
+                    Box::new(f)
+                }
+                Err(e) => {
+                    rt.set_errno_io(&e);
+                    return Err(Error::ProgramFile(p.to_path_buf(), e));
+                }
+            }
+        } else {
+            rt.clear_errno();
+            Box::new(std::io::stdin())
+        };
+        let br = Arc::new(std::sync::Mutex::new(BufReader::new(reader)));
+        rt.attach_input_reader(Arc::clone(&br));
+        br
     };
-    let br = Arc::new(std::sync::Mutex::new(BufReader::new(reader)));
-    rt.attach_input_reader(Arc::clone(&br));
 
     let mut count = 0usize;
     loop {

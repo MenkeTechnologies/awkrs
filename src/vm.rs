@@ -8,6 +8,7 @@ use crate::format;
 use crate::interp::Flow;
 use crate::runtime::AwkMap;
 use crate::runtime::{sorted_in_mode, value_to_float, Runtime, SortedInMode, Value};
+use rug::ops::Pow as _;
 use rug::Float;
 use std::borrow::Cow;
 use std::cell::RefCell;
@@ -621,7 +622,7 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
         MIXED_GET_VAR, MIXED_GSUB_FIELD, MIXED_GSUB_INDEX, MIXED_GSUB_INDEX_STASH,
         MIXED_GSUB_RECORD, MIXED_GSUB_SLOT, MIXED_GSUB_VAR, MIXED_INCDEC_SLOT, MIXED_INCR_SLOT,
         MIXED_JOIN_ARRAY_KEY, MIXED_JOIN_KEY_ARG, MIXED_MATCH_BUILTIN, MIXED_MATCH_BUILTIN_ARR,
-        MIXED_MOD, MIXED_MUL, MIXED_NEG, MIXED_NOT, MIXED_PATSPLIT, MIXED_PATSPLIT_FP,
+        MIXED_MOD, MIXED_MUL, MIXED_NEG, MIXED_NOT, MIXED_PATSPLIT, MIXED_PATSPLIT_FP, MIXED_POW,
         MIXED_PATSPLIT_FP_SEP, MIXED_PATSPLIT_FP_SEP_WIDE, MIXED_PATSPLIT_SEP,
         MIXED_PATSPLIT_STASH_SEPS, MIXED_POS, MIXED_PRINTF_FLUSH, MIXED_PRINTF_FLUSH_REDIR,
         MIXED_PRINT_ARG, MIXED_PRINT_FLUSH, MIXED_PRINT_FLUSH_REDIR, MIXED_PUSH_STR,
@@ -648,7 +649,7 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
             s.push_str(&pool);
             value_to_jit_f64(ctx, Value::Str(s))
         }
-        MIXED_ADD | MIXED_SUB | MIXED_MUL | MIXED_DIV | MIXED_MOD => {
+        MIXED_ADD | MIXED_SUB | MIXED_MUL | MIXED_DIV | MIXED_MOD | MIXED_POW => {
             let a = jit_f64_to_value(ctx, a2);
             let b = jit_f64_to_value(ctx, a3);
             match op {
@@ -657,6 +658,7 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
                 MIXED_MUL => a.as_number() * b.as_number(),
                 MIXED_DIV => a.as_number() / b.as_number(),
                 MIXED_MOD => a.as_number() % b.as_number(),
+                MIXED_POW => a.as_number().powf(b.as_number()),
                 _ => unreachable!(),
             }
         }
@@ -2550,6 +2552,21 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                     ctx.push(Value::Num(a % b));
                 }
             }
+            Op::Pow => {
+                if ctx.rt.bignum {
+                    let b = ctx.pop();
+                    let a = ctx.pop();
+                    let prec = ctx.rt.mpfr_prec_bits();
+                    let round = ctx.rt.mpfr_round();
+                    let fa = value_to_float(&a, prec);
+                    let fb = value_to_float(&b, prec);
+                    ctx.push(Value::Mpfr(Float::with_val_round(prec, fa.pow(&fb), round).0));
+                } else {
+                    let b = ctx.pop().as_number();
+                    let a = ctx.pop().as_number();
+                    ctx.push(Value::Num(a.powf(b)));
+                }
+            }
 
             // ── Comparison (POSIX-aware) ────────────────────────────────
             Op::CmpEq => {
@@ -2767,7 +2784,11 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             }
 
             // ── Getline ─────────────────────────────────────────────────
-            Op::GetLine { var, source } => exec_getline(ctx, var, source)?,
+            Op::GetLine {
+                var,
+                source,
+                push_result,
+            } => exec_getline(ctx, var, source, push_result)?,
 
             // ── Sub / Gsub ──────────────────────────────────────────────
             Op::SubFn(target) => exec_sub(ctx, target, false)?,
@@ -3305,21 +3326,44 @@ fn apply_getline_line(
     }
 }
 
-fn exec_getline(ctx: &mut VmCtx<'_>, var: Option<u32>, source: GetlineSource) -> Result<()> {
+fn exec_getline(
+    ctx: &mut VmCtx<'_>,
+    var: Option<u32>,
+    source: GetlineSource,
+    push_result: bool,
+) -> Result<()> {
     let file_path = match source {
         GetlineSource::File => Some(ctx.pop().as_str()),
         GetlineSource::Coproc => Some(ctx.pop().as_str()),
+        GetlineSource::Pipe => Some(ctx.pop().as_str()),
         GetlineSource::Primary => None,
     };
 
-    let line = match source {
-        GetlineSource::Primary => ctx.rt.read_line_primary()?,
-        GetlineSource::File => ctx.rt.read_line_file(file_path.as_ref().unwrap())?,
-        GetlineSource::Coproc => ctx.rt.read_line_coproc(file_path.as_ref().unwrap())?,
+    let line_res = match source {
+        GetlineSource::Primary => ctx.rt.read_line_primary(),
+        GetlineSource::File => ctx.rt.read_line_file(file_path.as_ref().unwrap().as_str()),
+        GetlineSource::Coproc => ctx.rt.read_line_coproc(file_path.as_ref().unwrap().as_str()),
+        GetlineSource::Pipe => ctx.rt.read_line_pipe(file_path.as_ref().unwrap().as_str()),
     };
 
-    apply_getline_line(ctx, var, source, line);
-    Ok(())
+    match line_res {
+        Ok(line) => {
+            let has = line.is_some();
+            apply_getline_line(ctx, var, source, line);
+            if push_result {
+                ctx.push(Value::Num(if has { 1.0 } else { 0.0 }));
+            }
+            Ok(())
+        }
+        Err(e) => {
+            if push_result {
+                ctx.push(Value::Num(-1.0));
+                Ok(())
+            } else {
+                Err(e)
+            }
+        }
+    }
 }
 
 // ── Sub / Gsub ──────────────────────────────────────────────────────────────

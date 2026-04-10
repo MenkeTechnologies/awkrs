@@ -516,16 +516,29 @@ fn exec_stmt(s: &Stmt, ctx: &mut ExecCtx<'_>) -> Result<Flow> {
             ctx.rt.exit_pending = true;
             return Ok(Flow::ExitPending);
         }
-        Stmt::GetLine { var, redir } => {
-            let line = match &redir {
-                GetlineRedir::Primary => ctx.rt.read_line_primary()?,
-                GetlineRedir::File(path_expr) => {
+        Stmt::GetLine {
+            pipe_cmd,
+            var,
+            redir,
+        } => {
+            let line = match (pipe_cmd.as_ref(), redir) {
+                (Some(cmd_expr), GetlineRedir::Primary) => {
+                    let cmd = eval_expr(cmd_expr, ctx)?.as_str();
+                    ctx.rt.read_line_pipe(&cmd)?
+                }
+                (None, GetlineRedir::Primary) => ctx.rt.read_line_primary()?,
+                (None, GetlineRedir::File(path_expr)) => {
                     let path = eval_expr(path_expr, ctx)?.as_str();
                     ctx.rt.read_line_file(&path)?
                 }
-                GetlineRedir::Coproc(cmd_expr) => {
+                (None, GetlineRedir::Coproc(cmd_expr)) => {
                     let cmd = eval_expr(cmd_expr, ctx)?.as_str();
                     ctx.rt.read_line_coproc(&cmd)?
+                }
+                (Some(_), GetlineRedir::File(_) | GetlineRedir::Coproc(_)) => {
+                    return Err(Error::Runtime(
+                        "internal: pipe getline combined with `<` / `<&` redirect".into(),
+                    ));
                 }
             };
             if let Some(l) = line {
@@ -544,12 +557,12 @@ fn exec_stmt(s: &Stmt, ctx: &mut ExecCtx<'_>) -> Result<Flow> {
                     let nf = ctx.rt.nf() as f64;
                     ctx.rt.vars.insert("NF".into(), Value::Num(nf));
                 }
-                match &redir {
-                    GetlineRedir::Primary => {
+                match (pipe_cmd.as_ref(), redir) {
+                    (None, GetlineRedir::Primary) => {
                         ctx.rt.nr += 1.0;
                         ctx.rt.fnr += 1.0;
                     }
-                    GetlineRedir::File(_) | GetlineRedir::Coproc(_) => {}
+                    _ => {}
                 }
             }
         }
@@ -690,6 +703,63 @@ pub fn eval_expr(e: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {
             Value::Num(if ctx.rt.array_has(arr, &k) { 1.0 } else { 0.0 })
         }
         Expr::IncDec { op, target } => eval_inc_dec(*op, target, ctx)?,
+        Expr::GetLine {
+            pipe_cmd,
+            var,
+            redir,
+        } => {
+            let line_res = match (pipe_cmd.as_ref(), redir) {
+                (Some(cmd_expr), GetlineRedir::Primary) => {
+                    let cmd = eval_expr(cmd_expr, ctx)?.as_str();
+                    ctx.rt.read_line_pipe(&cmd)
+                }
+                (None, GetlineRedir::Primary) => ctx.rt.read_line_primary(),
+                (None, GetlineRedir::File(path_expr)) => {
+                    let path = eval_expr(path_expr, ctx)?.as_str();
+                    ctx.rt.read_line_file(&path)
+                }
+                (None, GetlineRedir::Coproc(cmd_expr)) => {
+                    let cmd = eval_expr(cmd_expr, ctx)?.as_str();
+                    ctx.rt.read_line_coproc(&cmd)
+                }
+                (Some(_), GetlineRedir::File(_) | GetlineRedir::Coproc(_)) => {
+                    return Err(Error::Runtime(
+                        "internal: pipe getline combined with `<` / `<&` redirect".into(),
+                    ));
+                }
+            };
+            match line_res {
+                Ok(line) => {
+                    let has = line.is_some();
+                    if let Some(l) = line {
+                        let trimmed = l.trim_end_matches(['\n', '\r']).to_string();
+                        if let Some(ref name) = var {
+                            ctx.set_var(name, Value::Str(trimmed));
+                        } else {
+                            let fs = ctx
+                                .rt
+                                .vars
+                                .get("FS")
+                                .map(|v| v.as_str())
+                                .unwrap_or_else(|| " ".into());
+                            ctx.rt.set_field_sep_split(&fs, &trimmed);
+                            ctx.rt.ensure_fields_split();
+                            let nf = ctx.rt.nf() as f64;
+                            ctx.rt.vars.insert("NF".into(), Value::Num(nf));
+                        }
+                        match (pipe_cmd.as_ref(), redir) {
+                            (None, GetlineRedir::Primary) => {
+                                ctx.rt.nr += 1.0;
+                                ctx.rt.fnr += 1.0;
+                            }
+                            _ => {}
+                        }
+                    }
+                    Value::Num(if has { 1.0 } else { 0.0 })
+                }
+                Err(_) => Value::Num(-1.0),
+            }
+        }
     })
 }
 
@@ -751,7 +821,7 @@ fn eval_binary(op: BinOp, left: &Expr, right: &Expr, ctx: &mut ExecCtx<'_>) -> R
     if ctx.rt.bignum
         && matches!(
             op,
-            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod
+            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod | BinOp::Pow
         )
     {
         let av = eval_expr(left, ctx)?;
@@ -766,6 +836,7 @@ fn eval_binary(op: BinOp, left: &Expr, right: &Expr, ctx: &mut ExecCtx<'_>) -> R
         BinOp::Mul => a * b,
         BinOp::Div => a / b,
         BinOp::Mod => a % b,
+        BinOp::Pow => a.powf(b),
         BinOp::Eq
         | BinOp::Ne
         | BinOp::Lt

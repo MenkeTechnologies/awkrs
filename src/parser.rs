@@ -592,6 +592,7 @@ impl<'a> Parser<'a> {
                     let fe = self.parse_expr(false)?;
                     self.consume_stmt_end()?;
                     return Ok(Stmt::GetLine {
+                        pipe_cmd: None,
                         var,
                         redir: GetlineRedir::Coproc(Box::new(fe)),
                     });
@@ -601,12 +602,14 @@ impl<'a> Parser<'a> {
                     let fe = self.parse_expr(false)?;
                     self.consume_stmt_end()?;
                     return Ok(Stmt::GetLine {
+                        pipe_cmd: None,
                         var,
                         redir: GetlineRedir::File(Box::new(fe)),
                     });
                 }
                 self.consume_stmt_end()?;
                 Ok(Stmt::GetLine {
+                    pipe_cmd: None,
                     var,
                     redir: GetlineRedir::Primary,
                 })
@@ -785,7 +788,29 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_expr(&mut self, regex_mode: bool) -> Result<Expr> {
-        self.parse_assign(regex_mode)
+        let e = self.parse_assign(regex_mode)?;
+        // `expr | getline [var]` — `|` must be followed by `getline` (not `print | cmd`).
+        if self.cur == Token::Pipe {
+            let mut peek = self.lexer.clone();
+            if peek.next_token(false)? != Token::Getline {
+                return Ok(e);
+            }
+            self.bump(false)?;
+            self.bump(false)?;
+            let var = if let Token::Ident(name) = &self.cur.clone() {
+                let n = name.clone();
+                self.bump(false)?;
+                Some(n)
+            } else {
+                None
+            };
+            return Ok(Expr::GetLine {
+                pipe_cmd: Some(Box::new(e)),
+                var,
+                redir: GetlineRedir::Primary,
+            });
+        }
+        Ok(e)
     }
 
     fn parse_assign(&mut self, regex_mode: bool) -> Result<Expr> {
@@ -965,6 +990,8 @@ impl<'a> Parser<'a> {
                     | Token::ModAssign
                     | Token::Question
                     | Token::In
+                    | Token::Caret
+                    | Token::StarStar
             ) {
                 break;
             }
@@ -1019,9 +1046,39 @@ impl<'a> Parser<'a> {
         Ok(e)
     }
 
+    /// Prefix `++`/`--` bind tighter than `^` / `**`; `!` / unary `+` / `-` bind looser than `^`
+    /// (e.g. `-2^2` is `-(2^2)`).  `!` / `+` / `-` live in [`Self::parse_prefix_unary`] so `$-1`
+    /// works without consuming `$1++`-style postfix too early.
     fn parse_unary(&mut self, regex_mode: bool) -> Result<Expr> {
-        let e = self.parse_prefix_unary(regex_mode)?;
-        self.parse_postfix_on_expr(e)
+        match &self.cur.clone() {
+            Token::PlusPlus => {
+                self.bump(false)?;
+                let inner = self.parse_unary(false)?;
+                Self::wrap_prefix_incdec(inner, IncDecOp::PreInc, self.line)
+            }
+            Token::MinusMinus => {
+                self.bump(false)?;
+                let inner = self.parse_unary(false)?;
+                Self::wrap_prefix_incdec(inner, IncDecOp::PreDec, self.line)
+            }
+            _ => self.parse_power(regex_mode),
+        }
+    }
+
+    /// `^` / `**` — right-associative; postfix `++`/`--` are handled before `^` (e.g. `x++^2`).
+    fn parse_power(&mut self, regex_mode: bool) -> Result<Expr> {
+        let mut e = self.parse_prefix_unary(regex_mode)?;
+        e = self.parse_postfix_on_expr(e)?;
+        if matches!(self.cur, Token::Caret | Token::StarStar) {
+            self.bump(false)?;
+            let rhs = self.parse_power(false)?;
+            return Ok(Expr::Binary {
+                op: BinOp::Pow,
+                left: Box::new(e),
+                right: Box::new(rhs),
+            });
+        }
+        Ok(e)
     }
 
     /// Prefix unary operators; postfix `++`/`--` are handled by [`Self::parse_postfix_on_expr`].
@@ -1039,7 +1096,7 @@ impl<'a> Parser<'a> {
             }
             Token::Bang => {
                 self.bump(false)?;
-                let e = self.parse_unary(false)?;
+                let e = self.parse_power(false)?;
                 Ok(Expr::Unary {
                     op: UnaryOp::Not,
                     expr: Box::new(e),
@@ -1047,7 +1104,7 @@ impl<'a> Parser<'a> {
             }
             Token::Minus => {
                 self.bump(false)?;
-                let e = self.parse_unary(false)?;
+                let e = self.parse_power(false)?;
                 Ok(Expr::Unary {
                     op: UnaryOp::Neg,
                     expr: Box::new(e),
@@ -1055,7 +1112,7 @@ impl<'a> Parser<'a> {
             }
             Token::Plus => {
                 self.bump(false)?;
-                let e = self.parse_unary(false)?;
+                let e = self.parse_power(false)?;
                 Ok(Expr::Unary {
                     op: UnaryOp::Pos,
                     expr: Box::new(e),
@@ -1068,6 +1125,8 @@ impl<'a> Parser<'a> {
     /// After `$` (not `$(`…`)`), parse the field index: `$i++` binds `++` to `i` before `$`;
     /// `$1++` binds `++` to the field as a whole.
     fn parse_inner_for_dollar_field(&mut self) -> Result<Expr> {
+        // Prefix (including unary `-` for `$-1`) then postfix; bare `$1++` uses the error path in
+        // `Token::Dollar` to attach `++` to the field, not to the integer.
         let e = self.parse_prefix_unary(false)?;
         if matches!(e, Expr::Number(_) | Expr::Str(_))
             && matches!(self.cur, Token::PlusPlus | Token::MinusMinus)
@@ -1260,6 +1319,39 @@ impl<'a> Parser<'a> {
                 self.bump(false)?;
                 Ok(e)
             }
+            Token::Getline => {
+                self.bump(false)?;
+                let var = if let Token::Ident(name) = &self.cur.clone() {
+                    let n = name.clone();
+                    self.bump(false)?;
+                    Some(n)
+                } else {
+                    None
+                };
+                if self.cur == Token::LtAmp {
+                    self.bump(false)?;
+                    let fe = self.parse_expr(false)?;
+                    return Ok(Expr::GetLine {
+                        pipe_cmd: None,
+                        var,
+                        redir: GetlineRedir::Coproc(Box::new(fe)),
+                    });
+                }
+                if self.cur == Token::Lt {
+                    self.bump(false)?;
+                    let fe = self.parse_expr(false)?;
+                    return Ok(Expr::GetLine {
+                        pipe_cmd: None,
+                        var,
+                        redir: GetlineRedir::File(Box::new(fe)),
+                    });
+                }
+                Ok(Expr::GetLine {
+                    pipe_cmd: None,
+                    var,
+                    redir: GetlineRedir::Primary,
+                })
+            }
             _ => Err(Error::Parse {
                 line: self.line,
                 msg: format!("unexpected token in expression: {:?}", self.cur),
@@ -1319,7 +1411,12 @@ mod tests {
     fn parses_getline_coproc() {
         let p = parse_program("BEGIN { getline x <& \"cat\" }").unwrap();
         match first_begin_stmt(&p) {
-            Stmt::GetLine { var, redir } => {
+            Stmt::GetLine {
+                pipe_cmd,
+                var,
+                redir,
+            } => {
+                assert!(pipe_cmd.is_none());
                 assert_eq!(var.as_deref(), Some("x"));
                 assert!(matches!(redir, GetlineRedir::Coproc(_)));
             }

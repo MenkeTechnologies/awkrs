@@ -38,6 +38,10 @@ pub enum Token {
     /// `--` (single token).
     MinusMinus,
     Star,
+    /// `**` (exponentiation; distinct from `*`).
+    StarStar,
+    /// `^` (exponentiation).
+    Caret,
     Slash,
     Percent,
     AddAssign,
@@ -364,13 +368,17 @@ impl<'a> Lexer<'a> {
                 }
             }
             '*' => {
-                if self.peek() == Some('=') {
+                if self.peek() == Some('*') {
+                    self.bump();
+                    Token::StarStar
+                } else if self.peek() == Some('=') {
                     self.bump();
                     Token::MulAssign
                 } else {
                     Token::Star
                 }
             }
+            '^' => Token::Caret,
             '%' => {
                 if self.peek() == Some('=') {
                     self.bump();
@@ -588,6 +596,10 @@ mod tests {
                 Token::NotTilde,
                 Token::Tilde,
             ]
+        );
+        assert_eq!(
+            tokens_no_regex("^ **"),
+            vec![Token::Caret, Token::StarStar],
         );
         assert_eq!(
             tokens_no_regex("= += -= *= /= %="),

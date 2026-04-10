@@ -488,13 +488,26 @@ impl Compiler {
                 self.compile_switch(expr, arms, ops);
             }
 
-            Stmt::GetLine { var, redir } => {
+            Stmt::GetLine {
+                pipe_cmd,
+                var,
+                redir,
+            } => {
                 let var_idx = var.as_ref().map(|v| self.strings.intern(v));
+                if let Some(cmd) = pipe_cmd {
+                    self.compile_expr(cmd, ops);
+                }
                 match redir {
                     GetlineRedir::Primary => {
+                        let src = if pipe_cmd.is_some() {
+                            GetlineSource::Pipe
+                        } else {
+                            GetlineSource::Primary
+                        };
                         ops.push(Op::GetLine {
                             var: var_idx,
-                            source: GetlineSource::Primary,
+                            source: src,
+                            push_result: false,
                         });
                     }
                     GetlineRedir::File(e) => {
@@ -502,6 +515,7 @@ impl Compiler {
                         ops.push(Op::GetLine {
                             var: var_idx,
                             source: GetlineSource::File,
+                            push_result: false,
                         });
                     }
                     GetlineRedir::Coproc(e) => {
@@ -509,6 +523,7 @@ impl Compiler {
                         ops.push(Op::GetLine {
                             var: var_idx,
                             source: GetlineSource::Coproc,
+                            push_result: false,
                         });
                     }
                 }
@@ -646,6 +661,7 @@ impl Compiler {
                     BinOp::Concat => Op::Concat,
                     BinOp::Match => Op::RegexMatch,
                     BinOp::NotMatch => Op::RegexNotMatch,
+                    BinOp::Pow => Op::Pow,
                     BinOp::And | BinOp::Or => unreachable!("handled above"),
                 });
             }
@@ -753,6 +769,47 @@ impl Compiler {
                     ops.push(Op::IncDecIndex(arr_idx, *op));
                 }
             },
+
+            Expr::GetLine {
+                pipe_cmd,
+                var,
+                redir,
+            } => {
+                let var_idx = var.as_ref().map(|v| self.strings.intern(v));
+                if let Some(cmd) = pipe_cmd {
+                    self.compile_expr(cmd, ops);
+                }
+                match redir {
+                    GetlineRedir::Primary => {
+                        let src = if pipe_cmd.is_some() {
+                            GetlineSource::Pipe
+                        } else {
+                            GetlineSource::Primary
+                        };
+                        ops.push(Op::GetLine {
+                            var: var_idx,
+                            source: src,
+                            push_result: true,
+                        });
+                    }
+                    GetlineRedir::File(e) => {
+                        self.compile_expr(e, ops);
+                        ops.push(Op::GetLine {
+                            var: var_idx,
+                            source: GetlineSource::File,
+                            push_result: true,
+                        });
+                    }
+                    GetlineRedir::Coproc(e) => {
+                        self.compile_expr(e, ops);
+                        ops.push(Op::GetLine {
+                            var: var_idx,
+                            source: GetlineSource::Coproc,
+                            push_result: true,
+                        });
+                    }
+                }
+            }
         }
     }
 
@@ -1151,9 +1208,18 @@ fn collect_array_names_stmt(s: &Stmt, names: &mut HashSet<String>) {
             }
         }
         Stmt::Exit(Some(e)) | Stmt::Return(Some(e)) => collect_array_names_expr(e, names),
-        Stmt::GetLine { redir, .. } => match redir {
-            GetlineRedir::File(e) | GetlineRedir::Coproc(e) => collect_array_names_expr(e, names),
-            GetlineRedir::Primary => {}
+        Stmt::GetLine {
+            pipe_cmd,
+            redir,
+            ..
+        } => {
+            if let Some(p) = pipe_cmd {
+                collect_array_names_expr(p, names);
+            }
+            match redir {
+                GetlineRedir::File(e) | GetlineRedir::Coproc(e) => collect_array_names_expr(e, names),
+                GetlineRedir::Primary => {}
+            }
         },
         Stmt::Switch { expr, arms } => {
             collect_array_names_expr(expr, names);
@@ -1241,6 +1307,19 @@ fn collect_array_names_expr(e: &Expr, names: &mut HashSet<String>) {
             }
             IncDecTarget::Field(e) => collect_array_names_expr(e, names),
             IncDecTarget::Var(_) => {}
+        },
+        Expr::GetLine {
+            pipe_cmd,
+            redir,
+            ..
+        } => {
+            if let Some(p) = pipe_cmd {
+                collect_array_names_expr(p, names);
+            }
+            match redir {
+                GetlineRedir::File(e) | GetlineRedir::Coproc(e) => collect_array_names_expr(e, names),
+                GetlineRedir::Primary => {}
+            }
         },
         Expr::Number(_) | Expr::Str(_) | Expr::Var(_) => {}
     }

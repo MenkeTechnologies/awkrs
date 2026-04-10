@@ -30,6 +30,8 @@ pub enum GetlineSource {
     Primary,
     File,
     Coproc,
+    /// `expr | getline` — one line from `sh -c` with the command string.
+    Pipe,
 }
 
 /// Lvalue target for `sub`/`gsub`.
@@ -108,6 +110,8 @@ pub enum Op {
     Mul,
     Div,
     Mod,
+    /// Exponentiation (`^` / `**`); pop exponent, pop base, push `pow(base, exp)` (right-assoc in parser).
+    Pow,
 
     // ── Comparison (pop 2, push Num 0/1) — POSIX-aware ──────────────────
     CmpEq,
@@ -194,10 +198,12 @@ pub enum Op {
     JoinArrayKey(u16),
 
     // ── Getline ─────────────────────────────────────────────────────────
-    /// `var` is optional variable name index. File/Coproc pop an expr from stack.
+    /// `var` is optional variable name index. File/Coproc/Pipe pop an expr from stack when applicable.
+    /// `push_result`: expression `getline` pushes `1`/`0`/`-1`; statement form uses `false`.
     GetLine {
         var: Option<u32>,
         source: GetlineSource,
+        push_result: bool,
     },
 
     // ── Sub / Gsub with lvalue info ─────────────────────────────────────

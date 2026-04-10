@@ -36,6 +36,11 @@ fn stmt_blocks_parallel(s: &Stmt) -> bool {
     match s {
         Stmt::Exit(_) => true,
         Stmt::GetLine {
+            pipe_cmd: Some(_),
+            ..
+        } => true,
+        Stmt::GetLine {
+            pipe_cmd: None,
             redir: GetlineRedir::Primary,
             ..
         } => true,
@@ -98,6 +103,20 @@ fn expr_blocks_parallel(e: &Expr) -> bool {
             expr_blocks_parallel(cond) || expr_blocks_parallel(then_) || expr_blocks_parallel(else_)
         }
         Expr::In { key, .. } => expr_blocks_parallel(key),
+        Expr::GetLine {
+            pipe_cmd: Some(_),
+            ..
+        } => true,
+        Expr::GetLine {
+            pipe_cmd: None,
+            redir: GetlineRedir::Primary,
+            ..
+        } => true,
+        Expr::GetLine {
+            redir: GetlineRedir::Coproc(_),
+            ..
+        } => true,
+        Expr::GetLine { .. } => false,
         Expr::Number(_) | Expr::Str(_) | Expr::Var(_) => false,
     }
 }
