@@ -3457,9 +3457,15 @@ pub(crate) fn exec_builtin_dispatch(
             let needle = args[1].as_str();
             if needle.is_empty() {
                 Value::Num(0.0)
-            } else {
-                let pos = hay.find(&needle).map(|i| i + 1).unwrap_or(0);
+            } else if let Some(b) = hay.find(needle.as_str()) {
+                let pos = if ctx.rt.characters_as_bytes {
+                    b + 1
+                } else {
+                    hay[..b].chars().count() + 1
+                };
                 Value::Num(pos as f64)
+            } else {
+                Value::Num(0.0)
             }
         }
         "substr" => {

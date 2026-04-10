@@ -1,9 +1,10 @@
 //! Behaviors for gawk-style CLI flags (dump, pretty-print, gen-pot, lint, debug listing, profile timing).
 
-use crate::ast::{Expr, Program, Stmt};
+use crate::ast::{Expr, Program, Stmt, SwitchArm};
 use crate::ast_fmt;
 use crate::bytecode::CompiledProgram;
 use crate::error::{Error, Result};
+use crate::format::awk_sprintf;
 use crate::runtime::{Runtime, Value};
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -307,7 +308,7 @@ fn value_dump_scalar(v: &Value) -> String {
     }
 }
 
-/// Rule/function listing for `-D` / `--debug` (static inspection, **not** GNU awk’s interactive debugger).
+/// Rule/function listing for `-D` / `--debug` (static inspection only — **not** GNU awk’s interactive debugger).
 pub fn write_debug_listing(prog: &Program, out: &mut dyn Write, bin_name: &str) -> Result<()> {
     writeln!(
         out,
@@ -316,7 +317,7 @@ pub fn write_debug_listing(prog: &Program, out: &mut dyn Write, bin_name: &str) 
     .map_err(Error::Io)?;
     writeln!(
         out,
-        "# Use this output to inspect rules and functions. Breakpoints/step execution are not available."
+        "# gawk’s -D debugger (break, step, next, print, watch, backtrace, stack, etc.) is not implemented; this output is for inspection only."
     )
     .map_err(Error::Io)?;
     writeln!(out, "rules: {}", prog.rules.len()).map_err(Error::Io)?;
@@ -348,7 +349,8 @@ pub fn write_debug_listing(prog: &Program, out: &mut dyn Write, bin_name: &str) 
     Ok(())
 }
 
-/// Pretty-print program as awk-like source (reformatted AST; not gawk’s canonicalizer).
+/// Pretty-print program as awk-like source from the AST ([`ast_fmt::format_program`]), not `Debug` output
+/// and not gawk’s canonical `--pretty-print` source reformatter.
 pub fn pretty_print_ast(prog: &Program) -> String {
     ast_fmt::format_program(prog)
 }
@@ -372,6 +374,11 @@ pub fn emit_lint_warnings(
             std::process::exit(2);
         }
     };
+    if warn {
+        w(
+            "awkrs implements only a subset of gawk’s lint (missing: uninitialized variables, regex issues, full printf-format validation, …)",
+        );
+    }
     let mut begin_rules = 0usize;
     let mut end_rules = 0usize;
     for r in &prog.rules {
@@ -411,6 +418,82 @@ pub fn emit_lint_warnings(
     if lint_old {
         w("-t/--lint-old: deprecated extension checks are not fully implemented");
     }
+    if warn {
+        for r in &prog.rules {
+            for s in &r.stmts {
+                lint_stmt_printf_args(&w, s);
+            }
+        }
+        for fd in prog.funcs.values() {
+            for s in &fd.body {
+                lint_stmt_printf_args(&w, s);
+            }
+        }
+    }
+}
+
+/// Best-effort: if the format is a string literal, compare minimum `sprintf` value count to `printf` args.
+fn printf_min_args_for_format(fmt: &str) -> Option<usize> {
+    const MAX: usize = 256;
+    let dummies: Vec<Value> = (0..MAX).map(|_| Value::Num(0.0)).collect();
+    for n in 0..MAX {
+        if awk_sprintf(fmt, &dummies[..n]).is_ok() {
+            return Some(n);
+        }
+    }
+    None
+}
+
+fn lint_stmt_printf_args(w: &impl Fn(&str), stmt: &Stmt) {
+    match stmt {
+        Stmt::Printf { args, .. } => {
+            if let Some(Expr::Str(fmt)) = args.first() {
+                if let Some(min) = printf_min_args_for_format(fmt) {
+                    let have = args.len().saturating_sub(1);
+                    if have < min {
+                        w(&format!(
+                            "printf: format may need at least {min} value argument(s) (have {have})"
+                        ));
+                    }
+                }
+            }
+        }
+        Stmt::If { then_, else_, .. } => {
+            for s in then_ {
+                lint_stmt_printf_args(w, s);
+            }
+            for s in else_ {
+                lint_stmt_printf_args(w, s);
+            }
+        }
+        Stmt::While { body, .. } | Stmt::DoWhile { body, .. } => {
+            for s in body {
+                lint_stmt_printf_args(w, s);
+            }
+        }
+        Stmt::ForC { body, .. } | Stmt::ForIn { body, .. } => {
+            for s in body {
+                lint_stmt_printf_args(w, s);
+            }
+        }
+        Stmt::Block(ss) => {
+            for s in ss {
+                lint_stmt_printf_args(w, s);
+            }
+        }
+        Stmt::Switch { arms, .. } => {
+            for arm in arms {
+                let stmts = match arm {
+                    SwitchArm::Case { stmts, .. } => stmts,
+                    SwitchArm::Default { stmts } => stmts,
+                };
+                for s in stmts {
+                    lint_stmt_printf_args(w, s);
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Write profile summary: wall-clock plus per-record-rule execution counts when **sequential**.
@@ -438,6 +521,11 @@ pub fn write_profile_summary(
     writeln!(
         w,
         "# This is not gawk’s full profiler (no per-function or per-line counts). Use a single thread (-j1) for rule-hit counts."
+    )
+    .map_err(Error::Io)?;
+    writeln!(
+        w,
+        "# This is not gawk’s annotated profile output (no per-statement execution counts in the canonical profile format)."
     )
     .map_err(Error::Io)?;
     writeln!(w, "wall_seconds: {:.6}", elapsed.as_secs_f64()).map_err(Error::Io)?;

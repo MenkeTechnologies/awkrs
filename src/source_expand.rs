@@ -144,7 +144,9 @@ fn expand_inner(
             return Err(Error::Parse {
                 line: line_no,
                 msg: format!(
-                    "`@load` {path_str}: only `.awk` source is supported (shared-object extensions are not loaded)"
+                    "`@load` {path_str}: awkrs only inlines `.awk` source (like `@include`). \
+                     gawk loadable C modules (`filefuncs`, `time`, `readdir`, `inplace`, `ordchr`, …) \
+                     and `.so` extensions are not loaded"
                 ),
             });
         }

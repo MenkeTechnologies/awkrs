@@ -980,7 +980,15 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
             if needle.is_empty() {
                 return Ok(Value::Num(0.0));
             }
-            let pos = hay.find(&needle).map(|i| i + 1).unwrap_or(0);
+            let pos = if let Some(b) = hay.find(&needle) {
+                if ctx.rt.characters_as_bytes {
+                    b + 1
+                } else {
+                    hay[..b].chars().count() + 1
+                }
+            } else {
+                0
+            };
             Ok(Value::Num(pos as f64))
         }
         "substr" => {

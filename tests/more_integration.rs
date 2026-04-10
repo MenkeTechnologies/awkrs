@@ -1170,3 +1170,15 @@ fn symtab_length_is_positive() {
     assert_eq!(c, 0);
     assert_eq!(o.trim(), "1");
 }
+
+#[test]
+fn index_utf8_respects_characters_as_bytes_flag() {
+    let prog = r#"BEGIN { print index("αβ", "β") }"#;
+    let (c, o, _) = run_awkrs_stdin(prog, "");
+    assert_eq!(c, 0);
+    assert_eq!(o.trim(), "2");
+
+    let (c_b, o_b, _) = run_awkrs_stdin_args(["-b"], prog, "");
+    assert_eq!(c_b, 0);
+    assert_eq!(o_b.trim(), "3");
+}

@@ -83,21 +83,22 @@ enum SortedInMode {
     ValTypeDesc,
 }
 
-fn parse_sorted_in(s: &str) -> SortedInMode {
+/// Returns [`Some`] for recognized `@ind_*` / `@val_*` tokens and for empty / `@unsorted` (→ [`SortedInMode::Unsorted`]).
+/// Returns [`None`] for gawk-style **custom comparator function names** (and typos): those are not implemented.
+fn parse_sorted_in_token(s: &str) -> Option<SortedInMode> {
     match s.trim() {
-        "" | "@unsorted" => SortedInMode::Unsorted,
-        "@ind_str_asc" => SortedInMode::IndStrAsc,
-        "@ind_str_desc" => SortedInMode::IndStrDesc,
-        "@ind_num_asc" => SortedInMode::IndNumAsc,
-        "@ind_num_desc" => SortedInMode::IndNumDesc,
-        "@val_str_asc" => SortedInMode::ValStrAsc,
-        "@val_str_desc" => SortedInMode::ValStrDesc,
-        "@val_num_asc" => SortedInMode::ValNumAsc,
-        "@val_num_desc" => SortedInMode::ValNumDesc,
-        "@val_type_asc" => SortedInMode::ValTypeAsc,
-        "@val_type_desc" => SortedInMode::ValTypeDesc,
-        // Custom comparator name — not implemented; keep gawk default (unsorted).
-        _ => SortedInMode::Unsorted,
+        "" | "@unsorted" => Some(SortedInMode::Unsorted),
+        "@ind_str_asc" => Some(SortedInMode::IndStrAsc),
+        "@ind_str_desc" => Some(SortedInMode::IndStrDesc),
+        "@ind_num_asc" => Some(SortedInMode::IndNumAsc),
+        "@ind_num_desc" => Some(SortedInMode::IndNumDesc),
+        "@val_str_asc" => Some(SortedInMode::ValStrAsc),
+        "@val_str_desc" => Some(SortedInMode::ValStrDesc),
+        "@val_num_asc" => Some(SortedInMode::ValNumAsc),
+        "@val_num_desc" => Some(SortedInMode::ValNumDesc),
+        "@val_type_asc" => Some(SortedInMode::ValTypeAsc),
+        "@val_type_desc" => Some(SortedInMode::ValTypeDesc),
+        _ => None,
     }
 }
 
@@ -106,10 +107,22 @@ fn sorted_in_mode(rt: &Runtime) -> SortedInMode {
         return SortedInMode::Unsorted;
     }
     match rt.get_global_var("PROCINFO") {
-        Some(Value::Array(m)) => m
-            .get("sorted_in")
-            .map(|v| parse_sorted_in(&v.as_str()))
-            .unwrap_or(SortedInMode::Unsorted),
+        Some(Value::Array(m)) => {
+            let Some(v) = m.get("sorted_in") else {
+                return SortedInMode::Unsorted;
+            };
+            let s = v.as_str();
+            if let Some(mode) = parse_sorted_in_token(&s) {
+                return mode;
+            }
+            if !s.trim().is_empty() && !rt.sorted_in_warned.get() {
+                rt.sorted_in_warned.set(true);
+                eprintln!(
+                    "awkrs: PROCINFO[\"sorted_in\"]={s:?}: gawk user-defined comparator functions are not supported (only @ind_* / @val_* modes); using default key order"
+                );
+            }
+            SortedInMode::Unsorted
+        }
         _ => SortedInMode::Unsorted,
     }
 }
@@ -759,7 +772,7 @@ pub struct Runtime {
     pub rs_regex_bytes: Option<BytesRegex>,
     /// gawk `--sandbox` / `-S`: disallow file redirects, pipes, coprocesses, inet, `system()`.
     pub sandbox: bool,
-    /// gawk `-b` / `--characters-as-bytes`: `length` / `substr` use byte units.
+    /// gawk `-b` / `--characters-as-bytes`: `length` / `substr` / `index` use byte units (otherwise UTF-8 character units).
     pub characters_as_bytes: bool,
     /// gawk `--posix` / `-P` (reserved; stricter POSIX checks may be added incrementally).
     pub posix: bool,
@@ -773,6 +786,8 @@ pub struct Runtime {
     pub symtab_slot_map: HashMap<String, u16>,
     /// `-p` / `--profile`: invocation count per **record** rule (index matches `CompiledProgram::record_rules`).
     pub profile_record_hits: Vec<u64>,
+    /// One-shot: warn once when `PROCINFO["sorted_in"]` is set to an unsupported custom comparator name.
+    pub sorted_in_warned: Cell<bool>,
 }
 
 impl Runtime {
@@ -855,6 +870,7 @@ impl Runtime {
             gettext_catalogs: AwkMap::default(),
             symtab_slot_map: HashMap::new(),
             profile_record_hits: Vec::new(),
+            sorted_in_warned: Cell::new(false),
         }
     }
 
@@ -1065,6 +1081,7 @@ impl Runtime {
             gettext_catalogs,
             symtab_slot_map: HashMap::new(),
             profile_record_hits: Vec::new(),
+            sorted_in_warned: Cell::new(false),
         }
     }
 
@@ -2232,6 +2249,7 @@ impl Clone for Runtime {
             gettext_catalogs: self.gettext_catalogs.clone(),
             symtab_slot_map: self.symtab_slot_map.clone(),
             profile_record_hits: Vec::new(),
+            sorted_in_warned: Cell::new(self.sorted_in_warned.get()),
         }
     }
 }
