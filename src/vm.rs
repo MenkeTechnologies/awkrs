@@ -337,8 +337,61 @@ pub fn vm_pattern_matches(
             ctx.recycle();
             Ok(val)
         }
-        CompiledPattern::Range => Ok(false), // handled externally via range_step
+        CompiledPattern::Range { .. } => Ok(false), // handled via [`vm_range_step`]
     }
+}
+
+/// Match one range-pattern endpoint (regex, expr, empty, `BEGIN`-style never, or nested-range error).
+pub fn vm_match_range_endpoint(
+    ep: &CompiledRangeEndpoint,
+    cp: &CompiledProgram,
+    rt: &mut Runtime,
+) -> Result<bool> {
+    match ep {
+        CompiledRangeEndpoint::Always => Ok(true),
+        CompiledRangeEndpoint::Never => Ok(false),
+        CompiledRangeEndpoint::NestedRangeError => {
+            Err(Error::Runtime("nested range pattern".into()))
+        }
+        CompiledRangeEndpoint::Regexp(idx) => {
+            let pat = cp.strings.get(*idx);
+            rt.ensure_regex(pat).map_err(Error::Runtime)?;
+            Ok(rt.regex_ref(pat).is_match(&rt.record))
+        }
+        CompiledRangeEndpoint::LiteralRegexp(idx) => {
+            let pat = cp.strings.get(*idx);
+            Ok(rt.record.contains(pat))
+        }
+        CompiledRangeEndpoint::Expr(chunk) => {
+            let mut ctx = VmCtx::new(cp, rt);
+            let r = execute(chunk, &mut ctx)?;
+            let val = truthy(&ctx.pop());
+            let _ = r;
+            ctx.recycle();
+            Ok(val)
+        }
+    }
+}
+
+/// Range pattern: `state` is false until `start` matches, then true until `end` matches after a run.
+pub fn vm_range_step(
+    state: &mut bool,
+    start: &CompiledRangeEndpoint,
+    end: &CompiledRangeEndpoint,
+    cp: &CompiledProgram,
+    rt: &mut Runtime,
+) -> Result<bool> {
+    if !*state && vm_match_range_endpoint(start, cp, rt)? {
+        *state = true;
+    }
+    if *state {
+        let run = true;
+        if vm_match_range_endpoint(end, cp, rt)? {
+            *state = false;
+        }
+        return Ok(run);
+    }
+    Ok(false)
 }
 
 /// Execute a rule body. Returns the same `Flow` enum used by the AST interpreter
@@ -3670,7 +3723,7 @@ mod tests {
     fn vm_pattern_range_placeholder_returns_false_in_vm() {
         let cp = compile("/a/,/b/ { print }");
         let rule = &cp.record_rules[0];
-        assert!(matches!(rule.pattern, CompiledPattern::Range));
+        assert!(matches!(rule.pattern, CompiledPattern::Range { .. }));
         let mut rt = runtime_with_slots(&cp);
         rt.set_record_from_line("x");
         assert!(!vm_pattern_matches(rule, &cp, &mut rt).unwrap());

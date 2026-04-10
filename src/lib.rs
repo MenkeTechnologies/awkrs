@@ -26,15 +26,15 @@ mod vm;
 pub use error::{Error, Result};
 
 use crate::ast::parallel;
-use crate::ast::{Pattern, Program};
+use crate::ast::Program;
 use crate::bytecode::{CompiledPattern, CompiledProgram, Op, RedirKind, SubTarget};
 use crate::cli::{Args, MawkWAction};
 use crate::compiler::Compiler;
-use crate::interp::{range_step, Flow};
+use crate::interp::Flow;
 use crate::parser::parse_program;
 use crate::runtime::{Runtime, Value};
 use crate::vm::{
-    flush_print_buf, vm_pattern_matches, vm_run_begin, vm_run_beginfile, vm_run_end,
+    flush_print_buf, vm_pattern_matches, vm_range_step, vm_run_begin, vm_run_beginfile, vm_run_end,
     vm_run_endfile, vm_run_rule,
 };
 use clap::Parser;
@@ -147,7 +147,7 @@ pub fn run(bin_name: &str) -> Result<()> {
         if stdin_parallel {
             process_stdin_parallel(&cp, &mut rt, threads, chunk_lines)?;
         } else {
-            process_file(None, &prog, cp.as_ref(), &mut range_state, &mut rt)?;
+            process_file(None, cp.as_ref(), &mut range_state, &mut rt)?;
         }
         vm_run_endfile(cp.as_ref(), &mut rt)?;
     } else {
@@ -163,13 +163,7 @@ pub fn run(bin_name: &str) -> Result<()> {
             let n = if use_parallel_files {
                 process_file_parallel(Some(p.as_path()), &prog, &cp, &mut rt, threads, nr_global)?
             } else {
-                process_file(
-                    Some(p.as_path()),
-                    &prog,
-                    cp.as_ref(),
-                    &mut range_state,
-                    &mut rt,
-                )?
+                process_file(Some(p.as_path()), cp.as_ref(), &mut range_state, &mut rt)?
             };
             nr_global += n as f64;
             vm_run_endfile(cp.as_ref(), &mut rt)?;
@@ -239,7 +233,7 @@ fn process_lines_parallel_chunk(
 
                 let mut buf = Vec::new();
                 for rule in &cp.record_rules {
-                    if matches!(rule.pattern, CompiledPattern::Range) {
+                    if matches!(rule.pattern, CompiledPattern::Range { .. }) {
                         return Err(Error::Runtime(
                             "internal: range pattern in parallel path".into(),
                         ));
@@ -511,7 +505,6 @@ fn uses_primary_getline(cp: &CompiledProgram) -> bool {
 
 fn process_file(
     path: Option<&Path>,
-    prog: &Program,
     cp: &CompiledProgram,
     range_state: &mut [bool],
     rt: &mut Runtime,
@@ -520,7 +513,7 @@ fn process_file(
     // Eliminates Mutex, BufReader, and syscall-per-line overhead.
     if let Some(p) = path {
         if !uses_primary_getline(cp) {
-            return process_file_slurp(p, prog, cp, range_state, rt);
+            return process_file_slurp(p, cp, range_state, rt);
         }
     }
 
@@ -548,7 +541,7 @@ fn process_file(
         rt.nr += 1.0;
         rt.fnr += 1.0;
         rt.set_record_from_line_buf();
-        if dispatch_rules(prog, cp, range_state, rt)? {
+        if dispatch_rules(cp, range_state, rt)? {
             break;
         }
     }
@@ -729,7 +722,6 @@ fn detect_inline_program(cp: &CompiledProgram) -> Option<(InlinePattern, InlineA
 /// No Mutex, no BufReader, no syscall per line, no per-line buffer allocation.
 fn process_file_slurp(
     path: &Path,
-    prog: &Program,
     cp: &CompiledProgram,
     range_state: &mut [bool],
     rt: &mut Runtime,
@@ -775,7 +767,7 @@ fn process_file_slurp(
         let line = unsafe { std::str::from_utf8_unchecked(&data[pos..end]) };
         rt.set_field_sep_split(&fs, line);
 
-        if dispatch_rules(prog, cp, range_state, rt)? {
+        if dispatch_rules(cp, range_state, rt)? {
             break;
         }
 
@@ -1242,21 +1234,19 @@ fn parse_two_fields_number_ws(line: &[u8], f1: usize, f2: usize, max_field: usiz
 
 /// Execute all record rules for the current record. Returns true if processing should stop.
 fn dispatch_rules(
-    prog: &Program,
     cp: &CompiledProgram,
     range_state: &mut [bool],
     rt: &mut Runtime,
 ) -> Result<bool> {
     for rule in &cp.record_rules {
         let run = match &rule.pattern {
-            CompiledPattern::Range => {
-                let orig = &prog.rules[rule.original_index];
-                if let Pattern::Range(p1, p2) = &orig.pattern {
-                    range_step(&mut range_state[rule.original_index], p1, p2, rt, prog)?
-                } else {
-                    false
-                }
-            }
+            CompiledPattern::Range { start, end } => vm_range_step(
+                &mut range_state[rule.original_index],
+                start,
+                end,
+                cp,
+                rt,
+            )?,
             _ => vm_pattern_matches(rule, cp, rt)?,
         };
         if run {
@@ -1512,7 +1502,7 @@ mod lib_internal_tests {
         flush_print_buf(&mut rt.print_buf).unwrap();
         vm_run_beginfile(&cp, &mut rt).unwrap();
         let mut range_state = vec![false; prog.rules.len()];
-        process_file_slurp(&path, &prog, &cp, &mut range_state, &mut rt).unwrap();
+        process_file_slurp(&path, &cp, &mut range_state, &mut rt).unwrap();
         let _ = std::fs::remove_file(&path);
         assert_eq!(rt.print_buf, b"aX", "print_buf={:?}", rt.print_buf);
     }

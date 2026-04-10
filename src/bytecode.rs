@@ -432,6 +432,23 @@ pub struct CompiledRule {
     pub original_index: usize,
 }
 
+/// One endpoint of a range pattern (`pat1, pat2 { … }`).
+#[derive(Debug, Clone)]
+pub enum CompiledRangeEndpoint {
+    /// `Pattern::Empty` — always matches.
+    Always,
+    /// `BEGIN` / `END` / `BEGINFILE` / `ENDFILE` as an endpoint — never matches.
+    Never,
+    /// Nested `pat1, pat2` as an endpoint — [`crate::vm::vm_match_range_endpoint`] returns `Err`.
+    NestedRangeError,
+    /// Regex tested against `$0`.
+    Regexp(u32),
+    /// Literal string — `str::contains` on `$0`.
+    LiteralRegexp(u32),
+    /// Expression chunk; truthy → match.
+    Expr(Chunk),
+}
+
 /// Compiled form of a rule pattern.
 #[derive(Debug, Clone)]
 pub enum CompiledPattern {
@@ -443,8 +460,11 @@ pub enum CompiledPattern {
     LiteralRegexp(u32),
     /// Arbitrary expression; truthy → match.
     Expr(Chunk),
-    /// Range pattern — state tracked externally by `original_index`.
-    Range,
+    /// Inclusive range — state tracked externally by [`CompiledRule::original_index`].
+    Range {
+        start: CompiledRangeEndpoint,
+        end: CompiledRangeEndpoint,
+    },
 }
 
 /// A compiled user-defined function.

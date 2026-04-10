@@ -257,27 +257,6 @@ pub fn match_pattern(pat: &Pattern, rt: &mut Runtime, prog: &Program) -> Result<
     })
 }
 
-/// Range pattern: `state` is false until `p1` matches, then true until `p2` matches after a run.
-pub fn range_step(
-    state: &mut bool,
-    p1: &Pattern,
-    p2: &Pattern,
-    rt: &mut Runtime,
-    prog: &Program,
-) -> Result<bool> {
-    if !*state && match_pattern(p1, rt, prog)? {
-        *state = true;
-    }
-    if *state {
-        let run = true;
-        if match_pattern(p2, rt, prog)? {
-            *state = false;
-        }
-        return Ok(run);
-    }
-    Ok(false)
-}
-
 fn truthy(v: &Value) -> bool {
     v.truthy()
 }
@@ -1395,7 +1374,10 @@ fn call_user(fd: &FunctionDef, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<V
 
 #[cfg(test)]
 mod tests {
-    use super::{match_pattern, pattern_matches, range_step, run_begin};
+    use super::{match_pattern, pattern_matches, run_begin};
+    use crate::bytecode::CompiledPattern;
+    use crate::compiler::Compiler;
+    use crate::vm::vm_range_step;
     use crate::ast::{Expr, Pattern};
     use crate::parser::parse_program;
     use crate::runtime::Runtime;
@@ -1430,13 +1412,16 @@ mod tests {
 
     #[test]
     fn range_step_enters_after_start_pattern() {
-        let prog = parse_program("").unwrap();
+        let prog = parse_program("/start/,/end/ { print }").unwrap();
+        let cp = Compiler::compile_program(&prog);
+        let rule = &cp.record_rules[0];
+        let CompiledPattern::Range { start, end } = &rule.pattern else {
+            panic!("expected range pattern");
+        };
         let mut rt = Runtime::new();
         rt.set_record_from_line("start");
-        let p1 = Pattern::Regexp("start".into());
-        let p2 = Pattern::Regexp("end".into());
         let mut state = false;
-        assert!(range_step(&mut state, &p1, &p2, &mut rt, &prog).unwrap());
+        assert!(vm_range_step(&mut state, start, end, &cp, &mut rt).unwrap());
         assert!(state);
     }
 

@@ -154,10 +154,37 @@ impl Compiler {
                 peephole_optimize(&mut ops);
                 CompiledPattern::Expr(Chunk::from_ops(ops))
             }
-            Pattern::Range(_, _) => CompiledPattern::Range,
+            Pattern::Range(p1, p2) => CompiledPattern::Range {
+                start: self.compile_range_endpoint(p1),
+                end: self.compile_range_endpoint(p2),
+            },
             Pattern::Begin | Pattern::End | Pattern::BeginFile | Pattern::EndFile => {
                 CompiledPattern::Always
             }
+        }
+    }
+
+    fn compile_range_endpoint(&mut self, pat: &Pattern) -> CompiledRangeEndpoint {
+        match pat {
+            Pattern::Empty => CompiledRangeEndpoint::Always,
+            Pattern::Regexp(re) => {
+                let idx = self.strings.intern(re);
+                if is_literal_regex(re) {
+                    CompiledRangeEndpoint::LiteralRegexp(idx)
+                } else {
+                    CompiledRangeEndpoint::Regexp(idx)
+                }
+            }
+            Pattern::Expr(e) => {
+                let mut ops = Vec::new();
+                self.compile_expr(e, &mut ops);
+                peephole_optimize(&mut ops);
+                CompiledRangeEndpoint::Expr(Chunk::from_ops(ops))
+            }
+            Pattern::Begin | Pattern::End | Pattern::BeginFile | Pattern::EndFile => {
+                CompiledRangeEndpoint::Never
+            }
+            Pattern::Range(_, _) => CompiledRangeEndpoint::NestedRangeError,
         }
     }
 
@@ -1685,5 +1712,16 @@ mod tests {
         let prog = parse_program("BEGIN { delete a[1,2] }").unwrap();
         let cp = Compiler::compile_program(&prog);
         assert!(!cp.begin_chunks[0].ops.is_empty());
+    }
+
+    #[test]
+    fn compile_range_pattern_has_compiled_endpoints() {
+        let prog = parse_program("/start/,/end/ { print }").unwrap();
+        let cp = Compiler::compile_program(&prog);
+        let rule = &cp.record_rules[0];
+        assert!(matches!(
+            &rule.pattern,
+            crate::bytecode::CompiledPattern::Range { .. }
+        ));
     }
 }
