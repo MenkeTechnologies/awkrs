@@ -1444,12 +1444,12 @@ fn call_user(fd: &FunctionDef, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<V
 #[cfg(test)]
 mod tests {
     use super::{match_pattern, pattern_matches, run_begin};
+    use crate::ast::{Expr, Pattern};
     use crate::bytecode::CompiledPattern;
     use crate::compiler::Compiler;
-    use crate::vm::vm_range_step;
-    use crate::ast::{Expr, Pattern};
     use crate::parser::parse_program;
     use crate::runtime::Runtime;
+    use crate::vm::vm_range_step;
 
     #[test]
     fn pattern_empty_matches() {

@@ -1068,11 +1068,7 @@ fn strtonum_empty_string_is_zero() {
 
 #[test]
 fn non_decimal_data_flag_coerces_hex_strings_in_numeric_context() {
-    let (c, o, _) = run_awkrs_stdin_args(
-        ["-n"],
-        r#"BEGIN { v = "0x10"; print v + 0 }"#,
-        "",
-    );
+    let (c, o, _) = run_awkrs_stdin_args(["-n"], r#"BEGIN { v = "0x10"; print v + 0 }"#, "");
     assert_eq!(c, 0);
     assert_eq!(o, "16\n");
 }
@@ -1122,4 +1118,35 @@ fn regexp_pattern_anchors_line_start_and_end() {
     let (c, o, _) = run_awkrs_stdin(r#"/^only$/ { print "yes" }"#, "only\nno\nonly\n");
     assert_eq!(c, 0);
     assert_eq!(o, "yes\nyes\n");
+}
+
+// ── gawk: `@namespace`, `SYMTAB` lvalue, `ns::name` ─────────────────────────
+
+#[test]
+fn gawk_namespace_default_prefixes_unqualified_globals() {
+    let prog = "@namespace \"n\"\nBEGIN { x = 7; print x }\n";
+    let (c, o, _) = run_awkrs_stdin(prog, "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "7\n");
+}
+
+#[test]
+fn gawk_symtab_subscript_assigns_global_scalar() {
+    let (c, o, _) = run_awkrs_stdin("BEGIN { SYMTAB[\"q\"] = 99; print q }", "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "99\n");
+}
+
+#[test]
+fn gawk_qualified_identifier_two_colon_lexes() {
+    let (c, o, _) = run_awkrs_stdin("BEGIN { n::x = 3; print n::x }", "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "3\n");
+}
+
+#[test]
+fn symtab_length_is_positive() {
+    let (c, o, _) = run_awkrs_stdin("BEGIN { print (length(SYMTAB) > 0) }", "");
+    assert_eq!(c, 0);
+    assert_eq!(o.trim(), "1");
 }

@@ -76,6 +76,8 @@ pub enum Op {
     GetArrayElem(u32),
     /// Pop value, pop key, store `arr[key] = val`, push `val`.
     SetArrayElem(u32),
+    /// Push `length(SYMTAB)` — dynamic symbol count (gawk-style introspection).
+    SymtabKeyCount,
 
     // ── Compound assignment ─────────────────────────────────────────────
     /// Pop rhs; compute `var op= rhs`; push result — HashMap path.

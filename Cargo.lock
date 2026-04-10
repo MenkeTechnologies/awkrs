@@ -96,7 +96,7 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
 name = "awkrs"
-version = "0.1.20"
+version = "0.1.21"
 dependencies = [
  "chrono",
  "clap",
@@ -113,6 +113,7 @@ dependencies = [
  "regex",
  "rug",
  "rustc-hash",
+ "socket2",
  "target-lexicon",
  "thiserror",
 ]
@@ -834,6 +835,16 @@ name = "smallvec"
 version = "1.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
+
+[[package]]
+name = "socket2"
+version = "0.5.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e22376abed350d73dd1cd119b57ffccad95b4e585a7cda43e286245ce23c0678"
+dependencies = [
+ "libc",
+ "windows-sys 0.52.0",
+]
 
 [[package]]
 name = "stable_deref_trait"

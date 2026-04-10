@@ -5,9 +5,10 @@ use std::collections::HashMap;
 /// Fast hash map for awk variables and arrays. Uses FxHash (no DoS resistance,
 /// but ~2× faster than SipHash for short string keys typical in awk programs).
 pub type AwkMap<K, V> = rustc_hash::FxHashMap<K, V>;
+use socket2::{Domain, Socket, Type};
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
-use std::net::TcpStream;
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream, ToSocketAddrs, UdpSocket};
 use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -94,7 +95,16 @@ pub fn awk_binop_values(
 
 /// Parse gawk-style `/inet/tcp/lport/host/rport` (local port `0` = ephemeral client).
 pub fn parse_inet_tcp(path: &str) -> Option<(u16, String, u16)> {
-    let rest = path.strip_prefix("/inet/tcp/")?;
+    parse_inet_l4(path, "/inet/tcp/")
+}
+
+/// Parse gawk-style `/inet/udp/lport/host/rport`.
+pub fn parse_inet_udp(path: &str) -> Option<(u16, String, u16)> {
+    parse_inet_l4(path, "/inet/udp/")
+}
+
+fn parse_inet_l4(path: &str, prefix: &str) -> Option<(u16, String, u16)> {
+    let rest = path.strip_prefix(prefix)?;
     let mut it = rest.split('/');
     let lport = it.next()?.parse().ok()?;
     let host = it.next()?.to_string();
@@ -103,6 +113,33 @@ pub fn parse_inet_tcp(path: &str) -> Option<(u16, String, u16)> {
         return None;
     }
     Some((lport, host, rport))
+}
+
+fn tcp_connect_with_local_port(host: &str, lport: u16, rport: u16) -> Result<TcpStream> {
+    let mut addrs = format!("{host}:{rport}")
+        .to_socket_addrs()
+        .map_err(|e| Error::Runtime(format!("inet resolve `{host}`: {e}")))?;
+    let addr = addrs
+        .next()
+        .ok_or_else(|| Error::Runtime(format!("inet: no address for `{host}:{rport}`")))?;
+    let domain = match addr {
+        SocketAddr::V4(_) => Domain::IPV4,
+        SocketAddr::V6(_) => Domain::IPV6,
+    };
+    let socket = Socket::new(domain, Type::STREAM, None)
+        .map_err(|e| Error::Runtime(format!("inet socket: {e}")))?;
+    let bind_addr = match addr {
+        SocketAddr::V4(_) => SocketAddr::from((Ipv4Addr::UNSPECIFIED, lport)),
+        SocketAddr::V6(_) => SocketAddr::from((Ipv6Addr::UNSPECIFIED, lport)),
+    };
+    socket
+        .bind(&bind_addr.into())
+        .map_err(|e| Error::Runtime(format!("inet bind local port {lport}: {e}")))?;
+    socket.set_nonblocking(false).ok();
+    socket
+        .connect(&addr.into())
+        .map_err(|e| Error::Runtime(format!("inet connect `{host}:{rport}`: {e}")))?;
+    Ok(socket.into())
 }
 
 /// Open two-way pipe to `sh -c` (gawk-style `|&` / `<&`).
@@ -358,11 +395,7 @@ fn split_fields_fieldwidths(record: &str, widths: &[usize], field_ranges: &mut V
     let mut pos = 0usize;
     let len_w = widths.len();
     for (i, &w) in widths.iter().enumerate() {
-        let end = if i == len_w - 1 {
-            n
-        } else {
-            (pos + w).min(n)
-        };
+        let end = if i == len_w - 1 { n } else { (pos + w).min(n) };
         field_ranges.push((pos as u32, end as u32));
         pos = end;
         if pos >= n {
@@ -530,6 +563,8 @@ pub struct Runtime {
     pub inet_tcp_read: HashMap<String, BufReader<TcpStream>>,
     /// gawk `/inet/tcp/...` TCP streams (write half).
     pub inet_tcp_write: HashMap<String, TcpStream>,
+    /// gawk `/inet/udp/...` connected UDP sockets (one per path; `recv` / `send` datagrams).
+    pub inet_udp: HashMap<String, UdpSocket>,
     /// Last `bindtextdomain` directory (gettext stub / future real i18n).
     pub gettext_dir: String,
     /// `-M` / `--bignum`: use MPFR ([`Value::Mpfr`]) for arithmetic in the VM.
@@ -623,6 +658,7 @@ impl Runtime {
             input_reader: None,
             inet_tcp_read: HashMap::new(),
             inet_tcp_write: HashMap::new(),
+            inet_udp: HashMap::new(),
             gettext_dir: String::new(),
             bignum: false,
             file_handles: HashMap::new(),
@@ -663,18 +699,18 @@ impl Runtime {
     pub fn refresh_special_arrays(&mut self, cp: &CompiledProgram, bin_name: &str) {
         self.procinfo_refresh(bin_name);
         self.functab_refresh(cp);
-        self.symtab_mirror_refresh();
+        self.symtab_mirror_refresh(cp);
     }
 
     fn procinfo_refresh(&mut self, bin_name: &str) {
         let mut p = AwkMap::default();
-        p.insert("version".into(), Value::Str(env!("CARGO_PKG_VERSION").into()));
+        p.insert(
+            "version".into(),
+            Value::Str(env!("CARGO_PKG_VERSION").into()),
+        );
         p.insert("api".into(), Value::Str("awkrs".into()));
         p.insert("program".into(), Value::Str(bin_name.into()));
-        p.insert(
-            "platform".into(),
-            Value::Str(std::env::consts::OS.into()),
-        );
+        p.insert("platform".into(), Value::Str(std::env::consts::OS.into()));
         p.insert("pid".into(), Value::Num(std::process::id() as f64));
         #[cfg(unix)]
         {
@@ -693,10 +729,7 @@ impl Runtime {
             .get_global_var("BINMODE")
             .map(|v| v.as_number())
             .unwrap_or(0.0);
-        p.insert(
-            "awkrs_binmode".into(),
-            Value::Num(binmode),
-        );
+        p.insert("awkrs_binmode".into(), Value::Num(binmode));
         self.vars.insert("PROCINFO".into(), Value::Array(p));
     }
 
@@ -705,16 +738,13 @@ impl Runtime {
         for (name, f) in &cp.functions {
             let mut meta = AwkMap::default();
             meta.insert("type".into(), Value::Str("user".into()));
-            meta.insert(
-                "arity".into(),
-                Value::Num(f.params.len() as f64),
-            );
+            meta.insert("arity".into(), Value::Num(f.params.len() as f64));
             ft.insert(name.clone(), Value::Array(meta));
         }
         self.vars.insert("FUNCTAB".into(), Value::Array(ft));
     }
 
-    fn symtab_mirror_refresh(&mut self) {
+    fn symtab_mirror_refresh(&mut self, cp: &CompiledProgram) {
         let mut st = AwkMap::default();
         for (k, v) in &self.vars {
             match k.as_str() {
@@ -722,6 +752,16 @@ impl Runtime {
                 _ => {}
             }
             st.insert(k.clone(), v.clone());
+        }
+        for name in cp.slot_map.keys() {
+            if st.contains_key(name) {
+                continue;
+            }
+            if let Some(&idx) = cp.slot_map.get(name) {
+                if (idx as usize) < self.slots.len() {
+                    st.insert(name.clone(), self.slots[idx as usize].clone());
+                }
+            }
         }
         self.vars.insert("SYMTAB".into(), Value::Array(st));
     }
@@ -754,6 +794,7 @@ impl Runtime {
     }
 
     /// Worker runtime for parallel record processing: empty overlay `vars`, shared read-only globals.
+    #[allow(clippy::too_many_arguments)]
     pub fn for_parallel_worker(
         shared_globals: Arc<AwkMap<String, Value>>,
         filename: String,
@@ -786,6 +827,7 @@ impl Runtime {
             input_reader: None,
             inet_tcp_read: HashMap::new(),
             inet_tcp_write: HashMap::new(),
+            inet_udp: HashMap::new(),
             gettext_dir: String::new(),
             bignum,
             file_handles: HashMap::new(),
@@ -829,11 +871,12 @@ impl Runtime {
     pub fn ensure_regex(&mut self, pat: &str) -> std::result::Result<(), String> {
         let ic = self.ignore_case_flag();
         let key = format!("{ic}\x1c{pat}");
-        if !self.regex_cache.contains_key(&key) {
+        use std::collections::hash_map::Entry;
+        if let Entry::Vacant(e) = self.regex_cache.entry(key) {
             let mut b = RegexBuilder::new(pat);
             b.case_insensitive(ic);
             let re = b.build().map_err(|e| e.to_string())?;
-            self.regex_cache.insert(key, re);
+            e.insert(re);
         }
         Ok(())
     }
@@ -858,8 +901,7 @@ impl Runtime {
     }
 
     pub fn set_errno_io(&mut self, e: &std::io::Error) {
-        self.vars
-            .insert("ERRNO".into(), Value::Str(e.to_string()));
+        self.vars.insert("ERRNO".into(), Value::Str(e.to_string()));
     }
 
     pub fn ensure_rs_regex_bytes(&mut self) -> Result<()> {
@@ -998,6 +1040,14 @@ impl Runtime {
     /// append (`>>`); later writes reuse the same handle until `close`.
     pub fn write_output_line(&mut self, path: &str, data: &str, append: bool) -> Result<()> {
         self.require_unsandboxed_io()?;
+        if path.starts_with("/inet/udp/") {
+            let _ = append;
+            self.ensure_inet_udp(path)?;
+            let s = self.inet_udp.get_mut(path).unwrap();
+            s.send(data.as_bytes())
+                .map_err(|e| Error::Runtime(format!("inet udp send `{path}`: {e}")))?;
+            return Ok(());
+        }
         if path.starts_with("/inet/tcp/") {
             let _ = append;
             self.ensure_inet_tcp_pair(path)?;
@@ -1012,7 +1062,10 @@ impl Runtime {
     }
 
     fn ensure_output_writer(&mut self, path: &str, append: bool) -> Result<()> {
-        if path.starts_with("/inet/") {
+        if path.starts_with("/inet/udp/") {
+            return self.ensure_inet_udp(path);
+        }
+        if path.starts_with("/inet/tcp/") {
             return self.ensure_inet_tcp_pair(path);
         }
         if self.output_handles.contains_key(path) {
@@ -1041,6 +1094,9 @@ impl Runtime {
         }
         if let Some(w) = self.inet_tcp_write.get_mut(key) {
             w.flush().map_err(Error::Io)?;
+            return Ok(());
+        }
+        if self.inet_udp.contains_key(key) {
             return Ok(());
         }
         if let Some(w) = self.pipe_stdin.get_mut(key) {
@@ -1127,24 +1183,30 @@ impl Runtime {
     pub fn read_line_file(&mut self, path: &str) -> Result<Option<String>> {
         self.require_unsandboxed_io()?;
         if path.starts_with("/inet/udp/") {
-            return Err(Error::Runtime(
-                "/inet/udp/... is not implemented (only /inet/tcp/lport/host/port with lport=0 is supported)"
-                    .into(),
-            ));
+            self.ensure_inet_udp(path)?;
+            let s = self.inet_udp.get_mut(path).unwrap();
+            let mut buf = [0u8; 65536];
+            let n = s
+                .recv(&mut buf)
+                .map_err(|e| Error::Runtime(format!("inet udp recv `{path}`: {e}")))?;
+            if n == 0 {
+                return Ok(None);
+            }
+            return Ok(Some(String::from_utf8_lossy(&buf[..n]).into_owned()));
+        }
+        if path.starts_with("/inet/tcp/") {
+            self.ensure_inet_tcp_pair(path)?;
+            let reader = self.inet_tcp_read.get_mut(path).unwrap();
+            let mut line = String::new();
+            let n = reader.read_line(&mut line).map_err(Error::Io)?;
+            if n == 0 {
+                return Ok(None);
+            }
+            return Ok(Some(line));
         }
         if path.starts_with("/inet/") {
-            if path.starts_with("/inet/tcp/") {
-                self.ensure_inet_tcp_pair(path)?;
-                let reader = self.inet_tcp_read.get_mut(path).unwrap();
-                let mut line = String::new();
-                let n = reader.read_line(&mut line).map_err(Error::Io)?;
-                if n == 0 {
-                    return Ok(None);
-                }
-                return Ok(Some(line));
-            }
             return Err(Error::Runtime(format!(
-                "unsupported inet path `{path}` (only /inet/tcp/lport/host/port is implemented)"
+                "unsupported inet path `{path}` (use /inet/tcp/... or /inet/udp/...)"
             )));
         }
         let p = Path::new(path);
@@ -1166,22 +1228,44 @@ impl Runtime {
         if self.inet_tcp_read.contains_key(path) {
             return Ok(());
         }
-        let (lport, host, rport) = parse_inet_tcp(path).ok_or_else(|| {
-            Error::Runtime(format!("invalid /inet/tcp/ path `{path}`"))
-        })?;
-        if lport != 0 {
-            return Err(Error::Runtime(
-                "non-zero local port in /inet/tcp/ is not supported yet".into(),
-            ));
-        }
-        let stream = TcpStream::connect((host.as_str(), rport))
-            .map_err(|e| Error::Runtime(format!("inet connect `{path}`: {e}")))?;
+        let (lport, host, rport) = parse_inet_tcp(path)
+            .ok_or_else(|| Error::Runtime(format!("invalid /inet/tcp/ path `{path}`")))?;
+        let stream = if lport == 0 {
+            TcpStream::connect((host.as_str(), rport))
+                .map_err(|e| Error::Runtime(format!("inet connect `{path}`: {e}")))?
+        } else {
+            tcp_connect_with_local_port(&host, lport, rport)?
+        };
         let w = stream
             .try_clone()
             .map_err(|e| Error::Runtime(format!("inet: {e}")))?;
         self.inet_tcp_read
             .insert(path.to_string(), BufReader::new(stream));
         self.inet_tcp_write.insert(path.to_string(), w);
+        Ok(())
+    }
+
+    fn ensure_inet_udp(&mut self, path: &str) -> Result<()> {
+        if self.inet_udp.contains_key(path) {
+            return Ok(());
+        }
+        let (lport, host, rport) = parse_inet_udp(path)
+            .ok_or_else(|| Error::Runtime(format!("invalid /inet/udp/ path `{path}`")))?;
+        let mut addrs = format!("{host}:{rport}")
+            .to_socket_addrs()
+            .map_err(|e| Error::Runtime(format!("inet udp resolve `{host}`: {e}")))?;
+        let addr = addrs
+            .next()
+            .ok_or_else(|| Error::Runtime(format!("inet udp: no address for `{host}:{rport}`")))?;
+        let socket = match addr {
+            SocketAddr::V4(_) => UdpSocket::bind((Ipv4Addr::UNSPECIFIED, lport)),
+            SocketAddr::V6(_) => UdpSocket::bind((Ipv6Addr::UNSPECIFIED, lport)),
+        }
+        .map_err(|e| Error::Runtime(format!("inet udp bind `{path}`: {e}")))?;
+        socket
+            .connect(addr)
+            .map_err(|e| Error::Runtime(format!("inet udp connect `{path}`: {e}")))?;
+        self.inet_udp.insert(path.to_string(), socket);
         Ok(())
     }
 
@@ -1201,6 +1285,7 @@ impl Runtime {
         let _ = self.file_handles.remove(path);
         let _ = self.inet_tcp_read.remove(path);
         let _ = self.inet_tcp_write.remove(path);
+        let _ = self.inet_udp.remove(path);
         0.0
     }
 
@@ -1768,6 +1853,7 @@ impl Clone for Runtime {
             input_reader: None,
             inet_tcp_read: HashMap::new(),
             inet_tcp_write: HashMap::new(),
+            inet_udp: HashMap::new(),
             gettext_dir: self.gettext_dir.clone(),
             bignum: self.bignum,
             file_handles: HashMap::new(),

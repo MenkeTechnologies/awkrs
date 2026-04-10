@@ -16,12 +16,13 @@ pub use jit::{
     try_compile_numeric_expr, try_compile_with_options, try_jit_dispatch_numeric_chunk,
     try_jit_execute, JitChunk, JitCompileOptions, JitNumericChunk, JitRuntimeState,
 };
+mod gettext_util;
 #[allow(dead_code)]
 mod interp;
 mod lexer;
 mod locale_numeric;
+mod namespace;
 mod parser;
-mod gettext_util;
 mod record_io;
 mod runtime;
 mod source_expand;
@@ -320,6 +321,7 @@ fn parallel_set_rt_approx(rt: &mut Runtime) {
     rt.vars.insert("RT".into(), Value::Str(rt_sep));
 }
 
+#[allow(clippy::too_many_arguments)]
 fn process_lines_parallel_chunk(
     pool: &ThreadPool,
     lines: Vec<String>,
@@ -449,6 +451,7 @@ fn write_parallel_chunk_output(
 }
 
 /// Chunked parallel stdin: buffer up to `chunk_lines` records per batch, process with rayon, emit in order.
+#[allow(clippy::too_many_arguments)]
 fn process_stdin_parallel(
     cp: &Arc<CompiledProgram>,
     rt: &mut Runtime,
@@ -537,12 +540,10 @@ fn mmap_file_readonly(path: &Path, rt: &mut Runtime) -> Result<Mmap> {
     };
     // SAFETY: read-only map of a file we opened; no concurrent writes assumed (same as `fs::read`).
     unsafe {
-        memmap2::MmapOptions::new()
-            .map(&file)
-            .map_err(|e| {
-                rt.set_errno_io(&e);
-                Error::ProgramFile(path.to_path_buf(), e)
-            })
+        memmap2::MmapOptions::new().map(&file).map_err(|e| {
+            rt.set_errno_io(&e);
+            Error::ProgramFile(path.to_path_buf(), e)
+        })
     }
 }
 
@@ -596,6 +597,7 @@ fn read_all_lines<R: Read>(mut r: R) -> Result<Vec<String>> {
 
 /// Per-record workers run the bytecode VM (`vm_pattern_matches` / `vm_run_rule`), same as sequential mode.
 /// Each worker gets `Arc::clone` of the shared program (O(1)) and a fresh `Runtime` (slots, VM stack, fields, print capture).
+#[allow(clippy::too_many_arguments)]
 fn process_file_parallel(
     path: Option<&Path>,
     _prog: &Program,
@@ -834,7 +836,10 @@ fn set_record_from_line_bytes(rt: &mut Runtime, fs: &str, line_bytes: &[u8]) {
 }
 
 /// Detect programs that can bypass the full VM dispatch loop.
-fn detect_inline_program(cp: &CompiledProgram, rt: &Runtime) -> Option<(InlinePattern, InlineAction)> {
+fn detect_inline_program(
+    cp: &CompiledProgram,
+    rt: &Runtime,
+) -> Option<(InlinePattern, InlineAction)> {
     if rt.rs_string() != "\n" {
         return None;
     }
@@ -995,11 +1000,7 @@ fn process_file_slurp(
     let chunks = crate::record_io::split_input_into_records(data, &rs, None);
     for chunk in chunks {
         count += 1;
-        let rtb: &[u8] = if rs.is_empty() {
-            b"\n"
-        } else {
-            rs.as_bytes()
-        };
+        let rtb: &[u8] = if rs.is_empty() { b"\n" } else { rs.as_bytes() };
         if dispatch_slurp_record(cp, range_state, rt, &fs, chunk, rtb)? {
             break;
         }
@@ -1471,13 +1472,9 @@ fn dispatch_rules(
 ) -> Result<bool> {
     for rule in &cp.record_rules {
         let run = match &rule.pattern {
-            CompiledPattern::Range { start, end } => vm_range_step(
-                &mut range_state[rule.original_index],
-                start,
-                end,
-                cp,
-                rt,
-            )?,
+            CompiledPattern::Range { start, end } => {
+                vm_range_step(&mut range_state[rule.original_index], start, end, cp, rt)?
+            }
             _ => vm_pattern_matches(rule, cp, rt)?,
         };
         if run {
@@ -1543,9 +1540,8 @@ fn load_awk_library_source(name: &str) -> Result<String> {
         for c in &candidates {
             let p = Path::new(dir).join(c);
             if p.is_file() {
-                return std::fs::read_to_string(&p).map_err(|e| {
-                    Error::Runtime(format!("-l {name}: read {}: {e}", p.display()))
-                });
+                return std::fs::read_to_string(&p)
+                    .map_err(|e| Error::Runtime(format!("-l {name}: read {}: {e}", p.display())));
             }
         }
     }

@@ -237,13 +237,7 @@ fn replace_all_awk(re: &Regex, s: &str, repl: &str, repl_has_special: bool) -> (
     (out, count)
 }
 
-fn replace_nth_awk(
-    re: &Regex,
-    s: &str,
-    repl: &str,
-    repl_has_special: bool,
-    n: usize,
-) -> String {
+fn replace_nth_awk(re: &Regex, s: &str, repl: &str, repl_has_special: bool, n: usize) -> String {
     if n == 0 {
         let (out, _) = replace_all_awk(re, s, repl, repl_has_special);
         return out;

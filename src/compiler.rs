@@ -758,6 +758,21 @@ impl Compiler {
 
     fn compile_call(&mut self, name: &str, args: &[Expr], ops: &mut Vec<Op>) {
         match name {
+            "length" => {
+                if args.len() == 1 {
+                    if let Expr::Var(arr) = &args[0] {
+                        if arr == "SYMTAB" {
+                            ops.push(Op::SymtabKeyCount);
+                            return;
+                        }
+                    }
+                }
+                for a in args {
+                    self.compile_expr(a, ops);
+                }
+                let name_idx = self.strings.intern("length");
+                ops.push(Op::CallBuiltin(name_idx, args.len() as u16));
+            }
             "sub" => self.compile_sub_gsub(args, false, ops),
             "gsub" => self.compile_sub_gsub(args, true, ops),
             "split" => self.compile_split(args, ops),

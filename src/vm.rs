@@ -119,6 +119,67 @@ impl<'a> VmCtx<'a> {
             })
     }
 
+    /// `arr[key]` — `SYMTAB` uses live global/slot resolution (gawk lvalue semantics).
+    fn array_elem_get(&self, name: &str, key: &str) -> Value {
+        if name == "SYMTAB" {
+            self.get_var(key)
+        } else {
+            self.rt.array_get(name, key)
+        }
+    }
+
+    fn array_elem_set(&mut self, name: &str, key: String, val: Value) {
+        if name == "SYMTAB" {
+            self.set_var(&key, val);
+        } else {
+            self.rt.array_set(name, key, val);
+        }
+    }
+
+    fn symtab_has(&self, key: &str) -> bool {
+        if self.cp.slot_map.contains_key(key) {
+            return true;
+        }
+        if self.rt.vars.contains_key(key) {
+            return true;
+        }
+        !matches!(self.get_var(key), Value::Uninit)
+    }
+
+    fn symtab_keys(&self) -> Vec<String> {
+        use rustc_hash::FxHashSet;
+        let mut seen = FxHashSet::default();
+        for k in self.rt.vars.keys() {
+            if matches!(k.as_str(), "SYMTAB" | "FUNCTAB" | "PROCINFO") {
+                continue;
+            }
+            seen.insert(k.clone());
+        }
+        for k in self.cp.slot_map.keys() {
+            seen.insert(k.clone());
+        }
+        for &s in crate::namespace::SPECIAL_GLOBAL_NAMES {
+            seen.insert((*s).to_string());
+        }
+        let mut out: Vec<_> = seen.into_iter().collect();
+        out.sort();
+        out
+    }
+
+    fn symtab_key_count(&self) -> usize {
+        self.symtab_keys().len()
+    }
+
+    fn symtab_delete(&mut self, key: &str) {
+        if let Some(&slot) = self.cp.slot_map.get(key) {
+            let i = slot as usize;
+            if i < self.rt.slots.len() {
+                self.rt.slots[i] = Value::Uninit;
+            }
+        }
+        self.rt.vars.remove(key);
+    }
+
     /// Run `f` with `str_ref(idx)` as `&str` without a heap allocation when the name is short.
     fn with_short_pool_name_mut<T>(&mut self, idx: u32, f: impl FnOnce(&mut Self, &str) -> T) -> T {
         let s = self.str_ref(idx);
@@ -598,12 +659,22 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
         }
         MIXED_CMP_EQ => {
             let ic = ctx.rt.ignore_case_flag();
-            let r = awk_cmp_eq(&jit_f64_to_value(ctx, a2), &jit_f64_to_value(ctx, a3), ic, false);
+            let r = awk_cmp_eq(
+                &jit_f64_to_value(ctx, a2),
+                &jit_f64_to_value(ctx, a3),
+                ic,
+                false,
+            );
             r.as_number()
         }
         MIXED_CMP_NE => {
             let ic = ctx.rt.ignore_case_flag();
-            let eq = awk_cmp_eq(&jit_f64_to_value(ctx, a2), &jit_f64_to_value(ctx, a3), ic, false);
+            let eq = awk_cmp_eq(
+                &jit_f64_to_value(ctx, a2),
+                &jit_f64_to_value(ctx, a3),
+                ic,
+                false,
+            );
             Value::Num(if eq.as_number() != 0.0 { 0.0 } else { 1.0 }).as_number()
         }
         MIXED_CMP_LT | MIXED_CMP_LE | MIXED_CMP_GT | MIXED_CMP_GE => {
@@ -615,8 +686,14 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
                 MIXED_CMP_GE => BinOp::Ge,
                 _ => unreachable!(),
             };
-            awk_cmp_rel(bop, &jit_f64_to_value(ctx, a2), &jit_f64_to_value(ctx, a3), ic, false)
-                .as_number()
+            awk_cmp_rel(
+                bop,
+                &jit_f64_to_value(ctx, a2),
+                &jit_f64_to_value(ctx, a3),
+                ic,
+                false,
+            )
+            .as_number()
         }
         MIXED_NEG => {
             let v = jit_f64_to_value(ctx, a2);
@@ -827,21 +904,26 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
             let name = ctx.cp.strings.get(a1);
             let key_val = jit_f64_to_value(ctx, a2);
             let k = key_val.as_str_cow();
-            let v = ctx.rt.array_get(name, k.as_ref());
+            let v = ctx.array_elem_get(name, k.as_ref());
             value_to_jit_f64(ctx, v)
         }
         MIXED_ARRAY_SET => {
             let name = ctx.cp.strings.get(a1);
             let key = jit_f64_to_value(ctx, a2).into_string();
             let val = jit_f64_to_value(ctx, a3);
-            ctx.rt.array_set(name, key, val.clone());
+            ctx.array_elem_set(name, key, val.clone());
             value_to_jit_f64(ctx, val)
         }
         MIXED_ARRAY_IN => {
             let name = ctx.cp.strings.get(a1);
             let key_val = jit_f64_to_value(ctx, a2);
             let k = key_val.as_str_cow();
-            if ctx.rt.array_has(name, k.as_ref()) {
+            let b = if name == "SYMTAB" {
+                ctx.symtab_has(k.as_ref())
+            } else {
+                ctx.rt.array_has(name, k.as_ref())
+            };
+            if b {
                 1.0
             } else {
                 0.0
@@ -851,7 +933,11 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
             let name = ctx.cp.strings.get(a1);
             let key_val = jit_f64_to_value(ctx, a2);
             let k = key_val.as_str_cow();
-            ctx.rt.array_delete(name, Some(k.as_ref()));
+            if name == "SYMTAB" {
+                ctx.symtab_delete(k.as_ref());
+            } else {
+                ctx.rt.array_delete(name, Some(k.as_ref()));
+            }
             0.0
         }
         MIXED_ARRAY_DELETE_ALL => {
@@ -874,13 +960,13 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
             let key_val = jit_f64_to_value(ctx, a2);
             let old = {
                 let k = key_val.as_str_cow();
-                ctx.rt.array_get(name, k.as_ref())
+                ctx.array_elem_get(name, k.as_ref())
             };
             let rhs = jit_f64_to_value(ctx, a3);
             let newv = apply_binop(bop, &old, &rhs, false).unwrap_or(Value::Num(0.0));
             let n = newv.as_number();
             let key = key_val.into_string();
-            ctx.rt.array_set(name, key, Value::Num(n));
+            ctx.array_elem_set(name, key, Value::Num(n));
             n
         }
         MIXED_ARRAY_INCDEC => {
@@ -897,7 +983,7 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
             let key_val = jit_f64_to_value(ctx, a2);
             let old_n = {
                 let k = key_val.as_str_cow();
-                ctx.rt.array_get(name, k.as_ref())
+                ctx.array_elem_get(name, k.as_ref())
             }
             .as_number();
             let delta = match kind {
@@ -906,7 +992,7 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
             };
             let new_n = old_n + delta;
             let key = key_val.into_string();
-            ctx.rt.array_set(name, key, Value::Num(new_n));
+            ctx.array_elem_set(name, key, Value::Num(new_n));
             incdec_push(kind, old_n, new_n)
         }
         MIXED_INCDEC_SLOT => {
@@ -1109,11 +1195,8 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
                 .get("FS")
                 .map(|v| v.as_str())
                 .unwrap_or_else(|| " ".into());
-            let parts = crate::runtime::split_string_by_field_separator(
-                &s,
-                &fs,
-                ctx.rt.ignore_case_flag(),
-            );
+            let parts =
+                crate::runtime::split_string_by_field_separator(&s, &fs, ctx.rt.ignore_case_flag());
             let n = parts.len();
             ctx.rt.split_into_array(&name, &parts);
             n as f64
@@ -1122,11 +1205,8 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
             let name = ctx.str_ref(a1).to_string();
             let s = jit_f64_to_value(ctx, a2).as_str();
             let fs = jit_f64_to_value(ctx, a3).as_str();
-            let parts = crate::runtime::split_string_by_field_separator(
-                &s,
-                &fs,
-                ctx.rt.ignore_case_flag(),
-            );
+            let parts =
+                crate::runtime::split_string_by_field_separator(&s, &fs, ctx.rt.ignore_case_flag());
             let n = parts.len();
             ctx.rt.split_into_array(&name, &parts);
             n as f64
@@ -1809,28 +1889,37 @@ extern "C" fn jit_val_dispatch(vmctx: *mut c_void, op: u32, a1: u32, a2: f64, a3
             JIT_VAL_ARRAY_GET => {
                 let name = ctx.cp.strings.get(a1);
                 let key = jit_f64_to_value(ctx, a2).into_string();
-                ctx.rt.array_get(name, &key).as_number()
+                ctx.array_elem_get(name, &key).as_number()
             }
             JIT_VAL_ARRAY_SET => {
                 let name = ctx.cp.strings.get(a1);
                 let key = jit_f64_to_value(ctx, a2).into_string();
                 let val = jit_f64_to_value(ctx, a3);
-                ctx.rt.array_set(name, key, val);
+                ctx.array_elem_set(name, key, val);
                 a3
             }
             JIT_VAL_ARRAY_IN => {
                 let name = ctx.cp.strings.get(a1);
                 let key = jit_f64_to_value(ctx, a2).into_string();
-                if ctx.rt.array_has(name, &key) {
+                let b = if name == "SYMTAB" {
+                    ctx.symtab_has(&key)
+                } else {
+                    ctx.rt.array_has(name, &key)
+                };
+                if b {
                     1.0
                 } else {
                     0.0
                 }
             }
             JIT_VAL_ARRAY_DELETE_ELEM => {
-                let name = ctx.cp.strings.get(a1).to_string();
+                let name = ctx.cp.strings.get(a1);
                 let key = jit_f64_to_value(ctx, a2).into_string();
-                ctx.rt.array_delete(&name, Some(&key));
+                if name == "SYMTAB" {
+                    ctx.symtab_delete(&key);
+                } else {
+                    ctx.rt.array_delete(name, Some(&key));
+                }
                 0.0
             }
             JIT_VAL_ARRAY_DELETE_ALL => {
@@ -1845,7 +1934,7 @@ extern "C" fn jit_val_dispatch(vmctx: *mut c_void, op: u32, a1: u32, a2: f64, a3
             | JIT_VAL_ARRAY_COMPOUND_MOD => {
                 let name = ctx.cp.strings.get(a1);
                 let key = jit_f64_to_value(ctx, a2).into_string();
-                let old = ctx.rt.array_get(name, &key).as_number();
+                let old = ctx.array_elem_get(name, &key).as_number();
                 let rhs = a3;
                 let n = match op {
                     JIT_VAL_ARRAY_COMPOUND_ADD => old + rhs,
@@ -1855,7 +1944,7 @@ extern "C" fn jit_val_dispatch(vmctx: *mut c_void, op: u32, a1: u32, a2: f64, a3
                     JIT_VAL_ARRAY_COMPOUND_MOD => old % rhs,
                     _ => unreachable!(),
                 };
-                ctx.rt.array_set(name, key, Value::Num(n));
+                ctx.array_elem_set(name, key, Value::Num(n));
                 n
             }
             JIT_VAL_ARRAY_INCDEC_PRE_INC
@@ -1864,13 +1953,13 @@ extern "C" fn jit_val_dispatch(vmctx: *mut c_void, op: u32, a1: u32, a2: f64, a3
             | JIT_VAL_ARRAY_INCDEC_POST_DEC => {
                 let name = ctx.cp.strings.get(a1);
                 let key = jit_f64_to_value(ctx, a2).into_string();
-                let old_n = ctx.rt.array_get(name, &key).as_number();
+                let old_n = ctx.array_elem_get(name, &key).as_number();
                 let delta = match op {
                     JIT_VAL_ARRAY_INCDEC_PRE_INC | JIT_VAL_ARRAY_INCDEC_POST_INC => 1.0,
                     _ => -1.0,
                 };
                 let new_n = old_n + delta;
-                ctx.rt.array_set(name, key, Value::Num(new_n));
+                ctx.array_elem_set(name, key, Value::Num(new_n));
                 match op {
                     JIT_VAL_ARRAY_INCDEC_PRE_INC | JIT_VAL_ARRAY_INCDEC_PRE_DEC => new_n,
                     _ => old_n,
@@ -1879,7 +1968,11 @@ extern "C" fn jit_val_dispatch(vmctx: *mut c_void, op: u32, a1: u32, a2: f64, a3
             // ── ForIn iteration ────────────────────────────────────────
             JIT_VAL_FORIN_START => {
                 let name = ctx.cp.strings.get(a1);
-                let keys = ctx.rt.array_keys(name);
+                let keys = if name == "SYMTAB" {
+                    ctx.symtab_keys()
+                } else {
+                    ctx.rt.array_keys(name)
+                };
                 JIT_FORIN_ITERS.with(|c| {
                     c.borrow_mut().push(ForInState { keys, index: 0 });
                 });
@@ -2224,8 +2317,12 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 let key_val = ctx.pop();
                 let k = key_val.as_str_cow();
                 let name = ctx.str_ref(arr);
-                let v = ctx.rt.array_get(name, k.as_ref());
+                let v = ctx.array_elem_get(name, k.as_ref());
                 ctx.push(v);
+            }
+            Op::SymtabKeyCount => {
+                let n = ctx.symtab_key_count() as f64;
+                ctx.push(Value::Num(n));
             }
             Op::TypeofVar(idx) => {
                 let name = ctx.str_ref(idx);
@@ -2240,8 +2337,12 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 let key_val = ctx.pop();
                 let k = key_val.as_str_cow();
                 let name = ctx.str_ref(arr);
-                let t = builtins::awk_typeof_array_elem(ctx.rt, name, k.as_ref());
-                ctx.push(Value::Str(t.into()));
+                let t = if name == "SYMTAB" {
+                    ctx.typeof_scalar_name(k.as_ref())
+                } else {
+                    Value::Str(builtins::awk_typeof_array_elem(ctx.rt, name, k.as_ref()).into())
+                };
+                ctx.push(t);
             }
             Op::TypeofField => {
                 let i = ctx.pop().as_number() as i32;
@@ -2261,7 +2362,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 let val = ctx.pop();
                 let key = ctx.pop().into_string();
                 let name = ctx.cp.strings.get(arr);
-                ctx.rt.array_set(name, key, val.clone());
+                ctx.array_elem_set(name, key, val.clone());
                 ctx.push(val);
             }
 
@@ -2300,11 +2401,11 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 let name = ctx.cp.strings.get(arr);
                 let old = {
                     let k = key_val.as_str_cow();
-                    ctx.rt.array_get(name, k.as_ref())
+                    ctx.array_elem_get(name, k.as_ref())
                 };
                 let new_val = apply_binop(bop, &old, &rhs, ctx.rt.bignum)?;
                 let key = key_val.into_string();
-                ctx.rt.array_set(name, key, new_val.clone());
+                ctx.array_elem_set(name, key, new_val.clone());
                 ctx.push(new_val);
             }
 
@@ -2353,10 +2454,10 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             Op::IncDecIndex(arr, kind) => {
                 let key = ctx.pop().into_string();
                 let name = ctx.cp.strings.get(arr);
-                let old_n = ctx.rt.array_get(name, &key).as_number();
+                let old_n = ctx.array_elem_get(name, &key).as_number();
                 let delta = incdec_delta(kind);
                 let new_n = old_n + delta;
-                ctx.rt.array_set(name, key, Value::Num(new_n));
+                ctx.array_elem_set(name, key, Value::Num(new_n));
                 ctx.push(Value::Num(incdec_push(kind, old_n, new_n)));
             }
 
@@ -2615,7 +2716,11 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 let key_val = ctx.pop();
                 let k = key_val.as_str_cow();
                 let name = ctx.str_ref(arr);
-                let b = ctx.rt.array_has(name, k.as_ref());
+                let b = if name == "SYMTAB" {
+                    ctx.symtab_has(k.as_ref())
+                } else {
+                    ctx.rt.array_has(name, k.as_ref())
+                };
                 ctx.push(Value::Num(if b { 1.0 } else { 0.0 }));
             }
             Op::DeleteArray(arr) => {
@@ -2626,7 +2731,11 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 let key_val = ctx.pop();
                 let k = key_val.as_str_cow();
                 let name = ctx.cp.strings.get(arr);
-                ctx.rt.array_delete(name, Some(k.as_ref()));
+                if name == "SYMTAB" {
+                    ctx.symtab_delete(k.as_ref());
+                } else {
+                    ctx.rt.array_delete(name, Some(k.as_ref()));
+                }
             }
 
             // ── Multi-dimensional array key ─────────────────────────────
@@ -2664,10 +2773,10 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 let s = ctx.pop().as_str();
                 let arr_name = ctx.str_ref(arr).to_string();
                 let parts = crate::runtime::split_string_by_field_separator(
-                &s,
-                &fs,
-                ctx.rt.ignore_case_flag(),
-            );
+                    &s,
+                    &fs,
+                    ctx.rt.ignore_case_flag(),
+                );
                 let n = parts.len();
                 ctx.rt.split_into_array(&arr_name, &parts);
                 ctx.push(Value::Num(n as f64));
@@ -2700,7 +2809,11 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             // ── ForIn ───────────────────────────────────────────────────
             Op::ForInStart(arr) => {
                 let name = ctx.str_ref(arr);
-                let keys = ctx.rt.array_keys(name);
+                let keys = if name == "SYMTAB" {
+                    ctx.symtab_keys()
+                } else {
+                    ctx.rt.array_keys(name)
+                };
                 ctx.for_in_iters.push(ForInState { keys, index: 0 });
             }
             Op::ForInNext { var, end_jump } => {
@@ -3257,13 +3370,13 @@ pub(crate) fn exec_sub_from_values(
         SubTarget::Index(arr_idx) => {
             let key = extra_key.expect("key for SubTarget::Index");
             let arr_name = ctx.str_ref(arr_idx).to_string();
-            let mut s = ctx.rt.array_get(&arr_name, &key).as_str();
+            let mut s = ctx.array_elem_get(&arr_name, &key).as_str();
             let n = if is_global {
                 builtins::gsub(ctx.rt, re.as_ref(), repl.as_ref(), Some(&mut s))?
             } else {
                 builtins::sub_fn(ctx.rt, re.as_ref(), repl.as_ref(), Some(&mut s))?
             };
-            ctx.rt.array_set(&arr_name, key, Value::Str(s));
+            ctx.array_elem_set(&arr_name, key, Value::Str(s));
             n
         }
     };
@@ -3574,12 +3687,8 @@ pub(crate) fn exec_builtin_dispatch(
             ctx.rt
                 .vars
                 .insert("TEXTDOMAIN".into(), Value::Str(domain.clone()));
-            if let Some(cat) =
-                crate::gettext_util::try_load_gettext_catalog(&domain, &dirname)
-            {
-                ctx.rt
-                    .gettext_catalogs
-                    .insert(domain, cat);
+            if let Some(cat) = crate::gettext_util::try_load_gettext_catalog(&domain, &dirname) {
+                ctx.rt.gettext_catalogs.insert(domain, cat);
             }
             Value::Str(dirname)
         }

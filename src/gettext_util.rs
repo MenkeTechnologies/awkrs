@@ -14,20 +14,28 @@ pub fn try_load_gettext_catalog(domain: &str, dirname: &str) -> Option<Arc<Catal
         .or_else(|| std::env::var("LANG").ok())
         .unwrap_or_else(|| "C".into());
     let lang_short = lang.split('.').next().unwrap_or("C").to_string();
-    let lang_major = lang_short
-        .split('_')
-        .next()
-        .unwrap_or("C")
-        .to_string();
+    let lang_major = lang_short.split('_').next().unwrap_or("C").to_string();
 
     let base = Path::new(dirname);
     let mo_name = format!("{domain}.mo");
     let candidates: Vec<PathBuf> = vec![
         base.join(&lang).join("LC_MESSAGES").join(&mo_name),
-        base.join("locale").join(&lang).join("LC_MESSAGES").join(&mo_name),
-        base.join("locale").join(&lang_short).join("LC_MESSAGES").join(&mo_name),
-        base.join("locale").join(&lang_major).join("LC_MESSAGES").join(&mo_name),
-        base.join("locale").join("C").join("LC_MESSAGES").join(&mo_name),
+        base.join("locale")
+            .join(&lang)
+            .join("LC_MESSAGES")
+            .join(&mo_name),
+        base.join("locale")
+            .join(&lang_short)
+            .join("LC_MESSAGES")
+            .join(&mo_name),
+        base.join("locale")
+            .join(&lang_major)
+            .join("LC_MESSAGES")
+            .join(&mo_name),
+        base.join("locale")
+            .join("C")
+            .join("LC_MESSAGES")
+            .join(&mo_name),
     ];
 
     for p in candidates {

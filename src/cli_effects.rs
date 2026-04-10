@@ -66,11 +66,7 @@ fn escape_pot_str(s: &str) -> String {
 
 fn collect_stmt_strings(s: &Stmt, out: &mut BTreeMap<String, usize>) {
     match s {
-        Stmt::If {
-            cond,
-            then_,
-            else_,
-        } => {
+        Stmt::If { cond, then_, else_ } => {
             collect_expr_strings(cond, out);
             for t in then_ {
                 collect_stmt_strings(t, out);
@@ -237,11 +233,7 @@ fn collect_expr_strings(e: &Expr, out: &mut BTreeMap<String, usize>) {
                 collect_expr_strings(a, out);
             }
         }
-        Expr::Ternary {
-            cond,
-            then_,
-            else_,
-        } => {
+        Expr::Ternary { cond, then_, else_ } => {
             collect_expr_strings(cond, out);
             collect_expr_strings(then_, out);
             collect_expr_strings(else_, out);
@@ -275,11 +267,7 @@ pub fn dump_variables(rt: &Runtime, cp: &CompiledProgram, out: &mut dyn Write) -
         if rt.vars.contains_key(name) {
             continue;
         }
-        let v = rt
-            .slots
-            .get(slot)
-            .cloned()
-            .unwrap_or(Value::Uninit);
+        let v = rt.slots.get(slot).cloned().unwrap_or(Value::Uninit);
         dump_value(out, name, &v, "slot:")?;
     }
     Ok(())
@@ -319,11 +307,7 @@ fn value_dump_scalar(v: &Value) -> String {
 }
 
 /// Rule/function index for `-D` (debug listing).
-pub fn write_debug_listing(
-    prog: &Program,
-    out: &mut dyn Write,
-    bin_name: &str,
-) -> Result<()> {
+pub fn write_debug_listing(prog: &Program, out: &mut dyn Write, bin_name: &str) -> Result<()> {
     writeln!(
         out,
         "# {bin_name} debug listing (rules and functions; not interactive debugger)"

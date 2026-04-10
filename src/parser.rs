@@ -30,8 +30,10 @@ fn assign_expr(lhs: Expr, op: Option<BinOp>, rhs: Expr, line: usize) -> Result<E
 
 pub fn parse_program(src: &str) -> Result<Program> {
     let expanded = crate::source_expand::expand_source_directives(src)?;
-    let mut p = Parser::new(&expanded);
-    p.parse_program()
+    let mut p = Parser::new(&expanded.text);
+    let mut prog = p.parse_program()?;
+    crate::namespace::apply_default_namespace(&mut prog, expanded.default_namespace.as_deref());
+    Ok(prog)
 }
 
 struct Parser<'a> {

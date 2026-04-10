@@ -209,7 +209,7 @@ fn trim_trailing_zero_fraction(s: &str) -> String {
 
 /// After `%e`/`%E` formatting for `%g`, trim zeros in the mantissa only (leave exponent intact).
 fn trim_sprintf_g_scientific(s: &str) -> String {
-    let Some(pos) = s.find(|c| c == 'e' || c == 'E') else {
+    let Some(pos) = s.find(['e', 'E']) else {
         return trim_trailing_zero_fraction(s);
     };
     let (mant, exp_part) = s.split_at(pos);

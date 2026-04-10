@@ -264,33 +264,65 @@ impl<'a> Lexer<'a> {
                     break;
                 }
             }
+            // `ns::name` — gawk-style qualified identifiers (namespace).
+            while self.peek() == Some(':') {
+                let rest = &self.input[self.pos..];
+                if !rest.starts_with("::") {
+                    break;
+                }
+                self.pos += 2;
+                let Some(seg) = self.peek() else {
+                    return Err(Error::Parse {
+                        line: self.line,
+                        msg: "expected identifier after `::`".into(),
+                    });
+                };
+                if !is_ident_start(seg) {
+                    return Err(Error::Parse {
+                        line: self.line,
+                        msg: "expected identifier after `::`".into(),
+                    });
+                }
+                self.bump();
+                while let Some(d) = self.peek() {
+                    if is_ident_continue(d) {
+                        self.bump();
+                    } else {
+                        break;
+                    }
+                }
+            }
             let name = self.input[start..self.pos].to_string();
-            let tok = match name.as_str() {
-                "BEGIN" => Token::Begin,
-                "BEGINFILE" => Token::BeginFile,
-                "END" => Token::End,
-                "ENDFILE" => Token::EndFile,
-                "print" => Token::Print,
-                "printf" => Token::Printf,
-                "if" => Token::If,
-                "else" => Token::Else,
-                "while" => Token::While,
-                "for" => Token::For,
-                "do" => Token::Do,
-                "break" => Token::Break,
-                "continue" => Token::Continue,
-                "next" => Token::Next,
-                "nextfile" => Token::NextFile,
-                "exit" => Token::Exit,
-                "in" => Token::In,
-                "function" => Token::Function,
-                "return" => Token::Return,
-                "delete" => Token::Delete,
-                "getline" => Token::Getline,
-                "switch" => Token::Switch,
-                "case" => Token::Case,
-                "default" => Token::Default,
-                _ => Token::Ident(name),
+            let tok = if name.contains("::") {
+                Token::Ident(name)
+            } else {
+                match name.as_str() {
+                    "BEGIN" => Token::Begin,
+                    "BEGINFILE" => Token::BeginFile,
+                    "END" => Token::End,
+                    "ENDFILE" => Token::EndFile,
+                    "print" => Token::Print,
+                    "printf" => Token::Printf,
+                    "if" => Token::If,
+                    "else" => Token::Else,
+                    "while" => Token::While,
+                    "for" => Token::For,
+                    "do" => Token::Do,
+                    "break" => Token::Break,
+                    "continue" => Token::Continue,
+                    "next" => Token::Next,
+                    "nextfile" => Token::NextFile,
+                    "exit" => Token::Exit,
+                    "in" => Token::In,
+                    "function" => Token::Function,
+                    "return" => Token::Return,
+                    "delete" => Token::Delete,
+                    "getline" => Token::Getline,
+                    "switch" => Token::Switch,
+                    "case" => Token::Case,
+                    "default" => Token::Default,
+                    _ => Token::Ident(name),
+                }
             };
             return Ok(tok);
         }
@@ -503,6 +535,10 @@ mod tests {
             ]
         );
         assert_eq!(tokens_no_regex("_x99"), vec![Token::Ident("_x99".into())]);
+        assert_eq!(
+            tokens_no_regex("n::foo"),
+            vec![Token::Ident("n::foo".into())]
+        );
     }
 
     #[test]

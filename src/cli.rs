@@ -255,25 +255,8 @@ mod tests {
     #[test]
     fn gawk_compat_flags_parse_to_expected_fields() {
         let a = Args::try_parse_from([
-            "awkrs",
-            "-d",
-            "-D",
-            "-p",
-            "-o",
-            "-g",
-            "-L",
-            "fatal",
-            "-t",
-            "-S",
-            "-l",
-            "foo",
-            "-b",
-            "-c",
-            "-P",
-            "-n",
-            "-O",
-            "-s",
-            "{print}",
+            "awkrs", "-d", "-D", "-p", "-o", "-g", "-L", "fatal", "-t", "-S", "-l", "foo", "-b",
+            "-c", "-P", "-n", "-O", "-s", "{print}",
         ])
         .unwrap();
         assert_eq!(a.dump_variables.as_deref(), Some(""));
@@ -295,8 +278,10 @@ mod tests {
 
     #[test]
     fn dump_debug_pretty_profile_accept_optional_file() {
-        let a = Args::try_parse_from(["awkrs", "-d", "/tmp/v", "-D", "/tmp/d", "-o", "/tmp/o", "-p", "/tmp/p", "1"])
-            .unwrap();
+        let a = Args::try_parse_from([
+            "awkrs", "-d", "/tmp/v", "-D", "/tmp/d", "-o", "/tmp/o", "-p", "/tmp/p", "1",
+        ])
+        .unwrap();
         assert_eq!(a.dump_variables.as_deref(), Some("/tmp/v"));
         assert_eq!(a.debug.as_deref(), Some("/tmp/d"));
         assert_eq!(a.pretty_print.as_deref(), Some("/tmp/o"));
