@@ -43,3 +43,6 @@ target-lexicon = "0.13.5"
 thiserror = "2.0"
 walkdir = "2.5"
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("vms"))'] }
+

@@ -714,19 +714,25 @@ pub fn eval_expr(e: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {
             var,
             redir,
         } => {
-            let line_res = match (pipe_cmd.as_ref(), redir) {
+            let (line_res, input_key) = match (pipe_cmd.as_ref(), redir) {
                 (Some(cmd_expr), GetlineRedir::Primary) => {
-                    let cmd = eval_expr(cmd_expr, ctx)?.as_str();
-                    ctx.rt.read_line_pipe(&cmd)
+                    let cmd = eval_expr(cmd_expr, ctx)?.as_str().to_string();
+                    let r = ctx.rt.read_line_pipe(&cmd);
+                    (r, cmd)
                 }
-                (None, GetlineRedir::Primary) => ctx.rt.read_line_primary(),
+                (None, GetlineRedir::Primary) => {
+                    let k = ctx.rt.primary_input_procinfo_key();
+                    (ctx.rt.read_line_primary(), k)
+                }
                 (None, GetlineRedir::File(path_expr)) => {
-                    let path = eval_expr(path_expr, ctx)?.as_str();
-                    ctx.rt.read_line_file(&path)
+                    let path = eval_expr(path_expr, ctx)?.as_str().to_string();
+                    let r = ctx.rt.read_line_file(&path);
+                    (r, path)
                 }
                 (None, GetlineRedir::Coproc(cmd_expr)) => {
-                    let cmd = eval_expr(cmd_expr, ctx)?.as_str();
-                    ctx.rt.read_line_coproc(&cmd)
+                    let cmd = eval_expr(cmd_expr, ctx)?.as_str().to_string();
+                    let r = ctx.rt.read_line_coproc(&cmd);
+                    (r, cmd)
                 }
                 (Some(_), GetlineRedir::File(_) | GetlineRedir::Coproc(_)) => {
                     return Err(Error::Runtime(
@@ -760,7 +766,7 @@ pub fn eval_expr(e: &Expr, ctx: &mut ExecCtx<'_>) -> Result<Value> {
                     }
                     Value::Num(if has { 1.0 } else { 0.0 })
                 }
-                Err(_) => Value::Num(-1.0),
+                Err(e) => Value::Num(ctx.rt.getline_error_code_for_key(&e, &input_key)),
             }
         }
     })

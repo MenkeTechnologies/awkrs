@@ -44,6 +44,8 @@
 //! [`pack_print_redir`] (same stack order as the VM: redirect path is TOS).
 //! [`Op::GetLine`] uses [`MIXED_GETLINE_PRIMARY`] / [`MIXED_GETLINE_FILE`] / [`MIXED_GETLINE_COPROC`];
 //! [`MIXED_GETLINE_INTO_RECORD`] in `a1` means read into `$0` / fields (no named variable).
+//! On I/O error these stash [`crate::error::Error`] in TLS and abort the JIT chunk (no **`-1`**/**`-2`**
+//! stack result—unlike the bytecode **`getline`** path, which sets **`ERRNO`** and pushes gawk codes).
 //! Whitelisted [`Op::CallBuiltin`] (see [`jit_call_builtins_ok`]) uses `MIXED_BUILTIN_*`
 //! including `sprintf`/`printf` and I/O helpers when arity and [`jit_call_builtins_ok`] allow.
 //! The **`printf`** *statement* opcode ([`Op::Printf`] to stdout) uses `MIXED_PRINT_ARG` +

@@ -5,7 +5,14 @@ use crate::runtime::{AwkMap, Runtime, Value};
 use std::ffi::CStr;
 
 /// gawk uses **`posix`** / **`mingw`** / **`vms`**, not Rust’s `std::env::consts::OS` (`macos`, `linux`, …).
+///
+/// `target_os = "vms"` is reserved for a future OpenVMS Rust target (currently unused on all tier-1
+/// platforms).
 pub(crate) fn gawk_platform_string() -> &'static str {
+    #[cfg(target_os = "vms")]
+    {
+        return "vms";
+    }
     if cfg!(unix) {
         "posix"
     } else if cfg!(windows) {
@@ -13,6 +20,19 @@ pub(crate) fn gawk_platform_string() -> &'static str {
     } else {
         "unknown"
     }
+}
+
+/// When `Some`, awkrs was built with gawk-style PMA and **`PROCINFO["pma"]`** is set (see gawk manual).
+/// Default `None` matches gawk built **without** PMA (key omitted).
+pub const AWKRS_PMA_VERSION: Option<&'static str> = None;
+
+/// gawk: if **`PROCINFO["READ_TIMEOUT"]`** is absent, initialize from **`GAWK_READ_TIMEOUT`** (milliseconds).
+pub(crate) fn gawk_read_timeout_env() -> i32 {
+    std::env::var("GAWK_READ_TIMEOUT")
+        .ok()
+        .and_then(|s| s.parse::<i64>().ok())
+        .map(|n| n.clamp(0, i32::MAX as i64) as i32)
+        .unwrap_or(0)
 }
 
 /// Reflects active field-splitting mode (gawk **`PROCINFO["FS"]`**).

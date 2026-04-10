@@ -737,24 +737,43 @@ fn attach_primary_input_before_begin_for_getline(
     if !uses_primary_getline(cp) {
         return Ok(());
     }
-    let reader: Box<dyn Read + Send> = if files.is_empty() {
+    if files.is_empty() {
         rt.clear_errno();
-        Box::new(std::io::stdin())
-    } else {
-        match File::open(&files[0]) {
-            Ok(f) => {
-                rt.clear_errno();
-                Box::new(f)
-            }
-            Err(e) => {
-                rt.set_errno_io(&e);
-                return Err(Error::ProgramFile(files[0].clone(), e));
-            }
+        let reader = Box::new(std::io::stdin()) as Box<dyn Read + Send>;
+        let br = Arc::new(std::sync::Mutex::new(BufReader::new(reader)));
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            rt.attach_input_reader_with_poll_fd(
+                Arc::clone(&br),
+                Some(std::io::stdin().as_raw_fd()),
+            );
         }
-    };
-    let br = Arc::new(std::sync::Mutex::new(BufReader::new(reader)));
-    rt.attach_input_reader(Arc::clone(&br));
-    Ok(())
+        #[cfg(not(unix))]
+        rt.attach_input_reader(Arc::clone(&br));
+        return Ok(());
+    }
+    match File::open(&files[0]) {
+        Ok(f) => {
+            rt.clear_errno();
+            #[cfg(unix)]
+            let poll_fd = {
+                use std::os::unix::io::AsRawFd;
+                Some(f.as_raw_fd())
+            };
+            let reader = Box::new(f) as Box<dyn Read + Send>;
+            let br = Arc::new(std::sync::Mutex::new(BufReader::new(reader)));
+            #[cfg(unix)]
+            rt.attach_input_reader_with_poll_fd(Arc::clone(&br), poll_fd);
+            #[cfg(not(unix))]
+            rt.attach_input_reader(Arc::clone(&br));
+            Ok(())
+        }
+        Err(e) => {
+            rt.set_errno_io(&e);
+            Err(Error::ProgramFile(files[0].clone(), e))
+        }
+    }
 }
 
 fn process_file(
@@ -775,11 +794,22 @@ fn process_file(
     let br = if let Some(existing) = rt.input_reader.clone() {
         existing
     } else {
-        let reader: Box<dyn Read + Send> = if let Some(p) = path {
+        let br = if let Some(p) = path {
             match File::open(p) {
                 Ok(f) => {
                     rt.clear_errno();
-                    Box::new(f)
+                    #[cfg(unix)]
+                    let poll_fd = {
+                        use std::os::unix::io::AsRawFd;
+                        f.as_raw_fd()
+                    };
+                    let reader = Box::new(f) as Box<dyn Read + Send>;
+                    let br = Arc::new(std::sync::Mutex::new(BufReader::new(reader)));
+                    #[cfg(unix)]
+                    rt.attach_input_reader_with_poll_fd(Arc::clone(&br), Some(poll_fd));
+                    #[cfg(not(unix))]
+                    rt.attach_input_reader(Arc::clone(&br));
+                    br
                 }
                 Err(e) => {
                     rt.set_errno_io(&e);
@@ -788,15 +818,27 @@ fn process_file(
             }
         } else {
             rt.clear_errno();
-            Box::new(std::io::stdin())
+            let reader = Box::new(std::io::stdin()) as Box<dyn Read + Send>;
+            let br = Arc::new(std::sync::Mutex::new(BufReader::new(reader)));
+            #[cfg(unix)]
+            {
+                use std::os::unix::io::AsRawFd;
+                rt.attach_input_reader_with_poll_fd(
+                    Arc::clone(&br),
+                    Some(std::io::stdin().as_raw_fd()),
+                );
+            }
+            #[cfg(not(unix))]
+            rt.attach_input_reader(Arc::clone(&br));
+            br
         };
-        let br = Arc::new(std::sync::Mutex::new(BufReader::new(reader)));
-        rt.attach_input_reader(Arc::clone(&br));
         br
     };
 
     let mut count = 0usize;
     loop {
+        #[cfg(unix)]
+        rt.poll_primary_read_timeout_if_needed()?;
         let rs = rt.rs_string();
         rt.ensure_rs_regex_bytes()?;
         let mut rt_sep = Vec::new();

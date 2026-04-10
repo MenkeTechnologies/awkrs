@@ -3481,6 +3481,14 @@ fn exec_getline(
         GetlineSource::Primary => None,
     };
 
+    let input_key = match source {
+        GetlineSource::Primary => ctx.rt.primary_input_procinfo_key(),
+        GetlineSource::File | GetlineSource::Coproc | GetlineSource::Pipe => file_path
+            .as_ref()
+            .expect("getline path")
+            .clone(),
+    };
+
     let line_res = match source {
         GetlineSource::Primary => ctx.rt.read_line_primary(),
         GetlineSource::File => ctx.rt.read_line_file(file_path.as_ref().unwrap().as_str()),
@@ -3500,8 +3508,9 @@ fn exec_getline(
             Ok(())
         }
         Err(e) => {
+            let code = ctx.rt.getline_error_code_for_key(&e, &input_key);
             if push_result {
-                ctx.push(Value::Num(-1.0));
+                ctx.push(Value::Num(code));
                 Ok(())
             } else {
                 Err(e)

@@ -844,6 +844,9 @@ pub struct Runtime {
     pub sorted_in_warned: Cell<bool>,
     /// Last OS errno from [`Self::set_errno_io`] (gawk **`PROCINFO["errno"]`** numeric mirror).
     pub errno_code: i32,
+    /// Unix: raw fd for [`libc::poll`] before reads on the primary input stream (stdin or first file).
+    #[cfg(unix)]
+    pub primary_input_poll_fd: Option<std::os::unix::io::RawFd>,
 }
 
 impl Runtime {
@@ -930,6 +933,8 @@ impl Runtime {
             profile_record_hits: Vec::new(),
             sorted_in_warned: Cell::new(false),
             errno_code: 0,
+            #[cfg(unix)]
+            primary_input_poll_fd: None,
         }
     }
 
@@ -972,15 +977,94 @@ impl Runtime {
         }
     }
 
-    /// gawk **`PROCINFO["READ_TIMEOUT"]`**: positive = milliseconds for blocking reads on files / inet; **`0`** = no timeout.
-    pub fn read_timeout_ms(&self) -> i32 {
+    /// gawk **`SUBSEP`** string used for **`PROCINFO[input, "READ_TIMEOUT"]`** composite keys.
+    pub fn procinfo_subsep_string(&self) -> String {
+        self.get_global_var("SUBSEP")
+            .map(|v| v.as_str().to_string())
+            .unwrap_or_else(|| "\x1c".into())
+    }
+
+    /// gawk: default **`PROCINFO["READ_TIMEOUT"]`** — explicit **`0`** disables; absent key uses **`GAWK_READ_TIMEOUT`**.
+    pub fn global_read_timeout_ms(&self) -> i32 {
         match self.get_global_var("PROCINFO") {
-            Some(Value::Array(m)) => m
-                .get("READ_TIMEOUT")
-                .map(|v| v.as_number() as i32)
-                .unwrap_or(0),
-            _ => 0,
+            Some(Value::Array(m)) => match m.get("READ_TIMEOUT") {
+                Some(v) => (v.as_number() as i32).max(0),
+                None => crate::procinfo::gawk_read_timeout_env().max(0),
+            },
+            _ => crate::procinfo::gawk_read_timeout_env().max(0),
         }
+    }
+
+    /// Per-input **`PROCINFO[input_name, "READ_TIMEOUT"]`** (gawk), else [`Self::global_read_timeout_ms`].
+    pub fn procinfo_read_timeout_ms_for(&self, input_key: &str) -> i32 {
+        let sep = self.procinfo_subsep_string();
+        let composite = format!("{input_key}{sep}READ_TIMEOUT");
+        if let Some(Value::Array(m)) = self.get_global_var("PROCINFO") {
+            if let Some(v) = m.get(&composite) {
+                return (v.as_number() as i32).max(0);
+            }
+        }
+        self.global_read_timeout_ms()
+    }
+
+    /// gawk **`PROCINFO[input_name, "RETRY"]`**: when truthy, retryable I/O errors map to **`getline`** **`-2`**.
+    pub fn procinfo_retry_enabled_for(&self, input_key: &str) -> bool {
+        let sep = self.procinfo_subsep_string();
+        let composite = format!("{input_key}{sep}RETRY");
+        self.get_global_var("PROCINFO")
+            .and_then(|v| match v {
+                Value::Array(m) => m.get(&composite).map(|v| v.truthy()),
+                _ => None,
+            })
+            .unwrap_or(false)
+    }
+
+    /// gawk **`FILENAME`**-style key for primary-input timeouts (`"-"` when unset / stdin).
+    pub fn primary_input_procinfo_key(&self) -> String {
+        let f = self.filename.trim();
+        if f.is_empty() {
+            "-".into()
+        } else {
+            f.to_string()
+        }
+    }
+
+    /// gawk **`getline`** return **`-2`** when **`PROCINFO[input, "RETRY"]`** is set and errno is retryable.
+    pub fn getline_io_return_code(&self, e: &std::io::Error, input_key: &str) -> f64 {
+        if !self.procinfo_retry_enabled_for(input_key) {
+            return -1.0;
+        }
+        let retry = matches!(
+            e.kind(),
+            std::io::ErrorKind::WouldBlock
+                | std::io::ErrorKind::TimedOut
+                | std::io::ErrorKind::Interrupted
+        );
+        if retry {
+            -2.0
+        } else {
+            -1.0
+        }
+    }
+
+    /// Map a **`getline`** I/O failure to **`-1`** / **`-2`** (sets **`ERRNO`**).
+    pub fn getline_error_code_for_key(&mut self, err: &Error, input_key: &str) -> f64 {
+        match err {
+            Error::Io(e) => {
+                self.set_errno_io(e);
+                self.getline_io_return_code(e, input_key)
+            }
+            _ => {
+                self.set_errno_str(err.to_string());
+                -1.0
+            }
+        }
+    }
+
+    /// gawk **`PROCINFO["READ_TIMEOUT"]`**: positive = milliseconds for blocking reads on files / inet; **`0`** = no timeout.
+    #[inline]
+    pub fn read_timeout_ms(&self) -> i32 {
+        self.global_read_timeout_ms()
     }
 
     /// Refresh **`PROCINFO`**, **`FUNCTAB`**, and a **`SYMTAB`** mirror of globals (best-effort vs gawk introspection).
@@ -1009,6 +1093,9 @@ impl Runtime {
             "platform".into(),
             Value::Str(crate::procinfo::gawk_platform_string().into()),
         );
+        if let Some(pma) = crate::procinfo::AWKRS_PMA_VERSION {
+            p.insert("pma".into(), Value::Str(pma.into()));
+        }
         p.insert("pid".into(), Value::Num(std::process::id() as f64));
         p.insert("errno".into(), Value::Num(self.errno_code as f64));
         #[cfg(unix)]
@@ -1049,7 +1136,10 @@ impl Runtime {
             p.insert("roundmode".into(), Value::Str("N".into()));
         }
         if !p.contains_key("READ_TIMEOUT") {
-            p.insert("READ_TIMEOUT".into(), Value::Num(0.0));
+            let env_to = crate::procinfo::gawk_read_timeout_env();
+            if env_to > 0 {
+                p.insert("READ_TIMEOUT".into(), Value::Num(env_to as f64));
+            }
         }
         if self.bignum {
             p.insert(
@@ -1081,10 +1171,10 @@ impl Runtime {
             .get_global_var("SUBSEP")
             .map(|v| v.as_str().to_string())
             .unwrap_or_else(|| "\x1c".into());
-        let global_to = p
-            .get("READ_TIMEOUT")
-            .map(|v| v.as_number())
-            .unwrap_or(0.0);
+        let global_to = match p.get("READ_TIMEOUT") {
+            Some(v) => v.as_number(),
+            None => crate::procinfo::gawk_read_timeout_env() as f64,
+        };
         let mut paths: Vec<String> = Vec::new();
         if let Some(Value::Array(argv)) = self.get_global_var("ARGV") {
             let argc = self
@@ -1225,6 +1315,8 @@ impl Runtime {
             profile_record_hits: Vec::new(),
             sorted_in_warned: Cell::new(false),
             errno_code: 0,
+            #[cfg(unix)]
+            primary_input_poll_fd: None,
         }
     }
 
@@ -1405,6 +1497,14 @@ impl Runtime {
     /// `getline … <& "cmd"` — one line from the coprocess stdout.
     pub fn read_line_coproc(&mut self, cmd: &str) -> Result<Option<String>> {
         self.ensure_coproc(cmd)?;
+        let to = self.procinfo_read_timeout_ms_for(cmd);
+        #[cfg(unix)]
+        if to > 0 {
+            use std::os::unix::io::AsRawFd;
+            let h = self.coproc_handles.get_mut(cmd).unwrap();
+            let fd = h.stdout.get_ref().as_raw_fd();
+            wait_fd_read_timeout(fd, to)?;
+        }
         let h = self.coproc_handles.get_mut(cmd).unwrap();
         let mut line = String::new();
         let n = h.stdout.read_line(&mut line).map_err(Error::Io)?;
@@ -1428,6 +1528,13 @@ impl Runtime {
             .take()
             .ok_or_else(|| Error::Runtime(format!("pipe getline `{cmd}`: no stdout")))?;
         let mut reader = BufReader::new(stdout);
+        let to = self.procinfo_read_timeout_ms_for(cmd);
+        #[cfg(unix)]
+        if to > 0 {
+            use std::os::unix::io::AsRawFd;
+            let fd = reader.get_ref().as_raw_fd();
+            wait_fd_read_timeout(fd, to)?;
+        }
         let mut line = String::new();
         let n = reader.read_line(&mut line).map_err(Error::Io)?;
         let _ = child.wait();
@@ -1515,11 +1622,42 @@ impl Runtime {
     }
 
     pub fn attach_input_reader(&mut self, r: SharedInputReader) {
+        self.attach_input_reader_with_poll_fd(r, None);
+    }
+
+    /// Attach primary input; **`poll_fd`** (Unix) is used with [`libc::poll`] for gawk-style **`READ_TIMEOUT`** on the record / primary-`getline` stream.
+    pub fn attach_input_reader_with_poll_fd(
+        &mut self,
+        r: SharedInputReader,
+        #[cfg(unix)] poll_fd: Option<std::os::unix::io::RawFd>,
+        #[cfg(not(unix))] _poll_fd: Option<()>,
+    ) {
         self.input_reader = Some(r);
+        #[cfg(unix)]
+        {
+            self.primary_input_poll_fd = poll_fd;
+        }
     }
 
     pub fn detach_input_reader(&mut self) {
         self.input_reader = None;
+        #[cfg(unix)]
+        {
+            self.primary_input_poll_fd = None;
+        }
+    }
+
+    /// Unix: honor **`PROCINFO[FILENAME,"READ_TIMEOUT"]`** before each primary record read.
+    #[cfg(unix)]
+    pub fn poll_primary_read_timeout_if_needed(&self) -> Result<()> {
+        let to = self
+            .procinfo_read_timeout_ms_for(&self.primary_input_procinfo_key());
+        if to > 0 {
+            if let Some(fd) = self.primary_input_poll_fd {
+                wait_fd_read_timeout(fd, to)?;
+            }
+        }
+        Ok(())
     }
 
     /// Current [`RS`](https://www.gnu.org/software/gawk/manual/html_node/Built_002din-Variables.html) value.
@@ -1608,6 +1746,14 @@ impl Runtime {
                 "`getline` with no file is only valid during normal input".into(),
             ));
         };
+        let to = self
+            .procinfo_read_timeout_ms_for(&self.primary_input_procinfo_key());
+        #[cfg(unix)]
+        if to > 0 {
+            if let Some(fd) = self.primary_input_poll_fd {
+                wait_fd_read_timeout(fd, to)?;
+            }
+        }
         let rs = self.rs_string();
         self.ensure_rs_regex_bytes()?;
         let mut rt_sep = Vec::new();
@@ -1685,7 +1831,7 @@ impl Runtime {
             self.file_handles
                 .insert(path.to_string(), BufReader::new(f));
         }
-        let to = self.read_timeout_ms();
+        let to = self.procinfo_read_timeout_ms_for(path);
         let reader = self.file_handles.get_mut(path).unwrap();
         #[cfg(unix)]
         if to > 0 {
@@ -1716,7 +1862,7 @@ impl Runtime {
         let w = stream
             .try_clone()
             .map_err(|e| Error::Runtime(format!("inet: {e}")))?;
-        let to = self.read_timeout_ms();
+        let to = self.procinfo_read_timeout_ms_for(path);
         if to > 0 {
             let d = Duration::from_millis(to as u64);
             stream
@@ -1749,7 +1895,7 @@ impl Runtime {
         socket
             .connect(addr)
             .map_err(|e| Error::Runtime(format!("inet udp connect `{path}`: {e}")))?;
-        let to = self.read_timeout_ms();
+        let to = self.procinfo_read_timeout_ms_for(path);
         if to > 0 {
             socket
                 .set_read_timeout(Some(Duration::from_millis(to as u64)))
@@ -2506,6 +2652,8 @@ impl Clone for Runtime {
             profile_record_hits: Vec::new(),
             sorted_in_warned: Cell::new(self.sorted_in_warned.get()),
             errno_code: self.errno_code,
+            #[cfg(unix)]
+            primary_input_poll_fd: self.primary_input_poll_fd,
         }
     }
 }
