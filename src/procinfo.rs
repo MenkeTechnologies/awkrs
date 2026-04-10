@@ -117,6 +117,22 @@ pub(crate) fn supplementary_group_entries() -> Vec<(String, f64)> {
 }
 
 /// Locale-dependent max bytes per multibyte character (best-effort).
+#[cfg(all(test, unix))]
+#[test]
+fn gawk_platform_unix_reports_posix_not_rust_os() {
+    assert_eq!(
+        gawk_platform_string(),
+        "posix",
+        "PROCINFO[\"platform\"] must follow gawk, not std::env::consts::OS"
+    );
+}
+
+#[cfg(all(test, windows))]
+#[test]
+fn gawk_platform_windows_reports_mingw() {
+    assert_eq!(gawk_platform_string(), "mingw");
+}
+
 pub(crate) fn mb_cur_max_value() -> f64 {
     #[cfg(target_os = "linux")]
     {

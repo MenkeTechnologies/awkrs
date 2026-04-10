@@ -70,7 +70,7 @@
 - **`PROCINFO["sorted_in"]`** — `@ind_*`/`@val_*` modes, plus user comparator function (2-arg = index sort, 4-arg `(i1, v1, i2, v2)` = value sort). Returns negative/zero/positive like `qsort`.
 - **`SYMTAB`** — assignment, `for-in`, `length(SYMTAB)` like gawk's global introspection (not GNU's variable-object references).
 - **`@load`** — non-`.awk` paths only accepted for **gawk's bundled extension names** (`filefuncs`, `readdir`, `time`, …) as no-ops; the builtins are native. Arbitrary `.so`/gawkapi modules error at parse time.
-- **`-M`/`--bignum`** — MPFR via `rug` (default 256 bits, `PROCINFO["prec"]`/`["roundmode"]` apply). Arithmetic, `sprintf`/`printf` integer formats (no f64/i64 clamp), `int`/`intdiv`/`strtonum`/`++`/`--`, bit ops, transcendentals, `srand` (low 32 bits of previous seed), `CONVFMT`/`OFMT`/`%s`/concat/regex coercion all use MPFR. JIT is disabled in `-M` mode.
+- **`-M`/`--bignum`** — MPFR via `rug` (default 256 bits, `PROCINFO["prec"]`/`["roundmode"]` apply). Arithmetic, `sprintf`/`printf` integer formats (no f64/i64 clamp), `int`/`intdiv`/`strtonum`/`++`/`--`, bit ops, transcendentals, `srand` (low 32 bits of previous seed), `CONVFMT`/`OFMT`/`%s`/concat/regex coercion all use MPFR. Default `CONVFMT`-style number→string for scalars uses each `Float`'s own precision for the MPFR `sprintf` path (so raising `PROCINFO["prec"]` is not undermined by a hardcoded bit count at display time). JIT is disabled in `-M` mode.
 - **Unicode vs bytes:** `-b` honored for `length`/`substr`/`index`. Full multibyte field-splitting parity is not audited.
 
 #### HELP // SYSTEM INTERFACE

@@ -369,15 +369,20 @@ pub enum Value {
     Array(AwkMap<String, Value>),
 }
 
-/// Default **`-M`** number→string when no [`Runtime`] is available (POSIX default **CONVFMT** **`%.6g`** at [`MPFR_PREC`]).
+/// Default **`-M`** number→string when no [`Runtime`] is available (POSIX default **CONVFMT** **`%.6g`**).
+///
+/// Uses each MPFR `Float`'s own precision (`Float::prec()`) for `sprintf` MPFR mode so values
+/// allocated at high `PROCINFO["prec"]` are not rounded down through a hardcoded bit count during
+/// formatting (round mode defaults to nearest when `Runtime` is not in scope).
 #[inline]
 fn mpfr_value_default_display(f: &Float) -> String {
+    let prec = f.prec();
     crate::format::awk_sprintf_with_decimal(
         "%.6g",
         &[Value::Mpfr(f.clone())],
         '.',
         Some(','),
-        Some((MPFR_PREC, Round::Nearest)),
+        Some((prec, Round::Nearest)),
     )
     .unwrap_or_else(|_| crate::bignum::mpfr_string_trim_trailing_zeros(f.to_string()))
 }
@@ -1109,6 +1114,7 @@ impl Runtime {
         p.insert("api_major".into(), Value::Num(4.0));
         p.insert("api_minor".into(), Value::Num(1.0));
         p.insert("program".into(), Value::Str(bin_name.into()));
+        // gawk: `posix` / `mingw` / `vms` — not Rust `std::env::consts::OS` (`macos`, `linux`, …).
         p.insert(
             "platform".into(),
             Value::Str(crate::procinfo::gawk_platform_string().into()),
