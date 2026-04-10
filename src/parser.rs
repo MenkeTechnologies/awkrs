@@ -761,6 +761,12 @@ impl<'a> Parser<'a> {
             }
             _ => {
                 let e = self.parse_expr(false, false)?;
+                if matches!(e, Expr::Tuple(_)) {
+                    return Err(Error::Parse {
+                        line: self.line,
+                        msg: "parenthesized comma list cannot be used as a statement".into(),
+                    });
+                }
                 self.consume_stmt_end()?;
                 Ok(Stmt::Expr(e))
             }
@@ -1573,6 +1579,17 @@ mod tests {
             r#"BEGIN { x = /foo/ }"#,
         ] {
             parse_program(prog).unwrap_or_else(|e| panic!("parse {prog:?}: {e:?}"));
+        }
+    }
+
+    #[test]
+    fn tuple_cannot_be_expression_statement() {
+        let e = parse_program("BEGIN { (1,2) }").unwrap_err();
+        match e {
+            crate::error::Error::Parse { msg, .. } => {
+                assert!(msg.contains("parenthesized comma list"), "{msg:?}");
+            }
+            e => panic!("expected parse error, got {e:?}"),
         }
     }
 

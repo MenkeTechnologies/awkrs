@@ -23,6 +23,7 @@ mod gettext_util;
 #[allow(dead_code)]
 mod interp;
 mod lexer;
+mod limits;
 mod locale_numeric;
 mod namespace;
 mod parser;
@@ -118,7 +119,7 @@ pub fn run(bin_name: &str) -> Result<()> {
     }
 
     // Compile once; `Arc` is shared with parallel workers (cheap refcount) instead of cloning [`CompiledProgram`].
-    let cp: Arc<CompiledProgram> = Arc::new(Compiler::compile_program(&prog));
+    let cp: Arc<CompiledProgram> = Arc::new(Compiler::compile_program(&prog)?);
 
     if let Some(ref p) = args.debug {
         let mut w: Box<dyn Write> = if p.is_empty() || p == "-" {
@@ -1784,42 +1785,42 @@ mod lib_internal_tests {
     #[test]
     fn uses_primary_getline_detects_bare_getline() {
         let prog = parse_program("{ getline }").unwrap();
-        let cp = Compiler::compile_program(&prog);
+        let cp = Compiler::compile_program(&prog).unwrap();
         assert!(uses_primary_getline(&cp));
     }
 
     #[test]
     fn uses_primary_getline_false_without_primary_getline() {
         let prog = parse_program("BEGIN { x = 1 }").unwrap();
-        let cp = Compiler::compile_program(&prog);
+        let cp = Compiler::compile_program(&prog).unwrap();
         assert!(!uses_primary_getline(&cp));
     }
 
     #[test]
     fn uses_primary_getline_file_redirect_not_primary() {
         let prog = parse_program("{ getline < \"/dev/null\" }").unwrap();
-        let cp = Compiler::compile_program(&prog);
+        let cp = Compiler::compile_program(&prog).unwrap();
         assert!(!uses_primary_getline(&cp));
     }
 
     #[test]
     fn uses_primary_getline_false_for_coproc_redirect() {
         let prog = parse_program("{ getline <& \"cat\" }").unwrap();
-        let cp = Compiler::compile_program(&prog);
+        let cp = Compiler::compile_program(&prog).unwrap();
         assert!(!uses_primary_getline(&cp));
     }
 
     #[test]
     fn uses_primary_getline_scans_functions() {
         let prog = parse_program("function f(){ getline } BEGIN { f() }").unwrap();
-        let cp = Compiler::compile_program(&prog);
+        let cp = Compiler::compile_program(&prog).unwrap();
         assert!(uses_primary_getline(&cp));
     }
 
     #[test]
     fn getline_source_tagged_in_bytecode() {
         let prog = parse_program("{ getline }").unwrap();
-        let cp = Compiler::compile_program(&prog);
+        let cp = Compiler::compile_program(&prog).unwrap();
         let has_primary = cp.record_rules.iter().any(|r| {
             r.body.ops.iter().any(|op| {
                 matches!(
@@ -1848,7 +1849,7 @@ mod lib_internal_tests {
         let path = dir.join(format!("awkrs_ors_slurp_{}.txt", std::process::id()));
         std::fs::write(&path, "a b\n").unwrap();
         let prog = parse_program("BEGIN { ORS = \"X\" } { print $1 }").unwrap();
-        let cp = Compiler::compile_program(&prog);
+        let cp = Compiler::compile_program(&prog).unwrap();
         let mut rt = Runtime::new();
         rt.init_argv(std::slice::from_ref(&path));
         rt.slots = cp.init_slots(&rt.vars);

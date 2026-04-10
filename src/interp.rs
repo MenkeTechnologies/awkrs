@@ -1773,6 +1773,12 @@ fn call_user_with_values(name: &str, mut vals: Vec<Value>, ctx: &mut ExecCtx<'_>
         .funcs
         .get(name)
         .ok_or_else(|| Error::Runtime(format!("unknown function `{name}`")))?;
+    if ctx.locals.len() >= crate::limits::MAX_USER_CALL_DEPTH {
+        return Err(Error::Runtime(format!(
+            "maximum user function call depth ({}) exceeded",
+            crate::limits::MAX_USER_CALL_DEPTH
+        )));
+    }
     while vals.len() < fd.params.len() {
         vals.push(Value::Uninit);
     }
@@ -1948,7 +1954,7 @@ mod tests {
     #[test]
     fn range_step_enters_after_start_pattern() {
         let prog = parse_program("/start/,/end/ { print }").unwrap();
-        let cp = Compiler::compile_program(&prog);
+        let cp = Compiler::compile_program(&prog).unwrap();
         let rule = &cp.record_rules[0];
         let CompiledPattern::Range { start, end } = &rule.pattern else {
             panic!("expected range pattern");

@@ -2,6 +2,7 @@
 
 use crate::ast::*;
 use crate::bytecode::*;
+use crate::error::{Error, Result};
 use std::collections::{HashMap, HashSet};
 
 /// Variables with special awk semantics — accessed by Runtime methods or computed
@@ -68,7 +69,8 @@ pub struct Compiler {
 }
 
 impl Compiler {
-    pub fn compile_program(prog: &Program) -> CompiledProgram {
+    pub fn compile_program(prog: &Program) -> Result<CompiledProgram> {
+        validate_program(prog)?;
         // Pre-pass: collect all names used in array contexts.
         let array_names = collect_array_names(prog);
 
@@ -131,7 +133,7 @@ impl Compiler {
         let mut array_var_names: Vec<String> = c.array_names.iter().cloned().collect();
         array_var_names.sort();
 
-        CompiledProgram {
+        Ok(CompiledProgram {
             begin_chunks,
             end_chunks,
             beginfile_chunks,
@@ -143,7 +145,7 @@ impl Compiler {
             slot_names,
             slot_map,
             array_var_names,
-        }
+        })
     }
 
     /// Get or assign a slot index for a variable. Returns `None` for specials,
@@ -785,7 +787,7 @@ impl Compiler {
             }
 
             Expr::Tuple(_) => {
-                panic!("internal error: Tuple must appear only in `print` or as `(… ) in arr` key");
+                unreachable!("Tuple should be rejected by validate_program before compile");
             }
 
             Expr::IncDec { op, target } => match target {
@@ -1786,6 +1788,283 @@ fn peephole_optimize(ops: &mut Vec<Op>) {
     }
 }
 
+/// Static checks before codegen: tuple contexts, minimum builtin arities.
+pub fn validate_program(prog: &Program) -> Result<()> {
+    for rule in &prog.rules {
+        validate_pattern(&rule.pattern)?;
+        for st in &rule.stmts {
+            validate_stmt(st)?;
+        }
+    }
+    for f in prog.funcs.values() {
+        for st in &f.body {
+            validate_stmt(st)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_pattern(pat: &Pattern) -> Result<()> {
+    match pat {
+        Pattern::Expr(e) => validate_expr(e, false),
+        Pattern::Range(a, b) => {
+            validate_pattern(a.as_ref())?;
+            validate_pattern(b.as_ref())?;
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn validate_print_redir(r: &PrintRedir) -> Result<()> {
+    match r {
+        PrintRedir::Overwrite(e)
+        | PrintRedir::Append(e)
+        | PrintRedir::Pipe(e)
+        | PrintRedir::Coproc(e) => validate_expr(e, false),
+    }
+}
+
+fn validate_stmt(st: &Stmt) -> Result<()> {
+    match st {
+        Stmt::If { cond, then_, else_ } => {
+            validate_expr(cond, false)?;
+            for s in then_ {
+                validate_stmt(s)?;
+            }
+            for s in else_ {
+                validate_stmt(s)?;
+            }
+            Ok(())
+        }
+        Stmt::While { cond, body } => {
+            validate_expr(cond, false)?;
+            for s in body {
+                validate_stmt(s)?;
+            }
+            Ok(())
+        }
+        Stmt::DoWhile { body, cond } => {
+            for s in body {
+                validate_stmt(s)?;
+            }
+            validate_expr(cond, false)?;
+            Ok(())
+        }
+        Stmt::ForC {
+            init,
+            cond,
+            iter,
+            body,
+        } => {
+            if let Some(e) = init {
+                validate_expr(e, false)?;
+            }
+            if let Some(e) = cond {
+                validate_expr(e, false)?;
+            }
+            if let Some(e) = iter {
+                validate_expr(e, false)?;
+            }
+            for s in body {
+                validate_stmt(s)?;
+            }
+            Ok(())
+        }
+        Stmt::ForIn { body, .. } => {
+            for s in body {
+                validate_stmt(s)?;
+            }
+            Ok(())
+        }
+        Stmt::Block(ss) => {
+            for s in ss {
+                validate_stmt(s)?;
+            }
+            Ok(())
+        }
+        Stmt::Expr(e) => validate_expr(e, false),
+        Stmt::Print { args, redir } => {
+            for a in args {
+                validate_expr(a, true)?;
+            }
+            if let Some(r) = redir {
+                validate_print_redir(r)?;
+            }
+            Ok(())
+        }
+        Stmt::Printf { args, redir } => {
+            for a in args {
+                validate_expr(a, true)?;
+            }
+            if let Some(r) = redir {
+                validate_print_redir(r)?;
+            }
+            Ok(())
+        }
+        Stmt::Break | Stmt::Continue | Stmt::Next | Stmt::NextFile => Ok(()),
+        Stmt::Exit(e) => {
+            if let Some(ex) = e {
+                validate_expr(ex, false)?;
+            }
+            Ok(())
+        }
+        Stmt::Delete { indices, .. } => {
+            if let Some(ix) = indices {
+                for e in ix {
+                    validate_expr(e, false)?;
+                }
+            }
+            Ok(())
+        }
+        Stmt::Return(e) => {
+            if let Some(ex) = e {
+                validate_expr(ex, false)?;
+            }
+            Ok(())
+        }
+        Stmt::GetLine {
+            pipe_cmd, redir, ..
+        } => {
+            if let Some(cmd) = pipe_cmd {
+                validate_expr(cmd, false)?;
+            }
+            match redir {
+                GetlineRedir::Primary => Ok(()),
+                GetlineRedir::File(e) | GetlineRedir::Coproc(e) => validate_expr(e, false),
+            }
+        }
+        Stmt::Switch { expr, arms } => {
+            validate_expr(expr, false)?;
+            for arm in arms {
+                match arm {
+                    SwitchArm::Case { label, stmts } => {
+                        if let SwitchLabel::Expr(le) = label {
+                            validate_expr(le, false)?;
+                        }
+                        for s in stmts {
+                            validate_stmt(s)?;
+                        }
+                    }
+                    SwitchArm::Default { stmts } => {
+                        for s in stmts {
+                            validate_stmt(s)?;
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
+fn validate_expr(e: &Expr, allow_tuple: bool) -> Result<()> {
+    match e {
+        Expr::Tuple(_) if !allow_tuple => Err(Error::Runtime(
+            "parenthesized comma list is not allowed in this context".into(),
+        )),
+        Expr::Tuple(parts) => {
+            for p in parts {
+                validate_expr(p, false)?;
+            }
+            Ok(())
+        }
+        Expr::Binary { left, right, .. } => {
+            validate_expr(left, false)?;
+            validate_expr(right, false)?;
+            Ok(())
+        }
+        Expr::Unary { expr, .. } => validate_expr(expr, false),
+        Expr::Assign { rhs, .. } => validate_expr(rhs, false),
+        Expr::AssignField { field, rhs, .. } => {
+            validate_expr(field, false)?;
+            validate_expr(rhs, false)?;
+            Ok(())
+        }
+        Expr::AssignIndex { rhs, indices, .. } => {
+            for x in indices {
+                validate_expr(x, false)?;
+            }
+            validate_expr(rhs, false)?;
+            Ok(())
+        }
+        Expr::Call { name, args } => {
+            match name.as_str() {
+                "gsub" | "sub" if args.len() < 2 => {
+                    return Err(Error::Runtime(format!(
+                        "{name}: expected at least 2 arguments"
+                    )));
+                }
+                "split" | "match" if args.len() < 2 => {
+                    return Err(Error::Runtime(format!(
+                        "{name}: expected at least 2 arguments"
+                    )));
+                }
+                "patsplit" if !(2..=4).contains(&args.len()) => {
+                    return Err(Error::Runtime(
+                        "patsplit: expected 2, 3, or 4 arguments".into(),
+                    ));
+                }
+                "gensub" if !(3..=4).contains(&args.len()) => {
+                    return Err(Error::Runtime("gensub: expected 3 or 4 arguments".into()));
+                }
+                _ => {}
+            }
+            for a in args {
+                validate_expr(a, false)?;
+            }
+            Ok(())
+        }
+        Expr::IndirectCall { callee, args } => {
+            validate_expr(callee, false)?;
+            for a in args {
+                validate_expr(a, false)?;
+            }
+            Ok(())
+        }
+        Expr::Ternary { cond, then_, else_ } => {
+            validate_expr(cond, false)?;
+            validate_expr(then_, false)?;
+            validate_expr(else_, false)?;
+            Ok(())
+        }
+        Expr::In { key, .. } => validate_expr(key, true),
+        Expr::Field(inner) => validate_expr(inner, false),
+        Expr::Index { indices, .. } => {
+            for x in indices {
+                validate_expr(x, false)?;
+            }
+            Ok(())
+        }
+        Expr::IncDec { target, .. } => match target {
+            IncDecTarget::Field(inner) => validate_expr(inner, false),
+            IncDecTarget::Index { indices, .. } => {
+                for x in indices {
+                    validate_expr(x, false)?;
+                }
+                Ok(())
+            }
+            IncDecTarget::Var(_) => Ok(()),
+        },
+        Expr::GetLine {
+            pipe_cmd, redir, ..
+        } => {
+            if let Some(cmd) = pipe_cmd {
+                validate_expr(cmd, false)?;
+            }
+            match redir {
+                GetlineRedir::Primary => Ok(()),
+                GetlineRedir::File(ex) | GetlineRedir::Coproc(ex) => validate_expr(ex, false),
+            }
+        }
+        Expr::Number(_)
+        | Expr::IntegerLiteral(_)
+        | Expr::Str(_)
+        | Expr::RegexpLiteral(_)
+        | Expr::Var(_) => Ok(()),
+    }
+}
+
 /// Check if a regex pattern is a plain literal (no metacharacters).
 fn is_literal_regex(pat: &str) -> bool {
     !pat.bytes().any(|b| {
@@ -1818,7 +2097,7 @@ mod tests {
     fn compile_bignum_literal_add_uses_push_num_decimal_str_not_f64() {
         let prog =
             parse_program(r#"BEGIN { print sprintf("%d", 9223372036854775807 + 1) }"#).unwrap();
-        let cp = Compiler::compile_program(&prog);
+        let cp = Compiler::compile_program(&prog).unwrap();
         let ops = &cp.begin_chunks[0].ops;
         assert!(
             ops.iter().any(|o| matches!(o, Op::PushNumDecimalStr(_))),
@@ -1835,7 +2114,7 @@ mod tests {
     #[test]
     fn compile_begin_print_constant() {
         let prog = parse_program("BEGIN { print 42 }").unwrap();
-        let cp = Compiler::compile_program(&prog);
+        let cp = Compiler::compile_program(&prog).unwrap();
         assert!(!cp.begin_chunks.is_empty());
         assert!(!cp.begin_chunks[0].ops.is_empty());
     }
@@ -1843,7 +2122,7 @@ mod tests {
     #[test]
     fn compile_record_rule_field_access() {
         let prog = parse_program("{ print $1 + $2 }").unwrap();
-        let cp = Compiler::compile_program(&prog);
+        let cp = Compiler::compile_program(&prog).unwrap();
         assert_eq!(cp.record_rules.len(), 1);
         assert!(!cp.record_rules[0].body.ops.is_empty());
     }
@@ -1851,7 +2130,7 @@ mod tests {
     #[test]
     fn compile_user_function_has_body() {
         let prog = parse_program("function dbl(n){ return n*2 } { print dbl(3) }").unwrap();
-        let cp = Compiler::compile_program(&prog);
+        let cp = Compiler::compile_program(&prog).unwrap();
         let f = cp.functions.get("dbl").expect("dbl");
         assert_eq!(f.params, vec!["n".to_string()]);
         assert!(!f.body.ops.is_empty());
@@ -1860,21 +2139,21 @@ mod tests {
     #[test]
     fn compile_empty_record_pattern_still_emits_rule() {
         let prog = parse_program("{ }").unwrap();
-        let cp = Compiler::compile_program(&prog);
+        let cp = Compiler::compile_program(&prog).unwrap();
         assert_eq!(cp.record_rules.len(), 1);
     }
 
     #[test]
     fn compile_end_block() {
         let prog = parse_program("END { print \"x\" }").unwrap();
-        let cp = Compiler::compile_program(&prog);
+        let cp = Compiler::compile_program(&prog).unwrap();
         assert!(!cp.end_chunks.is_empty());
     }
 
     #[test]
     fn compile_beginfile_endfile() {
         let prog = parse_program("BEGINFILE { print \"bf\" } ENDFILE { print \"ef\" }").unwrap();
-        let cp = Compiler::compile_program(&prog);
+        let cp = Compiler::compile_program(&prog).unwrap();
         assert!(!cp.beginfile_chunks.is_empty());
         assert!(!cp.endfile_chunks.is_empty());
     }
@@ -1882,7 +2161,7 @@ mod tests {
     #[test]
     fn compile_begin_and_end_together() {
         let prog = parse_program("BEGIN { a=1 } { print $0 } END { print a }").unwrap();
-        let cp = Compiler::compile_program(&prog);
+        let cp = Compiler::compile_program(&prog).unwrap();
         assert!(!cp.begin_chunks.is_empty());
         assert!(!cp.end_chunks.is_empty());
         assert_eq!(cp.record_rules.len(), 1);
@@ -1891,21 +2170,21 @@ mod tests {
     #[test]
     fn compile_while_loop() {
         let prog = parse_program("BEGIN { i=0; while (i<3) i=i+1 }").unwrap();
-        let cp = Compiler::compile_program(&prog);
+        let cp = Compiler::compile_program(&prog).unwrap();
         assert!(!cp.begin_chunks[0].ops.is_empty());
     }
 
     #[test]
     fn compile_if_else() {
         let prog = parse_program("BEGIN { if (1) print 1; else print 0 }").unwrap();
-        let cp = Compiler::compile_program(&prog);
+        let cp = Compiler::compile_program(&prog).unwrap();
         assert!(!cp.begin_chunks[0].ops.is_empty());
     }
 
     #[test]
     fn compile_delete_array_elem() {
         let prog = parse_program("BEGIN { delete a[\"k\"] }").unwrap();
-        let cp = Compiler::compile_program(&prog);
+        let cp = Compiler::compile_program(&prog).unwrap();
         assert!(!cp.begin_chunks[0].ops.is_empty());
     }
 
@@ -1915,7 +2194,7 @@ mod tests {
             "function a(){ return 1 } function b(){ return 2 } BEGIN { print a()+b() }",
         )
         .unwrap();
-        let cp = Compiler::compile_program(&prog);
+        let cp = Compiler::compile_program(&prog).unwrap();
         assert!(cp.functions.contains_key("a"));
         assert!(cp.functions.contains_key("b"));
     }
@@ -1923,21 +2202,21 @@ mod tests {
     #[test]
     fn compile_do_while_loop() {
         let prog = parse_program("BEGIN { do { x = 1 } while (0) }").unwrap();
-        let cp = Compiler::compile_program(&prog);
+        let cp = Compiler::compile_program(&prog).unwrap();
         assert!(!cp.begin_chunks[0].ops.is_empty());
     }
 
     #[test]
     fn compile_for_in_loop() {
         let prog = parse_program("BEGIN { for (k in a) print k }").unwrap();
-        let cp = Compiler::compile_program(&prog);
+        let cp = Compiler::compile_program(&prog).unwrap();
         assert!(!cp.begin_chunks[0].ops.is_empty());
     }
 
     #[test]
     fn compile_record_rule_with_next() {
         let prog = parse_program("{ next }").unwrap();
-        let cp = Compiler::compile_program(&prog);
+        let cp = Compiler::compile_program(&prog).unwrap();
         assert_eq!(cp.record_rules.len(), 1);
         assert!(!cp.record_rules[0].body.ops.is_empty());
     }
@@ -1945,18 +2224,37 @@ mod tests {
     #[test]
     fn compile_delete_multidimensional_element() {
         let prog = parse_program("BEGIN { delete a[1,2] }").unwrap();
-        let cp = Compiler::compile_program(&prog);
+        let cp = Compiler::compile_program(&prog).unwrap();
         assert!(!cp.begin_chunks[0].ops.is_empty());
     }
 
     #[test]
     fn compile_range_pattern_has_compiled_endpoints() {
         let prog = parse_program("/start/,/end/ { print }").unwrap();
-        let cp = Compiler::compile_program(&prog);
+        let cp = Compiler::compile_program(&prog).unwrap();
         let rule = &cp.record_rules[0];
         assert!(matches!(
             &rule.pattern,
             crate::bytecode::CompiledPattern::Range { .. }
         ));
+    }
+
+    #[test]
+    fn validate_rejects_gsub_without_args() {
+        let prog = parse_program("BEGIN { gsub() }").unwrap();
+        let e = validate_program(&prog).unwrap_err();
+        assert!(e.to_string().contains("gsub"), "{e}");
+    }
+
+    #[test]
+    fn validate_rejects_split_without_args() {
+        let prog = parse_program("BEGIN { split() }").unwrap();
+        assert!(validate_program(&prog).is_err());
+    }
+
+    #[test]
+    fn validate_rejects_tuple_in_return() {
+        let prog = parse_program("function f(){ return (1,2) } BEGIN { f() }").unwrap();
+        assert!(validate_program(&prog).is_err());
     }
 }

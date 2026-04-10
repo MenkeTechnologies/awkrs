@@ -4241,6 +4241,13 @@ pub(crate) fn exec_call_user_inner(
         .ok_or_else(|| Error::Runtime(format!("unknown function `{name}`")))?
         .clone();
 
+    if ctx.locals.len() >= crate::limits::MAX_USER_CALL_DEPTH {
+        return Err(Error::Runtime(format!(
+            "maximum user function call depth ({}) exceeded",
+            crate::limits::MAX_USER_CALL_DEPTH
+        )));
+    }
+
     while vals.len() < func.params.len() {
         vals.push(Value::Uninit);
     }
@@ -4311,7 +4318,7 @@ mod tests {
 
     fn compile(prog_text: &str) -> CompiledProgram {
         let prog = parse_program(prog_text).expect("parse");
-        Compiler::compile_program(&prog)
+        Compiler::compile_program(&prog).unwrap()
     }
 
     /// Match `lib::run`: slotted scalars from the compiler need `init_slots` before VM runs.
@@ -4327,6 +4334,18 @@ mod tests {
         let mut rt = runtime_with_slots(&cp);
         vm_run_begin(&cp, &mut rt).unwrap();
         assert_eq!(String::from_utf8_lossy(&rt.print_buf), "14\n");
+    }
+
+    #[test]
+    fn vm_begin_user_recursion_hits_call_depth_cap() {
+        let cp = compile("function f(){ f() } BEGIN { f() }");
+        let mut rt = runtime_with_slots(&cp);
+        let e = vm_run_begin(&cp, &mut rt).unwrap_err();
+        let msg = e.to_string();
+        assert!(
+            msg.contains("maximum user function call depth"),
+            "unexpected err: {msg}"
+        );
     }
 
     /// `-M`: integer literals must not round through `f64` before `+` / `sprintf %d`.
