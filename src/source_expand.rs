@@ -39,6 +39,31 @@ fn take_double_quoted(rest: &str) -> Option<(String, &str)> {
     None
 }
 
+/// gawk’s **bundled** extension module names (typically `@load "filefuncs"` or `filefuncs.so`).
+/// awkrs implements these in Rust; the directive is accepted and ignored (no `dlopen`).
+const NATIVE_GAWK_EXTENSIONS: &[&str] = &[
+    "filefuncs",
+    "readdir",
+    "time",
+    "inplace",
+    "ordchr",
+    "readfile",
+    "revoutput",
+    "revtwoway",
+    "rwarray",
+    "intdiv",
+];
+
+/// True when `path_str` refers to one of those modules (with or without `.so`, any directory prefix).
+fn is_native_gawk_extension_path(path_str: &str) -> bool {
+    let stem = Path::new(path_str)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(path_str);
+    let name = stem.to_ascii_lowercase();
+    NATIVE_GAWK_EXTENSIONS.contains(&name.as_str())
+}
+
 fn take_bare_ident(rest: &str) -> Option<(String, &str)> {
     let rest = rest.trim_start();
     let mut i = 0usize;
@@ -141,13 +166,16 @@ fn expand_inner(
                 }
                 continue;
             }
+            if is_native_gawk_extension_path(&path_str) {
+                // Builtins already present for the whole run; gawkapi / dlopen not used.
+                continue;
+            }
             return Err(Error::Parse {
                 line: line_no,
                 msg: format!(
-                    "`@load` {path_str}: awkrs only inlines `.awk` source (like `@include`). \
-                     gawk `.so` loadable modules are not loaded; the usual builtins from those \
-                     extensions (`chdir`, `stat`, `fts`, `ord`, `readfile`, …) are implemented \
-                     in awkrs and do not require `@load`"
+                    "`@load` {path_str}: awkrs only inlines `.awk` source or recognizes gawk’s \
+                     bundled extension names (implemented natively). Arbitrary third-party `.so` \
+                     modules (gawkapi) are not loaded"
                 ),
             });
         }
@@ -202,6 +230,25 @@ mod tests {
         assert!(!e.text.contains("@namespace"));
         assert!(e.text.contains("BEGIN"));
         assert_eq!(e.default_namespace.as_deref(), Some("ns"));
+    }
+
+    #[test]
+    fn load_bundled_extension_name_is_noop() {
+        let e = expand_source_directives("@load \"filefuncs\"\nBEGIN { x = 1 }\n").unwrap();
+        assert!(!e.text.contains("@load"));
+        assert!(e.text.contains("BEGIN"));
+    }
+
+    #[test]
+    fn load_bundled_extension_so_suffix_is_noop() {
+        let e = expand_source_directives("@load \"./filefuncs.so\"\nBEGIN { }\n").unwrap();
+        assert!(!e.text.contains("@load"));
+    }
+
+    #[test]
+    fn load_arbitrary_so_still_errors() {
+        let r = expand_source_directives("@load \"vendor_foo.so\"\n");
+        assert!(r.is_err(), "{r:?}");
     }
 
     #[test]
