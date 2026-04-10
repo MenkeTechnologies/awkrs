@@ -1,6 +1,7 @@
 //! Awk-style record processor: library crate shared by the `awkrs` and `ars` binaries.
 
 mod ast;
+mod ast_fmt;
 mod builtins;
 mod bytecode;
 mod cli;
@@ -154,6 +155,10 @@ pub fn run(bin_name: &str) -> Result<()> {
     }
 
     rt.slots = cp.init_slots(&rt.vars);
+    rt.symtab_slot_map = cp.slot_map.clone();
+    if args.profile.is_some() {
+        rt.profile_record_hits = vec![0; cp.record_rules.len()];
+    }
 
     let worker_sandbox = rt.sandbox;
     let worker_characters_as_bytes = rt.characters_as_bytes;
@@ -174,7 +179,7 @@ pub fn run(bin_name: &str) -> Result<()> {
     if rt.exit_pending {
         vm_run_end(cp.as_ref(), &mut rt)?;
         flush_print_buf(&mut rt.print_buf)?;
-        finalize_cli_outputs(&args, bin_name, &rt, cp.as_ref(), profile_start)?;
+        finalize_cli_outputs(&args, bin_name, &rt, cp.as_ref(), profile_start, threads)?;
         std::process::exit(rt.exit_code);
     }
 
@@ -202,7 +207,7 @@ pub fn run(bin_name: &str) -> Result<()> {
         if rt.exit_pending {
             vm_run_endfile(cp.as_ref(), &mut rt)?;
             vm_run_end(cp.as_ref(), &mut rt)?;
-            finalize_cli_outputs(&args, bin_name, &rt, cp.as_ref(), profile_start)?;
+            finalize_cli_outputs(&args, bin_name, &rt, cp.as_ref(), profile_start, threads)?;
             std::process::exit(rt.exit_code);
         }
         if stdin_parallel {
@@ -232,7 +237,7 @@ pub fn run(bin_name: &str) -> Result<()> {
             if rt.exit_pending {
                 vm_run_endfile(cp.as_ref(), &mut rt)?;
                 vm_run_end(cp.as_ref(), &mut rt)?;
-                finalize_cli_outputs(&args, bin_name, &rt, cp.as_ref(), profile_start)?;
+                finalize_cli_outputs(&args, bin_name, &rt, cp.as_ref(), profile_start, threads)?;
                 std::process::exit(rt.exit_code);
             }
             let n = if use_parallel_files {
@@ -264,7 +269,7 @@ pub fn run(bin_name: &str) -> Result<()> {
     flush_print_buf(&mut rt.print_buf)?;
     vm_run_end(cp.as_ref(), &mut rt)?;
     flush_print_buf(&mut rt.print_buf)?;
-    finalize_cli_outputs(&args, bin_name, &rt, cp.as_ref(), profile_start)?;
+    finalize_cli_outputs(&args, bin_name, &rt, cp.as_ref(), profile_start, threads)?;
     if rt.exit_pending {
         std::process::exit(rt.exit_code);
     }
@@ -277,6 +282,7 @@ fn finalize_cli_outputs(
     rt: &Runtime,
     cp: &CompiledProgram,
     profile_start: Option<Instant>,
+    threads: usize,
 ) -> Result<()> {
     if let Some(ref path) = args.dump_variables {
         let mut w: Box<dyn Write> = if path.is_empty() || path == "-" {
@@ -288,7 +294,13 @@ fn finalize_cli_outputs(
         cli_effects::dump_variables(rt, cp, &mut *w)?;
     }
     if let (Some(ref path), Some(t0)) = (&args.profile, profile_start) {
-        cli_effects::write_profile_summary(path, t0.elapsed(), Some(rt.nr.max(0.0) as usize))?;
+        cli_effects::write_profile_summary(
+            path,
+            t0.elapsed(),
+            Some(rt.nr.max(0.0) as usize),
+            &rt.profile_record_hits,
+            threads > 1,
+        )?;
     }
     Ok(())
 }
@@ -381,7 +393,7 @@ fn process_lines_parallel_chunk(
                     }
                     let run = vm_pattern_matches(rule, cp.as_ref(), &mut local)?;
                     if run {
-                        match vm_run_rule(rule, cp.as_ref(), &mut local, Some(&mut buf)) {
+                        match vm_run_rule(rule, cp.as_ref(), &mut local, Some(&mut buf), None) {
                             Ok(Flow::Next) => break,
                             Ok(Flow::NextFile) => {
                                 return Err(Error::Runtime(
@@ -1470,7 +1482,8 @@ fn dispatch_rules(
     range_state: &mut [bool],
     rt: &mut Runtime,
 ) -> Result<bool> {
-    for rule in &cp.record_rules {
+    let profile_record_idx = !rt.profile_record_hits.is_empty();
+    for (i, rule) in cp.record_rules.iter().enumerate() {
         let run = match &rule.pattern {
             CompiledPattern::Range { start, end } => {
                 vm_range_step(&mut range_state[rule.original_index], start, end, cp, rt)?
@@ -1478,7 +1491,7 @@ fn dispatch_rules(
             _ => vm_pattern_matches(rule, cp, rt)?,
         };
         if run {
-            match vm_run_rule(rule, cp, rt, None) {
+            match vm_run_rule(rule, cp, rt, None, profile_record_idx.then_some(i)) {
                 Ok(Flow::Next) => break,
                 Ok(Flow::NextFile) => return Ok(true),
                 Ok(Flow::ExitPending) => return Ok(true),

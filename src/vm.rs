@@ -122,48 +122,25 @@ impl<'a> VmCtx<'a> {
     /// `arr[key]` — `SYMTAB` uses live global/slot resolution (gawk lvalue semantics).
     fn array_elem_get(&self, name: &str, key: &str) -> Value {
         if name == "SYMTAB" {
-            self.get_var(key)
-        } else {
-            self.rt.array_get(name, key)
+            return self.rt.symtab_elem_get(key);
         }
+        self.rt.array_get(name, key)
     }
 
     fn array_elem_set(&mut self, name: &str, key: String, val: Value) {
         if name == "SYMTAB" {
-            self.set_var(&key, val);
-        } else {
-            self.rt.array_set(name, key, val);
+            self.rt.symtab_elem_set(&key, val);
+            return;
         }
+        self.rt.array_set(name, key, val);
     }
 
     fn symtab_has(&self, key: &str) -> bool {
-        if self.cp.slot_map.contains_key(key) {
-            return true;
-        }
-        if self.rt.vars.contains_key(key) {
-            return true;
-        }
-        !matches!(self.get_var(key), Value::Uninit)
+        self.rt.array_has("SYMTAB", key)
     }
 
     fn symtab_keys(&self) -> Vec<String> {
-        use rustc_hash::FxHashSet;
-        let mut seen = FxHashSet::default();
-        for k in self.rt.vars.keys() {
-            if matches!(k.as_str(), "SYMTAB" | "FUNCTAB" | "PROCINFO") {
-                continue;
-            }
-            seen.insert(k.clone());
-        }
-        for k in self.cp.slot_map.keys() {
-            seen.insert(k.clone());
-        }
-        for &s in crate::namespace::SPECIAL_GLOBAL_NAMES {
-            seen.insert((*s).to_string());
-        }
-        let mut out: Vec<_> = seen.into_iter().collect();
-        out.sort();
-        out
+        self.rt.array_keys("SYMTAB")
     }
 
     fn symtab_key_count(&self) -> usize {
@@ -465,7 +442,13 @@ pub fn vm_run_rule(
     cp: &CompiledProgram,
     rt: &mut Runtime,
     print_out: Option<&mut Vec<String>>,
+    profile_record_idx: Option<usize>,
 ) -> Result<Flow> {
+    if let Some(i) = profile_record_idx {
+        if i < rt.profile_record_hits.len() {
+            rt.profile_record_hits[i] = rt.profile_record_hits[i].saturating_add(1);
+        }
+    }
     let mut ctx = match print_out {
         Some(buf) => VmCtx::with_print_capture(cp, rt, buf),
         None => VmCtx::new(cp, rt),
@@ -3941,7 +3924,7 @@ mod tests {
         let mut rt = runtime_with_slots(&cp);
         rt.set_record_from_line("a b");
         let mut cap = Vec::new();
-        let flow = vm_run_rule(rule, &cp, &mut rt, Some(&mut cap)).unwrap();
+        let flow = vm_run_rule(rule, &cp, &mut rt, Some(&mut cap), None).unwrap();
         assert!(matches!(flow, Flow::Normal));
         assert_eq!(cap.len(), 1);
         assert!(cap[0].starts_with("a"));
@@ -3954,7 +3937,7 @@ mod tests {
         let rule = &cp.record_rules[0];
         let mut rt = runtime_with_slots(&cp);
         rt.set_record_from_line("z");
-        let flow = vm_run_rule(rule, &cp, &mut rt, None).unwrap();
+        let flow = vm_run_rule(rule, &cp, &mut rt, None, None).unwrap();
         assert!(matches!(flow, Flow::Next));
     }
 
@@ -3964,7 +3947,7 @@ mod tests {
         let rule = &cp.record_rules[0];
         let mut rt = runtime_with_slots(&cp);
         rt.set_record_from_line("z");
-        let flow = vm_run_rule(rule, &cp, &mut rt, None).unwrap();
+        let flow = vm_run_rule(rule, &cp, &mut rt, None, None).unwrap();
         assert!(matches!(flow, Flow::ExitPending));
         assert!(rt.exit_pending);
         assert_eq!(rt.exit_code, 3);
@@ -3998,7 +3981,7 @@ mod tests {
         let mut rt = runtime_with_slots(&cp);
         rt.set_record_from_line("21");
         let mut cap = Vec::new();
-        vm_run_rule(rule, &cp, &mut rt, Some(&mut cap)).unwrap();
+        vm_run_rule(rule, &cp, &mut rt, Some(&mut cap), None).unwrap();
         assert_eq!(cap.len(), 1);
         assert!(cap[0].starts_with("42"));
     }
@@ -4023,7 +4006,7 @@ mod tests {
         let mut rt = runtime_with_slots(&cp);
 
         rt.set_record_from_line("42");
-        vm_run_rule(rule, &cp, &mut rt, None).unwrap();
+        vm_run_rule(rule, &cp, &mut rt, None, None).unwrap();
         assert!(
             chunk.jit_lock.lock().expect("jit_lock").is_none(),
             "first record: tiered gate should skip compile; cache untouched"
@@ -4031,7 +4014,7 @@ mod tests {
         assert_eq!(chunk.jit_invocation_count.load(AtomicOrdering::Relaxed), 1);
 
         rt.set_record_from_line("42");
-        vm_run_rule(rule, &cp, &mut rt, None).unwrap();
+        vm_run_rule(rule, &cp, &mut rt, None, None).unwrap();
         assert!(
             chunk.jit_lock.lock().expect("jit_lock").is_some(),
             "second record: min invocations met; JIT cache entry should exist"

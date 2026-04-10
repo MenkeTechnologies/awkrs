@@ -1,6 +1,7 @@
 //! Behaviors for gawk-style CLI flags (dump, pretty-print, gen-pot, lint, debug listing, profile timing).
 
 use crate::ast::{Expr, Program, Stmt};
+use crate::ast_fmt;
 use crate::bytecode::CompiledProgram;
 use crate::error::{Error, Result};
 use crate::runtime::{Runtime, Value};
@@ -306,20 +307,36 @@ fn value_dump_scalar(v: &Value) -> String {
     }
 }
 
-/// Rule/function index for `-D` (debug listing).
+/// Rule/function listing for `-D` / `--debug` (static inspection, **not** GNU awk’s interactive debugger).
 pub fn write_debug_listing(prog: &Program, out: &mut dyn Write, bin_name: &str) -> Result<()> {
     writeln!(
         out,
-        "# {bin_name} debug listing (rules and functions; not interactive debugger)"
+        "# {bin_name} — awkrs --debug: static program listing (NOT gawk’s interactive debugger)."
+    )
+    .map_err(Error::Io)?;
+    writeln!(
+        out,
+        "# Use this output to inspect rules and functions. Breakpoints/step execution are not available."
     )
     .map_err(Error::Io)?;
     writeln!(out, "rules: {}", prog.rules.len()).map_err(Error::Io)?;
     for (i, r) in prog.rules.iter().enumerate() {
         writeln!(out, "  [{i}] pattern: {:?}", r.pattern).map_err(Error::Io)?;
         writeln!(out, "      stmts: {}", r.stmts.len()).map_err(Error::Io)?;
+        writeln!(out, "      --- pretty ---").map_err(Error::Io)?;
+        let one = crate::ast::Program {
+            rules: vec![r.clone()],
+            funcs: Default::default(),
+        };
+        for line in ast_fmt::format_program(&one).lines() {
+            writeln!(out, "      {line}").map_err(Error::Io)?;
+        }
     }
     writeln!(out, "functions: {}", prog.funcs.len()).map_err(Error::Io)?;
-    for (name, fd) in &prog.funcs {
+    let mut fnames: Vec<&String> = prog.funcs.keys().collect();
+    fnames.sort();
+    for name in fnames {
+        let fd = &prog.funcs[name];
         writeln!(
             out,
             "  function {name}({}) body_stmts={}",
@@ -331,9 +348,9 @@ pub fn write_debug_listing(prog: &Program, out: &mut dyn Write, bin_name: &str) 
     Ok(())
 }
 
-/// Pretty-print program using `Debug` (stable enough for inspection; not full gawk `-o` formatter).
+/// Pretty-print program as awk-like source (reformatted AST; not gawk’s canonicalizer).
 pub fn pretty_print_ast(prog: &Program) -> String {
-    format!("{prog:#?}")
+    ast_fmt::format_program(prog)
 }
 
 /// Emit lint warnings for gawk extensions when `-L`, `-t`, or a truthy **`LINT`** variable is set.
@@ -355,11 +372,25 @@ pub fn emit_lint_warnings(
             std::process::exit(2);
         }
     };
+    let mut begin_rules = 0usize;
+    let mut end_rules = 0usize;
     for r in &prog.rules {
         use crate::ast::Pattern;
         if matches!(r.pattern, Pattern::BeginFile | Pattern::EndFile) {
             w("BEGINFILE/ENDFILE is a gawk extension");
         }
+        if matches!(r.pattern, Pattern::Begin) {
+            begin_rules += 1;
+        }
+        if matches!(r.pattern, Pattern::End) {
+            end_rules += 1;
+        }
+    }
+    if begin_rules > 1 {
+        w("multiple BEGIN rules (gawk merges them; order is significant)");
+    }
+    if end_rules > 1 {
+        w("multiple END rules (gawk merges them; order is significant)");
     }
     for r in &prog.rules {
         for s in &r.stmts {
@@ -369,17 +400,27 @@ pub fn emit_lint_warnings(
             }
         }
     }
+    for fd in prog.funcs.values() {
+        for s in &fd.body {
+            if matches!(s, Stmt::NextFile) {
+                w("nextfile in a user function may be invalid depending on context");
+                break;
+            }
+        }
+    }
     if lint_old {
         w("-t/--lint-old: deprecated extension checks are not fully implemented");
     }
 }
 
-/// Write wall-clock profile summary (minimal substitute for line-level profiling).
+/// Write profile summary: wall-clock plus per-record-rule execution counts when **sequential**.
 /// Empty path or `-` writes to stderr (matches gawk-style default when no file is given).
 pub fn write_profile_summary(
     path: &str,
     elapsed: std::time::Duration,
     records_hint: Option<usize>,
+    record_rule_hits: &[u64],
+    parallel_mode: bool,
 ) -> Result<()> {
     let mut w: Box<dyn Write> = if path.is_empty() || path == "-" {
         Box::new(std::io::stderr())
@@ -389,10 +430,31 @@ pub fn write_profile_summary(
                 .map_err(|e| Error::Runtime(format!("profile {path}: {e}")))?,
         )
     };
-    writeln!(w, "# awkrs profile (wall time only)").map_err(Error::Io)?;
+    writeln!(
+        w,
+        "# awkrs profile: wall time + per-record-rule invocation counts (sequential runs only)."
+    )
+    .map_err(Error::Io)?;
+    writeln!(
+        w,
+        "# This is not gawk’s full profiler (no per-function or per-line counts). Use a single thread (-j1) for rule-hit counts."
+    )
+    .map_err(Error::Io)?;
     writeln!(w, "wall_seconds: {:.6}", elapsed.as_secs_f64()).map_err(Error::Io)?;
     if let Some(n) = records_hint {
         writeln!(w, "records_processed: {n}").map_err(Error::Io)?;
+    }
+    if parallel_mode {
+        writeln!(
+            w,
+            "record_rule_hits: (skipped: parallel mode — use -j1 for per-rule counts)"
+        )
+        .map_err(Error::Io)?;
+    } else {
+        writeln!(w, "record_rule_hits:").map_err(Error::Io)?;
+        for (i, &n) in record_rule_hits.iter().enumerate() {
+            writeln!(w, "  rule[{i}]: {n}").map_err(Error::Io)?;
+        }
     }
     Ok(())
 }

@@ -769,6 +769,10 @@ pub struct Runtime {
     pub jit_enabled: bool,
     /// GNU MO catalogs loaded by `bindtextdomain` (domain → catalog).
     pub gettext_catalogs: AwkMap<String, Arc<Catalog>>,
+    /// Copy of [`crate::bytecode::CompiledProgram::slot_map`] for SYMTAB / `array_keys` without VM context.
+    pub symtab_slot_map: HashMap<String, u16>,
+    /// `-p` / `--profile`: invocation count per **record** rule (index matches `CompiledProgram::record_rules`).
+    pub profile_record_hits: Vec<u64>,
 }
 
 impl Runtime {
@@ -849,6 +853,8 @@ impl Runtime {
             traditional: false,
             jit_enabled: true,
             gettext_catalogs: AwkMap::default(),
+            symtab_slot_map: HashMap::new(),
+            profile_record_hits: Vec::new(),
         }
     }
 
@@ -963,25 +969,10 @@ impl Runtime {
     }
 
     fn symtab_mirror_refresh(&mut self, cp: &CompiledProgram) {
-        let mut st = AwkMap::default();
-        for (k, v) in &self.vars {
-            match k.as_str() {
-                "SYMTAB" | "FUNCTAB" | "PROCINFO" => continue,
-                _ => {}
-            }
-            st.insert(k.clone(), v.clone());
-        }
-        for name in cp.slot_map.keys() {
-            if st.contains_key(name) {
-                continue;
-            }
-            if let Some(&idx) = cp.slot_map.get(name) {
-                if (idx as usize) < self.slots.len() {
-                    st.insert(name.clone(), self.slots[idx as usize].clone());
-                }
-            }
-        }
-        self.vars.insert("SYMTAB".into(), Value::Array(st));
+        self.symtab_slot_map = cp.slot_map.clone();
+        // SYMTAB subscripts resolve live via [`VmCtx`] / [`Runtime::symtab_elem_get`]; keep empty placeholder.
+        self.vars
+            .insert("SYMTAB".into(), Value::Array(AwkMap::default()));
     }
 
     /// Resize [`Self::jit_slot_buf`] for JIT (`n` elements; no shrink).
@@ -1072,6 +1063,8 @@ impl Runtime {
             traditional,
             jit_enabled,
             gettext_catalogs,
+            symtab_slot_map: HashMap::new(),
+            profile_record_hits: Vec::new(),
         }
     }
 
@@ -1866,8 +1859,101 @@ impl Runtime {
         self.split_record_fields();
     }
 
+    /// `SYMTAB[name]` — live global / slot value (gawk introspection).
+    pub fn symtab_elem_get(&self, key: &str) -> Value {
+        if let Some(&slot) = self.symtab_slot_map.get(key) {
+            let i = slot as usize;
+            if i < self.slots.len() {
+                return self.slots[i].clone();
+            }
+        }
+        self.get_global_var(key)
+            .cloned()
+            .unwrap_or_else(|| self.builtin_scalar_symtab(key))
+    }
+
+    fn builtin_scalar_symtab(&self, name: &str) -> Value {
+        match name {
+            "NR" => Value::Num(self.nr),
+            "FNR" => Value::Num(self.fnr),
+            "NF" => Value::Num(if self.fields_dirty {
+                self.fields.len()
+            } else {
+                self.field_ranges.len()
+            } as f64),
+            "FILENAME" => Value::Str(self.filename.clone()),
+            _ => Value::Uninit,
+        }
+    }
+
+    /// Enumerate SYMTAB keys (globals, slot-backed names, special scalars).
+    pub fn symtab_keys_reflect(&self) -> Vec<String> {
+        use rustc_hash::FxHashSet;
+        let mut seen = FxHashSet::default();
+        for k in self.vars.keys() {
+            if matches!(k.as_str(), "SYMTAB" | "FUNCTAB" | "PROCINFO") {
+                continue;
+            }
+            seen.insert(k.clone());
+        }
+        if let Some(g) = &self.global_readonly {
+            for k in g.keys() {
+                if matches!(k.as_str(), "SYMTAB" | "FUNCTAB" | "PROCINFO") {
+                    continue;
+                }
+                seen.insert(k.clone());
+            }
+        }
+        for k in self.symtab_slot_map.keys() {
+            seen.insert(k.clone());
+        }
+        for &s in crate::namespace::SPECIAL_GLOBAL_NAMES {
+            seen.insert((*s).to_string());
+        }
+        let mut out: Vec<_> = seen.into_iter().collect();
+        out.sort();
+        out
+    }
+
+    fn symtab_has_key(&self, key: &str) -> bool {
+        if self.symtab_slot_map.contains_key(key) {
+            return true;
+        }
+        if self.vars.contains_key(key) && !matches!(key, "SYMTAB" | "FUNCTAB" | "PROCINFO") {
+            return true;
+        }
+        if self
+            .global_readonly
+            .as_ref()
+            .is_some_and(|g| g.contains_key(key))
+        {
+            return true;
+        }
+        !matches!(self.symtab_elem_get(key), Value::Uninit)
+    }
+
+    /// `SYMTAB[name] = v` — assign global or slot (not a materialized mirror array).
+    pub fn symtab_elem_set(&mut self, key: &str, val: Value) {
+        if let Some(&slot) = self.symtab_slot_map.get(key) {
+            let i = slot as usize;
+            if i < self.slots.len() {
+                self.slots[i] = val;
+                return;
+            }
+        }
+        match key {
+            "OFS" => self.ofs_bytes = val.as_str().into_bytes(),
+            "ORS" => self.ors_bytes = val.as_str().into_bytes(),
+            _ => {}
+        }
+        self.vars.insert(key.to_string(), val);
+    }
+
     #[inline]
     pub fn array_get(&self, name: &str, key: &str) -> Value {
+        if name == "SYMTAB" {
+            return self.symtab_elem_get(key);
+        }
         match self.get_global_var(name) {
             Some(Value::Array(a)) => match a.get(key) {
                 Some(Value::Num(n)) => Value::Num(*n),
@@ -1879,6 +1965,10 @@ impl Runtime {
     }
 
     pub fn array_set(&mut self, name: &str, key: String, val: Value) {
+        if name == "SYMTAB" {
+            self.symtab_elem_set(&key, val);
+            return;
+        }
         // Fast path: array already exists in vars — no name allocation needed.
         if let Some(existing) = self.vars.get_mut(name) {
             match existing {
@@ -2014,6 +2104,19 @@ impl Runtime {
     }
 
     pub fn array_keys(&self, name: &str) -> Vec<String> {
+        if name == "SYMTAB" {
+            let mut keys = self.symtab_keys_reflect();
+            if self.posix {
+                return keys;
+            }
+            let mode = sorted_in_mode(self);
+            let mut tmp: AwkMap<String, Value> = AwkMap::default();
+            for k in &keys {
+                tmp.insert(k.clone(), self.symtab_elem_get(k));
+            }
+            sort_for_in_keys(&mut keys, &tmp, mode);
+            return keys;
+        }
         let Some(Value::Array(a)) = self.get_global_var(name) else {
             return Vec::new();
         };
@@ -2029,6 +2132,9 @@ impl Runtime {
     /// `key in arr` — true iff `arr` is an array that has `key` (POSIX: subscript was used).
     #[inline]
     pub fn array_has(&self, name: &str, key: &str) -> bool {
+        if name == "SYMTAB" {
+            return self.symtab_has_key(key);
+        }
         match self.get_global_var(name) {
             Some(Value::Array(a)) => a.contains_key(key),
             _ => false,
@@ -2124,6 +2230,8 @@ impl Clone for Runtime {
             traditional: self.traditional,
             jit_enabled: self.jit_enabled,
             gettext_catalogs: self.gettext_catalogs.clone(),
+            symtab_slot_map: self.symtab_slot_map.clone(),
+            profile_record_hits: Vec::new(),
         }
     }
 }
