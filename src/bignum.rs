@@ -18,11 +18,7 @@ pub fn numeric_string_to_mpfr(s: &str, prec: u32, round: Round) -> Float {
             Err(_) => Float::with_val_round(prec, 0, round).0,
         };
     }
-    if t.len() > 1
-        && t.starts_with('0')
-        && !t.contains('.')
-        && !t.contains('e')
-        && !t.contains('E')
+    if t.len() > 1 && t.starts_with('0') && !t.contains('.') && !t.contains('e') && !t.contains('E')
     {
         return match Integer::from_str_radix(t, 8) {
             Ok(i) => Float::with_val_round(prec, i, round).0,

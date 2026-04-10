@@ -4,8 +4,8 @@ use crate::builtins;
 use crate::error::{Error, Result};
 use crate::format;
 use crate::runtime::{sorted_in_mode, value_to_float, Runtime, SortedInMode, Value};
-use rug::Float;
 use regex::Regex;
+use rug::Float;
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -813,8 +813,7 @@ fn eval_inc_dec(op: IncDecOp, target: &IncDecTarget, ctx: &mut ExecCtx<'_>) -> R
                 let old_f = value_to_float(&old, prec, round);
                 let d = Float::with_val(prec, delta);
                 let new_f = Float::with_val_round(prec, &old_f + &d, round).0;
-                ctx.rt
-                    .array_set(name, k, Value::Mpfr(new_f.clone()));
+                ctx.rt.array_set(name, k, Value::Mpfr(new_f.clone()));
                 let ret = match op {
                     IncDecOp::PreInc | IncDecOp::PreDec => Value::Mpfr(new_f),
                     IncDecOp::PostInc | IncDecOp::PostDec => Value::Mpfr(old_f),
@@ -1398,7 +1397,9 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut ExecCtx<'_>) -> Result<Value> 
                 let round = ctx.rt.mpfr_round();
                 let y = value_to_float(&eval_expr(&args[0], ctx)?, prec, round);
                 let x = value_to_float(&eval_expr(&args[1], ctx)?, prec, round);
-                Ok(Value::Mpfr(Float::with_val_round(prec, y.atan2(&x), round).0))
+                Ok(Value::Mpfr(
+                    Float::with_val_round(prec, y.atan2(&x), round).0,
+                ))
             } else {
                 let y = eval_expr(&args[0], ctx)?.as_number();
                 let x = eval_expr(&args[1], ctx)?.as_number();

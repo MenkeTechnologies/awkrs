@@ -3483,10 +3483,9 @@ fn exec_getline(
 
     let input_key = match source {
         GetlineSource::Primary => ctx.rt.primary_input_procinfo_key(),
-        GetlineSource::File | GetlineSource::Coproc | GetlineSource::Pipe => file_path
-            .as_ref()
-            .expect("getline path")
-            .clone(),
+        GetlineSource::File | GetlineSource::Coproc | GetlineSource::Pipe => {
+            file_path.as_ref().expect("getline path").clone()
+        }
     };
 
     let line_res = match source {

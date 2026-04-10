@@ -1061,12 +1061,6 @@ impl Runtime {
         }
     }
 
-    /// gawk **`PROCINFO["READ_TIMEOUT"]`**: positive = milliseconds for blocking reads on files / inet; **`0`** = no timeout.
-    #[inline]
-    pub fn read_timeout_ms(&self) -> i32 {
-        self.global_read_timeout_ms()
-    }
-
     /// Refresh **`PROCINFO`**, **`FUNCTAB`**, and a **`SYMTAB`** mirror of globals (best-effort vs gawk introspection).
     pub fn refresh_special_arrays(&mut self, cp: &CompiledProgram, bin_name: &str) {
         self.procinfo_refresh(cp, bin_name);
@@ -1190,13 +1184,9 @@ impl Runtime {
         paths.push("-".into());
         for path in paths {
             let k_rt = format!("{path}{sep}READ_TIMEOUT");
-            if !p.contains_key(&k_rt) {
-                p.insert(k_rt, Value::Num(global_to));
-            }
+            p.entry(k_rt).or_insert(Value::Num(global_to));
             let k_retry = format!("{path}{sep}RETRY");
-            if !p.contains_key(&k_retry) {
-                p.insert(k_retry, Value::Num(0.0));
-            }
+            p.entry(k_retry).or_insert(Value::Num(0.0));
         }
 
         self.vars.insert("PROCINFO".into(), Value::Array(p));
@@ -1621,6 +1611,7 @@ impl Runtime {
         )))
     }
 
+    #[cfg_attr(unix, allow(dead_code))]
     pub fn attach_input_reader(&mut self, r: SharedInputReader) {
         self.attach_input_reader_with_poll_fd(r, None);
     }
@@ -1650,8 +1641,7 @@ impl Runtime {
     /// Unix: honor **`PROCINFO[FILENAME,"READ_TIMEOUT"]`** before each primary record read.
     #[cfg(unix)]
     pub fn poll_primary_read_timeout_if_needed(&self) -> Result<()> {
-        let to = self
-            .procinfo_read_timeout_ms_for(&self.primary_input_procinfo_key());
+        let to = self.procinfo_read_timeout_ms_for(&self.primary_input_procinfo_key());
         if to > 0 {
             if let Some(fd) = self.primary_input_poll_fd {
                 wait_fd_read_timeout(fd, to)?;
@@ -1746,8 +1736,7 @@ impl Runtime {
                 "`getline` with no file is only valid during normal input".into(),
             ));
         };
-        let to = self
-            .procinfo_read_timeout_ms_for(&self.primary_input_procinfo_key());
+        let to = self.procinfo_read_timeout_ms_for(&self.primary_input_procinfo_key());
         #[cfg(unix)]
         if to > 0 {
             if let Some(fd) = self.primary_input_poll_fd {

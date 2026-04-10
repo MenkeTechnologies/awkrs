@@ -393,12 +393,7 @@ mod tests {
     #[test]
     fn intdiv0_zero_divisor() {
         let mut rt = Runtime::new();
-        let v = intdiv0(
-            &mut rt,
-            &Value::Num(10.0),
-            &Value::Num(0.0),
-        )
-        .unwrap();
+        let v = intdiv0(&mut rt, &Value::Num(10.0), &Value::Num(0.0)).unwrap();
         assert_eq!(v.as_number(), 0.0);
     }
 

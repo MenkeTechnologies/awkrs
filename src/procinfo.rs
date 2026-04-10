@@ -90,9 +90,7 @@ unsafe fn c_str_to_string(p: *const libc::c_char) -> String {
     if p.is_null() {
         return String::new();
     }
-    unsafe { CStr::from_ptr(p) }
-        .to_string_lossy()
-        .into_owned()
+    unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned()
 }
 
 #[cfg(unix)]

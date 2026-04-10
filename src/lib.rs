@@ -793,45 +793,42 @@ fn process_file(
     // Streaming path: stdin or programs using primary getline.
     let br = if let Some(existing) = rt.input_reader.clone() {
         existing
+    } else if let Some(p) = path {
+        match File::open(p) {
+            Ok(f) => {
+                rt.clear_errno();
+                #[cfg(unix)]
+                let poll_fd = {
+                    use std::os::unix::io::AsRawFd;
+                    f.as_raw_fd()
+                };
+                let reader = Box::new(f) as Box<dyn Read + Send>;
+                let br = Arc::new(std::sync::Mutex::new(BufReader::new(reader)));
+                #[cfg(unix)]
+                rt.attach_input_reader_with_poll_fd(Arc::clone(&br), Some(poll_fd));
+                #[cfg(not(unix))]
+                rt.attach_input_reader(Arc::clone(&br));
+                br
+            }
+            Err(e) => {
+                rt.set_errno_io(&e);
+                return Err(Error::ProgramFile(p.to_path_buf(), e));
+            }
+        }
     } else {
-        let br = if let Some(p) = path {
-            match File::open(p) {
-                Ok(f) => {
-                    rt.clear_errno();
-                    #[cfg(unix)]
-                    let poll_fd = {
-                        use std::os::unix::io::AsRawFd;
-                        f.as_raw_fd()
-                    };
-                    let reader = Box::new(f) as Box<dyn Read + Send>;
-                    let br = Arc::new(std::sync::Mutex::new(BufReader::new(reader)));
-                    #[cfg(unix)]
-                    rt.attach_input_reader_with_poll_fd(Arc::clone(&br), Some(poll_fd));
-                    #[cfg(not(unix))]
-                    rt.attach_input_reader(Arc::clone(&br));
-                    br
-                }
-                Err(e) => {
-                    rt.set_errno_io(&e);
-                    return Err(Error::ProgramFile(p.to_path_buf(), e));
-                }
-            }
-        } else {
-            rt.clear_errno();
-            let reader = Box::new(std::io::stdin()) as Box<dyn Read + Send>;
-            let br = Arc::new(std::sync::Mutex::new(BufReader::new(reader)));
-            #[cfg(unix)]
-            {
-                use std::os::unix::io::AsRawFd;
-                rt.attach_input_reader_with_poll_fd(
-                    Arc::clone(&br),
-                    Some(std::io::stdin().as_raw_fd()),
-                );
-            }
-            #[cfg(not(unix))]
-            rt.attach_input_reader(Arc::clone(&br));
-            br
-        };
+        rt.clear_errno();
+        let reader = Box::new(std::io::stdin()) as Box<dyn Read + Send>;
+        let br = Arc::new(std::sync::Mutex::new(BufReader::new(reader)));
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            rt.attach_input_reader_with_poll_fd(
+                Arc::clone(&br),
+                Some(std::io::stdin().as_raw_fd()),
+            );
+        }
+        #[cfg(not(unix))]
+        rt.attach_input_reader(Arc::clone(&br));
         br
     };
 

@@ -750,7 +750,8 @@ mod tests {
 
     #[test]
     fn lc_numeric_scientific_uppercase_e() {
-        let s = awk_sprintf_with_decimal("%.1E", &[Value::Num(1000.0)], ',', Some(','), None).unwrap();
+        let s =
+            awk_sprintf_with_decimal("%.1E", &[Value::Num(1000.0)], ',', Some(','), None).unwrap();
         assert!(s.contains('E'), "got {s:?}");
         assert!(s.contains(','), "got {s:?}");
     }
@@ -763,7 +764,8 @@ mod tests {
 
     #[test]
     fn printf_apostrophe_groups_integer() {
-        let s = awk_sprintf_with_decimal("%'d", &[Value::Num(1234567.0)], '.', Some(','), None).unwrap();
+        let s = awk_sprintf_with_decimal("%'d", &[Value::Num(1234567.0)], '.', Some(','), None)
+            .unwrap();
         assert_eq!(s, "1,234,567");
     }
 

@@ -180,10 +180,7 @@ fn procinfo_platform_posix_on_unix() {
     if !cfg!(unix) {
         return;
     }
-    let (c, o, _) = run_awkrs_stdin(
-        r#"BEGIN { print PROCINFO["platform"] }"#,
-        "",
-    );
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { print PROCINFO["platform"] }"#, "");
     assert_eq!(c, 0);
     assert_eq!(o.trim_end(), "posix");
 }
