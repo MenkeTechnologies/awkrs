@@ -651,8 +651,13 @@ pub fn awk_typeof_array_elem(rt: &Runtime, name: &str, key: &str) -> &'static st
 
 #[cfg(test)]
 mod tests {
-    use super::{gsub, gsub_literal_eligible, is_literal_pattern, match_fn, patsplit, sub_fn};
+    use super::{
+        asort, asorti, awk_gensub, awk_mktime, awk_strftime, awk_strtonum, awk_typeof_array_elem,
+        awk_typeof_value, awk_value_sort_cmp, gsub, gsub_literal_eligible, is_literal_pattern,
+        match_fn, patsplit, sub_fn,
+    };
     use crate::runtime::{Runtime, Value};
+    use std::cmp::Ordering;
 
     fn rt_with_fs() -> Runtime {
         let mut rt = Runtime::new();
@@ -706,6 +711,24 @@ mod tests {
     }
 
     #[test]
+    fn match_with_array_fills_capture_groups() {
+        let mut rt = Runtime::new();
+        let n = match_fn(&mut rt, "foo123bar", "([a-z]+)([0-9]+)", Some("cap")).unwrap();
+        assert_eq!(n, 1.0);
+        assert_eq!(rt.array_get("cap", "1").as_str(), "foo");
+        assert_eq!(rt.array_get("cap", "2").as_str(), "123");
+    }
+
+    #[test]
+    fn match_miss_clears_named_array() {
+        let mut rt = Runtime::new();
+        rt.array_set("cap", "1".into(), Value::Str("keep".into()));
+        let n = match_fn(&mut rt, "zzz", "a+", Some("cap")).unwrap();
+        assert_eq!(n, 0.0);
+        assert_eq!(awk_typeof_array_elem(&rt, "cap", "1"), "uninitialized");
+    }
+
+    #[test]
     fn patsplit_fills_array() {
         let mut rt = Runtime::new();
         let n = patsplit(&mut rt, "x y z", "parts", Some("[a-z]+"), None).unwrap();
@@ -733,5 +756,197 @@ mod tests {
     #[test]
     fn gsub_literal_eligible_accepts_simple_pair() {
         assert!(gsub_literal_eligible("needle", "repl"));
+    }
+
+    #[test]
+    fn awk_typeof_value_variants() {
+        assert_eq!(awk_typeof_value(&Value::Uninit), "uninitialized");
+        assert_eq!(awk_typeof_value(&Value::Num(0.0)), "number");
+        assert_eq!(awk_typeof_value(&Value::Str("".into())), "string");
+        assert_eq!(awk_typeof_value(&Value::StrLit("x".into())), "string");
+        assert_eq!(awk_typeof_value(&Value::Regexp(".".into())), "regexp");
+        let mut a = crate::runtime::AwkMap::default();
+        a.insert("k".into(), Value::Num(1.0));
+        assert_eq!(awk_typeof_value(&Value::Array(a)), "array");
+    }
+
+    #[test]
+    fn awk_typeof_array_elem_hits_and_misses() {
+        let mut rt = Runtime::new();
+        rt.array_set("t", "k".into(), Value::Str("v".into()));
+        assert_eq!(awk_typeof_array_elem(&rt, "t", "k"), "string");
+        assert_eq!(awk_typeof_array_elem(&rt, "t", "missing"), "uninitialized");
+        assert_eq!(
+            awk_typeof_array_elem(&rt, "not_array", "k"),
+            "uninitialized"
+        );
+    }
+
+    #[test]
+    fn awk_strtonum_empty_or_whitespace_zero() {
+        assert_eq!(awk_strtonum(""), 0.0);
+        assert_eq!(awk_strtonum("   "), 0.0);
+    }
+
+    #[test]
+    fn awk_strtonum_hex_octal_and_decimal() {
+        assert_eq!(awk_strtonum("0x10"), 16.0);
+        assert_eq!(awk_strtonum("0Xff"), 255.0);
+        assert_eq!(awk_strtonum("010"), 8.0);
+        assert_eq!(awk_strtonum("3.5"), 3.5);
+    }
+
+    #[test]
+    fn awk_strtonum_invalid_hex_returns_zero() {
+        assert_eq!(awk_strtonum("0x"), 0.0);
+        assert_eq!(awk_strtonum("0xzz"), 0.0);
+    }
+
+    #[test]
+    fn awk_strtonum_hex_above_u64_returns_zero() {
+        assert_eq!(awk_strtonum("0x10000000000000000"), 0.0);
+    }
+
+    #[test]
+    fn awk_value_sort_cmp_numeric_strings_use_numeric_order() {
+        assert_eq!(
+            awk_value_sort_cmp(&Value::Str("2".into()), &Value::Str("10".into())),
+            Ordering::Less
+        );
+    }
+
+    #[test]
+    fn awk_value_sort_cmp_plain_numbers() {
+        assert_eq!(
+            awk_value_sort_cmp(&Value::Num(3.0), &Value::Num(1.0)),
+            Ordering::Greater
+        );
+    }
+
+    #[test]
+    fn asort_inplace_sorts_values_and_reindexes_one_based() {
+        let mut rt = Runtime::new();
+        rt.array_set("a", "z".into(), Value::Num(30.0));
+        rt.array_set("a", "y".into(), Value::Num(10.0));
+        rt.array_set("a", "x".into(), Value::Num(20.0));
+        let n = asort(&mut rt, "a", None).unwrap();
+        assert_eq!(n, 3.0);
+        assert_eq!(rt.array_get("a", "1").as_number(), 10.0);
+        assert_eq!(rt.array_get("a", "2").as_number(), 20.0);
+        assert_eq!(rt.array_get("a", "3").as_number(), 30.0);
+    }
+
+    #[test]
+    fn asort_into_destination_leaves_source_unchanged() {
+        let mut rt = Runtime::new();
+        rt.array_set("src", "p".into(), Value::Num(2.0));
+        rt.array_set("src", "q".into(), Value::Num(1.0));
+        let n = asort(&mut rt, "src", Some("dst")).unwrap();
+        assert_eq!(n, 2.0);
+        assert_eq!(rt.array_get("dst", "1").as_number(), 1.0);
+        assert_eq!(rt.array_get("dst", "2").as_number(), 2.0);
+        assert_eq!(rt.array_get("src", "p").as_number(), 2.0);
+        assert_eq!(rt.array_get("src", "q").as_number(), 1.0);
+    }
+
+    #[test]
+    fn asort_non_array_errors() {
+        let mut rt = Runtime::new();
+        rt.vars.insert("x".into(), Value::Num(1.0));
+        let e = asort(&mut rt, "x", None).unwrap_err();
+        assert!(e.to_string().contains("asort"), "{e}");
+    }
+
+    #[test]
+    fn asorti_inplace_sorts_keys_into_string_values() {
+        let mut rt = Runtime::new();
+        rt.array_set("a", "banana".into(), Value::Num(1.0));
+        rt.array_set("a", "apple".into(), Value::Num(2.0));
+        let n = asorti(&mut rt, "a", None).unwrap();
+        assert_eq!(n, 2.0);
+        assert_eq!(rt.array_get("a", "1").as_str(), "apple");
+        assert_eq!(rt.array_get("a", "2").as_str(), "banana");
+    }
+
+    #[test]
+    fn asorti_non_array_errors() {
+        let mut rt = Runtime::new();
+        let e = asorti(&mut rt, "missing", None).unwrap_err();
+        assert!(e.to_string().contains("asorti"), "{e}");
+    }
+
+    #[test]
+    fn awk_mktime_short_datespec_returns_minus_one() {
+        assert_eq!(awk_mktime("2020 1"), -1.0);
+        assert_eq!(awk_mktime("not numbers"), -1.0);
+    }
+
+    #[test]
+    fn awk_mktime_six_field_datespec_positive() {
+        let t = awk_mktime("2020 06 15 12 00 00");
+        assert!(t > 0.0, "expected positive epoch seconds, got {t}");
+    }
+
+    #[test]
+    fn awk_strftime_no_args_yields_non_empty_string() {
+        let v = awk_strftime(&[]).unwrap();
+        assert!(!v.as_str().is_empty(), "{v:?}");
+    }
+
+    #[test]
+    fn awk_gensub_global_string_replaces_all_matches() {
+        let mut rt = Runtime::new();
+        rt.record = "a1b2c".into();
+        let out = awk_gensub(&mut rt, "[0-9]", "X", &Value::Str("g".into()), None).unwrap();
+        assert_eq!(out, "aXbXc");
+    }
+
+    #[test]
+    fn awk_gensub_numeric_zero_replaces_all_like_g() {
+        let mut rt = Runtime::new();
+        let out = awk_gensub(
+            &mut rt,
+            "[0-9]",
+            "_",
+            &Value::Num(0.0),
+            Some("z9y9z".into()),
+        )
+        .unwrap();
+        assert_eq!(out, "z_y_z");
+    }
+
+    #[test]
+    fn awk_gensub_numeric_two_replaces_second_match_only() {
+        let mut rt = Runtime::new();
+        let out = awk_gensub(
+            &mut rt,
+            "[0-9]",
+            "X",
+            &Value::Num(2.0),
+            Some("a1b2c3".into()),
+        )
+        .unwrap();
+        assert_eq!(out, "a1bXc3");
+    }
+
+    #[test]
+    fn awk_gensub_empty_how_string_errors() {
+        let mut rt = Runtime::new();
+        let e = awk_gensub(
+            &mut rt,
+            "a",
+            "b",
+            &Value::Str("  ".into()),
+            Some("x".into()),
+        )
+        .unwrap_err();
+        assert!(e.to_string().contains("gensub"), "{e}");
+    }
+
+    #[test]
+    fn awk_gensub_negative_numeric_how_errors() {
+        let mut rt = Runtime::new();
+        let e = awk_gensub(&mut rt, "a", "b", &Value::Num(-1.0), Some("x".into())).unwrap_err();
+        assert!(e.to_string().contains("gensub"), "{e}");
     }
 }

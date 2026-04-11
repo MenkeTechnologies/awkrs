@@ -2334,15 +2334,106 @@ mod tests {
     }
 
     #[test]
+    fn validate_rejects_gsub_with_only_pattern_arg() {
+        let prog = parse_program("BEGIN { gsub(/x/) }").unwrap();
+        let e = validate_program(&prog).unwrap_err();
+        assert!(e.to_string().contains("gsub"), "{e}");
+    }
+
+    #[test]
     fn validate_rejects_split_without_args() {
         let prog = parse_program("BEGIN { split() }").unwrap();
         assert!(validate_program(&prog).is_err());
     }
 
     #[test]
+    fn validate_rejects_split_single_arg() {
+        let prog = parse_program("BEGIN { split(\"a,b\") }").unwrap();
+        let e = validate_program(&prog).unwrap_err();
+        assert!(e.to_string().contains("split"), "{e}");
+    }
+
+    #[test]
+    fn validate_accepts_match_three_args_with_array() {
+        let prog = parse_program(r#"BEGIN { n = match("aba", /a/, arr) }"#).unwrap();
+        validate_program(&prog).unwrap();
+    }
+
+    #[test]
     fn validate_rejects_tuple_in_return() {
         let prog = parse_program("function f(){ return (1,2) } BEGIN { f() }").unwrap();
         assert!(validate_program(&prog).is_err());
+    }
+
+    #[test]
+    fn validate_rejects_match_with_few_args() {
+        let prog = parse_program("BEGIN { match(\"x\") }").unwrap();
+        let e = validate_program(&prog).unwrap_err();
+        assert!(e.to_string().contains("match"), "{e}");
+    }
+
+    #[test]
+    fn validate_rejects_patsplit_wrong_arity() {
+        let prog = parse_program("BEGIN { patsplit(\"a\") }").unwrap();
+        let e = validate_program(&prog).unwrap_err();
+        assert!(e.to_string().contains("patsplit"), "{e}");
+    }
+
+    #[test]
+    fn validate_rejects_gensub_wrong_arity() {
+        let prog = parse_program("BEGIN { gensub(/a/, \"b\") }").unwrap();
+        let e = validate_program(&prog).unwrap_err();
+        assert!(e.to_string().contains("gensub"), "{e}");
+    }
+
+    #[test]
+    fn validate_accepts_gensub_three_and_four_args() {
+        for src in [
+            "BEGIN { gensub(/a/, \"b\", \"g\") }",
+            "BEGIN { gensub(/a/, \"b\", \"g\", \"aba\") }",
+        ] {
+            let prog = parse_program(src).unwrap();
+            validate_program(&prog).unwrap_or_else(|e| panic!("{src}: {e}"));
+        }
+    }
+
+    #[test]
+    fn validate_rejects_gensub_five_args() {
+        let prog = parse_program("BEGIN { gensub(/a/, \"b\", \"g\", \"x\", \"y\") }").unwrap();
+        let e = validate_program(&prog).unwrap_err();
+        assert!(e.to_string().contains("gensub"), "{e}");
+    }
+
+    #[test]
+    fn validate_accepts_exit_with_expression() {
+        let prog = parse_program("BEGIN { exit 1 + 1 }").unwrap();
+        validate_program(&prog).unwrap();
+    }
+
+    #[test]
+    fn validate_rejects_sub_with_few_args() {
+        let prog = parse_program("BEGIN { sub(/a/) }").unwrap();
+        let e = validate_program(&prog).unwrap_err();
+        assert!(e.to_string().contains("sub"), "{e}");
+    }
+
+    #[test]
+    fn validate_rejects_patsplit_five_args() {
+        let prog = parse_program("BEGIN { patsplit(\"a\", arr, \"x\", y, z) }").unwrap();
+        let e = validate_program(&prog).unwrap_err();
+        assert!(e.to_string().contains("patsplit"), "{e}");
+    }
+
+    #[test]
+    fn validate_accepts_patsplit_two_three_and_four_args() {
+        for src in [
+            "BEGIN { patsplit(\"a b\", parts) }",
+            "BEGIN { patsplit(\"a b\", parts, \"[a-z]+\") }",
+            "BEGIN { patsplit(\"a b\", parts, \"[a-z]+\", seps) }",
+        ] {
+            let prog = parse_program(src).unwrap();
+            validate_program(&prog).unwrap_or_else(|e| panic!("{src}: {e}"));
+        }
     }
 
     #[test]

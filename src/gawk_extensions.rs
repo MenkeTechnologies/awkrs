@@ -409,4 +409,103 @@ mod tests {
         assert_eq!(rt.array_get("b", "x").as_str(), "hello");
         let _ = std::fs::remove_file(&p);
     }
+
+    #[test]
+    fn ord_empty_string_zero() {
+        let mut rt = Runtime::new();
+        assert_eq!(ord(&mut rt, "").unwrap().as_number(), 0.0);
+    }
+
+    #[test]
+    fn chr_invalid_codepoint_empty_string() {
+        let mut rt = Runtime::new();
+        let v = chr(&mut rt, f64::from(0xD800)).unwrap();
+        assert_eq!(v.as_str(), "");
+    }
+
+    #[test]
+    fn gettimeofday_sets_sec_and_usec() {
+        let mut rt = Runtime::new();
+        gettimeofday(&mut rt, "ts").unwrap();
+        assert!(rt.array_get("ts", "sec").as_number() > 0.0);
+        let usec = rt.array_get("ts", "usec").as_number();
+        assert!((0.0..=999_999.0).contains(&usec), "usec={usec}");
+    }
+
+    #[test]
+    fn sleep_negative_errors() {
+        let mut rt = Runtime::new();
+        let e = sleep_secs(&mut rt, -1.0).unwrap_err();
+        assert!(e.to_string().contains("sleep"), "unexpected error: {e}");
+    }
+
+    #[test]
+    fn sleep_zero_returns_ok_without_panicking() {
+        let mut rt = Runtime::new();
+        sleep_secs(&mut rt, 0.0).unwrap();
+    }
+
+    #[test]
+    fn revoutput_reverses_scalar_order() {
+        let mut rt = Runtime::new();
+        let v = revoutput(&mut rt, "ab").unwrap();
+        assert_eq!(v.as_str(), "ba");
+    }
+
+    #[test]
+    fn readfile_missing_yields_empty_string() {
+        let mut rt = Runtime::new();
+        let dir = std::env::temp_dir();
+        let p = dir.join(format!("awkrs_no_such_readfile_{}", std::process::id()));
+        let _ = std::fs::remove_file(&p);
+        let v = readfile(&mut rt, p.to_str().unwrap()).unwrap();
+        assert_eq!(v.as_str(), "");
+    }
+
+    #[test]
+    fn reada_rejects_bad_magic() {
+        let mut rt = Runtime::new();
+        let dir = std::env::temp_dir();
+        let p = dir.join(format!("awkrs_reada_bad_{}", std::process::id()));
+        std::fs::write(&p, "not-magic\n").unwrap();
+        let n = reada(&mut rt, p.to_str().unwrap(), "z").unwrap();
+        assert_eq!(n.as_number(), -1.0);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn stat_populates_type_and_size_for_file() {
+        let mut rt = Runtime::new();
+        let dir = std::env::temp_dir();
+        let p = dir.join(format!("awkrs_stat_test_{}", std::process::id()));
+        std::fs::write(&p, b"hi").unwrap();
+        let code = stat(&mut rt, p.to_str().unwrap(), "st").unwrap();
+        assert_eq!(code.as_number(), 0.0);
+        assert_eq!(rt.array_get("st", "type").as_str(), "file");
+        assert_eq!(rt.array_get("st", "size").as_number(), 2.0);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn ord_first_char_unicode_scalar() {
+        let mut rt = Runtime::new();
+        let n = ord(&mut rt, "πx").unwrap().as_number();
+        assert_eq!(n, f64::from('π' as u32));
+    }
+
+    #[test]
+    fn chr_ascii_roundtrip_with_ord() {
+        let mut rt = Runtime::new();
+        let c = chr(&mut rt, 65.0).unwrap();
+        assert_eq!(c.as_str(), "A");
+        let n = ord(&mut rt, "A").unwrap().as_number();
+        assert_eq!(n, 65.0);
+    }
+
+    #[test]
+    fn revoutput_unicode_preserves_scalar_boundaries() {
+        let mut rt = Runtime::new();
+        let v = revoutput(&mut rt, "aπb").unwrap();
+        assert_eq!(v.as_str(), "bπa");
+    }
 }

@@ -2852,6 +2852,12 @@ mod value_tests {
     }
 
     #[test]
+    fn value_as_number_regexp_uses_pattern_text_as_numeric_string() {
+        assert_eq!(Value::Regexp("3.5".into()).as_number(), 3.5);
+        assert_eq!(Value::Regexp("notnum".into()).as_number(), 0.0);
+    }
+
+    #[test]
     fn value_as_number_empty_string_zero() {
         assert_eq!(Value::Str("".into()).as_number(), 0.0);
     }
@@ -2966,6 +2972,24 @@ mod value_tests {
     }
 
     #[test]
+    fn value_as_number_hex_only_when_non_decimal_parse_mode() {
+        super::set_numeric_parse_mode(false);
+        assert_eq!(Value::Str("0x10".into()).as_number(), 0.0);
+        super::set_numeric_parse_mode(true);
+        assert_eq!(Value::Str("0x10".into()).as_number(), 16.0);
+        super::set_numeric_parse_mode(false);
+    }
+
+    #[test]
+    fn value_as_number_leading_zero_octal_only_in_non_decimal_mode() {
+        super::set_numeric_parse_mode(false);
+        assert_eq!(Value::Str("010".into()).as_number(), 10.0);
+        super::set_numeric_parse_mode(true);
+        assert_eq!(Value::Str("010".into()).as_number(), 8.0);
+        super::set_numeric_parse_mode(false);
+    }
+
+    #[test]
     fn value_into_string_float_fraction() {
         let s = Value::Num(0.25).into_string();
         assert!(s.contains('2') && s.contains('5'), "{s}");
@@ -3001,5 +3025,248 @@ mod value_tests {
         assert_eq!(rt.nf(), 2);
         assert_eq!(rt.field(1).unwrap().as_str(), "a");
         assert_eq!(rt.field(2).unwrap().as_str(), "");
+    }
+
+    #[test]
+    fn ignore_case_false_when_unset_or_zero() {
+        let rt = super::Runtime::new();
+        assert!(!rt.ignore_case_flag());
+        let mut rt0 = super::Runtime::new();
+        rt0.vars.insert("IGNORECASE".into(), Value::Num(0.0));
+        assert!(!rt0.ignore_case_flag());
+    }
+
+    #[test]
+    fn ignore_case_true_for_numeric_one() {
+        let mut rt = super::Runtime::new();
+        rt.vars.insert("IGNORECASE".into(), Value::Num(1.0));
+        assert!(rt.ignore_case_flag());
+    }
+
+    #[test]
+    fn ignore_case_true_for_non_numeric_string() {
+        let mut rt = super::Runtime::new();
+        rt.vars
+            .insert("IGNORECASE".into(), Value::Str("yes".into()));
+        assert!(rt.ignore_case_flag());
+    }
+
+    #[test]
+    fn num_to_string_convfmt_uses_convfmt_global() {
+        let mut rt = super::Runtime::new();
+        rt.vars.insert("CONVFMT".into(), Value::Str("%.0f".into()));
+        assert_eq!(rt.num_to_string_convfmt(3.2), "3");
+    }
+
+    #[test]
+    fn num_to_string_ofmt_uses_ofmt_global() {
+        let mut rt = super::Runtime::new();
+        rt.vars.insert("OFMT".into(), Value::Str("%.2f".into()));
+        assert_eq!(rt.num_to_string_ofmt(1.2), "1.20");
+    }
+}
+
+#[cfg(test)]
+mod longest_prefix_and_sorted_in_tests {
+    use super::{
+        longest_f64_prefix, sort_for_in_keys, sorted_in_mode, AwkMap, Runtime, SortedInMode, Value,
+    };
+
+    #[test]
+    fn longest_f64_prefix_empty_none() {
+        assert_eq!(longest_f64_prefix(""), None);
+    }
+
+    #[test]
+    fn longest_f64_prefix_scientific_ok() {
+        assert_eq!(longest_f64_prefix("1e2"), Some("1e2"));
+    }
+
+    #[test]
+    fn longest_f64_prefix_non_monotonic_stops_at_last_valid() {
+        assert_eq!(longest_f64_prefix("1ex"), Some("1"));
+    }
+
+    #[test]
+    fn longest_f64_prefix_trailing_non_numeric() {
+        assert_eq!(longest_f64_prefix("3.5abc"), Some("3.5"));
+    }
+
+    #[test]
+    fn sorted_in_posix_forces_unsorted() {
+        let mut rt = Runtime::new();
+        rt.posix = true;
+        let mut pi = AwkMap::default();
+        pi.insert("sorted_in".into(), Value::Str("@ind_str_desc".into()));
+        rt.vars.insert("PROCINFO".into(), Value::Array(pi));
+        assert_eq!(sorted_in_mode(&rt), SortedInMode::Unsorted);
+    }
+
+    #[test]
+    fn sorted_in_reads_at_tokens_with_trim() {
+        let mut rt = Runtime::new();
+        let mut pi = AwkMap::default();
+        pi.insert("sorted_in".into(), Value::Str("  @val_num_asc  ".into()));
+        rt.vars.insert("PROCINFO".into(), Value::Array(pi));
+        assert_eq!(sorted_in_mode(&rt), SortedInMode::ValNumAsc);
+    }
+
+    #[test]
+    fn sorted_in_user_function_name() {
+        let mut rt = Runtime::new();
+        let mut pi = AwkMap::default();
+        pi.insert("sorted_in".into(), Value::Str("my_cmp".into()));
+        rt.vars.insert("PROCINFO".into(), Value::Array(pi));
+        assert_eq!(sorted_in_mode(&rt), SortedInMode::CustomFn("my_cmp".into()));
+    }
+
+    #[test]
+    fn sorted_in_missing_or_empty_is_unsorted() {
+        let rt = Runtime::new();
+        assert_eq!(sorted_in_mode(&rt), SortedInMode::Unsorted);
+
+        let mut rt2 = Runtime::new();
+        let mut pi = AwkMap::default();
+        pi.insert("sorted_in".into(), Value::Str("  ".into()));
+        rt2.vars.insert("PROCINFO".into(), Value::Array(pi));
+        assert_eq!(sorted_in_mode(&rt2), SortedInMode::Unsorted);
+
+        let mut rt3 = Runtime::new();
+        let pi = AwkMap::default();
+        rt3.vars.insert("PROCINFO".into(), Value::Array(pi));
+        assert_eq!(sorted_in_mode(&rt3), SortedInMode::Unsorted);
+    }
+
+    #[test]
+    fn sort_for_in_ind_num_asc_numeric_not_lexicographic() {
+        let mut keys = vec!["10".into(), "2".into(), "1".into()];
+        let arr = AwkMap::default();
+        sort_for_in_keys(&mut keys, &arr, SortedInMode::IndNumAsc);
+        assert_eq!(keys, vec!["1", "2", "10"]);
+    }
+
+    #[test]
+    fn sort_for_in_val_num_desc_by_values() {
+        let mut keys = vec!["a".into(), "b".into()];
+        let mut arr = AwkMap::default();
+        arr.insert("a".into(), Value::Num(1.0));
+        arr.insert("b".into(), Value::Num(10.0));
+        sort_for_in_keys(&mut keys, &arr, SortedInMode::ValNumDesc);
+        assert_eq!(keys, vec!["b", "a"]);
+    }
+
+    #[test]
+    fn sort_for_in_val_str_asc_by_string_values() {
+        let mut keys = vec!["a".into(), "b".into()];
+        let mut arr = AwkMap::default();
+        arr.insert("a".into(), Value::Str("z".into()));
+        arr.insert("b".into(), Value::Str("a".into()));
+        sort_for_in_keys(&mut keys, &arr, SortedInMode::ValStrAsc);
+        assert_eq!(keys, vec!["b", "a"]);
+    }
+
+    #[test]
+    fn sorted_in_mode_ind_str_asc_token() {
+        let mut rt = Runtime::new();
+        let mut pi = AwkMap::default();
+        pi.insert("sorted_in".into(), Value::Str("@ind_str_asc".into()));
+        rt.vars.insert("PROCINFO".into(), Value::Array(pi));
+        assert_eq!(sorted_in_mode(&rt), SortedInMode::IndStrAsc);
+    }
+
+    #[test]
+    fn sorted_in_mode_val_type_asc_token() {
+        let mut rt = Runtime::new();
+        let mut pi = AwkMap::default();
+        pi.insert("sorted_in".into(), Value::Str("@val_type_asc".into()));
+        rt.vars.insert("PROCINFO".into(), Value::Array(pi));
+        assert_eq!(sorted_in_mode(&rt), SortedInMode::ValTypeAsc);
+    }
+
+    #[test]
+    fn sorted_in_mode_val_type_desc_token() {
+        let mut rt = Runtime::new();
+        let mut pi = AwkMap::default();
+        pi.insert("sorted_in".into(), Value::Str("@val_type_desc".into()));
+        rt.vars.insert("PROCINFO".into(), Value::Array(pi));
+        assert_eq!(sorted_in_mode(&rt), SortedInMode::ValTypeDesc);
+    }
+
+    #[test]
+    fn sort_for_in_val_type_asc_orders_type_rank_then_value_string() {
+        let mut keys = vec!["str".into(), "num".into(), "absent".into()];
+        let mut arr = AwkMap::default();
+        arr.insert("num".into(), Value::Num(1.0));
+        arr.insert("str".into(), Value::Str("z".into()));
+        sort_for_in_keys(&mut keys, &arr, SortedInMode::ValTypeAsc);
+        assert_eq!(keys, vec!["absent", "num", "str"]);
+    }
+
+    #[test]
+    fn sort_for_in_val_type_desc_reverses_type_rank() {
+        let mut keys = vec!["absent".into(), "num".into(), "str".into()];
+        let mut arr = AwkMap::default();
+        arr.insert("num".into(), Value::Num(1.0));
+        arr.insert("str".into(), Value::Str("z".into()));
+        sort_for_in_keys(&mut keys, &arr, SortedInMode::ValTypeDesc);
+        assert_eq!(keys, vec!["str", "num", "absent"]);
+    }
+
+    #[test]
+    fn sort_for_in_ind_str_desc() {
+        let mut keys = vec!["a".into(), "c".into(), "b".into()];
+        let arr = AwkMap::default();
+        sort_for_in_keys(&mut keys, &arr, SortedInMode::IndStrDesc);
+        assert_eq!(keys, vec!["c", "b", "a"]);
+    }
+
+    #[test]
+    fn sort_for_in_unsorted_no_op() {
+        let mut keys = vec!["z".into(), "a".into()];
+        let arr = AwkMap::default();
+        sort_for_in_keys(&mut keys, &arr, SortedInMode::Unsorted);
+        assert_eq!(keys, vec!["z", "a"]);
+    }
+
+    #[test]
+    fn sort_for_in_custom_fn_no_op_in_runtime_helper() {
+        let mut keys = vec!["b".into(), "a".into()];
+        let arr = AwkMap::default();
+        sort_for_in_keys(&mut keys, &arr, SortedInMode::CustomFn("cmp".into()));
+        assert_eq!(keys, vec!["b", "a"]);
+    }
+}
+
+#[cfg(test)]
+mod init_argv_tests {
+    use super::{Runtime, Value};
+    use std::path::PathBuf;
+
+    #[test]
+    fn init_argv_sets_argc_and_numeric_string_keys() {
+        let mut rt = Runtime::new();
+        rt.init_argv(&[
+            PathBuf::from("/data/one.txt"),
+            PathBuf::from("/data/two.txt"),
+        ]);
+        assert_eq!(rt.vars.get("ARGC").unwrap().as_number(), 3.0);
+        let Value::Array(argv) = rt.vars.get("ARGV").expect("ARGV") else {
+            panic!("ARGV not array");
+        };
+        assert!(!argv.get("0").unwrap().as_str().is_empty());
+        assert_eq!(argv.get("1").unwrap().as_str(), "/data/one.txt");
+        assert_eq!(argv.get("2").unwrap().as_str(), "/data/two.txt");
+    }
+
+    #[test]
+    fn init_argv_empty_file_list_leaves_only_program_name() {
+        let mut rt = Runtime::new();
+        rt.init_argv(&[]);
+        assert_eq!(rt.vars.get("ARGC").unwrap().as_number(), 1.0);
+        let Value::Array(argv) = rt.vars.get("ARGV").expect("ARGV") else {
+            panic!("ARGV not array");
+        };
+        assert_eq!(argv.len(), 1);
+        assert!(argv.get("0").is_some());
     }
 }

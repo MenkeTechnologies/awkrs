@@ -294,4 +294,33 @@ mod tests {
         assert_eq!(a.pretty_print.as_deref(), Some("/tmp/o"));
         assert_eq!(a.profile.as_deref(), Some("/tmp/p"));
     }
+
+    #[test]
+    fn bignum_and_lc_numeric_flags_parse() {
+        let a = Args::try_parse_from(["awkrs", "-M", "-N", "1"]).unwrap();
+        assert!(a.bignum);
+        assert!(a.use_lc_numeric);
+    }
+
+    #[test]
+    fn copyright_and_trace_flags_parse() {
+        let a = Args::try_parse_from(["awkrs", "-C", "-I", "{ }"]).unwrap();
+        assert!(a.copyright);
+        assert!(a.trace);
+    }
+
+    #[test]
+    fn exec_short_flag_parses() {
+        let a = Args::try_parse_from(["awkrs", "-E", "/tmp/prog.awk", "{ }"]).unwrap();
+        assert_eq!(
+            a.exec_file.as_deref(),
+            Some(std::path::Path::new("/tmp/prog.awk"))
+        );
+    }
+
+    #[test]
+    fn include_short_flag_collects_paths() {
+        let a = Args::try_parse_from(["awkrs", "-i", "/a.awk", "-i", "/b.awk", "{ }"]).unwrap();
+        assert_eq!(a.include.len(), 2);
+    }
 }

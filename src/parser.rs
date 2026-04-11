@@ -1641,7 +1641,7 @@ mod tests {
     use super::*;
     use crate::ast::{
         BinOp, Expr, GetlineRedir, IncDecOp, IncDecTarget, Pattern, PrintRedir, Rule, Stmt,
-        SwitchArm, SwitchLabel,
+        SwitchArm, SwitchLabel, UnaryOp,
     };
 
     fn first_begin_stmt(prog: &crate::ast::Program) -> &Stmt {
@@ -1660,6 +1660,132 @@ mod tests {
             Expr::Number(n) => *n == v as f64,
             _ => false,
         }
+    }
+
+    #[test]
+    fn parses_power_right_associative_star_star() {
+        let p = parse_program("BEGIN { x = 2 ** 3 ** 2 }").unwrap();
+        let Stmt::Expr(Expr::Assign { rhs, .. }) = first_begin_stmt(&p) else {
+            panic!("expected assign");
+        };
+        let Expr::Binary { op, left, right } = rhs.as_ref() else {
+            panic!("expected binary, got {rhs:?}");
+        };
+        assert_eq!(*op, BinOp::Pow);
+        assert!(expr_is_int(left, 2));
+        let Expr::Binary {
+            op: iop,
+            left: il,
+            right: ir,
+        } = right.as_ref()
+        else {
+            panic!("expected nested ** on rhs");
+        };
+        assert_eq!(*iop, BinOp::Pow);
+        assert!(expr_is_int(il, 3));
+        assert!(expr_is_int(ir, 2));
+    }
+
+    #[test]
+    fn parses_unary_minus_binds_outside_power() {
+        let p = parse_program("BEGIN { x = -2 ^ 2 }").unwrap();
+        let Stmt::Expr(Expr::Assign { rhs, .. }) = first_begin_stmt(&p) else {
+            panic!("expected assign");
+        };
+        let Expr::Unary { op, expr } = rhs.as_ref() else {
+            panic!("expected unary, got {rhs:?}");
+        };
+        assert_eq!(*op, UnaryOp::Neg);
+        let Expr::Binary { op: bop, .. } = expr.as_ref() else {
+            panic!("expected pow inside unary, got {expr:?}");
+        };
+        assert_eq!(*bop, BinOp::Pow);
+    }
+
+    #[test]
+    fn parses_compound_add_assign_statement() {
+        let p = parse_program("BEGIN { x += 1 }").unwrap();
+        let Stmt::Expr(Expr::Assign { name, op, rhs }) = first_begin_stmt(&p) else {
+            panic!("expected assign expr stmt");
+        };
+        assert_eq!(name, "x");
+        assert_eq!(*op, Some(BinOp::Add));
+        assert!(expr_is_int(rhs, 1), "rhs={rhs:?}");
+    }
+
+    #[test]
+    fn parses_compound_mul_and_sub_assign() {
+        for (src, expected_op) in [
+            ("BEGIN { y *= 2 }", BinOp::Mul),
+            ("BEGIN { z -= 3 }", BinOp::Sub),
+        ] {
+            let p = parse_program(src).unwrap();
+            let Stmt::Expr(Expr::Assign { op, .. }) = first_begin_stmt(&p) else {
+                panic!("{src}: expected assign");
+            };
+            assert_eq!(*op, Some(expected_op), "{src}");
+        }
+    }
+
+    #[test]
+    fn parses_compound_div_assign() {
+        let p = parse_program("BEGIN { q /= 4 }").unwrap();
+        let Stmt::Expr(Expr::Assign { op, .. }) = first_begin_stmt(&p) else {
+            panic!("expected assign");
+        };
+        assert_eq!(*op, Some(BinOp::Div));
+    }
+
+    #[test]
+    fn parses_compound_mod_assign() {
+        let p = parse_program("BEGIN { m %= 5 }").unwrap();
+        let Stmt::Expr(Expr::Assign { op, .. }) = first_begin_stmt(&p) else {
+            panic!("expected assign");
+        };
+        assert_eq!(*op, Some(BinOp::Mod));
+    }
+
+    #[test]
+    fn parses_adjacent_string_literals_implicit_concat() {
+        let p = parse_program(r#"BEGIN { x = "foo" "bar" }"#).unwrap();
+        let Stmt::Expr(Expr::Assign { rhs, .. }) = first_begin_stmt(&p) else {
+            panic!("expected assign");
+        };
+        let Expr::Binary { op, left, right } = rhs.as_ref() else {
+            panic!("expected concat, got {rhs:?}");
+        };
+        assert_eq!(*op, BinOp::Concat);
+        assert!(matches!(left.as_ref(), Expr::Str(s) if s == "foo"));
+        assert!(matches!(right.as_ref(), Expr::Str(s) if s == "bar"));
+    }
+
+    #[test]
+    fn parses_three_adjacent_string_literals_nested_concat() {
+        let p = parse_program(r#"BEGIN { x = "a" "b" "c" }"#).unwrap();
+        let Stmt::Expr(Expr::Assign { rhs, .. }) = first_begin_stmt(&p) else {
+            panic!("expected assign");
+        };
+        let Expr::Binary {
+            op: o1,
+            left,
+            right,
+        } = rhs.as_ref()
+        else {
+            panic!("expected binary");
+        };
+        assert_eq!(*o1, BinOp::Concat);
+        let Expr::Binary {
+            op: o2,
+            left: l2,
+            right: r2,
+        } = left.as_ref()
+        else {
+            panic!("expected nested concat on left");
+        };
+        assert_eq!(*o2, BinOp::Concat);
+        assert!(matches!(l2.as_ref(), Expr::Str(s) if s == "a"));
+        assert!(matches!(r2.as_ref(), Expr::Str(s) if s == "b"));
+        assert!(matches!(right.as_ref(), Expr::Str(s) if s == "c"));
     }
 
     #[test]
@@ -1958,6 +2084,14 @@ mod tests {
     }
 
     #[test]
+    fn parses_function_bare_return_statement() {
+        let p = parse_program("function f(){ return } BEGIN { }").unwrap();
+        let f = p.funcs.get("f").expect("f");
+        assert_eq!(f.body.len(), 1);
+        assert!(matches!(f.body[0], Stmt::Return(None)));
+    }
+
+    #[test]
     fn parses_regexp_literal_at_slash() {
         let p = parse_program("BEGIN { x = @/foo/ }").unwrap();
         match first_begin_stmt(&p) {
@@ -2142,6 +2276,49 @@ mod tests {
     }
 
     #[test]
+    fn parses_for_c_infinite_form_with_break() {
+        let p = parse_program("BEGIN { for (;;) break }").unwrap();
+        match first_begin_stmt(&p) {
+            Stmt::ForC {
+                init,
+                cond,
+                iter,
+                body,
+            } => {
+                assert!(init.is_none() && cond.is_none() && iter.is_none());
+                assert_eq!(body.len(), 1);
+            }
+            s => panic!("expected for (;;), got {s:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_for_c_with_init_cond_iter() {
+        let p = parse_program("BEGIN { for (i = 0; i < 3; i++) { print i } }").unwrap();
+        match first_begin_stmt(&p) {
+            Stmt::ForC {
+                init: Some(_),
+                cond: Some(_),
+                iter: Some(_),
+                body,
+            } => assert_eq!(body.len(), 1),
+            s => panic!("expected for-C, got {s:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_delete_entire_array() {
+        let p = parse_program("BEGIN { delete a }").unwrap();
+        match first_begin_stmt(&p) {
+            Stmt::Delete { name, indices } => {
+                assert_eq!(name, "a");
+                assert!(indices.is_none());
+            }
+            s => panic!("expected delete a, got {s:?}"),
+        }
+    }
+
+    #[test]
     fn parses_for_in_loop() {
         let p = parse_program("BEGIN { for (k in arr) print k }").unwrap();
         match first_begin_stmt(&p) {
@@ -2170,6 +2347,18 @@ mod tests {
     }
 
     #[test]
+    fn parses_assign_multidimensional_subscript() {
+        let p = parse_program("BEGIN { a[1,2] = 9 }").unwrap();
+        let Stmt::Expr(Expr::AssignIndex { name, indices, .. }) = first_begin_stmt(&p) else {
+            panic!("expected AssignIndex");
+        };
+        assert_eq!(name, "a");
+        assert_eq!(indices.len(), 2);
+        assert!(expr_is_int(&indices[0], 1));
+        assert!(expr_is_int(&indices[1], 2));
+    }
+
+    #[test]
     fn parses_beginfile_rule() {
         let p = parse_program("BEGINFILE { bf = 1 }").unwrap();
         let rule = p
@@ -2181,6 +2370,24 @@ mod tests {
     }
 
     #[test]
+    fn parses_nextfile_statement() {
+        let p = parse_program("BEGIN { nextfile }").unwrap();
+        assert!(matches!(first_begin_stmt(&p), Stmt::NextFile));
+    }
+
+    #[test]
+    fn parses_bare_length_as_zero_arg_call() {
+        let p = parse_program("BEGIN { x = length }").unwrap();
+        let Stmt::Expr(Expr::Assign { rhs, .. }) = first_begin_stmt(&p) else {
+            panic!("expected assign");
+        };
+        assert!(matches!(
+            **rhs,
+            Expr::Call { ref name, ref args } if name == "length" && args.is_empty()
+        ));
+    }
+
+    #[test]
     fn parses_endfile_rule() {
         let p = parse_program("ENDFILE { ef = 1 }").unwrap();
         let rule = p
@@ -2189,5 +2396,36 @@ mod tests {
             .find(|r| matches!(r.pattern, Pattern::EndFile))
             .expect("ENDFILE rule");
         assert_eq!(rule.stmts.len(), 1);
+    }
+
+    #[test]
+    fn parses_ternary_expression() {
+        let p = parse_program("BEGIN { x = 1 ? 2 : 3 }").unwrap();
+        let rule = p
+            .rules
+            .iter()
+            .find(|r| matches!(r.pattern, Pattern::Begin))
+            .unwrap();
+        let Stmt::Expr(Expr::Assign { rhs, .. }) = &rule.stmts[0] else {
+            panic!("expected assign");
+        };
+        assert!(matches!(**rhs, Expr::Ternary { .. }));
+    }
+
+    #[test]
+    fn parses_postfix_increment_field_in_record_rule() {
+        let p = parse_program("{ $1++ }").unwrap();
+        assert!(matches!(p.rules[0].pattern, Pattern::Empty));
+        match &p.rules[0].stmts[0] {
+            Stmt::Expr(Expr::IncDec { op, target }) => {
+                assert_eq!(*op, IncDecOp::PostInc);
+                assert!(matches!(
+                    target,
+                    IncDecTarget::Field(inner)
+                        if matches!(**inner, Expr::IntegerLiteral(ref s) if s == "1")
+                ));
+            }
+            s => panic!("expected $1++ in record rule, got {s:?}"),
+        }
     }
 }

@@ -68,6 +68,115 @@ fn begin_end_sum() {
 }
 
 #[test]
+fn compound_mod_assign_runs_in_begin() {
+    let (code, stdout, _) = run_awkrs_stdin("BEGIN { x = 17; x %= 5; print x }", "");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "2\n");
+}
+
+#[test]
+fn sprintf_percent_x_lower_and_left_pad_s() {
+    let (code, stdout, _) = run_awkrs_stdin("BEGIN { printf \"<%x><%-4s>\\n\", 10, \"ab\" }", "");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "<a><ab  >\n");
+}
+
+#[test]
+fn begin_for_c_loop_runs_expected_iterations() {
+    let (code, stdout, _) = run_awkrs_stdin(
+        "BEGIN { s = 0; for (i = 1; i <= 4; i++) s += i; print s }",
+        "",
+    );
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "10\n");
+}
+
+#[test]
+fn begin_delete_whole_array_then_scalar_reuse() {
+    let (code, stdout, _) = run_awkrs_stdin("BEGIN { a[1] = 1; delete a; a = 9; print a }", "");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "9\n");
+}
+
+#[test]
+fn builtin_index_substr_and_string_concat() {
+    let (code, stdout, _) = run_awkrs_stdin(
+        r#"BEGIN { s = "foo" "bar"; print s, index(s, "bar"), substr(s, 4, 3) }"#,
+        "",
+    );
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "foobar 4 bar\n");
+}
+
+#[test]
+fn split_fs_and_asort_end_to_end() {
+    let (code, stdout, _) = run_awkrs_stdin(
+        r#"BEGIN {
+ n = split("3,1,2", v, ",");
+  for (i = 1; i <= n; i++) a[i] = v[i] + 0;
+  asort(a);
+  print n, a[1], a[2], a[3];
+}"#,
+        "",
+    );
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "3 1 2 3\n");
+}
+
+#[test]
+fn mktime_positive_and_strftime_year_four_chars() {
+    let (code, stdout, _) = run_awkrs_stdin(
+        r#"BEGIN {
+  t = mktime("2020 06 15 12 00 00");
+  print (t > 0), length(strftime("%Y", t));
+}"#,
+        "",
+    );
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "1 4\n");
+}
+
+#[test]
+fn bitwise_and_or_xor_builtins() {
+    let (code, stdout, _) = run_awkrs_stdin("BEGIN { print and(3, 1), or(2, 1), xor(5, 3) }", "");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "1 3 6\n");
+}
+
+#[test]
+fn length_sin_cos_int_in_begin() {
+    let (code, stdout, _) = run_awkrs_stdin(
+        "BEGIN { print length(\"ab\"), sin(0), cos(0), int(-2.1) }",
+        "",
+    );
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "2 0 1 -2\n");
+}
+
+#[test]
+fn sprintf_positional_reorders_arguments() {
+    let (code, stdout, _) = run_awkrs_stdin(r#"BEGIN { printf "%2$d %1$s\n", "last", 7 }"#, "");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "7 last\n");
+}
+
+#[test]
+fn ofs_ors_and_multidim_array_in_begin() {
+    let (code, stdout, _) = run_awkrs_stdin(
+        r#"BEGIN {
+  OFS = ":";
+  ORS = "|";
+  print "x", "y";
+  a[9,8] = 3;
+  print a[9,8];
+}"#,
+        "",
+    );
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "x:y|3|");
+}
+
+#[test]
 fn regex_pattern_matches_line() {
     let (code, stdout, _) = run_awkrs_stdin(r#"/hello/ { print "yes" }"#, "hello\nworld\n");
     assert_eq!(code, 0);
@@ -573,4 +682,142 @@ fn parallel_mode_with_input_file_preserves_line_order() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(!stderr.contains("not parallel-safe"), "stderr={stderr:?}");
     assert_eq!(String::from_utf8_lossy(&out.stdout), "a\nb\nc\nd\n");
+}
+
+#[test]
+fn index_returns_zero_when_substring_not_present() {
+    let (code, stdout, _) = run_awkrs_stdin(r#"BEGIN { print index("abc", "z") }"#, "");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "0\n");
+}
+
+#[test]
+fn substr_start_past_end_prints_blank_line() {
+    let (code, stdout, _) = run_awkrs_stdin(r#"BEGIN { print substr("hi", 99, 2) }"#, "");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "\n");
+}
+
+#[test]
+fn begin_argc_is_one_for_program_plus_implicit_stdin() {
+    let (code, stdout, _) = run_awkrs_stdin(r#"BEGIN { print ARGC }"#, "");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "1\n");
+}
+
+#[test]
+fn next_in_end_rule_is_runtime_error_nonzero_exit() {
+    let (code, stdout, stderr) = run_awkrs_stdin(r#"END { next }"#, "");
+    assert_ne!(code, 0);
+    assert!(stdout.is_empty(), "stdout={stdout:?}");
+    assert!(
+        stderr.contains("next") && stderr.contains("END"),
+        "stderr={stderr:?}"
+    );
+}
+
+#[test]
+fn next_in_begin_rule_is_runtime_error_nonzero_exit() {
+    let (code, stdout, stderr) = run_awkrs_stdin(r#"BEGIN { next }"#, "");
+    assert_ne!(code, 0);
+    assert!(stdout.is_empty(), "stdout={stdout:?}");
+    assert!(
+        stderr.contains("next") && stderr.contains("BEGIN"),
+        "stderr={stderr:?}"
+    );
+}
+
+#[test]
+fn nextfile_in_begin_rule_is_runtime_error_nonzero_exit() {
+    let (code, stdout, stderr) = run_awkrs_stdin(r#"BEGIN { nextfile }"#, "");
+    assert_ne!(code, 0);
+    assert!(stdout.is_empty(), "stdout={stdout:?}");
+    assert!(
+        stderr.contains("nextfile") && stderr.contains("BEGIN"),
+        "stderr={stderr:?}"
+    );
+}
+
+#[test]
+fn next_in_beginfile_rule_is_runtime_error_nonzero_exit() {
+    let (code, stdout, stderr) = run_awkrs_stdin(r#"BEGINFILE { next }"#, "x\n");
+    assert_ne!(code, 0);
+    assert!(stdout.is_empty(), "stdout={stdout:?}");
+    assert!(
+        stderr.contains("next") && stderr.contains("BEGINFILE"),
+        "stderr={stderr:?}"
+    );
+}
+
+#[test]
+fn nextfile_in_end_rule_is_runtime_error_nonzero_exit() {
+    let (code, stdout, stderr) = run_awkrs_stdin(r#"END { nextfile }"#, "");
+    assert_ne!(code, 0);
+    assert!(stdout.is_empty(), "stdout={stdout:?}");
+    assert!(
+        stderr.contains("nextfile") && stderr.contains("END"),
+        "stderr={stderr:?}"
+    );
+}
+
+#[test]
+fn nextfile_in_beginfile_rule_is_runtime_error_nonzero_exit() {
+    let (code, stdout, stderr) = run_awkrs_stdin(r#"BEGINFILE { nextfile }"#, "x\n");
+    assert_ne!(code, 0);
+    assert!(stdout.is_empty(), "stdout={stdout:?}");
+    assert!(
+        stderr.contains("nextfile") && stderr.contains("BEGINFILE"),
+        "stderr={stderr:?}"
+    );
+}
+
+#[test]
+fn next_in_endfile_rule_is_runtime_error_nonzero_exit() {
+    let dir = std::env::temp_dir();
+    let id = std::process::id();
+    let path = dir.join(format!("awkrs_endfile_next_{id}.txt"));
+    fs::write(&path, "x\n").expect("temp");
+    let out = Command::new(env!("CARGO_BIN_EXE_awkrs"))
+        .arg(r#"ENDFILE { next }"#)
+        .arg(&path)
+        .output()
+        .expect("spawn awkrs");
+    let _ = fs::remove_file(&path);
+    assert_ne!(out.status.code(), Some(0));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("next") && stderr.contains("ENDFILE"),
+        "stderr={stderr:?}"
+    );
+}
+
+#[test]
+fn nextfile_in_endfile_rule_is_runtime_error_nonzero_exit() {
+    let dir = std::env::temp_dir();
+    let id = std::process::id();
+    let path = dir.join(format!("awkrs_endfile_nextfile_{id}.txt"));
+    fs::write(&path, "y\n").expect("temp");
+    let out = Command::new(env!("CARGO_BIN_EXE_awkrs"))
+        .arg(r#"ENDFILE { nextfile }"#)
+        .arg(&path)
+        .output()
+        .expect("spawn awkrs");
+    let _ = fs::remove_file(&path);
+    assert_ne!(out.status.code(), Some(0));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("nextfile") && stderr.contains("ENDFILE"),
+        "stderr={stderr:?}"
+    );
+}
+
+#[test]
+fn intdiv_division_by_zero_is_runtime_error() {
+    let (code, stdout, stderr) = run_awkrs_stdin(r#"BEGIN { print intdiv(1, 0) }"#, "");
+    assert_ne!(code, 0);
+    assert!(stdout.is_empty(), "stdout={stdout:?}");
+    assert!(
+        stderr.contains("intdiv") && stderr.contains("zero"),
+        "stderr={stderr:?}"
+    );
 }

@@ -127,12 +127,6 @@ fn gawk_platform_unix_reports_posix_not_rust_os() {
     );
 }
 
-#[cfg(all(test, windows))]
-#[test]
-fn gawk_platform_windows_reports_mingw() {
-    assert_eq!(gawk_platform_string(), "mingw");
-}
-
 pub(crate) fn mb_cur_max_value() -> f64 {
     #[cfg(target_os = "linux")]
     {
@@ -145,5 +139,168 @@ pub(crate) fn mb_cur_max_value() -> f64 {
         6.0
     } else {
         1.0
+    }
+}
+
+#[cfg(all(test, windows))]
+#[test]
+fn gawk_platform_windows_reports_mingw() {
+    assert_eq!(gawk_platform_string(), "mingw");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::{Runtime, Value};
+
+    #[test]
+    fn field_split_mode_fs_by_default() {
+        let rt = Runtime::new();
+        assert_eq!(field_split_mode(&rt), "FS");
+    }
+
+    #[test]
+    fn field_split_mode_csv_reports_api() {
+        let mut rt = Runtime::new();
+        rt.csv_mode = true;
+        assert_eq!(field_split_mode(&rt), "API");
+    }
+
+    #[test]
+    fn field_split_mode_fieldwidths_over_fpat() {
+        let mut rt = Runtime::new();
+        rt.vars
+            .insert("FIELDWIDTHS".into(), Value::Str("1 2".into()));
+        rt.vars.insert("FPAT".into(), Value::Str("[0-9]+".into()));
+        assert_eq!(field_split_mode(&rt), "FIELDWIDTHS");
+    }
+
+    #[test]
+    fn field_split_mode_fpat_when_no_fieldwidths() {
+        let mut rt = Runtime::new();
+        rt.vars.insert("FPAT".into(), Value::Str("[0-9]+".into()));
+        assert_eq!(field_split_mode(&rt), "FPAT");
+    }
+
+    #[test]
+    fn field_split_mode_whitespace_only_fieldwidths_ignored() {
+        let mut rt = Runtime::new();
+        rt.vars
+            .insert("FIELDWIDTHS".into(), Value::Str("  \t".into()));
+        rt.vars.insert("FPAT".into(), Value::Str("[0-9]+".into()));
+        assert_eq!(field_split_mode(&rt), "FPAT");
+    }
+
+    #[test]
+    fn field_split_mode_non_whitespace_fieldwidths_wins_over_fpat() {
+        let mut rt = Runtime::new();
+        rt.vars.insert("FIELDWIDTHS".into(), Value::Str("1".into()));
+        rt.vars.insert("FPAT".into(), Value::Str("[0-9]+".into()));
+        assert_eq!(field_split_mode(&rt), "FIELDWIDTHS");
+    }
+
+    #[test]
+    fn field_split_mode_empty_fieldwidths_string_uses_fpat() {
+        let mut rt = Runtime::new();
+        rt.vars.insert("FIELDWIDTHS".into(), Value::Str("".into()));
+        rt.vars.insert("FPAT".into(), Value::Str("[a-z]+".into()));
+        assert_eq!(field_split_mode(&rt), "FPAT");
+    }
+
+    #[test]
+    fn gawk_read_timeout_env_missing_zero() {
+        let _g = crate::test_sync::ENV_LOCK.lock().unwrap();
+        std::env::remove_var("GAWK_READ_TIMEOUT");
+        assert_eq!(gawk_read_timeout_env(), 0);
+    }
+
+    #[test]
+    fn gawk_read_timeout_env_parses_ms() {
+        let _g = crate::test_sync::ENV_LOCK.lock().unwrap();
+        std::env::set_var("GAWK_READ_TIMEOUT", "123");
+        assert_eq!(gawk_read_timeout_env(), 123);
+        std::env::remove_var("GAWK_READ_TIMEOUT");
+    }
+
+    #[test]
+    fn gawk_read_timeout_env_invalid_falls_back_zero() {
+        let _g = crate::test_sync::ENV_LOCK.lock().unwrap();
+        std::env::set_var("GAWK_READ_TIMEOUT", "not_a_number");
+        assert_eq!(gawk_read_timeout_env(), 0);
+        std::env::remove_var("GAWK_READ_TIMEOUT");
+    }
+
+    #[test]
+    fn gawk_read_timeout_env_empty_string_zero() {
+        let _g = crate::test_sync::ENV_LOCK.lock().unwrap();
+        std::env::set_var("GAWK_READ_TIMEOUT", "");
+        assert_eq!(gawk_read_timeout_env(), 0);
+        std::env::remove_var("GAWK_READ_TIMEOUT");
+    }
+
+    #[test]
+    fn gawk_read_timeout_env_negative_clamps_zero() {
+        let _g = crate::test_sync::ENV_LOCK.lock().unwrap();
+        std::env::set_var("GAWK_READ_TIMEOUT", "-5");
+        assert_eq!(gawk_read_timeout_env(), 0);
+        std::env::remove_var("GAWK_READ_TIMEOUT");
+    }
+
+    #[test]
+    fn gawk_read_timeout_env_huge_clamps_i32_max() {
+        let _g = crate::test_sync::ENV_LOCK.lock().unwrap();
+        std::env::set_var("GAWK_READ_TIMEOUT", "999999999999");
+        assert_eq!(gawk_read_timeout_env(), i32::MAX);
+        std::env::remove_var("GAWK_READ_TIMEOUT");
+    }
+
+    #[test]
+    fn mb_cur_max_positive() {
+        let v = mb_cur_max_value();
+        assert!(v >= 1.0, "mb_cur_max={v}");
+    }
+
+    #[test]
+    fn awkrs_pma_version_omitted_by_default() {
+        assert!(
+            AWKRS_PMA_VERSION.is_none(),
+            "built without gawk PMA — key should stay unset unless explicitly wired"
+        );
+    }
+
+    #[test]
+    fn merge_procinfo_identifiers_tags_builtins_slots_arrays_and_functions() {
+        use crate::bytecode::{Chunk, CompiledFunc, CompiledProgram, StringPool};
+        use std::collections::HashMap;
+
+        let cp = CompiledProgram {
+            begin_chunks: vec![],
+            end_chunks: vec![],
+            beginfile_chunks: vec![],
+            endfile_chunks: vec![],
+            record_rules: vec![],
+            functions: HashMap::from([(
+                "uf".into(),
+                CompiledFunc {
+                    params: vec![],
+                    body: Chunk::from_ops(vec![]),
+                },
+            )]),
+            strings: StringPool::default(),
+            slot_count: 1,
+            slot_names: vec!["vx".into()],
+            slot_map: HashMap::from([("vx".into(), 0u16)]),
+            array_var_names: vec!["arr".into()],
+        };
+        let mut proc = AwkMap::default();
+        merge_procinfo_identifiers(&mut proc, &cp);
+        let id = match proc.get("identifiers").expect("identifiers key") {
+            Value::Array(m) => m,
+            v => panic!("expected PROCINFO identifiers map, got {v:?}"),
+        };
+        assert_eq!(id.get("split").unwrap().as_str(), "builtin");
+        assert_eq!(id.get("vx").unwrap().as_str(), "scalar");
+        assert_eq!(id.get("arr").unwrap().as_str(), "array");
+        assert_eq!(id.get("uf").unwrap().as_str(), "user");
     }
 }

@@ -491,6 +491,7 @@ fn binop_str(op: BinOp) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::{Expr, Pattern, Program, Rule, Stmt};
     use crate::parser::parse_program;
 
     #[test]
@@ -501,5 +502,79 @@ mod tests {
         assert!(out.contains("BEGIN"));
         assert!(out.contains("x = 1"));
         assert!(out.contains("print"));
+    }
+
+    #[test]
+    fn pretty_print_empty_program_empty_string() {
+        let p = Program {
+            rules: vec![],
+            funcs: std::collections::HashMap::new(),
+        };
+        assert_eq!(format_program(&p), "");
+    }
+
+    #[test]
+    fn pretty_print_delete_whole_array_and_subscript() {
+        let src = "BEGIN { delete a; delete b[1] }";
+        let prog = parse_program(src).unwrap();
+        let out = format_program(&prog);
+        assert!(
+            out.contains("delete a") && out.contains("delete b"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn pretty_print_includes_range_pattern_and_sorted_functions() {
+        let src = r#"function z() { return 0 } function a() { return 1 } /b/,/c/ { print 1 }"#;
+        let prog = parse_program(src).unwrap();
+        let out = format_program(&prog);
+        assert!(out.contains("/b/,/c/") || (out.contains("/b/") && out.contains("/c/")));
+        let a_pos = out.find("function a").expect("function a");
+        let z_pos = out.find("function z").expect("function z");
+        assert!(
+            a_pos < z_pos,
+            "functions should be sorted by name in output: {out}"
+        );
+    }
+
+    #[test]
+    fn pretty_print_switch_statement_shape() {
+        let src = "BEGIN { switch (x) { case 1: print 1; break; default: print 0 } }";
+        let prog = parse_program(src).unwrap();
+        let out = format_program(&prog);
+        assert!(out.contains("switch"));
+        assert!(out.contains("case"));
+        assert!(out.contains("default"));
+    }
+
+    #[test]
+    fn pretty_print_indirect_call_form() {
+        let prog = Program {
+            rules: vec![Rule {
+                pattern: Pattern::Begin,
+                stmts: vec![Stmt::Expr(Expr::IndirectCall {
+                    callee: Box::new(Expr::Str("g".into())),
+                    args: vec![Expr::Number(1.0)],
+                })],
+            }],
+            funcs: std::collections::HashMap::new(),
+        };
+        let out = format_program(&prog);
+        assert!(
+            out.contains(r#"@"g"(1)"#) || (out.contains('@') && out.contains("\"g\"")),
+            "expected indirect call in output:\n{out}"
+        );
+    }
+
+    #[test]
+    fn pretty_print_regexp_literal_at_slash_form() {
+        let src = "BEGIN { r = @/z+/ }";
+        let prog = parse_program(src).unwrap();
+        let out = format_program(&prog);
+        assert!(
+            out.contains("@/z+/") || out.contains("z+"),
+            "expected @/re/ in output:\n{out}"
+        );
     }
 }

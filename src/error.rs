@@ -60,4 +60,30 @@ mod tests {
         let s = e.to_string();
         assert!(s.contains("I/O") && s.contains("eacces"), "{s}");
     }
+
+    #[test]
+    fn exit_error_negative_code_display() {
+        let e = Error::Exit(-1);
+        assert_eq!(e.to_string(), "exit -1");
+    }
+
+    #[test]
+    fn exit_error_zero_display() {
+        assert_eq!(Error::Exit(0).to_string(), "exit 0");
+    }
+
+    #[test]
+    fn io_error_wrapped_keeps_source_chain() {
+        use std::error::Error as _;
+        let inner = std::io::Error::other("inner");
+        let e: Error = inner.into();
+        assert!(e.source().is_some());
+    }
+
+    #[test]
+    fn exit_error_large_positive_code_display() {
+        let e = Error::Exit(i32::MAX);
+        let s = e.to_string();
+        assert!(s.contains(&i32::MAX.to_string()), "{s}");
+    }
 }

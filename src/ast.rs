@@ -265,3 +265,31 @@ pub enum UnaryOp {
 }
 
 pub mod parallel;
+
+#[cfg(test)]
+mod ast_tests {
+    use super::*;
+
+    #[test]
+    fn program_empty_clone_eq() {
+        let p = Program {
+            rules: vec![],
+            funcs: HashMap::new(),
+        };
+        assert_eq!(p, p.clone());
+    }
+
+    #[test]
+    fn pattern_range_holds_endpoints() {
+        let p = Pattern::Range(
+            Box::new(Pattern::Regexp("a".into())),
+            Box::new(Pattern::Regexp("b".into())),
+        );
+        assert!(matches!(
+            p,
+            Pattern::Range(ref a, ref b)
+                if matches!(**a, Pattern::Regexp(ref s) if s == "a")
+                    && matches!(**b, Pattern::Regexp(ref s) if s == "b")
+        ));
+    }
+}

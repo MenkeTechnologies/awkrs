@@ -707,6 +707,315 @@ fn close_one_way_pipe_returns_zero() {
 }
 
 #[test]
+fn getline_from_missing_file_returns_minus_one_and_sets_errno() {
+    let dir = std::env::temp_dir();
+    let id = std::process::id();
+    let path = dir.join(format!("awkrs_getline_enoent_{id}.txt"));
+    assert!(
+        !path.exists(),
+        "precondition: temp path must not exist: {}",
+        path.display()
+    );
+    let prog = format!(
+        r#"BEGIN {{ print (getline x < "{}"), (length(ERRNO) > 0) }}"#,
+        path.display()
+    );
+    let (c, o, _) = run_awkrs_stdin(&prog, "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "-1 1\n");
+}
+
+#[test]
+fn close_returns_zero_after_getline_from_named_file() {
+    let dir = std::env::temp_dir();
+    let id = std::process::id();
+    let path = dir.join(format!("awkrs_close_after_getline_{id}.txt"));
+    fs::write(&path, "row\n").expect("temp");
+    let prog = format!(
+        r#"BEGIN {{ print (getline x < "{}"), x; print close("{}") }}"#,
+        path.display(),
+        path.display()
+    );
+    let (c, o, _) = run_awkrs_stdin(&prog, "");
+    let _ = fs::remove_file(&path);
+    assert_eq!(c, 0);
+    assert_eq!(o, "1 row\n0\n");
+}
+
+#[test]
+fn gensub_ampersand_substitutes_entire_match() {
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { print gensub(/a+/, "[&]", "g", "xaay") }"#, "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "x[aa]y\n");
+}
+
+#[test]
+fn split_accepts_slash_regex_field_separator() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN {
+            n = split("a1b2c", t, /[0-9]/)
+            print n
+            for (i = 1; i <= n; i++) print t[i]
+        }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "3\na\nb\nc\n");
+}
+
+#[test]
+fn split_reinitializes_destination_array_removing_old_keys() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN {
+            a[9] = 1
+            n = split("x:y", a, ":")
+            print n, a[1], a[2], (9 in a)
+        }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "2 x y 0\n");
+}
+
+#[test]
+fn for_c_style_infinite_loop_breaks_once() {
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { for (;;) { break } print "done" }"#, "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "done\n");
+}
+
+#[test]
+fn sprintf_percent_s_respects_minimum_width() {
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { printf ">%5s<\n", "ab" }"#, "");
+    assert_eq!(c, 0);
+    assert_eq!(o, ">   ab<\n");
+}
+
+#[test]
+fn int_of_missing_field_is_zero() {
+    let (c, o, _) = run_awkrs_stdin(r#"{ print int($2) }"#, "a\n");
+    assert_eq!(c, 0);
+    assert_eq!(o, "0\n");
+}
+
+#[test]
+fn getline_from_dev_null_returns_zero_immediately() {
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { print (getline x < "/dev/null") }"#, "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "0\n");
+}
+
+#[test]
+fn system_empty_command_reports_success() {
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { print system("") }"#, "");
+    assert_eq!(c, 0);
+    assert_eq!(o.trim(), "0");
+}
+
+#[test]
+fn multichar_ofs_used_between_print_arguments() {
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { OFS = "::"; print 1, 2 }"#, "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "1::2\n");
+}
+
+#[test]
+fn assigning_dollar_one_to_empty_string_keeps_nf() {
+    let (c, o, _) = run_awkrs_stdin(r#"{ $1 = ""; print NF, $2 }"#, "a b\n");
+    assert_eq!(c, 0);
+    assert_eq!(o, "2 b\n");
+}
+
+#[test]
+fn zero_raised_to_zero_is_one() {
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { print 0^0, 1^0 }"#, "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "1 1\n");
+}
+
+#[test]
+fn chained_assignment_sets_all_lvalues() {
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { x = y = 3; print x, y }"#, "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "3 3\n");
+}
+
+#[test]
+fn string_concatenation_with_empty_middle_term() {
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { print "a" "" "b" }"#, "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "ab\n");
+}
+
+#[test]
+fn print_numeric_respects_ofmt() {
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { OFMT = "%.2f"; print 1.234 }"#, "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "1.23\n");
+}
+
+#[test]
+fn string_concatenation_uses_convfmt_for_number_coercion() {
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { CONVFMT = "%.1f"; x = 1.23; print "" x }"#, "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "1.2\n");
+}
+
+#[test]
+fn gensub_numeric_how_replaces_single_occurrence() {
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { print gensub(/a/, "A", 1, "aba") }"#, "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "Aba\n");
+}
+
+#[test]
+fn regexp_match_operator_accepts_pattern_in_variable() {
+    let (c, o, _) = run_awkrs_stdin(r#"{ pat = "[0-9]+"; print ($0 ~ pat) }"#, "abc\n42\n");
+    assert_eq!(c, 0);
+    assert_eq!(o, "0\n1\n");
+}
+
+#[test]
+fn modulo_with_negative_dividend_matches_awk_semantics() {
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { print (-7 % 3), (7 % -3) }"#, "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "-1 1\n");
+}
+
+#[test]
+fn multichar_ors_between_print_records() {
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { ORS = "|\n" } { print $1 }"#, "a\nb\n");
+    assert_eq!(c, 0);
+    assert_eq!(o, "a|\nb|\n");
+}
+
+#[test]
+fn postfix_increment_uninitialized_scalar_starts_at_zero() {
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { print x++ }"#, "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "0\n");
+}
+
+#[test]
+fn gensub_numeric_zero_replaces_all_occurrences() {
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { print gensub(/a/, "A", 0, "aba") }"#, "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "AbA\n");
+}
+
+#[test]
+fn intdiv0_truncates_toward_zero_and_zero_divisor_yields_zero() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { print intdiv0(7, 3), intdiv0(-7, 3), intdiv0(7, 0) }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "2 -2 0\n");
+}
+
+#[test]
+fn decrement_nf_drops_trailing_field_and_rebuilds_dollar_zero() {
+    let (c, o, _) = run_awkrs_stdin(r#"{ print NF; NF--; print NF, $0 }"#, "a b c\n");
+    assert_eq!(c, 0);
+    assert_eq!(o, "3\n2 a b\n");
+}
+
+#[test]
+fn length_of_uninitialized_scalar_is_zero() {
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { print length(s) }"#, "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "0\n");
+}
+
+#[test]
+fn logical_and_empty_string_is_falsy() {
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { print ("" && 1), ("x" && 1) }"#, "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "0 1\n");
+}
+
+#[test]
+fn compl_bitwise_not_of_one() {
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { print compl(1) }"#, "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "-2\n");
+}
+
+#[test]
+fn gsub_with_empty_replacement_removes_matches_in_scalar() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { s = "aba"; n = gsub(/a/, "", s); print n, s }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "2 b\n");
+}
+
+#[test]
+fn for_in_delete_removes_all_array_elements() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN {
+            a[1] = 1
+            a[2] = 2
+            for (i in a) delete a[i]
+            print length(a)
+        }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "0\n");
+}
+
+#[test]
+fn isarray_distinguishes_arrays_from_scalars() {
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { a[1] = 1; print isarray(a), isarray(x) }"#, "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "1 0\n");
+}
+
+#[test]
+fn sub_returns_zero_when_pattern_does_not_match_third_arg() {
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { print sub(/z/, "Z", "abc") }"#, "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "0\n");
+}
+
+#[test]
+fn strftime_third_argument_selects_utc() {
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { print strftime("%H", 0, 1) }"#, "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "00\n");
+}
+
+#[test]
+fn print_empty_string_still_writes_output_record_separator() {
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { print "" }"#, "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "\n");
+}
+
+#[test]
+fn argv_zero_names_the_awk_binary() {
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { print (index(ARGV[0], "awkrs") > 0) }"#, "");
+    assert_eq!(c, 0);
+    assert_eq!(o.trim(), "1");
+}
+
+#[test]
+fn bitwise_xor_same_value_and_or_and_with_zero() {
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { print xor(5, 5), or(0, 0), and(3, 0) }"#, "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "0 0 0\n");
+}
+
+#[test]
+fn lshift_and_rshift_by_zero_are_identity() {
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { print lshift(1, 0), rshift(8, 0) }"#, "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "1 8\n");
+}
+
+#[test]
 fn endfile_runs_once_per_input_file() {
     let dir = std::env::temp_dir();
     let id = std::process::id();

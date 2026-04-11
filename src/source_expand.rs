@@ -225,6 +225,31 @@ mod tests {
     }
 
     #[test]
+    fn take_double_quoted_parses_escapes() {
+        let (s, tail) = take_double_quoted(r#" "a\nb\t\"\\" tail"#).unwrap();
+        assert_eq!(s, "a\nb\t\"\\");
+        assert_eq!(tail.trim(), "tail");
+    }
+
+    #[test]
+    fn take_double_quoted_unclosed_returns_none() {
+        assert!(take_double_quoted(r#" "no_close"#).is_none());
+    }
+
+    #[test]
+    fn take_double_quoted_raw_newline_in_string_returns_none() {
+        assert!(take_double_quoted(" \"x\ny\"").is_none());
+    }
+
+    #[test]
+    fn namespace_last_line_wins() {
+        let e = expand_source_directives("@namespace \"first\"\n@namespace second\nBEGIN {}\n")
+            .unwrap();
+        assert_eq!(e.default_namespace.as_deref(), Some("second"));
+        assert!(!e.text.contains("@namespace"));
+    }
+
+    #[test]
     fn namespace_line_dropped_and_recorded() {
         let e = expand_source_directives("@namespace \"ns\"\nBEGIN { }\n").unwrap();
         assert!(!e.text.contains("@namespace"));
@@ -261,5 +286,108 @@ mod tests {
         let e = expand_source_directives(&main).unwrap();
         assert!(e.text.contains("function f"));
         let _ = std::fs::remove_file(&inc);
+    }
+
+    #[test]
+    fn namespace_bare_identifier_accepted() {
+        let e = expand_source_directives("@namespace myns\nBEGIN { }\n").unwrap();
+        assert_eq!(e.default_namespace.as_deref(), Some("myns"));
+        assert!(!e.text.contains("@namespace"));
+        assert!(e.text.contains("BEGIN"));
+    }
+
+    #[test]
+    fn namespace_malformed_errors() {
+        let r = expand_source_directives("@namespace\nBEGIN {}\n");
+        assert!(r.is_err(), "{r:?}");
+    }
+
+    #[test]
+    fn include_malformed_missing_quote_errors() {
+        let r = expand_source_directives("@include foo.awk\n");
+        assert!(r.is_err(), "{r:?}");
+    }
+
+    #[test]
+    fn include_cycle_errors() {
+        let dir = std::env::temp_dir();
+        let id = std::process::id();
+        let a = dir.join(format!("awkrs_inc_a_{id}.awk"));
+        let b = dir.join(format!("awkrs_inc_b_{id}.awk"));
+        std::fs::write(
+            &a,
+            format!(
+                "@include \"{}\"\n",
+                b.file_name().unwrap().to_string_lossy()
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            &b,
+            format!(
+                "@include \"{}\"\n",
+                a.file_name().unwrap().to_string_lossy()
+            ),
+        )
+        .unwrap();
+        let main = format!("@include \"{}\"\n", a.display());
+        let r = expand_source_directives(&main);
+        assert!(r.is_err(), "expected cycle error, got {r:?}");
+        let _ = std::fs::remove_file(&a);
+        let _ = std::fs::remove_file(&b);
+    }
+
+    #[test]
+    fn load_native_extension_case_insensitive_stem() {
+        let e = expand_source_directives("@load \"./FileFuncs.So\"\nBEGIN {}\n").unwrap();
+        assert!(!e.text.contains("@load"));
+        assert!(e.text.contains("BEGIN"));
+    }
+
+    #[test]
+    fn include_inlines_twice_sequential() {
+        let dir = std::env::temp_dir();
+        let id = std::process::id();
+        let one = dir.join(format!("awkrs_inc_one_{id}.awk"));
+        let two = dir.join(format!("awkrs_inc_two_{id}.awk"));
+        std::fs::write(&one, "function one() { return 1 }\n").unwrap();
+        std::fs::write(&two, "function two() { return 2 }\n").unwrap();
+        let main = format!(
+            "@include \"{}\"\n@include \"{}\"\nBEGIN {{ }}\n",
+            one.display(),
+            two.display()
+        );
+        let e = expand_source_directives(&main).unwrap();
+        assert!(e.text.contains("function one"));
+        assert!(e.text.contains("function two"));
+        let _ = std::fs::remove_file(&one);
+        let _ = std::fs::remove_file(&two);
+    }
+
+    #[test]
+    fn include_empty_file_expands_to_nothing_between_directives() {
+        let dir = std::env::temp_dir();
+        let id = std::process::id();
+        let empty = dir.join(format!("awkrs_inc_empty_{id}.awk"));
+        std::fs::write(&empty, "").unwrap();
+        let main = format!("@include \"{}\"\nBEGIN {{ x = 1 }}\n", empty.display());
+        let e = expand_source_directives(&main).unwrap();
+        assert!(e.text.contains("BEGIN") && e.text.contains("x = 1"));
+        let _ = std::fs::remove_file(&empty);
+    }
+
+    #[test]
+    fn include_missing_file_errors() {
+        let p = std::env::temp_dir().join(format!(
+            "awkrs_no_such_include_{}_{}.awk",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let main = format!("@include \"{}\"\nBEGIN {{}}\n", p.display());
+        let r = expand_source_directives(&main);
+        assert!(r.is_err(), "expected error for missing include, got {r:?}");
     }
 }

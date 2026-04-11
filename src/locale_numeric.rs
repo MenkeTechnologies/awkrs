@@ -82,4 +82,15 @@ mod tests {
     fn decimal_point_is_ascii_dot_on_non_unix() {
         assert_eq!(super::decimal_point_from_locale(), '.');
     }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn thousands_sep_comma_on_non_unix() {
+        assert_eq!(super::thousands_sep_from_locale(), Some(','));
+    }
+
+    #[test]
+    fn set_locale_numeric_from_env_does_not_panic() {
+        super::set_locale_numeric_from_env();
+    }
 }

@@ -574,4 +574,72 @@ mod tests {
         assert_eq!(slots[0].as_number(), 1.0);
         assert_eq!(slots[1].as_str(), "");
     }
+
+    #[test]
+    fn string_pool_intern_empty_string() {
+        let mut p = StringPool::default();
+        let a = p.intern("");
+        let b = p.intern("");
+        assert_eq!(a, b);
+        assert_eq!(p.get(a), "");
+    }
+
+    #[test]
+    fn init_slots_preserves_empty_string_value() {
+        let cp = CompiledProgram {
+            begin_chunks: vec![],
+            end_chunks: vec![],
+            beginfile_chunks: vec![],
+            endfile_chunks: vec![],
+            record_rules: vec![],
+            functions: HashMap::new(),
+            strings: StringPool::default(),
+            slot_count: 1,
+            slot_names: vec!["z".into()],
+            slot_map: HashMap::from([("z".into(), 0u16)]),
+            array_var_names: vec![],
+        };
+        let mut vars = AwkMap::default();
+        vars.insert("z".into(), Value::Str(String::new()));
+        let slots = cp.init_slots(&vars);
+        assert_eq!(slots[0].as_str(), "");
+    }
+
+    #[test]
+    fn redir_kind_and_getline_source_variants_distinct() {
+        assert_ne!(RedirKind::Stdout, RedirKind::Append);
+        assert_ne!(GetlineSource::File, GetlineSource::Pipe);
+    }
+
+    #[test]
+    fn chunk_from_ops_empty_and_with_push() {
+        let empty = Chunk::from_ops(vec![]);
+        assert!(empty.ops.is_empty());
+        let c = Chunk::from_ops(vec![Op::PushNum(2.5), Op::PushNum(1.0)]);
+        assert_eq!(c.ops.len(), 2);
+        assert!(matches!(c.ops[0], Op::PushNum(n) if n == 2.5));
+    }
+
+    #[test]
+    fn compiled_range_endpoint_nested_range_error_marker() {
+        assert!(matches!(
+            CompiledRangeEndpoint::NestedRangeError,
+            CompiledRangeEndpoint::NestedRangeError
+        ));
+    }
+
+    #[test]
+    fn compiled_pattern_range_shape() {
+        let p = CompiledPattern::Range {
+            start: CompiledRangeEndpoint::Always,
+            end: CompiledRangeEndpoint::Regexp(3),
+        };
+        assert!(matches!(
+            p,
+            CompiledPattern::Range {
+                start: CompiledRangeEndpoint::Always,
+                end: CompiledRangeEndpoint::Regexp(3),
+            }
+        ));
+    }
 }

@@ -186,6 +186,16 @@ fn procinfo_platform_posix_on_unix() {
 }
 
 #[test]
+fn procinfo_uid_is_non_negative_on_unix() {
+    if !cfg!(unix) {
+        return;
+    }
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { print (PROCINFO["uid"] + 0 >= 0) }"#, "");
+    assert_eq!(c, 0);
+    assert_eq!(o.trim(), "1");
+}
+
+#[test]
 fn procinfo_bignum_keys_when_dash_m() {
     let (c, o, _) = run_awkrs_stdin_args(
         ["-M"],
@@ -947,6 +957,13 @@ fn fpat_empty_falls_back_to_fs() {
     assert_eq!(o, "b\n");
 }
 
+#[test]
+fn patsplit_empty_string_yields_zero_matches() {
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { print patsplit("", a, /./) }"#, "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "0\n");
+}
+
 // ── Multi-char FS regex (bug fix) ──────────────────────────────────────────
 
 #[test]
@@ -962,6 +979,13 @@ fn fs_regex_alternation() {
     let (c, o, _) = run_awkrs_stdin(r#"BEGIN{FS="::|-"} {print $1, $2, $3}"#, "x::y-z\n");
     assert_eq!(c, 0);
     assert_eq!(o, "x y z\n");
+}
+
+#[test]
+fn empty_field_separator_flag_splits_record_into_characters() {
+    let (c, o, _) = run_awkrs_stdin_args(["-F", ""], "{ print NF, $1, $2 }", "ab\n");
+    assert_eq!(c, 0);
+    assert_eq!(o, "2 a b\n");
 }
 
 #[test]
@@ -1328,4 +1352,198 @@ fn length_substr_utf8_respects_characters_as_bytes_flag() {
     let lines_b: Vec<&str> = o_b.lines().collect();
     assert_eq!(lines_b[0], "4");
     assert_eq!(lines_b[1], "β");
+}
+
+// ── exit status, field rebuild, getline / match() edge cases ────────────────
+
+#[test]
+fn begin_exit_code_without_end_rule() {
+    let (c, o, _) = run_awkrs_stdin("BEGIN { exit 5 }", "");
+    assert_eq!(c, 5);
+    assert_eq!(o, "");
+}
+
+#[test]
+fn end_exit_sets_process_status_after_body_runs() {
+    let (c, o, _) = run_awkrs_stdin("BEGIN { print \"x\" } END { exit 7 }", "");
+    assert_eq!(c, 7);
+    assert_eq!(o, "x\n");
+}
+
+#[test]
+fn middle_field_assignment_rebuilds_dollar_zero_with_ofs() {
+    let (c, o, _) = run_awkrs_stdin("BEGIN { OFS = \"|\" } { $2 = \"ZZ\"; print $0 }", "a b c\n");
+    assert_eq!(c, 0);
+    assert_eq!(o, "a|ZZ|c\n");
+}
+
+#[test]
+fn extending_nf_via_assign_rebuilds_record_with_ofs() {
+    let (c, o, _) = run_awkrs_stdin(
+        "BEGIN { OFS = \":\" } { print NF; $3 = \"z\"; print NF, $0 }",
+        "a b\n",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "2\n3:a:b:z\n");
+}
+
+#[test]
+fn getline_returns_zero_when_no_following_line() {
+    let (c, o, _) = run_awkrs_stdin("{ print (getline) }", "only\n");
+    assert_eq!(c, 0);
+    assert_eq!(o, "0\n");
+}
+
+#[test]
+fn getline_between_automatic_reads_updates_nr() {
+    // One consumed line per automatic cycle: getline pulls the next line early.
+    let (c, o, _) = run_awkrs_stdin("{ print NR; getline; print NR }", "a\nb\nc\n");
+    assert_eq!(c, 0);
+    assert_eq!(o, "1\n2\n3\n3\n");
+}
+
+#[test]
+fn failed_match_sets_rstart_zero_rlength_negative_one() {
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { print match("abc", "z"), RSTART, RLENGTH }"#, "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "0 0 -1\n");
+}
+
+#[test]
+fn argind_fnr_and_filename_track_each_opened_input_file() {
+    let dir = std::env::temp_dir();
+    let id = std::process::id();
+    let f1 = dir.join(format!("awkrs_argind_a_{id}.txt"));
+    let f2 = dir.join(format!("awkrs_argind_b_{id}.txt"));
+    std::fs::write(&f1, "a\n").unwrap();
+    std::fs::write(&f2, "b\n").unwrap();
+    let bin = env!("CARGO_BIN_EXE_awkrs");
+    let out = Command::new(bin)
+        .arg(r#"{ print ARGIND, FNR, $1 }"#)
+        .arg(&f1)
+        .arg(&f2)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("spawn awkrs");
+    let _ = std::fs::remove_file(&f1);
+    let _ = std::fs::remove_file(&f2);
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "1 1 a\n2 1 b\n",
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn assigning_nf_to_one_truncates_fields_and_rebuilds_dollar_zero() {
+    let (c, o, _) = run_awkrs_stdin("{ print NF; NF = 1; print $0 }", "a b c\n");
+    assert_eq!(c, 0);
+    assert_eq!(o, "3\na\n");
+}
+
+#[test]
+fn dollar_field_beyond_nf_is_empty_string() {
+    let (c, o, _) = run_awkrs_stdin("{ print ($10 == \"\") }", "a b\n");
+    assert_eq!(c, 0);
+    assert_eq!(o, "1\n");
+}
+
+#[test]
+fn empty_ors_concatenates_print_records_without_newline_between() {
+    let (c, o, _) = run_awkrs_stdin("BEGIN { ORS = \"\" } { print $1 }", "a\nb\n");
+    assert_eq!(c, 0);
+    assert_eq!(o, "ab");
+}
+
+#[test]
+fn decrement_undefined_scalar_yields_negative_one() {
+    let (c, o, _) = run_awkrs_stdin("BEGIN { print --x }", "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "-1\n");
+}
+
+#[test]
+fn ternary_operator_selects_branch_by_numeric_condition() {
+    let (c, o, _) = run_awkrs_stdin(
+        "BEGIN { print (0 ? \"a\" : \"b\"), (1 ? \"c\" : \"d\") }",
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "b c\n");
+}
+
+// ── ENVIRON, RT, patterns, range rules, field mutation ─────────────────────
+
+#[test]
+fn environ_array_reflects_variable_set_on_child_process() {
+    let bin = env!("CARGO_BIN_EXE_awkrs");
+    let out = Command::new(bin)
+        .env("AWKRS_ENVIRON_E2E", "plugh")
+        .arg(r#"BEGIN { print ENVIRON["AWKRS_ENVIRON_E2E"] }"#)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("spawn awkrs");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "plugh\n",
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn rt_is_text_of_rs_for_each_record_when_rs_is_single_char() {
+    let (c, o, _) = run_awkrs_stdin("BEGIN { RS = \":\" } { print NR, RT }", "a:b\n");
+    assert_eq!(c, 0);
+    assert_eq!(o, "1 :\n2 :\n");
+}
+
+#[test]
+fn negated_regex_pattern_action_skips_matching_lines() {
+    let (c, o, _) = run_awkrs_stdin(r#"! /skip/ { print $0 }"#, "skip\nkeep\n");
+    assert_eq!(c, 0);
+    assert_eq!(o, "keep\n");
+}
+
+#[test]
+fn begin_fnr_is_zero_when_no_record_read_yet() {
+    let (c, o, _) = run_awkrs_stdin("BEGIN { print FNR }", "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "0\n");
+}
+
+#[test]
+fn range_pattern_matches_inclusive_endpoints() {
+    let (c, o, _) = run_awkrs_stdin("NR == 2, NR == 4 { print NR }", "a\nb\nc\nd\ne\n");
+    assert_eq!(c, 0);
+    assert_eq!(o, "2\n3\n4\n");
+}
+
+#[test]
+fn postfix_increment_on_dollar_field_returns_old_then_updates_field() {
+    let (c, o, _) = run_awkrs_stdin("{ print $1++; print $1 }", "5\n");
+    assert_eq!(c, 0);
+    assert_eq!(o, "5\n6\n");
+}
+
+#[test]
+fn in_operator_treats_string_one_and_numeric_one_as_same_key() {
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { a[1] = 1; print ("1" in a), (1 in a) }"#, "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "1 1\n");
+}
+
+#[test]
+fn delete_multidim_subscript_removes_composite_key() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { a[1, 2] = 1; delete a[1, 2]; k = 1 SUBSEP 2; print (k in a) }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "0\n");
 }

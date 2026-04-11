@@ -766,6 +766,12 @@ mod tests {
     }
 
     #[test]
+    fn hex_upper_conversion_x_uppercase() {
+        let s = awk_sprintf("%X", &[Value::Num(255.0)]).unwrap();
+        assert_eq!(s, "FF");
+    }
+
+    #[test]
     fn hex_alt_prefix() {
         let s = awk_sprintf("%#x", &[Value::Num(255.0)]).unwrap();
         assert_eq!(s, "0xff");
@@ -809,6 +815,12 @@ mod tests {
         )
         .unwrap();
         assert_eq!(s, "use");
+    }
+
+    #[test]
+    fn positional_mixed_order_integer_then_string() {
+        let s = awk_sprintf("%2$d %1$s", &[Value::Str("z".into()), Value::Num(9.0)]).unwrap();
+        assert_eq!(s, "9 z");
     }
 
     #[test]
@@ -893,5 +905,83 @@ mod tests {
     fn percent_c_string_first_char() {
         let s = awk_sprintf("[%c]\n", &[Value::Str("Z".into())]).unwrap();
         assert_eq!(s, "[Z]\n");
+    }
+
+    #[test]
+    fn percent_o_octal_conversion() {
+        let s = awk_sprintf("%o", &[Value::Num(8.0)]).unwrap();
+        assert_eq!(s, "10");
+    }
+
+    #[test]
+    fn percent_u_unsigned_decimal() {
+        let s = awk_sprintf("%u", &[Value::Num(42.0)]).unwrap();
+        assert_eq!(s, "42");
+    }
+
+    #[test]
+    fn sprintf_empty_format_empty_string() {
+        let s = awk_sprintf("", &[]).unwrap();
+        assert!(s.is_empty());
+    }
+
+    #[test]
+    fn percent_u_negative_truncates_to_zero() {
+        let s = awk_sprintf("%u", &[Value::Num(-9.0)]).unwrap();
+        assert_eq!(s, "0");
+    }
+
+    #[test]
+    fn percent_g_rejects_nan() {
+        let e = awk_sprintf("%g", &[Value::Num(f64::NAN)]).unwrap_err();
+        assert!(e.contains("non-finite"), "{e}");
+    }
+
+    #[test]
+    fn percent_g_rejects_infinity() {
+        let e = awk_sprintf("%g", &[Value::Num(f64::INFINITY)]).unwrap_err();
+        assert!(e.contains("non-finite"), "{e}");
+    }
+
+    #[test]
+    fn unsupported_conversion_errors() {
+        let e = awk_sprintf("%z", &[Value::Num(1.0)]).unwrap_err();
+        assert!(e.contains("unsupported"), "{e}");
+    }
+
+    #[test]
+    fn percent_s_min_field_width_right_pads_with_spaces() {
+        let s = awk_sprintf(">%5s<", &[Value::Str("ab".into())]).unwrap();
+        assert_eq!(s, ">   ab<");
+    }
+
+    #[test]
+    fn percent_dot_precision_truncates_string_s() {
+        let s = awk_sprintf("%.3s", &[Value::Str("hello".into())]).unwrap();
+        assert_eq!(s, "hel");
+    }
+
+    #[test]
+    fn percent_left_justify_s_padding() {
+        let s = awk_sprintf("%-5s!", &[Value::Str("ab".into())]).unwrap();
+        assert_eq!(s, "ab   !");
+    }
+
+    #[test]
+    fn percent_left_justify_d_padding() {
+        let s = awk_sprintf("%-4d!", &[Value::Num(7.0)]).unwrap();
+        assert_eq!(s, "7   !");
+    }
+
+    #[test]
+    fn percent_d_zero_pad_width() {
+        let s = awk_sprintf("%05d", &[Value::Num(7.0)]).unwrap();
+        assert_eq!(s, "00007");
+    }
+
+    #[test]
+    fn percent_f_width_and_precision() {
+        let s = awk_sprintf("%8.2f", &[Value::Num(1.2)]).unwrap();
+        assert_eq!(s, "    1.20");
     }
 }

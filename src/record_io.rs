@@ -241,12 +241,87 @@ fn split_by_delimiter_mmap<'a>(data: &'a [u8], delim: &[u8]) -> Vec<&'a [u8]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::SharedInputReader;
+    use std::io::{BufReader, Cursor, Read};
+    use std::sync::{Arc, Mutex};
+
+    fn shared_reader(data: &[u8]) -> SharedInputReader {
+        Arc::new(Mutex::new(BufReader::new(
+            Box::new(Cursor::new(data.to_vec())) as Box<dyn Read + Send>,
+        )))
+    }
+
+    #[test]
+    fn trim_end_record_bytes_strips_trailing_lf_cr() {
+        assert_eq!(trim_end_record_bytes(b"abc\n"), 3);
+        assert_eq!(trim_end_record_bytes(b"abc\r\n"), 3);
+        assert_eq!(trim_end_record_bytes(b"abc\r\r\n"), 3);
+    }
+
+    #[test]
+    fn trim_end_record_bytes_empty() {
+        assert_eq!(trim_end_record_bytes(b""), 0);
+    }
+
+    #[test]
+    fn trim_end_record_bytes_only_newlines_yields_zero_len_content() {
+        assert_eq!(trim_end_record_bytes(b"\n"), 0);
+        assert_eq!(trim_end_record_bytes(b"\r\n\r\n"), 0);
+    }
+
+    #[test]
+    fn trim_end_record_bytes_preserves_inner_newlines() {
+        assert_eq!(trim_end_record_bytes(b"a\nb"), 3);
+    }
+
+    #[test]
+    fn split_empty_input_yields_empty_vec() {
+        assert!(split_input_into_records(b"", "\n", None).is_empty());
+        assert!(split_input_into_records(b"", "XX", None).is_empty());
+    }
 
     #[test]
     fn split_newline_default() {
         let d = b"a\nb\n";
         let r = split_input_into_records(d, "\n", None);
         assert_eq!(r, vec![&b"a"[..], &b"b"[..]]);
+    }
+
+    #[test]
+    fn split_newline_strips_cr_before_lf() {
+        let d = b"a\r\nb\r\n";
+        let r = split_input_into_records(d, "\n", None);
+        assert_eq!(r, vec![&b"a"[..], &b"b"[..]]);
+    }
+
+    #[test]
+    fn split_newline_last_record_without_newline() {
+        let d = b"only";
+        let r = split_input_into_records(d, "\n", None);
+        assert_eq!(r, vec![&b"only"[..]]);
+    }
+
+    #[test]
+    fn split_paragraph_mode_blank_line_separator() {
+        let d = b"para one line\n\npara two\n";
+        let r = split_input_into_records(d, "", None);
+        assert_eq!(r.len(), 2);
+        assert_eq!(r[0], &b"para one line\n"[..]);
+        assert_eq!(r[1], &b"para two\n"[..]);
+    }
+
+    #[test]
+    fn split_paragraph_leading_blank_lines_skipped() {
+        let d = b"\n\nbody\n\n";
+        let r = split_input_into_records(d, "", None);
+        assert_eq!(r, vec![&b"body\n"[..]]);
+    }
+
+    #[test]
+    fn split_paragraph_whitespace_only_input_yields_no_records() {
+        let d = b"\n\n  \t\n";
+        let r = split_input_into_records(d, "", None);
+        assert!(r.is_empty(), "expected no paragraph records, got {r:?}");
     }
 
     #[test]
@@ -257,10 +332,102 @@ mod tests {
     }
 
     #[test]
+    fn split_single_byte_literal_rs() {
+        let d = b"a|b|c";
+        let r = split_input_into_records(d, "|", None);
+        assert_eq!(r, vec![&b"a"[..], &b"b"[..], &b"c"[..]]);
+    }
+
+    #[test]
+    fn split_custom_rs_ending_at_delimiter_omits_trailing_empty_mmap_chunk() {
+        // `split_by_delimiter_mmap` stops after the last full record; there is no empty slice
+        // after a trailing delimiter (differs from some awk edge cases — behavior is intentional).
+        let d = b"aXX";
+        let r = split_input_into_records(d, "XX", None);
+        assert_eq!(r, vec![&b"a"[..]]);
+    }
+
+    #[test]
+    fn split_multibyte_literal_rs() {
+        let d = "α•β•γ".as_bytes();
+        let r = split_input_into_records(d, "•", None);
+        assert_eq!(r.len(), 3);
+        assert_eq!(r[0], "α".as_bytes());
+        assert_eq!(r[1], "β".as_bytes());
+        assert_eq!(r[2], "γ".as_bytes());
+    }
+
+    #[test]
     fn split_regex_rs_mmap() {
         let d = b"axxbxx";
         let re = BytesRegex::new("x+").unwrap();
         let r = split_input_into_records(d, "x+", Some(&re));
         assert_eq!(r, vec![&b"a"[..], &b"b"[..], &b""[..]]);
+    }
+
+    #[test]
+    fn read_next_record_default_rs_reads_until_lf() {
+        let rdr = shared_reader(b"hi\nthere\n");
+        let mut out = Vec::new();
+        let mut sep = Vec::new();
+        assert!(read_next_record(&rdr, "\n", &mut out, &mut sep, None).unwrap());
+        assert_eq!(out, b"hi\n");
+        assert_eq!(sep, b"\n");
+        out.clear();
+        sep.clear();
+        assert!(read_next_record(&rdr, "\n", &mut out, &mut sep, None).unwrap());
+        assert_eq!(out, b"there\n");
+        assert!(!read_next_record(&rdr, "\n", &mut out, &mut sep, None).unwrap());
+    }
+
+    #[test]
+    fn read_next_record_literal_multibyte_delimiter() {
+        let rdr = shared_reader(b"axXXbXX");
+        let mut out = Vec::new();
+        let mut sep = Vec::new();
+        assert!(read_next_record(&rdr, "XX", &mut out, &mut sep, None).unwrap());
+        assert_eq!(out, b"ax");
+        assert_eq!(sep, b"XX");
+        out.clear();
+        sep.clear();
+        assert!(read_next_record(&rdr, "XX", &mut out, &mut sep, None).unwrap());
+        assert_eq!(out, b"b");
+        assert_eq!(sep, b"XX");
+    }
+
+    #[test]
+    fn read_next_record_regex_rs() {
+        let rdr = shared_reader(b"a---b");
+        let re = BytesRegex::new("-+").unwrap();
+        let mut out = Vec::new();
+        let mut sep = Vec::new();
+        assert!(read_next_record(&rdr, "-+", &mut out, &mut sep, Some(&re)).unwrap());
+        assert_eq!(out, b"a");
+        assert_eq!(sep, b"---");
+    }
+
+    #[test]
+    fn read_next_record_paragraph_mode_blank_line_boundary() {
+        let rdr = shared_reader(b"first para line\n\nsecond\n");
+        let mut out = Vec::new();
+        let mut sep = Vec::new();
+        assert!(read_next_record(&rdr, "", &mut out, &mut sep, None).unwrap());
+        assert_eq!(out, b"first para line\n");
+        assert_eq!(sep, b"\n");
+        out.clear();
+        sep.clear();
+        assert!(read_next_record(&rdr, "", &mut out, &mut sep, None).unwrap());
+        assert_eq!(out, b"second\n");
+        assert!(!read_next_record(&rdr, "", &mut out, &mut sep, None).unwrap());
+    }
+
+    #[test]
+    fn read_next_record_paragraph_skips_leading_blanks() {
+        let rdr = shared_reader(b"\n\nbody\n\n");
+        let mut out = Vec::new();
+        let mut sep = Vec::new();
+        assert!(read_next_record(&rdr, "", &mut out, &mut sep, None).unwrap());
+        assert_eq!(out, b"body\n");
+        assert!(!read_next_record(&rdr, "", &mut out, &mut sep, None).unwrap());
     }
 }

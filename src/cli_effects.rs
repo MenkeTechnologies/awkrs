@@ -1448,6 +1448,16 @@ mod lint_tests {
         let msgs = lint_msgs("// { print }");
         assert!(msgs.iter().any(|m| m.contains("empty regex")), "{msgs:?}");
     }
+
+    #[test]
+    fn lint_for_c_body_warns_uninitialized() {
+        let msgs = lint_msgs("BEGIN { for (i = 0; i < 1; i++) { print u } }");
+        assert!(
+            msgs.iter()
+                .any(|m| m.contains("uninitialized") && m.contains('u')),
+            "{msgs:?}"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1468,5 +1478,33 @@ mod pretty_print_tests {
             s.contains("NOT gawk"),
             "expected NOT gawk disclaimer in {s:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod gen_pot_tests {
+    use super::gen_pot;
+    use crate::parser::parse_program;
+
+    #[test]
+    fn gen_pot_collects_nonempty_string_literals_from_print() {
+        let p = parse_program(r#"BEGIN { print "Hello", "World" }"#).unwrap();
+        let s = gen_pot(&p);
+        assert!(s.contains("msgid \"Hello\""), "{s}");
+        assert!(s.contains("msgid \"World\""), "{s}");
+    }
+
+    #[test]
+    fn gen_pot_dedupes_duplicate_msgids_single_entry() {
+        let p = parse_program(r#"BEGIN { print "x"; print "x" }"#).unwrap();
+        let s = gen_pot(&p);
+        assert_eq!(s.matches("msgid \"x\"").count(), 1, "{s}");
+    }
+
+    #[test]
+    fn gen_pot_escapes_quotes_backslash_newline_in_msgid() {
+        let p = parse_program(r#"BEGIN { s = "a\"b\nc" }"#).unwrap();
+        let s = gen_pot(&p);
+        assert!(s.contains("msgid \"a\\\"b\\nc\""), "{s}");
     }
 }

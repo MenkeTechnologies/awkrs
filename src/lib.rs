@@ -1732,6 +1732,18 @@ mod lib_internal_tests {
     }
 
     #[test]
+    fn awk_float_eq_nan_always_false() {
+        assert!(!awk_float_eq(f64::NAN, f64::NAN));
+        assert!(!awk_float_eq(f64::NAN, 1.0));
+    }
+
+    #[test]
+    fn read_all_lines_preserves_crlf_in_each_line() {
+        let lines = read_all_lines(Cursor::new(b"a\r\nb\r\n")).unwrap();
+        assert_eq!(lines, vec!["a\r\n".to_string(), "b\r\n".to_string()]);
+    }
+
+    #[test]
     fn split_bytes_into_owned_lines_consecutive_newlines_yield_empty_records() {
         assert_eq!(
             split_bytes_into_owned_lines(b"\n\n"),
@@ -1847,6 +1859,168 @@ mod lib_internal_tests {
         process_file_slurp(&path, &cp, &mut range_state, &mut rt).unwrap();
         let _ = std::fs::remove_file(&path);
         assert_eq!(rt.print_buf, b"aX", "print_buf={:?}", rt.print_buf);
+    }
+
+    #[test]
+    fn parse_ascii_integer_bytes_signs_and_digits() {
+        assert_eq!(parse_ascii_integer_bytes(b""), None);
+        assert_eq!(parse_ascii_integer_bytes(b"+"), None);
+        assert_eq!(parse_ascii_integer_bytes(b"-"), None);
+        assert_eq!(parse_ascii_integer_bytes(b"42"), Some(42));
+        assert_eq!(parse_ascii_integer_bytes(b"-7"), Some(-7));
+        assert_eq!(parse_ascii_integer_bytes(b"+0"), Some(0));
+        assert_eq!(parse_ascii_integer_bytes(b"12x"), None);
+    }
+
+    #[test]
+    fn parse_ascii_integer_bytes_overflow_returns_none() {
+        assert!(parse_ascii_integer_bytes(b"999999999999999999999999").is_none());
+    }
+
+    #[test]
+    fn parse_ascii_integer_bytes_rejects_leading_whitespace() {
+        assert_eq!(parse_ascii_integer_bytes(b" 42"), None);
+    }
+
+    #[test]
+    fn parse_number_bytes_integer_and_float_paths() {
+        assert_eq!(parse_number_bytes(b""), 0.0);
+        assert_eq!(parse_number_bytes(b"0"), 0.0);
+        assert_eq!(parse_number_bytes(b"-12"), -12.0);
+        assert_eq!(parse_number_bytes(b"3.25"), 3.25);
+        assert_eq!(parse_number_bytes(b"1e2"), 100.0);
+    }
+
+    #[test]
+    fn parse_number_bytes_plus_sign_integer() {
+        assert_eq!(parse_number_bytes(b"+99"), 99.0);
+    }
+
+    #[test]
+    fn parse_number_bytes_does_not_strip_padding_float_parse_fails_to_zero() {
+        // `parse_ascii_integer_bytes` rejects leading space; `f64::from_str` does not trim the
+        // full buffer either, so padded tokens fall through to 0.0 (callers that scan fields trim).
+        assert_eq!(parse_number_bytes(b"  3.5\t"), 0.0);
+        assert_eq!(parse_number_bytes(b"\n1e2\r"), 0.0);
+    }
+
+    #[test]
+    fn parse_nth_field_number_ws_decimal_scientific_token() {
+        assert_eq!(parse_nth_field_number_ws(b"x 2e3", 2), 2000.0);
+    }
+
+    #[test]
+    fn parse_nth_field_number_ws_skips_leading_ws_and_tabs() {
+        assert_eq!(parse_nth_field_number_ws(b"\t 10 20", 1), 10.0);
+        assert_eq!(parse_nth_field_number_ws(b"a 3.5", 2), 3.5);
+        assert_eq!(parse_nth_field_number_ws(b"only_one", 3), 0.0);
+    }
+
+    #[test]
+    fn parse_two_fields_number_ws_single_scan() {
+        let (a, b) = parse_two_fields_number_ws(b"2 3\noops", 1, 2, 2);
+        assert_eq!((a, b), (2.0, 3.0));
+        let (x, y) = parse_two_fields_number_ws(b"7 8 9", 1, 1, 1);
+        assert_eq!((x, y), (7.0, 7.0));
+    }
+
+    #[test]
+    fn parse_two_fields_number_ws_out_of_order_indices() {
+        let (second, first) = parse_two_fields_number_ws(b"11 22 33", 2, 1, 2);
+        assert_eq!((first, second), (11.0, 22.0));
+    }
+
+    #[test]
+    fn parse_two_fields_number_ws_stops_after_max_field() {
+        let (a, b) = parse_two_fields_number_ws(b"1 2 999", 1, 3, 2);
+        assert_eq!((a, b), (1.0, 0.0));
+    }
+
+    #[test]
+    fn rs_is_default_newline_tracks_rs_var() {
+        let mut rt = Runtime::new();
+        assert!(rs_is_default_newline(&rt));
+        rt.vars.insert("RS".into(), Value::Str("".into()));
+        assert!(!rs_is_default_newline(&rt));
+    }
+
+    #[test]
+    fn process_file_add_field_to_slot_raw_accumulates() {
+        let mut rt = Runtime::new();
+        rt.slots = vec![Value::Num(0.0)];
+        process_file_add_field_to_slot_raw(b"a 10\n20 30\n", 2, 0, &mut rt).unwrap();
+        assert!((rt.slots[0].as_number() - 40.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn process_file_add_mul_fields_to_slot_raw_accumulates_products() {
+        let mut rt = Runtime::new();
+        rt.slots = vec![Value::Num(0.0)];
+        process_file_add_mul_fields_to_slot_raw(b"2 3\n4 5\n", 1, 2, 0, &mut rt).unwrap();
+        assert!((rt.slots[0].as_number() - 26.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn detect_inline_program_eligible_literal_regex_print_dollar_paren_float_field() {
+        // Integer field indices use `PushNumDecimalStr`; a float literal forces `PushNum` so the
+        // `PrintFieldStdout` peephole can fire.
+        let prog = parse_program("/needle/ { print $(1.0) }").unwrap();
+        let cp = Compiler::compile_program(&prog).unwrap();
+        let rt = Runtime::new();
+        let opt = detect_inline_program(&cp, &rt);
+        let Some((pat, act)) = opt else {
+            panic!(
+                "expected inline path, ops={:?}",
+                cp.record_rules[0].body.ops
+            );
+        };
+        assert!(matches!(pat, InlinePattern::LiteralContains(ref s) if s == "needle"));
+        assert!(matches!(act, InlineAction::PrintFieldStdout(1)));
+    }
+
+    #[test]
+    fn detect_inline_program_nr_mod_eq_when_pattern_uses_push_num() {
+        let ops = vec![
+            Op::GetNR,
+            Op::PushNum(3.0),
+            Op::Mod,
+            Op::PushNum(1.0),
+            Op::CmpEq,
+        ];
+        assert_eq!(match_nr_mod_eq_pattern(&ops), Some((3.0, 1.0)));
+        let prog = parse_program("BEGIN { x = 1 }").unwrap();
+        let mut cp = Compiler::compile_program(&prog).unwrap();
+        cp.record_rules = vec![crate::bytecode::CompiledRule {
+            pattern: crate::bytecode::CompiledPattern::Expr(crate::bytecode::Chunk::from_ops(ops)),
+            body: crate::bytecode::Chunk::from_ops(vec![Op::PrintFieldStdout(1)]),
+            original_index: 0,
+        }];
+        let rt = Runtime::new();
+        let opt = detect_inline_program(&cp, &rt).expect("NR mod + PrintFieldStdout");
+        assert!(matches!(
+            opt.0,
+            InlinePattern::NrModEq {
+                modulus: 3.0,
+                eq_val: 1.0
+            }
+        ));
+    }
+
+    #[test]
+    fn detect_inline_program_disabled_for_nondefault_rs() {
+        let prog = parse_program("{ print $1 }").unwrap();
+        let cp = Compiler::compile_program(&prog).unwrap();
+        let mut rt = Runtime::new();
+        rt.vars.insert("RS".into(), Value::Str("XX".into()));
+        assert!(detect_inline_program(&cp, &rt).is_none());
+    }
+
+    #[test]
+    fn detect_inline_program_disabled_multiple_rules() {
+        let prog = parse_program("{ print $1 } { print $2 }").unwrap();
+        let cp = Compiler::compile_program(&prog).unwrap();
+        let rt = Runtime::new();
+        assert!(detect_inline_program(&cp, &rt).is_none());
     }
 }
 

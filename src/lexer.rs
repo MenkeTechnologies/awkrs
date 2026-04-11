@@ -577,6 +577,18 @@ mod tests {
     }
 
     #[test]
+    fn lex_shift_right_gt_gt() {
+        assert_eq!(
+            tokens_no_regex("x >> 1"),
+            vec![
+                Token::Ident("x".into()),
+                Token::GtGt,
+                Token::IntegerLiteral("1".into()),
+            ]
+        );
+    }
+
+    #[test]
     fn lex_keywords_and_ident() {
         assert_eq!(
             tokens_no_regex("BEGIN END BEGINFILE ENDFILE print printf"),
@@ -588,6 +600,10 @@ mod tests {
                 Token::Print,
                 Token::Printf,
             ]
+        );
+        assert_eq!(
+            tokens_no_regex("next nextfile break continue"),
+            vec![Token::Next, Token::NextFile, Token::Break, Token::Continue,]
         );
         assert_eq!(
             tokens_no_regex("function getline return delete"),
@@ -823,5 +839,114 @@ mod tests {
             tokens_no_regex("switch case default"),
             vec![Token::Switch, Token::Case, Token::Default]
         );
+    }
+
+    #[test]
+    fn lex_empty_string_literal() {
+        let mut l = Lexer::new(r#""""#);
+        match l.next_token(false).unwrap() {
+            Token::String(s) => assert!(s.is_empty()),
+            t => panic!("expected String, got {t:?}"),
+        }
+    }
+
+    #[test]
+    fn lex_hex_integer_literal() {
+        assert_eq!(
+            tokens_no_regex("0x10 0xFF"),
+            vec![
+                Token::IntegerLiteral("16".into()),
+                Token::IntegerLiteral("255".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn lex_hex_empty_errors() {
+        let mut l = Lexer::new("0x");
+        assert!(l.next_token(false).is_err());
+    }
+
+    #[test]
+    fn lex_octal_integer_literal() {
+        assert_eq!(
+            tokens_no_regex("077"),
+            vec![Token::IntegerLiteral("63".into())]
+        );
+    }
+
+    #[test]
+    fn lex_leading_zero_non_octal_digits_decimal() {
+        assert_eq!(
+            tokens_no_regex("01238"),
+            vec![Token::IntegerLiteral("01238".into())]
+        );
+    }
+
+    #[test]
+    fn lex_octal_prefix_float_forces_decimal_parse() {
+        let mut l = Lexer::new("077.5");
+        match l.next_token(false).unwrap() {
+            Token::Number(n) => assert!((n - 77.5).abs() < 1e-12),
+            t => panic!("expected Number(77.5), got {t:?}"),
+        }
+    }
+
+    #[test]
+    fn lex_unterminated_string_errors() {
+        let mut l = Lexer::new("\"abc");
+        assert!(l.next_token(false).is_err());
+    }
+
+    #[test]
+    fn lex_newline_inside_string_errors() {
+        let mut l = Lexer::new("\"a\nb\"");
+        assert!(l.next_token(false).is_err());
+    }
+
+    #[test]
+    fn lex_string_backslash_at_eof_errors() {
+        let mut l = Lexer::new("\"x\\");
+        assert!(l.next_token(false).is_err());
+    }
+
+    #[test]
+    fn lex_qualified_ident_requires_segment_after_double_colon() {
+        let mut l = Lexer::new("ns::");
+        assert!(l.next_token(false).is_err());
+    }
+
+    #[test]
+    fn lex_scientific_notation_splits_integer_and_ident() {
+        // Lexer does not fold `e` exponents into one float token; callers rely on parse layer.
+        assert_eq!(
+            tokens_no_regex("1e3"),
+            vec![Token::IntegerLiteral("1".into()), Token::Ident("e3".into())]
+        );
+    }
+
+    #[test]
+    fn lex_at_token_for_indirect_call() {
+        assert_eq!(tokens_no_regex("@"), vec![Token::At]);
+    }
+
+    #[test]
+    fn lex_div_assign_token() {
+        assert_eq!(tokens_no_regex("/="), vec![Token::DivAssign]);
+    }
+
+    #[test]
+    fn lex_caret_followed_by_assign_is_two_tokens() {
+        assert_eq!(tokens_no_regex("^="), vec![Token::Caret, Token::Assign]);
+    }
+
+    #[test]
+    fn lex_mod_assign_token() {
+        assert_eq!(tokens_no_regex("%="), vec![Token::ModAssign]);
+    }
+
+    #[test]
+    fn lex_single_gt_not_append() {
+        assert_eq!(tokens_no_regex(">"), vec![Token::Gt]);
     }
 }

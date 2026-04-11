@@ -4716,6 +4716,269 @@ mod tests {
     }
 
     #[test]
+    fn vm_begin_power_star_star() {
+        let cp = compile("BEGIN { print 2 ** 10 }");
+        let mut rt = runtime_with_slots(&cp);
+        vm_run_begin(&cp, &mut rt).unwrap();
+        assert_eq!(String::from_utf8_lossy(&rt.print_buf), "1024\n");
+    }
+
+    #[test]
+    fn vm_begin_intdiv_and_intdiv0() {
+        let cp = compile("BEGIN { print intdiv(7, 2), intdiv0(5, 0) }");
+        let mut rt = runtime_with_slots(&cp);
+        vm_run_begin(&cp, &mut rt).unwrap();
+        assert_eq!(String::from_utf8_lossy(&rt.print_buf), "3 0\n");
+    }
+
+    #[test]
+    fn vm_begin_index_empty_needle_is_one_miss_is_zero() {
+        let cp = compile(r#"BEGIN { print index("abc", ""), index("abc", "x") }"#);
+        let mut rt = runtime_with_slots(&cp);
+        vm_run_begin(&cp, &mut rt).unwrap();
+        assert_eq!(String::from_utf8_lossy(&rt.print_buf), "1 0\n");
+    }
+
+    #[test]
+    fn vm_begin_index_finds_first_byte_substring() {
+        let cp = compile(r#"BEGIN { print index("abc", "bc") }"#);
+        let mut rt = runtime_with_slots(&cp);
+        vm_run_begin(&cp, &mut rt).unwrap();
+        assert_eq!(String::from_utf8_lossy(&rt.print_buf), "2\n");
+    }
+
+    #[test]
+    fn vm_begin_substr_zero_length_yields_empty() {
+        let cp = compile(r#"BEGIN { print "[" substr("hello", 2, 0) "]" }"#);
+        let mut rt = runtime_with_slots(&cp);
+        vm_run_begin(&cp, &mut rt).unwrap();
+        assert_eq!(String::from_utf8_lossy(&rt.print_buf), "[]\n");
+    }
+
+    #[test]
+    fn vm_begin_substr_omitted_length_takes_rest() {
+        let cp = compile(r#"BEGIN { print substr("abcdef", 3) }"#);
+        let mut rt = runtime_with_slots(&cp);
+        vm_run_begin(&cp, &mut rt).unwrap();
+        assert_eq!(String::from_utf8_lossy(&rt.print_buf), "cdef\n");
+    }
+
+    #[test]
+    fn vm_begin_split_returns_count_and_fills_array() {
+        let cp = compile(r#"BEGIN { n = split("a,b,c", t, ","); print n, t[1], t[2], t[3] }"#);
+        let mut rt = runtime_with_slots(&cp);
+        vm_run_begin(&cp, &mut rt).unwrap();
+        assert_eq!(String::from_utf8_lossy(&rt.print_buf), "3 a b c\n");
+    }
+
+    #[test]
+    fn vm_begin_asort_reorders_numeric_values() {
+        let cp = compile("BEGIN { a[1]=30; a[2]=10; a[3]=20; asort(a); print a[1], a[2], a[3] }");
+        let mut rt = runtime_with_slots(&cp);
+        vm_run_begin(&cp, &mut rt).unwrap();
+        assert_eq!(String::from_utf8_lossy(&rt.print_buf), "10 20 30\n");
+    }
+
+    #[test]
+    fn vm_begin_atan2_pi_over_four() {
+        let cp = compile("BEGIN { print atan2(1, 1) }");
+        let mut rt = runtime_with_slots(&cp);
+        vm_run_begin(&cp, &mut rt).unwrap();
+        let v: f64 = String::from_utf8_lossy(&rt.print_buf)
+            .trim()
+            .parse()
+            .unwrap();
+        // Default `OFMT` rounds; parsed text is not full `f64` precision.
+        assert!((v - std::f64::consts::FRAC_PI_4).abs() < 1e-5, "got {v}");
+    }
+
+    #[test]
+    fn vm_begin_atan2_wrong_arity_errors() {
+        let cp = compile("BEGIN { print atan2(1) }");
+        let mut rt = runtime_with_slots(&cp);
+        let e = vm_run_begin(&cp, &mut rt).unwrap_err();
+        assert!(e.to_string().contains("atan2"), "{e:?}");
+    }
+
+    #[test]
+    fn vm_begin_systime_with_arg_errors() {
+        let cp = compile("BEGIN { print systime(1) }");
+        let mut rt = runtime_with_slots(&cp);
+        let e = vm_run_begin(&cp, &mut rt).unwrap_err();
+        assert!(e.to_string().contains("systime"), "{e:?}");
+    }
+
+    #[test]
+    fn vm_begin_srand_resets_rand_sequence() {
+        let cp = compile("BEGIN { srand(42); a = rand(); srand(42); b = rand(); print (a == b) }");
+        let mut rt = runtime_with_slots(&cp);
+        vm_run_begin(&cp, &mut rt).unwrap();
+        assert_eq!(String::from_utf8_lossy(&rt.print_buf), "1\n");
+    }
+
+    #[test]
+    fn vm_begin_isarray_and_typeof_scalar_elem() {
+        let cp = compile("BEGIN { a[1] = 7; print isarray(a), typeof(a[1]) }");
+        let mut rt = runtime_with_slots(&cp);
+        vm_run_begin(&cp, &mut rt).unwrap();
+        assert_eq!(String::from_utf8_lossy(&rt.print_buf), "1 number\n");
+    }
+
+    #[test]
+    fn vm_begin_gensub_global_returns_modified_string() {
+        let cp = compile(r#"BEGIN { print gensub(/[0-9]/, "X", "g", "a1b2") }"#);
+        let mut rt = runtime_with_slots(&cp);
+        vm_run_begin(&cp, &mut rt).unwrap();
+        assert_eq!(String::from_utf8_lossy(&rt.print_buf), "aXbX\n");
+    }
+
+    #[test]
+    fn vm_begin_tolower_toupper_roundtrip_shape() {
+        let cp = compile(r#"BEGIN { print toupper("aBc"), tolower("XyZ") }"#);
+        let mut rt = runtime_with_slots(&cp);
+        vm_run_begin(&cp, &mut rt).unwrap();
+        assert_eq!(String::from_utf8_lossy(&rt.print_buf), "ABC xyz\n");
+    }
+
+    #[test]
+    fn vm_begin_sqrt_perfect_square() {
+        let cp = compile("BEGIN { print sqrt(9) }");
+        let mut rt = runtime_with_slots(&cp);
+        vm_run_begin(&cp, &mut rt).unwrap();
+        assert_eq!(String::from_utf8_lossy(&rt.print_buf), "3\n");
+    }
+
+    #[test]
+    fn vm_begin_sqrt_wrong_arity_errors() {
+        let cp = compile("BEGIN { print sqrt() }");
+        let mut rt = runtime_with_slots(&cp);
+        let e = vm_run_begin(&cp, &mut rt).unwrap_err();
+        assert!(e.to_string().contains("sqrt"), "{e:?}");
+    }
+
+    #[test]
+    fn vm_begin_log_one_is_zero() {
+        let cp = compile("BEGIN { print log(1) }");
+        let mut rt = runtime_with_slots(&cp);
+        vm_run_begin(&cp, &mut rt).unwrap();
+        assert_eq!(String::from_utf8_lossy(&rt.print_buf), "0\n");
+    }
+
+    #[test]
+    fn vm_begin_exp_zero_is_one() {
+        let cp = compile("BEGIN { print exp(0) }");
+        let mut rt = runtime_with_slots(&cp);
+        vm_run_begin(&cp, &mut rt).unwrap();
+        assert_eq!(String::from_utf8_lossy(&rt.print_buf), "1\n");
+    }
+
+    #[test]
+    fn vm_begin_length_no_args_uses_empty_record() {
+        let cp = compile("BEGIN { print length() }");
+        let mut rt = runtime_with_slots(&cp);
+        vm_run_begin(&cp, &mut rt).unwrap();
+        assert_eq!(String::from_utf8_lossy(&rt.print_buf), "0\n");
+    }
+
+    #[test]
+    fn vm_begin_length_string_argument_counts_chars() {
+        let cp = compile(r#"BEGIN { print length("hello") }"#);
+        let mut rt = runtime_with_slots(&cp);
+        vm_run_begin(&cp, &mut rt).unwrap();
+        assert_eq!(String::from_utf8_lossy(&rt.print_buf), "5\n");
+    }
+
+    #[test]
+    fn vm_begin_length_array_counts_entries() {
+        let cp = compile("BEGIN { a[1]=1; a[2]=2; a[99]=3; print length(a) }");
+        let mut rt = runtime_with_slots(&cp);
+        vm_run_begin(&cp, &mut rt).unwrap();
+        assert_eq!(String::from_utf8_lossy(&rt.print_buf), "3\n");
+    }
+
+    #[test]
+    fn vm_begin_sin_zero_and_cos_zero() {
+        let cp = compile("BEGIN { print sin(0), cos(0) }");
+        let mut rt = runtime_with_slots(&cp);
+        vm_run_begin(&cp, &mut rt).unwrap();
+        assert_eq!(String::from_utf8_lossy(&rt.print_buf), "0 1\n");
+    }
+
+    #[test]
+    fn vm_begin_sin_wrong_arity_errors() {
+        let cp = compile("BEGIN { print sin() }");
+        let mut rt = runtime_with_slots(&cp);
+        let e = vm_run_begin(&cp, &mut rt).unwrap_err();
+        assert!(e.to_string().contains("sin"), "{e:?}");
+    }
+
+    #[test]
+    fn vm_begin_int_truncates_toward_zero() {
+        let cp = compile("BEGIN { print int(3.9), int(-3.9) }");
+        let mut rt = runtime_with_slots(&cp);
+        vm_run_begin(&cp, &mut rt).unwrap();
+        assert_eq!(String::from_utf8_lossy(&rt.print_buf), "3 -3\n");
+    }
+
+    #[test]
+    fn vm_begin_mkbool_numeric_zero_vs_nonzero() {
+        let cp = compile("BEGIN { print mkbool(0), mkbool(0.5), mkbool(\"\") }");
+        let mut rt = runtime_with_slots(&cp);
+        vm_run_begin(&cp, &mut rt).unwrap();
+        assert_eq!(String::from_utf8_lossy(&rt.print_buf), "0 1 0\n");
+    }
+
+    #[test]
+    fn vm_begin_mkbool_wrong_arity_errors() {
+        let cp = compile("BEGIN { print mkbool() }");
+        let mut rt = runtime_with_slots(&cp);
+        let e = vm_run_begin(&cp, &mut rt).unwrap_err();
+        assert!(e.to_string().contains("mkbool"), "{e:?}");
+    }
+
+    #[test]
+    fn vm_begin_many_rand_draws_stay_in_half_open_unit_interval() {
+        let cp = compile(
+            "BEGIN { bad = 0; for (i = 1; i <= 80; i++) { r = rand(); if (r < 0 || r >= 1) bad++ } print bad }",
+        );
+        let mut rt = runtime_with_slots(&cp);
+        vm_run_begin(&cp, &mut rt).unwrap();
+        assert_eq!(String::from_utf8_lossy(&rt.print_buf), "0\n");
+    }
+
+    #[test]
+    fn vm_user_function_bare_return_runs() {
+        let cp = compile("function f(){ return } BEGIN { f(); print \"ok\" }");
+        let mut rt = runtime_with_slots(&cp);
+        vm_run_begin(&cp, &mut rt).unwrap();
+        assert_eq!(String::from_utf8_lossy(&rt.print_buf), "ok\n");
+    }
+
+    #[test]
+    fn vm_begin_ofs_between_output_fields() {
+        let cp = compile(r#"BEGIN { OFS = "|"; print "a", "b" }"#);
+        let mut rt = runtime_with_slots(&cp);
+        vm_run_begin(&cp, &mut rt).unwrap();
+        assert_eq!(String::from_utf8_lossy(&rt.print_buf), "a|b\n");
+    }
+
+    #[test]
+    fn vm_begin_ors_after_each_print() {
+        let cp = compile(r#"BEGIN { ORS = "X"; print "p"; print "q" }"#);
+        let mut rt = runtime_with_slots(&cp);
+        vm_run_begin(&cp, &mut rt).unwrap();
+        assert_eq!(String::from_utf8_lossy(&rt.print_buf), "pXqX");
+    }
+
+    #[test]
+    fn vm_begin_multidim_array_assign_and_read() {
+        let cp = compile("BEGIN { a[1,2] = 42; print a[1,2] }");
+        let mut rt = runtime_with_slots(&cp);
+        vm_run_begin(&cp, &mut rt).unwrap();
+        assert_eq!(String::from_utf8_lossy(&rt.print_buf), "42\n");
+    }
+
+    #[test]
     fn vm_begin_next_is_invalid() {
         let cp = compile("BEGIN { next }");
         let mut rt = runtime_with_slots(&cp);
@@ -4724,6 +4987,23 @@ mod tests {
             Error::Runtime(s) => assert!(s.contains("next"), "{s}"),
             _ => panic!("unexpected err: {e:?}"),
         }
+    }
+
+    #[test]
+    fn vm_begin_nextfile_is_invalid() {
+        let cp = compile("BEGIN { nextfile }");
+        let mut rt = runtime_with_slots(&cp);
+        let e = vm_run_begin(&cp, &mut rt).unwrap_err();
+        assert!(e.to_string().contains("nextfile"), "{e:?}");
+    }
+
+    #[test]
+    fn vm_end_nextfile_is_invalid() {
+        let cp = compile("END { nextfile }");
+        let mut rt = runtime_with_slots(&cp);
+        vm_run_begin(&cp, &mut rt).unwrap();
+        let e = vm_run_end(&cp, &mut rt).unwrap_err();
+        assert!(e.to_string().contains("nextfile"), "{e:?}");
     }
 
     #[test]

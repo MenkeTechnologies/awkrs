@@ -47,3 +47,24 @@ pub fn try_load_gettext_catalog(domain: &str, dirname: &str) -> Option<Arc<Catal
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn try_load_missing_catalog_returns_none() {
+        let tmp = std::env::temp_dir().join(format!(
+            "awkrs_no_mo_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        assert!(
+            try_load_gettext_catalog("nonexistent_domain", tmp.to_string_lossy().as_ref())
+                .is_none()
+        );
+    }
+}

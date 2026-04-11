@@ -179,4 +179,30 @@ mod tests {
     fn tagline_non_empty() {
         assert!(!tagline().is_empty());
     }
+
+    #[test]
+    fn status_box_middle_line_has_pipe_borders_and_version() {
+        let s = status_box("0.0.0-test");
+        assert!(
+            s.contains("0.0.0-test") && s.contains('│') && s.contains("ONLINE"),
+            "{s}"
+        );
+        let lines: Vec<_> = s.lines().collect();
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains('│') && line.contains("STATUS")),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn awkrs_logo_contains_awkrs_spelled_in_ascii_art() {
+        let logo = awkrs_logo();
+        assert!(
+            logo.contains("AWK") || logo.contains("awk") || logo.contains('█'),
+            "logo should contain banner glyphs: len={}",
+            logo.len()
+        );
+    }
 }

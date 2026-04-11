@@ -127,7 +127,9 @@ fn expr_blocks_parallel(e: &Expr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::record_rules_parallel_safe;
+    use crate::ast::{Expr, FunctionDef, GetlineRedir, Pattern, Program, Rule, Stmt};
     use crate::parser::parse_program;
+    use std::collections::HashMap;
 
     #[test]
     fn parallel_safe_simple_print() {
@@ -193,5 +195,79 @@ mod tests {
     fn parallel_unsafe_print_redirect() {
         let p = parse_program(r#"{ print $1 > "out.txt" }"#).unwrap();
         assert!(!record_rules_parallel_safe(&p));
+    }
+
+    #[test]
+    fn parallel_unsafe_asort_in_record_rule() {
+        let p = parse_program("{ asort(a) }").unwrap();
+        assert!(!record_rules_parallel_safe(&p));
+    }
+
+    #[test]
+    fn parallel_unsafe_asorti_in_record_rule() {
+        let p = parse_program("{ asorti(a) }").unwrap();
+        assert!(!record_rules_parallel_safe(&p));
+    }
+
+    #[test]
+    fn parallel_safe_next_in_rule() {
+        let p = parse_program("{ next }").unwrap();
+        assert!(record_rules_parallel_safe(&p));
+    }
+
+    #[test]
+    fn parallel_safe_print_two_fields_implicit_concat_ok() {
+        let p = parse_program("{ print $1, $2 }").unwrap();
+        assert!(record_rules_parallel_safe(&p));
+    }
+
+    #[test]
+    fn parallel_unsafe_switch_case_with_assignment() {
+        let p = parse_program(r#"BEGIN { x = 1 } { switch (x) { case 1: y = 2 } }"#).unwrap();
+        assert!(!record_rules_parallel_safe(&p));
+    }
+
+    #[test]
+    fn parallel_unsafe_getline_pipe_from_command_string() {
+        let p = parse_program(r#"{ "true" | getline x }"#).unwrap();
+        assert!(!record_rules_parallel_safe(&p));
+    }
+
+    #[test]
+    fn parallel_unsafe_expr_stmt_primary_getline() {
+        let prog = Program {
+            rules: vec![Rule {
+                pattern: Pattern::Empty,
+                stmts: vec![Stmt::Expr(Expr::GetLine {
+                    pipe_cmd: None,
+                    var: Some("x".into()),
+                    redir: GetlineRedir::Primary,
+                })],
+            }],
+            funcs: HashMap::new(),
+        };
+        assert!(!record_rules_parallel_safe(&prog));
+    }
+
+    #[test]
+    fn parallel_unsafe_indirect_call_in_record_rule() {
+        let prog = Program {
+            rules: vec![Rule {
+                pattern: Pattern::Empty,
+                stmts: vec![Stmt::Expr(Expr::IndirectCall {
+                    callee: Box::new(Expr::Var("callee".into())),
+                    args: vec![Expr::Number(0.0)],
+                })],
+            }],
+            funcs: HashMap::from([(
+                "dummy".into(),
+                FunctionDef {
+                    name: "dummy".into(),
+                    params: vec![],
+                    body: vec![],
+                },
+            )]),
+        };
+        assert!(!record_rules_parallel_safe(&prog));
     }
 }
