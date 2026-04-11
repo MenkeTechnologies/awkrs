@@ -4,6 +4,11 @@ use crate::bignum::{float_trunc_integer, mpfr_string_for_percent_s, value_to_mpf
 use crate::runtime::Value;
 use rug::float::Round;
 
+#[inline]
+fn fmt_peek(fmt: &str, i: usize) -> Option<char> {
+    fmt.get(i..)?.chars().next()
+}
+
 /// Default C-locale radix (`.`). Use [`awk_sprintf_with_decimal`] when `-N` applies.
 pub fn awk_sprintf(fmt: &str, vals: &[Value]) -> Result<String, String> {
     awk_sprintf_with_decimal(fmt, vals, '.', Some(','), None)
@@ -16,31 +21,34 @@ pub fn awk_sprintf_with_decimal(
     thousands_sep: Option<char>,
     mpfr_mode: Option<(u32, Round)>,
 ) -> Result<String, String> {
-    let chars: Vec<char> = fmt.chars().collect();
     let mut out = String::new();
     let mut vi = 0usize;
     let mut i = 0usize;
-    while i < chars.len() {
-        if chars[i] != '%' {
-            out.push(chars[i]);
-            i += 1;
+    while i < fmt.len() {
+        let c = fmt_peek(fmt, i).ok_or_else(|| "truncated format".to_string())?;
+        if c != '%' {
+            out.push(c);
+            i += c.len_utf8();
             continue;
         }
-        i += 1;
-        if i >= chars.len() {
+        i += c.len_utf8();
+        if i >= fmt.len() {
             return Err("truncated format".into());
         }
         // Optional `%m$` — digits must be followed by `$` or we rewind and treat as flags/width.
         let start_after_pct = i;
         let mut m = 0usize;
         let mut has_digits = false;
-        while i < chars.len() && chars[i].is_ascii_digit() {
+        while let Some(ch) = fmt_peek(fmt, i) {
+            if !ch.is_ascii_digit() {
+                break;
+            }
             has_digits = true;
-            m = m * 10 + (chars[i] as u8 - b'0') as usize;
-            i += 1;
+            m = m * 10 + (ch as u8 - b'0') as usize;
+            i += ch.len_utf8();
         }
-        let val_pos = if has_digits && i < chars.len() && chars[i] == '$' {
-            i += 1;
+        let val_pos = if has_digits && fmt_peek(fmt, i) == Some('$') {
+            i += '$'.len_utf8();
             if m == 0 {
                 return Err("sprintf: positional argument was 0".into());
             }
@@ -50,7 +58,7 @@ pub fn awk_sprintf_with_decimal(
             None
         };
         let (piece, new_i) = parse_conversion_rest(
-            &chars,
+            fmt,
             i,
             vals,
             &mut vi,
@@ -81,7 +89,7 @@ fn val_at(vals: &[Value], one_based: usize) -> Result<&Value, String> {
 /// After a `*` in width or precision: either `n$` (positional) or sequential `take_val`.
 /// Updates `vi` to at least `n` when `n$` is used so following sequential args align with POSIX.
 fn parse_star_value(
-    chars: &[char],
+    fmt: &str,
     mut i: usize,
     vals: &[Value],
     vi: &mut usize,
@@ -89,13 +97,16 @@ fn parse_star_value(
     let start = i;
     let mut n = 0usize;
     let mut has_digits = false;
-    while i < chars.len() && chars[i].is_ascii_digit() {
+    while let Some(ch) = fmt_peek(fmt, i) {
+        if !ch.is_ascii_digit() {
+            break;
+        }
         has_digits = true;
-        n = n * 10 + (chars[i] as u8 - b'0') as usize;
-        i += 1;
+        n = n * 10 + (ch as u8 - b'0') as usize;
+        i += ch.len_utf8();
     }
-    if has_digits && i < chars.len() && chars[i] == '$' {
-        i += 1;
+    if has_digits && fmt_peek(fmt, i) == Some('$') {
+        i += '$'.len_utf8();
         let v = val_at(vals, n)?;
         *vi = (*vi).max(n);
         return Ok((v.as_number(), i));
@@ -107,7 +118,7 @@ fn parse_star_value(
 
 #[allow(clippy::too_many_arguments)] // sprintf flag bundle + mpfr mode
 fn parse_conversion_rest(
-    chars: &[char],
+    fmt: &str,
     mut i: usize,
     vals: &[Value],
     vi: &mut usize,
@@ -122,76 +133,75 @@ fn parse_conversion_rest(
     let mut alt = false;
     let mut pad_zero = false;
     let mut group = false;
-    while i < chars.len() {
-        match chars[i] {
+    loop {
+        let Some(flag) = fmt_peek(fmt, i) else {
+            break;
+        };
+        match flag {
             '-' => {
                 left = true;
-                i += 1;
+                i += flag.len_utf8();
             }
             '+' => {
                 sign = true;
-                i += 1;
+                i += flag.len_utf8();
             }
             ' ' => {
                 space = true;
-                i += 1;
+                i += flag.len_utf8();
             }
             '#' => {
                 alt = true;
-                i += 1;
+                i += flag.len_utf8();
             }
             '\'' => {
                 group = true;
-                i += 1;
+                i += flag.len_utf8();
             }
             '0' => {
                 pad_zero = true;
-                i += 1;
+                i += flag.len_utf8();
             }
             _ => break,
         }
     }
 
-    let (width, star_left, i2) = parse_width_or_star(chars, i, vals, vi)?;
+    let (width, star_left, i2) = parse_width_or_star(fmt, i, vals, vi)?;
     i = i2;
     if star_left {
         left = true;
     }
 
     let mut prec: Option<usize> = None;
-    if i < chars.len() && chars[i] == '.' {
-        i += 1;
-        if i < chars.len() && chars[i] == '*' {
-            i += 1;
-            let (p, i2) = parse_star_value(chars, i, vals, vi)?;
+    if fmt_peek(fmt, i) == Some('.') {
+        i += '.'.len_utf8();
+        if fmt_peek(fmt, i) == Some('*') {
+            i += '*'.len_utf8();
+            let (p, i2) = parse_star_value(fmt, i, vals, vi)?;
             i = i2;
             prec = Some(if p < 0.0 { 0 } else { p as usize });
         } else {
             let mut p = 0usize;
             let mut any = false;
-            while i < chars.len() {
-                let d = chars[i];
-                if d.is_ascii_digit() {
-                    p = p * 10 + (d as u8 - b'0') as usize;
-                    any = true;
-                    i += 1;
-                } else {
+            while let Some(d) = fmt_peek(fmt, i) {
+                if !d.is_ascii_digit() {
                     break;
                 }
+                p = p * 10 + (d as u8 - b'0') as usize;
+                any = true;
+                i += d.len_utf8();
             }
             prec = if any { Some(p) } else { Some(0) };
         }
     }
 
-    while i < chars.len() && matches!(chars[i], 'h' | 'l' | 'L') {
-        i += 1;
+    while matches!(fmt_peek(fmt, i), Some('h' | 'l' | 'L')) {
+        let m = fmt_peek(fmt, i).unwrap();
+        i += m.len_utf8();
     }
 
-    let conv = chars
-        .get(i)
-        .copied()
-        .ok_or_else(|| "truncated format".to_string())?;
-    i += 1;
+    let conv = fmt_peek(fmt, i).ok_or_else(|| "truncated format".to_string())?;
+    i += conv.len_utf8();
 
     if conv == '%' {
         return Ok(("%".to_string(), i));
@@ -356,14 +366,14 @@ fn sprintf_c_char(v: &Value) -> String {
 }
 
 fn parse_width_or_star(
-    chars: &[char],
+    fmt: &str,
     mut i: usize,
     vals: &[Value],
     vi: &mut usize,
 ) -> Result<(Option<usize>, bool, usize), String> {
-    if i < chars.len() && chars[i] == '*' {
-        i += 1;
-        let (n, i2) = parse_star_value(chars, i, vals, vi)?;
+    if fmt_peek(fmt, i) == Some('*') {
+        i += '*'.len_utf8();
+        let (n, i2) = parse_star_value(fmt, i, vals, vi)?;
         i = i2;
         if n < 0.0 {
             let w = (-n) as usize;
@@ -371,16 +381,14 @@ fn parse_width_or_star(
         }
         return Ok((Some(n as usize), false, i));
     }
-    if i < chars.len() && chars[i].is_ascii_digit() {
+    if fmt_peek(fmt, i).is_some_and(|c| c.is_ascii_digit()) {
         let mut w = 0usize;
-        while i < chars.len() {
-            let d = chars[i];
-            if d.is_ascii_digit() {
-                w = w * 10 + (d as u8 - b'0') as usize;
-                i += 1;
-            } else {
+        while let Some(d) = fmt_peek(fmt, i) {
+            if !d.is_ascii_digit() {
                 break;
             }
+            w = w * 10 + (d as u8 - b'0') as usize;
+            i += d.len_utf8();
         }
         return Ok((Some(w), false, i));
     }

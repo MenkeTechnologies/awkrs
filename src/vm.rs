@@ -96,30 +96,37 @@ impl<'a> VmCtx<'a> {
         Ok(())
     }
 
-    fn get_var(&mut self, name: &str) -> Value {
+    /// Scalar read for locals/slots/globals: [`Cow::Borrowed`] when stored (no clone);
+    /// [`Cow::Owned`] for synthesized scalars (`NR`, `NF`, …) or missing globals.
+    pub(crate) fn var_value_cow(&mut self, name: &str) -> Cow<'_, Value> {
         for frame in self.locals.iter().rev() {
             if let Some(v) = frame.get(name) {
-                return v.clone();
+                return Cow::Borrowed(v);
             }
         }
-        // Check slots (for builtins / cold path that access vars by name)
         if let Some(&slot) = self.cp.slot_map.get(name) {
-            return self.rt.slots[slot as usize].clone();
+            return Cow::Borrowed(&self.rt.slots[slot as usize]);
         }
+        // `NF` is synthesized from the record (`nf()`), not `vars["NF"]` (matches legacy `get_var`).
         if name == "NF" {
-            let n = self.rt.nf() as f64;
-            return Value::Num(n);
+            return Cow::Owned(Value::Num(self.rt.nf() as f64));
         }
-        self.rt
-            .get_global_var(name)
-            .cloned()
-            .unwrap_or_else(|| match name {
-                "NR" => Value::Num(self.rt.nr),
-                "FNR" => Value::Num(self.rt.fnr),
-                "NF" => Value::Num(self.rt.nf() as f64),
-                "FILENAME" => Value::Str(self.rt.filename.clone()),
-                _ => Value::Uninit,
-            })
+        if let Some(v) = self.rt.get_global_var(name) {
+            return Cow::Borrowed(v);
+        }
+        match name {
+            "NR" => Cow::Owned(Value::Num(self.rt.nr)),
+            "FNR" => Cow::Owned(Value::Num(self.rt.fnr)),
+            "FILENAME" => Cow::Owned(Value::Str(self.rt.filename.clone())),
+            _ => Cow::Owned(Value::Uninit),
+        }
+    }
+
+    fn get_var(&mut self, name: &str) -> Value {
+        match self.var_value_cow(name) {
+            Cow::Borrowed(v) => v.clone(),
+            Cow::Owned(v) => v,
+        }
     }
 
     /// `arr[key]` — `SYMTAB` uses live global/slot resolution (gawk lvalue semantics).
@@ -655,14 +662,13 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
             value_to_jit_f64(ctx, Value::Str(s))
         }
         MIXED_CONCAT_POOL => {
-            let pool = ctx.str_ref(a1).to_string();
             let a = jit_f64_to_value(ctx, a2);
             if let Err(e) = a.reject_if_array_scalar() {
                 JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
                 return 0.0;
             }
             let mut s = a.into_string();
-            s.push_str(&pool);
+            s.push_str(ctx.str_ref(a1));
             value_to_jit_f64(ctx, Value::Str(s))
         }
         MIXED_ADD | MIXED_SUB | MIXED_MUL | MIXED_DIV | MIXED_MOD | MIXED_POW => {
@@ -1760,7 +1766,10 @@ extern "C" fn jit_var_dispatch(vmctx: *mut c_void, op: u32, name_idx: u32, arg: 
                 arg
             }
             JIT_VAR_OP_INCR => {
-                let n = ctx.get_var(name_owned.as_str()).as_number();
+                let n = match ctx.var_value_cow(name_owned.as_str()) {
+                    Cow::Borrowed(v) => v.as_number(),
+                    Cow::Owned(v) => v.as_number(),
+                };
                 if let Err(e) = ctx.set_var(name_owned.as_str(), Value::Num(n + 1.0)) {
                     JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
                     return 0.0;
@@ -1769,7 +1778,10 @@ extern "C" fn jit_var_dispatch(vmctx: *mut c_void, op: u32, name_idx: u32, arg: 
                 0.0
             }
             JIT_VAR_OP_DECR => {
-                let n = ctx.get_var(name_owned.as_str()).as_number();
+                let n = match ctx.var_value_cow(name_owned.as_str()) {
+                    Cow::Borrowed(v) => v.as_number(),
+                    Cow::Owned(v) => v.as_number(),
+                };
                 if let Err(e) = ctx.set_var(name_owned.as_str(), Value::Num(n - 1.0)) {
                     JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
                     return 0.0;
@@ -1790,7 +1802,10 @@ extern "C" fn jit_var_dispatch(vmctx: *mut c_void, op: u32, name_idx: u32, arg: 
                     JIT_VAR_OP_COMPOUND_MOD => BinOp::Mod,
                     _ => unreachable!(),
                 };
-                let old = ctx.get_var(name_owned.as_str());
+                let old = match ctx.var_value_cow(name_owned.as_str()) {
+                    Cow::Borrowed(v) => v.clone(),
+                    Cow::Owned(v) => v,
+                };
                 let rhs = Value::Num(arg);
                 let new_val = match apply_binop(bop, &old, &rhs, false, ctx.rt) {
                     Ok(v) => v,
@@ -1818,7 +1833,10 @@ extern "C" fn jit_var_dispatch(vmctx: *mut c_void, op: u32, name_idx: u32, arg: 
                     JIT_VAR_OP_INCDEC_POST_DEC => IncDecOp::PostDec,
                     _ => unreachable!(),
                 };
-                let old = ctx.get_var(name_owned.as_str());
+                let old = match ctx.var_value_cow(name_owned.as_str()) {
+                    Cow::Borrowed(v) => v.clone(),
+                    Cow::Owned(v) => v,
+                };
                 let old_n = old.as_number();
                 let delta = incdec_delta(kind);
                 let new_n = old_n + delta;
@@ -2615,7 +2633,10 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 let new_val = ctx.with_short_pool_name_mut(
                     idx,
                     |ctx, name| -> crate::error::Result<Value> {
-                        let old = ctx.get_var(name);
+                        let old = match ctx.var_value_cow(name) {
+                            Cow::Borrowed(v) => v.clone(),
+                            Cow::Owned(v) => v,
+                        };
                         let new_val = apply_binop(bop, &old, &rhs, ctx.rt.bignum, ctx.rt)?;
                         ctx.set_var(name, new_val.clone())?;
                         Ok(new_val)
@@ -2665,7 +2686,10 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                     let round = ctx.rt.mpfr_round();
                     let pushed =
                         ctx.with_short_pool_name_mut(idx, |ctx, name| -> Result<Value> {
-                            let old = ctx.get_var(name);
+                            let old = match ctx.var_value_cow(name) {
+                                Cow::Borrowed(v) => v.clone(),
+                                Cow::Owned(v) => v,
+                            };
                             let old_f = value_to_float(&old, prec, round);
                             let d = Float::with_val(prec, delta);
                             let new_f = Float::with_val_round(prec, &old_f + &d, round).0;
@@ -2679,8 +2703,10 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 } else {
                     let (old_n, new_n) =
                         ctx.with_short_pool_name_mut(idx, |ctx, name| -> Result<(f64, f64)> {
-                            let old = ctx.get_var(name);
-                            let old_n = old.as_number();
+                            let old_n = match ctx.var_value_cow(name) {
+                                Cow::Borrowed(v) => v.as_number(),
+                                Cow::Owned(v) => v.as_number(),
+                            };
                             let new_n = old_n + delta;
                             ctx.set_var(name, Value::Num(new_n))?;
                             Ok((old_n, new_n))
@@ -2693,7 +2719,10 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                     let prec = ctx.rt.mpfr_prec_bits();
                     let round = ctx.rt.mpfr_round();
                     ctx.with_short_pool_name_mut(idx, |ctx, name| -> Result<()> {
-                        let old = ctx.get_var(name);
+                        let old = match ctx.var_value_cow(name) {
+                            Cow::Borrowed(v) => v.clone(),
+                            Cow::Owned(v) => v,
+                        };
                         let old_f = value_to_float(&old, prec, round);
                         let d = Float::with_val(prec, 1.0);
                         let new_f = Float::with_val_round(prec, &old_f + &d, round).0;
@@ -2702,7 +2731,10 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                     })?;
                 } else {
                     ctx.with_short_pool_name_mut(idx, |ctx, name| -> Result<()> {
-                        let n = ctx.get_var(name).as_number();
+                        let n = match ctx.var_value_cow(name) {
+                            Cow::Borrowed(v) => v.as_number(),
+                            Cow::Owned(v) => v.as_number(),
+                        };
                         ctx.set_var(name, Value::Num(n + 1.0))?;
                         Ok(())
                     })?;
@@ -2713,7 +2745,10 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                     let prec = ctx.rt.mpfr_prec_bits();
                     let round = ctx.rt.mpfr_round();
                     ctx.with_short_pool_name_mut(idx, |ctx, name| -> Result<()> {
-                        let old = ctx.get_var(name);
+                        let old = match ctx.var_value_cow(name) {
+                            Cow::Borrowed(v) => v.clone(),
+                            Cow::Owned(v) => v,
+                        };
                         let old_f = value_to_float(&old, prec, round);
                         let d = Float::with_val(prec, 1.0);
                         let new_f = Float::with_val_round(prec, &old_f - &d, round).0;
@@ -2722,7 +2757,10 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                     })?;
                 } else {
                     ctx.with_short_pool_name_mut(idx, |ctx, name| -> Result<()> {
-                        let n = ctx.get_var(name).as_number();
+                        let n = match ctx.var_value_cow(name) {
+                            Cow::Borrowed(v) => v.as_number(),
+                            Cow::Owned(v) => v.as_number(),
+                        };
                         ctx.set_var(name, Value::Num(n - 1.0))?;
                         Ok(())
                     })?;
@@ -3842,7 +3880,10 @@ pub(crate) fn exec_sub_from_values(
         }
         SubTarget::Var(name_idx) => {
             let name = ctx.str_ref(name_idx).to_string();
-            let mut s = ctx.get_var(&name).as_str();
+            let mut s = match ctx.var_value_cow(&name) {
+                Cow::Borrowed(v) => v.as_str(),
+                Cow::Owned(v) => v.as_str(),
+            };
             let n = if is_global {
                 builtins::gsub(ctx.rt, re.as_ref(), repl.as_ref(), Some(&mut s))?
             } else {

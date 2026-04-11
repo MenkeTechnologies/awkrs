@@ -874,8 +874,10 @@ pub struct Runtime {
     pub numeric_thousands_sep: Option<char>,
     /// Indexed variable slots for the bytecode VM (fast Vec access instead of HashMap).
     pub slots: Vec<Value>,
-    /// Compiled regex cache — avoids recompiling the same pattern every record.
-    pub regex_cache: AwkMap<String, Regex>,
+    /// Compiled regex cache (case-sensitive) — avoids recompiling the same pattern every record.
+    pub regex_cache_cs: AwkMap<String, Regex>,
+    /// Compiled regex cache when [`Self::ignore_case_flag`] is true.
+    pub regex_cache_ci: AwkMap<String, Regex>,
     /// Cached substring searchers for literal `sub`/`gsub` patterns — faster than `str::contains` per line.
     pub memmem_finder_cache: AwkMap<String, memmem::Finder<'static>>,
     /// Persistent stdout buffer — shared across record iterations, flushed at file boundaries.
@@ -982,7 +984,8 @@ impl Runtime {
             numeric_decimal: '.',
             numeric_thousands_sep: crate::locale_numeric::thousands_sep_from_locale().or(Some(',')),
             slots: Vec::new(),
-            regex_cache: AwkMap::default(),
+            regex_cache_cs: AwkMap::default(),
+            regex_cache_ci: AwkMap::default(),
             memmem_finder_cache: AwkMap::default(),
             print_buf: Vec::with_capacity(DEFAULT_PRINT_BUF_CAPACITY),
             ofs_bytes: b" ".to_vec(),
@@ -1370,7 +1373,8 @@ impl Runtime {
             numeric_decimal,
             numeric_thousands_sep,
             slots: Vec::new(),
-            regex_cache: AwkMap::default(),
+            regex_cache_cs: AwkMap::default(),
+            regex_cache_ci: AwkMap::default(),
             memmem_finder_cache: AwkMap::default(),
             print_buf: Vec::new(),
             ofs_bytes: b" ".to_vec(),
@@ -1408,22 +1412,29 @@ impl Runtime {
     /// Ensure a regex is compiled and cached. Call before `regex_ref()`.
     pub fn ensure_regex(&mut self, pat: &str) -> std::result::Result<(), String> {
         let ic = self.ignore_case_flag();
-        let key = format!("{ic}\x1c{pat}");
-        use std::collections::hash_map::Entry;
-        if let Entry::Vacant(e) = self.regex_cache.entry(key) {
-            let mut b = RegexBuilder::new(pat);
-            b.case_insensitive(ic);
-            let re = b.build().map_err(|e| e.to_string())?;
-            e.insert(re);
+        let cache = if ic {
+            &mut self.regex_cache_ci
+        } else {
+            &mut self.regex_cache_cs
+        };
+        if cache.contains_key(pat) {
+            return Ok(());
         }
+        let mut b = RegexBuilder::new(pat);
+        b.case_insensitive(ic);
+        let re = b.build().map_err(|e| e.to_string())?;
+        cache.insert(pat.to_string(), re);
         Ok(())
     }
 
     /// Get a cached regex (must call `ensure_regex` first).
     pub fn regex_ref(&self, pat: &str) -> &Regex {
         let ic = self.ignore_case_flag();
-        let key = format!("{ic}\x1c{pat}");
-        &self.regex_cache[&key]
+        if ic {
+            &self.regex_cache_ci[pat]
+        } else {
+            &self.regex_cache_cs[pat]
+        }
     }
 
     /// gawk **`IGNORECASE`**: truthy value enables case-insensitive regex and string compares.
@@ -2061,7 +2072,11 @@ impl Runtime {
             for &(s, e) in &self.field_ranges {
                 let raw = &record[s as usize..e as usize];
                 // CSV doubled-quote escape: `""` → `"` inside a quoted field (gawk / RFC 4180).
-                self.fields.push(raw.replace("\"\"", "\""));
+                self.fields.push(if raw.contains("\"\"") {
+                    raw.replace("\"\"", "\"")
+                } else {
+                    raw.to_string()
+                });
             }
             self.fields_dirty = true;
             return;
@@ -2075,23 +2090,23 @@ impl Runtime {
                 return;
             }
         }
-        // Check FPAT: use Cow to avoid heap alloc when the value is already a string.
-        let has_fpat = self
-            .get_global_var("FPAT")
-            .map(|v| match v {
-                Value::Str(s) | Value::StrLit(s) => !s.trim().is_empty(),
-                _ => false,
-            })
-            .unwrap_or(false);
-        if has_fpat {
-            let fp = self
-                .get_global_var("FPAT")
-                .map(|v| v.as_str())
-                .unwrap_or_default();
-            let fp_trimmed = fp.trim();
-            if !fp_trimmed.is_empty()
-                && split_fields_fpat(record, fp_trimmed, &mut self.field_ranges, ic)
-            {
+        let fpat_trimmed: Option<String> = self.get_global_var("FPAT").and_then(|fv| {
+            if !matches!(
+                fv,
+                Value::Str(ref s) | Value::StrLit(ref s) if !s.trim().is_empty()
+            ) {
+                return None;
+            }
+            let t = fv.as_str_cow();
+            let tr = t.as_ref().trim();
+            if tr.is_empty() {
+                None
+            } else {
+                Some(tr.to_string())
+            }
+        });
+        if let Some(ref fp_trimmed) = fpat_trimmed {
+            if split_fields_fpat(record, fp_trimmed, &mut self.field_ranges, ic) {
                 return;
             }
         }
@@ -2099,11 +2114,13 @@ impl Runtime {
         if !self.cached_fs.is_empty() {
             split_fields_into(record, &self.cached_fs, &mut self.field_ranges, ic);
         } else {
-            let fs_str = self
-                .get_global_var("FS")
-                .map(|v| v.as_str())
-                .unwrap_or_else(|| " ".to_string());
-            split_fields_into(record, &fs_str, &mut self.field_ranges, ic);
+            match self.get_global_var("FS") {
+                None => split_fields_into(record, " ", &mut self.field_ranges, ic),
+                Some(v) => {
+                    let fs = v.as_str_cow().into_owned();
+                    split_fields_into(record, &fs, &mut self.field_ranges, ic);
+                }
+            }
         }
     }
 
@@ -2781,7 +2798,8 @@ impl Clone for Runtime {
             numeric_decimal: self.numeric_decimal,
             numeric_thousands_sep: self.numeric_thousands_sep,
             slots: self.slots.clone(),
-            regex_cache: self.regex_cache.clone(),
+            regex_cache_cs: self.regex_cache_cs.clone(),
+            regex_cache_ci: self.regex_cache_ci.clone(),
             memmem_finder_cache: self.memmem_finder_cache.clone(),
             print_buf: Vec::new(),
             ofs_bytes: self.ofs_bytes.clone(),
