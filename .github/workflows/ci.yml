@@ -50,3 +50,30 @@ jobs:
           key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
       - run: cargo build --verbose
       - run: cargo test --verbose
+
+  parity:
+    name: Parity vs gawk, mawk, BSD awk
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-parity-${{ hashFiles('**/Cargo.lock') }}
+      - name: Install reference awks
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gawk mawk nawk
+          command -v gawk && gawk --version | head -n1
+          command -v mawk && mawk -W version 2>&1 | head -n1
+          command -v nawk && nawk --version 2>&1 | head -n1 || true
+      - name: Full corpus vs gawk
+        run: bash parity/run_parity.sh gawk
+      - name: Full corpus vs mawk
+        run: bash parity/run_parity.sh mawk
+      - name: Full corpus vs nawk (BSD family)
+        run: env BSD_AWK=nawk bash parity/run_parity.sh bsd

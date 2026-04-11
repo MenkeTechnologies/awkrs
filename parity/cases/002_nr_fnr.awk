@@ -1,0 +1,3 @@
+BEGIN {
+    print NR, FNR
+}
