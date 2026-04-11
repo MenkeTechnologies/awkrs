@@ -5,8 +5,8 @@ use crate::bignum;
 use crate::builtins;
 use crate::bytecode::*;
 use crate::error::{Error, Result};
+use crate::flow::Flow;
 use crate::format;
-use crate::interp::Flow;
 use crate::runtime::AwkMap;
 use crate::runtime::{sorted_in_mode, value_to_float, Runtime, SortedInMode, Value};
 use rug::ops::Pow as _;
@@ -464,8 +464,7 @@ pub fn vm_range_step(
     Ok(false)
 }
 
-/// Execute a rule body. Returns the same `Flow` enum used by the AST interpreter
-/// so the caller doesn't need to change.
+/// Execute a rule body; maps the VM completion status to [`Flow`] for the record loop driver.
 pub fn vm_run_rule(
     rule: &CompiledRule,
     cp: &CompiledProgram,
@@ -4597,7 +4596,7 @@ fn exec_call_user(ctx: &mut VmCtx<'_>, name: &str, argc: u16) -> Result<()> {
 mod tests {
     use super::*;
     use crate::compiler::Compiler;
-    use crate::interp::Flow;
+    use crate::flow::Flow;
     use crate::jit::{
         mixed_encode_field_slot, MIXED_ADD_FIELDNUM_TO_SLOT, MIXED_ADD_FIELD_TO_SLOT,
         MIXED_ADD_MUL_FIELDNUMS_TO_SLOT, MIXED_ADD_MUL_FIELDS_TO_SLOT,

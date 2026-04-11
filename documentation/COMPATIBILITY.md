@@ -79,7 +79,7 @@ References: special variables and builtins lists in `src/compiler.rs` (`SPECIAL_
 | Construct | BSD | mawk | gawk | awkrs |
 |-----------|-----|------|------|-------|
 | `BEGIN` / `END` | Yes | Yes | Yes | Yes | **Match** |
-| `BEGINFILE` / `ENDFILE` | No | No | No | Yes (Ext) | **Match** (gawk-style; `next`/`nextfile` invalid in `BEGINFILE` per `interp.rs`) |
+| `BEGINFILE` / `ENDFILE` | No | No | No | Yes (Ext) | **Match** (gawk-style; `next`/`nextfile` invalid in `BEGINFILE` per `vm.rs`) |
 | Range patterns (`pat1,pat2`) | Yes | Yes | Yes | **Match** |
 | Regex record patterns + compound (`/re/ && expr`) | Yes | Yes | Yes | **Match** (tests in `tests/extra_integration.rs`) |
 | `next` / `nextfile` / `exit` | Yes | Yes | Yes | **Match** |

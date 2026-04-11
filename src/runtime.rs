@@ -2657,8 +2657,8 @@ impl Runtime {
     }
 
     /// Keys for `for (k in arr)` / `SYMTAB` in **sorted** order. When `PROCINFO["sorted_in"]` names a
-    /// **user function**, sorting requires VM/interpreter context — use [`crate::vm::VmCtx::for_in_keys`]
-    /// or the interpreter path; this method returns **unsorted** hash iteration order in that case.
+    /// **user function**, sorting requires VM context — use [`crate::vm::VmCtx::for_in_keys`];
+    /// this method returns **unsorted** hash iteration order in that case.
     pub fn array_keys(&self, name: &str) -> Vec<String> {
         if name == "SYMTAB" {
             let mut keys = self.symtab_keys_reflect();

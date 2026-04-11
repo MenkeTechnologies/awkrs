@@ -1155,6 +1155,34 @@ impl Compiler {
     }
 }
 
+#[cfg(test)]
+fn compiler_isolated() -> Compiler {
+    Compiler {
+        strings: StringPool::default(),
+        structural_stack: Vec::new(),
+        var_slots: HashMap::new(),
+        next_slot: 0,
+        array_names: HashSet::new(),
+        current_func_params: HashSet::new(),
+    }
+}
+
+/// Lower a standalone AST [`Pattern`] to [`CompiledPattern`] (empty program context).
+#[cfg(test)]
+fn lower_pattern(pat: &Pattern) -> (CompiledPattern, StringPool) {
+    let mut c = compiler_isolated();
+    let p = c.compile_pattern(pat);
+    (p, c.strings)
+}
+
+/// Lower a standalone AST [`Pattern`] as a range-pattern endpoint.
+#[cfg(test)]
+fn lower_range_endpoint(pat: &Pattern) -> (CompiledRangeEndpoint, StringPool) {
+    let mut c = compiler_isolated();
+    let p = c.compile_range_endpoint(pat);
+    (p, c.strings)
+}
+
 // ── Pre-pass: collect array names ───────────────────────────────────────────
 
 fn collect_array_names(prog: &Program) -> HashSet<String> {
@@ -1765,13 +1793,25 @@ fn peephole_optimize(ops: &mut Vec<Op>) {
         offset_map[pos] = pos - adjustment;
     }
 
-    // Phase 3: apply fusions in reverse order to preserve indices.
-    for &(pos, ref new_op, removed) in fusions.iter().rev() {
-        ops[pos] = *new_op;
-        for _ in 0..removed {
-            ops.remove(pos + 1);
+    // Phase 3: compact fused regions in one forward pass (linear total work).
+    // Applying `Vec::remove` per fusion was O(n²) when many patterns matched in one chunk.
+    let total_removed: usize = fusions.iter().map(|(_, _, r)| r).sum();
+    let mut new_ops = Vec::with_capacity(ops.len().saturating_sub(total_removed));
+    let mut src = 0usize;
+    let mut fi = 0usize;
+    while src < ops.len() {
+        if fi < fusions.len() && src == fusions[fi].0 {
+            let (_, new_op, removed) = fusions[fi];
+            new_ops.push(new_op);
+            src += 1 + removed;
+            fi += 1;
+        } else {
+            new_ops.push(ops[src]);
+            src += 1;
         }
     }
+    debug_assert_eq!(new_ops.len(), ops.len() - total_removed);
+    *ops = new_ops;
 
     // Phase 4: adjust all jump targets using the offset map.
     for op in ops.iter_mut() {
@@ -2090,8 +2130,37 @@ fn is_literal_regex(pat: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bytecode::Op;
+    use crate::ast::{Expr, Pattern};
+    use crate::bytecode::{
+        Chunk, CompiledPattern, CompiledProgram, CompiledRangeEndpoint, CompiledRule, Op,
+    };
     use crate::parser::parse_program;
+    use crate::runtime::Runtime;
+    use crate::vm::{vm_match_range_endpoint, vm_pattern_matches, vm_range_step, vm_run_begin};
+    use std::collections::HashMap;
+
+    fn compiled_program_with_rule(
+        pattern: CompiledPattern,
+        strings: StringPool,
+    ) -> CompiledProgram {
+        CompiledProgram {
+            begin_chunks: vec![],
+            end_chunks: vec![],
+            beginfile_chunks: vec![],
+            endfile_chunks: vec![],
+            record_rules: vec![CompiledRule {
+                pattern,
+                body: Chunk::from_ops(vec![]),
+                original_index: 0,
+            }],
+            functions: HashMap::new(),
+            strings,
+            slot_count: 0,
+            slot_names: vec![],
+            slot_map: HashMap::new(),
+            array_var_names: vec![],
+        }
+    }
 
     #[test]
     fn compile_bignum_literal_add_uses_push_num_decimal_str_not_f64() {
@@ -2274,5 +2343,99 @@ mod tests {
     fn validate_rejects_tuple_in_return() {
         let prog = parse_program("function f(){ return (1,2) } BEGIN { f() }").unwrap();
         assert!(validate_program(&prog).is_err());
+    }
+
+    #[test]
+    fn lowered_pattern_empty_matches_via_vm() {
+        let (pat, strings) = lower_pattern(&Pattern::Empty);
+        let cp = compiled_program_with_rule(pat, strings);
+        let mut rt = Runtime::new();
+        rt.set_record_from_line("anything");
+        let rule = &cp.record_rules[0];
+        assert!(vm_pattern_matches(rule, &cp, &mut rt).unwrap());
+    }
+
+    #[test]
+    fn lowered_pattern_regexp_respects_record() {
+        let (pat, strings) = lower_pattern(&Pattern::Regexp("ell".into()));
+        let cp = compiled_program_with_rule(pat, strings);
+        let mut rt = Runtime::new();
+        rt.set_record_from_line("hello");
+        let rule = &cp.record_rules[0];
+        assert!(vm_pattern_matches(rule, &cp, &mut rt).unwrap());
+
+        let (pat2, strings2) = lower_pattern(&Pattern::Regexp("^z".into()));
+        let cp2 = compiled_program_with_rule(pat2, strings2);
+        let rule2 = &cp2.record_rules[0];
+        assert!(!vm_pattern_matches(rule2, &cp2, &mut rt).unwrap());
+    }
+
+    #[test]
+    fn lowered_range_endpoint_nested_range_errors_in_vm() {
+        let p = Pattern::Range(
+            Box::new(Pattern::Regexp("a".into())),
+            Box::new(Pattern::Regexp("b".into())),
+        );
+        let (ep, strings) = lower_range_endpoint(&p);
+        let cp = compiled_program_with_rule(CompiledPattern::Always, strings);
+        let mut rt = Runtime::new();
+        assert!(matches!(ep, CompiledRangeEndpoint::NestedRangeError));
+        assert!(vm_match_range_endpoint(&ep, &cp, &mut rt).is_err());
+    }
+
+    #[test]
+    fn range_step_enters_after_start_pattern() {
+        let prog = parse_program("/start/,/end/ { print }").unwrap();
+        let cp = Compiler::compile_program(&prog).unwrap();
+        let rule = &cp.record_rules[0];
+        let CompiledPattern::Range { start, end } = &rule.pattern else {
+            panic!("expected range pattern");
+        };
+        let mut rt = Runtime::new();
+        rt.set_record_from_line("start");
+        let mut state = false;
+        assert!(vm_range_step(&mut state, start, end, &cp, &mut rt).unwrap());
+        assert!(state);
+    }
+
+    #[test]
+    fn begin_assignment_runs_on_vm_slots() {
+        let prog = parse_program("BEGIN { answer = 42 }").unwrap();
+        let cp = Compiler::compile_program(&prog).unwrap();
+        let mut rt = Runtime::new();
+        rt.slots = cp.init_slots(&rt.vars);
+        vm_run_begin(&cp, &mut rt).unwrap();
+        let slot = *cp.slot_map.get("answer").expect("answer slotted");
+        assert_eq!(rt.slots[slot as usize].as_number(), 42.0);
+    }
+
+    #[test]
+    fn lowered_pattern_expr_numeric_truthy_via_vm() {
+        let (pat, strings) = lower_pattern(&Pattern::Expr(Expr::Number(1.0)));
+        let cp = compiled_program_with_rule(pat, strings);
+        let mut rt = Runtime::new();
+        rt.set_record_from_line("anything");
+        let rule = &cp.record_rules[0];
+        assert!(vm_pattern_matches(rule, &cp, &mut rt).unwrap());
+    }
+
+    #[test]
+    fn lowered_pattern_expr_numeric_falsy_via_vm() {
+        let (pat, strings) = lower_pattern(&Pattern::Expr(Expr::Number(0.0)));
+        let cp = compiled_program_with_rule(pat, strings);
+        let mut rt = Runtime::new();
+        rt.set_record_from_line("anything");
+        let rule = &cp.record_rules[0];
+        assert!(!vm_pattern_matches(rule, &cp, &mut rt).unwrap());
+    }
+
+    #[test]
+    fn lowered_range_endpoint_expr_truthy_via_vm() {
+        let (ep, strings) = lower_range_endpoint(&Pattern::Expr(Expr::Number(2.0)));
+        assert!(matches!(ep, CompiledRangeEndpoint::Expr(_)));
+        let cp = compiled_program_with_rule(CompiledPattern::Always, strings);
+        let mut rt = Runtime::new();
+        rt.set_record_from_line("z");
+        assert!(vm_match_range_endpoint(&ep, &cp, &mut rt).unwrap());
     }
 }

@@ -18,10 +18,9 @@ pub use jit::{
     try_compile_numeric_expr, try_compile_with_options, try_jit_dispatch_numeric_chunk,
     try_jit_execute, JitChunk, JitCompileOptions, JitNumericChunk, JitRuntimeState,
 };
+mod flow;
 mod gawk_extensions;
 mod gettext_util;
-#[allow(dead_code)]
-mod interp;
 mod lexer;
 mod limits;
 mod locale_numeric;
@@ -40,7 +39,7 @@ use crate::ast::Program;
 use crate::bytecode::{CompiledPattern, CompiledProgram, Op, RedirKind, SubTarget};
 use crate::cli::{Args, MawkWAction};
 use crate::compiler::Compiler;
-use crate::interp::Flow;
+use crate::flow::Flow;
 use crate::parser::parse_program;
 use crate::runtime::{AwkMap, Runtime, Value};
 use gettext::Catalog;
@@ -427,12 +426,6 @@ fn process_lines_parallel_chunk(
                                 ));
                             }
                             Ok(Flow::Normal) => {}
-                            Ok(Flow::Break) | Ok(Flow::Continue) => {}
-                            Ok(Flow::Return(_)) => {
-                                return Err(Error::Runtime(
-                                    "`return` used outside function in rule action".into(),
-                                ));
-                            }
                             Err(Error::Exit(code)) => return Err(Error::Exit(code)),
                             Err(e) => return Err(e),
                         }
@@ -1589,12 +1582,6 @@ fn dispatch_rules(
                 Ok(Flow::NextFile) => return Ok(true),
                 Ok(Flow::ExitPending) => return Ok(true),
                 Ok(Flow::Normal) => {}
-                Ok(Flow::Break) | Ok(Flow::Continue) => {}
-                Ok(Flow::Return(_)) => {
-                    return Err(Error::Runtime(
-                        "`return` used outside function in rule action".into(),
-                    ));
-                }
                 Err(Error::Exit(code)) => return Err(Error::Exit(code)),
                 Err(e) => return Err(e),
             }
