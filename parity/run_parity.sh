@@ -11,7 +11,7 @@
 # Env:
 #   AWKRS=path/to/awkrs
 #   GAWK=gawk   MAWK=mawk
-#   BSD_AWK=    Reference for bsd mode: if unset, try nawk (Linux), else /usr/bin/awk (Darwin).
+#   BSD_AWK=    Reference for bsd mode: if unset, try nawk, then original-awk (Linux), else /usr/bin/awk (Darwin).
 
 set -euo pipefail
 
@@ -30,11 +30,15 @@ resolve_bsd_awk() {
     printf '%s' "nawk"
     return
   fi
+  if command -v original-awk >/dev/null 2>&1; then
+    printf '%s' "original-awk"
+    return
+  fi
   if [[ "$(uname -s)" == Darwin ]] && [[ -x /usr/bin/awk ]]; then
     printf '%s' "/usr/bin/awk"
     return
   fi
-  echo "parity: set BSD_AWK to a BSD awk (e.g. nawk on Linux; macOS /usr/bin/awk works)" >&2
+  echo "parity: set BSD_AWK to a BSD awk (e.g. nawk or original-awk on Linux; macOS /usr/bin/awk works)" >&2
   return 1
 }
 

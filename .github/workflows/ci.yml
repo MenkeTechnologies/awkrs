@@ -67,13 +67,14 @@ jobs:
       - name: Install reference awks
         run: |
           sudo apt-get update
-          sudo apt-get install -y gawk mawk nawk
+          # Noble dropped the transitional `nawk` metapackage; use `original-awk` (One True awk).
+          sudo apt-get install -y gawk mawk original-awk
           command -v gawk && gawk --version | head -n1
           command -v mawk && mawk -W version 2>&1 | head -n1
-          command -v nawk && nawk --version 2>&1 | head -n1 || true
+          command -v original-awk && original-awk -W version 2>&1 | head -n1 || true
       - name: Full corpus vs gawk
         run: bash parity/run_parity.sh gawk
       - name: Full corpus vs mawk
         run: bash parity/run_parity.sh mawk
-      - name: Full corpus vs nawk (BSD family)
-        run: env BSD_AWK=nawk bash parity/run_parity.sh bsd
+      - name: Full corpus vs original-awk (BSD family)
+        run: env BSD_AWK=original-awk bash parity/run_parity.sh bsd
