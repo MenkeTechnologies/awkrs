@@ -294,9 +294,17 @@ fn format_hex_float(n: f64, prec: Option<usize>, upper: bool, alt: bool) -> Stri
     }
     if n.is_infinite() {
         return if n < 0.0 {
-            if upper { "-INF".into() } else { "-inf".into() }
+            if upper {
+                "-INF".into()
+            } else {
+                "-inf".into()
+            }
         } else {
-            if upper { "INF".into() } else { "inf".into() }
+            if upper {
+                "INF".into()
+            } else {
+                "inf".into()
+            }
         };
     }
     if n == 0.0 {
@@ -361,7 +369,11 @@ fn format_hex_float(n: f64, prec: Option<usize>, upper: bool, alt: bool) -> Stri
     } else {
         format!("{int_digit:x}")
     };
-    let frac_str = if upper { frac_str.to_uppercase() } else { frac_str };
+    let frac_str = if upper {
+        frac_str.to_uppercase()
+    } else {
+        frac_str
+    };
     format!("{sign}{prefix}{int_hex}{frac_str}{exp_char}{exp_sign}{exp_abs}")
 }
 

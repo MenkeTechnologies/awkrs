@@ -306,7 +306,11 @@ fn dump_value(out: &mut dyn Write, name: &str, v: &Value, tag: &str) -> Result<(
     match v {
         Value::Array(a) => {
             // gawk format: array name with element count header
-            let prefix = if tag.is_empty() { String::new() } else { format!("{tag} ") };
+            let prefix = if tag.is_empty() {
+                String::new()
+            } else {
+                format!("{tag} ")
+            };
             writeln!(out, "{prefix}{name}: array, {n} elements", n = a.len()).map_err(Error::Io)?;
             let mut keys: Vec<_> = a.keys().cloned().collect();
             keys.sort();
@@ -318,7 +322,11 @@ fn dump_value(out: &mut dyn Write, name: &str, v: &Value, tag: &str) -> Result<(
             }
         }
         _ => {
-            let prefix = if tag.is_empty() { String::new() } else { format!("{tag} ") };
+            let prefix = if tag.is_empty() {
+                String::new()
+            } else {
+                format!("{tag} ")
+            };
             writeln!(out, "{prefix}{name}: {}", value_dump_scalar(v)).map_err(Error::Io)?;
         }
     }
@@ -1281,9 +1289,8 @@ fn lint_old_expr(e: &Expr, w: &impl Fn(&str)) {
     match e {
         Expr::Call { name, args } => {
             let gawk_ext = [
-                "gensub", "patsplit", "mkbool", "mktime", "strftime", "systime",
-                "isarray", "typeof", "strtonum", "and", "or", "xor", "compl",
-                "lshift", "rshift",
+                "gensub", "patsplit", "mkbool", "mktime", "strftime", "systime", "isarray",
+                "typeof", "strtonum", "and", "or", "xor", "compl", "lshift", "rshift",
             ];
             if gawk_ext.contains(&name.as_str()) {
                 w(&format!("lint-old: `{name}()` is a gawk extension"));

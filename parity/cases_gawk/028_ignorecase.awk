@@ -5,8 +5,8 @@ BEGIN {
     print match("Hello World", /hello/)
     print (RSTART > 0 ? "ok" : "fail")
 
-    n = split("aAbBcC", arr, /a/)
-    print n
+    # case-insensitive string comparison
+    print ("abc" == "ABC" ? "eq" : "ne")
 
     IGNORECASE = 0
     print match("Hello", /hello/)

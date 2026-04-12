@@ -826,30 +826,21 @@ fn use_lc_numeric_printf_apostrophe_groups_integer() {
 
 #[test]
 fn variadic_and_three_args() {
-    let (c, o, e) = run_awkrs_stdin(
-        r#"BEGIN { print and(0xFF, 0x0F, 0x03) }"#,
-        "",
-    );
+    let (c, o, e) = run_awkrs_stdin(r#"BEGIN { print and(0xFF, 0x0F, 0x03) }"#, "");
     assert_eq!(c, 0, "stderr={e}");
     assert_eq!(o.trim(), "3");
 }
 
 #[test]
 fn variadic_or_three_args() {
-    let (c, o, e) = run_awkrs_stdin(
-        r#"BEGIN { print or(1, 2, 4) }"#,
-        "",
-    );
+    let (c, o, e) = run_awkrs_stdin(r#"BEGIN { print or(1, 2, 4) }"#, "");
     assert_eq!(c, 0, "stderr={e}");
     assert_eq!(o.trim(), "7");
 }
 
 #[test]
 fn variadic_xor_three_args() {
-    let (c, o, e) = run_awkrs_stdin(
-        r#"BEGIN { print xor(7, 3, 1) }"#,
-        "",
-    );
+    let (c, o, e) = run_awkrs_stdin(r#"BEGIN { print xor(7, 3, 1) }"#, "");
     assert_eq!(c, 0, "stderr={e}");
     // 7 xor 3 = 4, 4 xor 1 = 5
     assert_eq!(o.trim(), "5");
@@ -892,10 +883,7 @@ fn getlocaltime_populates_time_array() {
 
 #[test]
 fn printf_hex_float_a() {
-    let (c, o, e) = run_awkrs_stdin(
-        r#"BEGIN { printf "%a\n", 1.5 }"#,
-        "",
-    );
+    let (c, o, e) = run_awkrs_stdin(r#"BEGIN { printf "%a\n", 1.5 }"#, "");
     assert_eq!(c, 0, "stderr={e}");
     let t = o.trim().to_lowercase();
     assert!(t.contains("0x") && t.contains("p"), "stdout={o:?}");
@@ -947,10 +935,6 @@ fn functab_includes_builtin_length() {
 
 #[test]
 fn posix_mode_rejects_gawk_builtin() {
-    let (c, _o, _e) = run_awkrs_stdin_args(
-        ["-P"],
-        r#"BEGIN { print typeof(1) }"#,
-        "",
-    );
+    let (c, _o, _e) = run_awkrs_stdin_args(["-P"], r#"BEGIN { print typeof(1) }"#, "");
     assert_ne!(c, 0, "posix mode should reject typeof()");
 }

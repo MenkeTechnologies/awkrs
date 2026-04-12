@@ -790,7 +790,7 @@ fn split_fields_into(
                 i += 1;
             }
         }
-    } else if fs.len() == 1 {
+    } else if fs.len() == 1 && !ignore_case {
         let sep = fs.as_bytes()[0];
         let bytes = record.as_bytes();
         let mut start = 0;
@@ -1255,10 +1255,11 @@ impl Runtime {
         p.insert("awkrs_binmode".into(), Value::Num(binmode));
 
         // nproc: number of available CPUs
-        p.entry("nproc".into())
-            .or_insert(Value::Num(std::thread::available_parallelism()
+        p.entry("nproc".into()).or_insert(Value::Num(
+            std::thread::available_parallelism()
                 .map(|n| n.get() as f64)
-                .unwrap_or(1.0)));
+                .unwrap_or(1.0),
+        ));
 
         // sorted_in: default sort order for for-in (gawk compat)
         p.entry("sorted_in".into())
@@ -2789,7 +2790,7 @@ pub fn split_string_by_field_separator(s: &str, fs: &str, ignore_case: bool) -> 
         s.chars().map(|c| c.to_string()).collect()
     } else if fs == " " {
         s.split_whitespace().map(String::from).collect()
-    } else if fs.len() == 1 {
+    } else if fs.len() == 1 && !ignore_case {
         s.split(fs).map(String::from).collect()
     } else {
         let mut b = RegexBuilder::new(fs);
