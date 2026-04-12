@@ -335,6 +335,31 @@ fn format_hex_float(n: f64, prec: Option<usize>, upper: bool, alt: bool) -> Stri
         // Normal: implicit leading 1, exponent is biased
         (raw_exp - 1023, 1, raw_mant)
     };
+    // Apply rounding when an explicit precision truncates hex digits (round half to even).
+    let (int_digit, frac_bits) = if let Some(p) = prec {
+        if p < 13 {
+            let keep_bits = p * 4;
+            let drop_bits = 52 - keep_bits;
+            let half = 1u64 << (drop_bits - 1);
+            let mask = (1u64 << drop_bits) - 1;
+            let dropped = frac_bits & mask;
+            let mut kept = frac_bits >> drop_bits;
+            let mut id = int_digit;
+            let lsb = if p > 0 { kept & 1 } else { id & 1 };
+            if dropped > half || (dropped == half && lsb != 0) {
+                kept += 1;
+                if kept >= (1u64 << keep_bits) {
+                    kept = 0;
+                    id += 1;
+                }
+            }
+            (id, kept << drop_bits)
+        } else {
+            (int_digit, frac_bits)
+        }
+    } else {
+        (int_digit, frac_bits)
+    };
     // frac_bits holds the 52-bit fractional mantissa → 13 hex digits
     let full_frac = format!("{frac_bits:013x}");
     let frac_str = match prec {
@@ -1079,5 +1104,26 @@ mod tests {
     fn percent_f_width_and_precision() {
         let s = awk_sprintf("%8.2f", &[Value::Num(1.2)]).unwrap();
         assert_eq!(s, "    1.20");
+    }
+
+    #[test]
+    fn hex_float_precision_zero_rounds() {
+        // %.0a of 1.5 (0x1.8p+0) rounds half-to-even → 0x2p+0
+        let s = awk_sprintf("%.0a", &[Value::Num(1.5)]).unwrap();
+        assert_eq!(s, "0x2p+0");
+    }
+
+    #[test]
+    fn hex_float_precision_zero_truncates_below_half() {
+        // %.0a of 1.25 (0x1.4p+0) → 0x1p+0 (below half, truncate)
+        let s = awk_sprintf("%.0a", &[Value::Num(1.25)]).unwrap();
+        assert_eq!(s, "0x1p+0");
+    }
+
+    #[test]
+    fn hex_float_precision_zero_even_no_round() {
+        // %.0a of 2.0 (0x1.0p+1) at half with even int_digit → 0x1p+1
+        let s = awk_sprintf("%.0a", &[Value::Num(2.0)]).unwrap();
+        assert_eq!(s, "0x1p+1");
     }
 }
