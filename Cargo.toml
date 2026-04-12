@@ -1,6 +1,6 @@
 [package]
 name = "awkrs"
-version = "0.1.37"
+version = "0.1.38"
 edition = "2021"
 # `parity/` stays in the git repo for local/CI testing vs gawk; it is not part of the published crate tree.
 description = "Awk implementation in Rust with broad CLI compatibility, parallel records, and experimental Cranelift JIT"

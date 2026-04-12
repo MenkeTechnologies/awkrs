@@ -158,6 +158,10 @@ run_mode() {
     ;;
   esac
   cases=( "$ROOT"/parity/cases/*.awk "$ROOT"/parity/cases_portable/*.awk )
+  # Include gawk-only extension tests only when testing against gawk
+  if [[ "$mode" == "gawk" ]]; then
+    cases+=( "$ROOT"/parity/cases_gawk/*.awk )
+  fi
   eval "$_ng"
 
   run_one_ref "$ref_name" "$ref_cmd" "${cases[@]}"
