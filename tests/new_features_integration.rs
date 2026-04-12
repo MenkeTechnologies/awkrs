@@ -821,3 +821,136 @@ fn use_lc_numeric_printf_apostrophe_groups_integer() {
         "stdout={o:?}"
     );
 }
+
+// ── Variadic and/or/xor ──────────────────────────────────────────────────
+
+#[test]
+fn variadic_and_three_args() {
+    let (c, o, e) = run_awkrs_stdin(
+        r#"BEGIN { print and(0xFF, 0x0F, 0x03) }"#,
+        "",
+    );
+    assert_eq!(c, 0, "stderr={e}");
+    assert_eq!(o.trim(), "3");
+}
+
+#[test]
+fn variadic_or_three_args() {
+    let (c, o, e) = run_awkrs_stdin(
+        r#"BEGIN { print or(1, 2, 4) }"#,
+        "",
+    );
+    assert_eq!(c, 0, "stderr={e}");
+    assert_eq!(o.trim(), "7");
+}
+
+#[test]
+fn variadic_xor_three_args() {
+    let (c, o, e) = run_awkrs_stdin(
+        r#"BEGIN { print xor(7, 3, 1) }"#,
+        "",
+    );
+    assert_eq!(c, 0, "stderr={e}");
+    // 7 xor 3 = 4, 4 xor 1 = 5
+    assert_eq!(o.trim(), "5");
+}
+
+// ── readdir builtin ──────────────────────────────────────────────────────
+
+#[test]
+fn readdir_populates_array_with_dir_entries() {
+    let (c, o, e) = run_awkrs_stdin(
+        r#"BEGIN {
+  n = readdir("/tmp", a)
+  print (n >= 0 ? "ok" : "fail")
+}"#,
+        "",
+    );
+    assert_eq!(c, 0, "stderr={e}");
+    assert_eq!(o.trim(), "ok");
+}
+
+// ── getlocaltime builtin ─────────────────────────────────────────────────
+
+#[test]
+fn getlocaltime_populates_time_array() {
+    let (c, o, e) = run_awkrs_stdin(
+        r#"BEGIN {
+  ts = getlocaltime(a)
+  print (ts > 0 ? "ok" : "fail")
+  print ("year" in a ? "has_year" : "no_year")
+}"#,
+        "",
+    );
+    assert_eq!(c, 0, "stderr={e}");
+    let lines: Vec<&str> = o.trim().lines().collect();
+    assert_eq!(lines[0], "ok");
+    assert_eq!(lines[1], "has_year");
+}
+
+// ── printf %a hex float ──────────────────────────────────────────────────
+
+#[test]
+fn printf_hex_float_a() {
+    let (c, o, e) = run_awkrs_stdin(
+        r#"BEGIN { printf "%a\n", 1.5 }"#,
+        "",
+    );
+    assert_eq!(c, 0, "stderr={e}");
+    let t = o.trim().to_lowercase();
+    assert!(t.contains("0x") && t.contains("p"), "stdout={o:?}");
+}
+
+// ── close() pipe exit status ─────────────────────────────────────────────
+
+#[test]
+fn close_pipe_returns_exit_status() {
+    let (c, o, e) = run_awkrs_stdin(
+        r#"BEGIN {
+  cmd = "sh -c 'exit 42'"
+  print "hi" | cmd
+  r = close(cmd)
+  print r
+}"#,
+        "",
+    );
+    assert_eq!(c, 0, "stderr={e}");
+    // Shell "exit 42" should yield 42
+    assert_eq!(o.trim().lines().last().unwrap().trim(), "42");
+}
+
+// ── PROCINFO nproc key ───────────────────────────────────────────────────
+
+#[test]
+fn procinfo_has_nproc_key() {
+    let (c, o, e) = run_awkrs_stdin(
+        r#"BEGIN { print (PROCINFO["nproc"] >= 1 ? "ok" : "fail") }"#,
+        "",
+    );
+    assert_eq!(c, 0, "stderr={e}");
+    assert_eq!(o.trim(), "ok");
+}
+
+// ── FUNCTAB includes builtins ────────────────────────────────────────────
+
+#[test]
+fn functab_includes_builtin_length() {
+    let (c, o, e) = run_awkrs_stdin(
+        r#"BEGIN { print ("length" in FUNCTAB ? "ok" : "fail") }"#,
+        "",
+    );
+    assert_eq!(c, 0, "stderr={e}");
+    assert_eq!(o.trim(), "ok");
+}
+
+// ── posix mode rejects gawk extensions ───────────────────────────────────
+
+#[test]
+fn posix_mode_rejects_gawk_builtin() {
+    let (c, _o, _e) = run_awkrs_stdin_args(
+        ["-P"],
+        r#"BEGIN { print typeof(1) }"#,
+        "",
+    );
+    assert_ne!(c, 0, "posix mode should reject typeof()");
+}

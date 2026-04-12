@@ -287,6 +287,84 @@ fn format_sprintf_exponent(exp: i32, upper_e: bool) -> String {
     format!("{ec}{sign}{mag:0w$}", w = w)
 }
 
+/// Format a float as C99 hex-float (`%a` / `%A`): `[-]0xh.hhhhp±d`.
+fn format_hex_float(n: f64, prec: Option<usize>, upper: bool, alt: bool) -> String {
+    if n.is_nan() {
+        return if upper { "NAN".into() } else { "nan".into() };
+    }
+    if n.is_infinite() {
+        return if n < 0.0 {
+            if upper { "-INF".into() } else { "-inf".into() }
+        } else {
+            if upper { "INF".into() } else { "inf".into() }
+        };
+    }
+    if n == 0.0 {
+        let sign = if n.is_sign_negative() { "-" } else { "" };
+        let prefix = if upper { "0X" } else { "0x" };
+        let p = prec.unwrap_or(0);
+        let dot = if p > 0 || alt { "." } else { "" };
+        let frac = "0".repeat(p);
+        let exp_char = if upper { 'P' } else { 'p' };
+        return format!("{sign}{prefix}0{dot}{frac}{exp_char}+0");
+    }
+    let sign = if n < 0.0 { "-" } else { "" };
+    let abs_n = n.abs();
+    let bits: u64 = abs_n.to_bits();
+    let raw_exp = ((bits >> 52) & 0x7FF) as i64;
+    let raw_mant = bits & 0x000F_FFFF_FFFF_FFFF;
+    let (exp, int_digit, frac_bits) = if raw_exp == 0 {
+        // Subnormal: normalize by finding the leading 1
+        if raw_mant == 0 {
+            (0i64, 0u64, 0u64)
+        } else {
+            let shift = raw_mant.leading_zeros() as i64 - 12; // 12 = 64 - 52
+            let normalized = raw_mant << shift;
+            let exp = -1022 - shift;
+            (exp, 1, normalized & 0x000F_FFFF_FFFF_FFFF)
+        }
+    } else {
+        // Normal: implicit leading 1, exponent is biased
+        (raw_exp - 1023, 1, raw_mant)
+    };
+    // frac_bits holds the 52-bit fractional mantissa → 13 hex digits
+    let full_frac = format!("{frac_bits:013x}");
+    let frac_str = match prec {
+        Some(0) if !alt => String::new(),
+        Some(p) => {
+            let needed = p.min(13);
+            if needed <= full_frac.len() {
+                format!(".{}", &full_frac[..needed])
+            } else {
+                let pad = needed - full_frac.len();
+                format!(".{}{}", full_frac, "0".repeat(pad))
+            }
+        }
+        None => {
+            // Default: show all significant hex digits (trim trailing zeros)
+            let trimmed = full_frac.trim_end_matches('0');
+            if trimmed.is_empty() && !alt {
+                String::new()
+            } else if trimmed.is_empty() {
+                ".".to_string()
+            } else {
+                format!(".{trimmed}")
+            }
+        }
+    };
+    let prefix = if upper { "0X" } else { "0x" };
+    let exp_char = if upper { 'P' } else { 'p' };
+    let exp_sign = if exp >= 0 { '+' } else { '-' };
+    let exp_abs = exp.unsigned_abs();
+    let int_hex = if upper {
+        format!("{int_digit:X}")
+    } else {
+        format!("{int_digit:x}")
+    };
+    let frac_str = if upper { frac_str.to_uppercase() } else { frac_str };
+    format!("{sign}{prefix}{int_hex}{frac_str}{exp_char}{exp_sign}{exp_abs}")
+}
+
 /// Rewrite `…e±digits` / `…E±digits` to awk-style exponent (always signed, min 2 magnitude digits).
 fn normalize_sprintf_scientific_exponent(s: &str) -> String {
     let Some(pos) = s.find(['e', 'E']) else {
@@ -514,6 +592,12 @@ fn format_one(
                     format!("0X{s}")
                 };
             }
+            pad_numeric(&s, w, left, pad_char)
+        }
+        'a' | 'A' => {
+            let n = v.as_number();
+            let s = format_hex_float(n, prec, conv == 'A', alt);
+            let s = localize_float_radix(s, decimal);
             pad_numeric(&s, w, left, pad_char)
         }
         'f' | 'F' => {

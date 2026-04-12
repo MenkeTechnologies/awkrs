@@ -2588,10 +2588,16 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 ctx.push(t);
             }
             Op::TypeofSlot(slot) => {
+                if ctx.rt.posix || ctx.rt.traditional {
+                    return Err(Error::Runtime("`typeof` is a gawk extension not available in POSIX/traditional mode".into()));
+                }
                 let t = builtins::awk_typeof_value(&ctx.rt.slots[slot as usize]);
                 ctx.push(Value::Str(t.into()));
             }
             Op::TypeofArrayElem(arr) => {
+                if ctx.rt.posix || ctx.rt.traditional {
+                    return Err(Error::Runtime("`typeof` is a gawk extension not available in POSIX/traditional mode".into()));
+                }
                 let key_val = ctx.pop();
                 let k = key_val.as_str_cow();
                 let name = ctx.str_ref(arr);
@@ -2603,6 +2609,9 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 ctx.push(t);
             }
             Op::TypeofField => {
+                if ctx.rt.posix || ctx.rt.traditional {
+                    return Err(Error::Runtime("`typeof` is a gawk extension not available in POSIX/traditional mode".into()));
+                }
                 let i = ctx.pop().as_number() as i32;
                 if i < 0 {
                     return Err(Error::Runtime("attempt to access field number -1".into()));
@@ -2615,6 +2624,9 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 ctx.push(Value::Str(t.into()));
             }
             Op::TypeofValue => {
+                if ctx.rt.posix || ctx.rt.traditional {
+                    return Err(Error::Runtime("`typeof` is a gawk extension not available in POSIX/traditional mode".into()));
+                }
                 let v = ctx.pop();
                 let t = builtins::awk_typeof_value(&v);
                 ctx.push(Value::Str(t.into()));
@@ -3981,6 +3993,23 @@ pub(crate) fn exec_builtin_dispatch(
     name: &str,
     args: Vec<Value>,
 ) -> Result<Value> {
+    // In POSIX / traditional mode, reject gawk-only extension functions
+    if ctx.rt.posix || ctx.rt.traditional {
+        const GAWK_ONLY_BUILTINS: &[&str] = &[
+            "and", "or", "xor", "compl", "lshift", "rshift",
+            "gensub", "patsplit", "mkbool", "mktime", "strftime", "systime",
+            "isarray", "typeof", "strtonum", "dcgettext", "dcngettext", "bindtextdomain",
+            "chdir", "stat", "statvfs", "fts", "chr", "ord",
+            "gettimeofday", "getlocaltime", "sleep", "readfile", "readdir",
+            "reada", "writea", "inplace_tmpfile", "inplace_commit",
+            "rename", "revoutput", "revtwoway", "intdiv", "intdiv0",
+        ];
+        if GAWK_ONLY_BUILTINS.contains(&name) {
+            return Err(Error::Runtime(format!(
+                "`{name}` is a gawk extension not available in POSIX/traditional mode"
+            )));
+        }
+    }
     let argc = args.len();
     let result = match name {
         "length" => {
@@ -4037,6 +4066,9 @@ pub(crate) fn exec_builtin_dispatch(
             };
             // gawk: start < 1 is treated as 1; length is not shortened (POSIX extension).
             if m < 1 {
+                ctx.rt.lint_warn(&format!(
+                    "substr: start index {start_raw} is less than 1, treated as 1"
+                ));
                 m = 1;
             }
             let len = len_opt.map(|l| l as usize).unwrap_or(usize::MAX);
@@ -4264,22 +4296,34 @@ pub(crate) fn exec_builtin_dispatch(
             Value::Num(0.0)
         }
         "and" => {
-            if argc != 2 {
-                return Err(Error::Runtime("`and` expects two arguments".into()));
+            if argc < 2 {
+                return Err(Error::Runtime("`and` expects at least two arguments".into()));
             }
-            bignum::awk_and_values(&args[0], &args[1], ctx.rt)
+            let mut acc = bignum::awk_and_values(&args[0], &args[1], ctx.rt);
+            for a in &args[2..] {
+                acc = bignum::awk_and_values(&acc, a, ctx.rt);
+            }
+            acc
         }
         "or" => {
-            if argc != 2 {
-                return Err(Error::Runtime("`or` expects two arguments".into()));
+            if argc < 2 {
+                return Err(Error::Runtime("`or` expects at least two arguments".into()));
             }
-            bignum::awk_or_values(&args[0], &args[1], ctx.rt)
+            let mut acc = bignum::awk_or_values(&args[0], &args[1], ctx.rt);
+            for a in &args[2..] {
+                acc = bignum::awk_or_values(&acc, a, ctx.rt);
+            }
+            acc
         }
         "xor" => {
-            if argc != 2 {
-                return Err(Error::Runtime("`xor` expects two arguments".into()));
+            if argc < 2 {
+                return Err(Error::Runtime("`xor` expects at least two arguments".into()));
             }
-            bignum::awk_xor_values(&args[0], &args[1], ctx.rt)
+            let mut acc = bignum::awk_xor_values(&args[0], &args[1], ctx.rt);
+            for a in &args[2..] {
+                acc = bignum::awk_xor_values(&acc, a, ctx.rt);
+            }
+            acc
         }
         "lshift" => {
             if argc != 2 {
@@ -4492,6 +4536,22 @@ pub(crate) fn exec_builtin_dispatch(
                 return Err(Error::Runtime("`intdiv0` expects two arguments".into()));
             }
             crate::gawk_extensions::intdiv0(ctx.rt, &args[0], &args[1])?
+        }
+        "readdir" => {
+            if argc != 2 {
+                return Err(Error::Runtime("`readdir` expects two arguments (path, array)".into()));
+            }
+            let path = args[0].as_str().to_string();
+            let arr_name = args[1].as_str().to_string();
+            crate::gawk_extensions::readdir(ctx.rt, &path, &arr_name)?
+        }
+        "getlocaltime" => {
+            if !(1..=2).contains(&argc) {
+                return Err(Error::Runtime("`getlocaltime` expects 1 or 2 arguments (array [, timestamp])".into()));
+            }
+            let arr_name = args[0].as_str().to_string();
+            let ts = if argc == 2 { Some(args[1].as_number()) } else { None };
+            crate::gawk_extensions::getlocaltime(ctx.rt, &arr_name, ts)?
         }
         _ => return Err(Error::Runtime(format!("unknown function `{name}`"))),
     };

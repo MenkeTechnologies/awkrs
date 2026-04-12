@@ -376,6 +376,100 @@ pub(crate) fn intdiv0(rt: &mut Runtime, a: &Value, b: &Value) -> Result<Value> {
     }
 }
 
+/// `readdir(path, arr)` — populate **`arr`** with directory entries; returns count or -1.
+pub(crate) fn readdir(rt: &mut Runtime, path: &str, arr_name: &str) -> Result<Value> {
+    rt.require_unsandboxed_io()?;
+    rt.clear_errno();
+    let entries = match fs::read_dir(path) {
+        Ok(rd) => rd,
+        Err(e) => {
+            rt.set_errno_io(&e);
+            return Ok(Value::Num(-1.0));
+        }
+    };
+    rt.array_delete(arr_name, None);
+    let mut count = 0usize;
+    for entry in entries {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(e) => {
+                rt.set_errno_io(&e);
+                continue;
+            }
+        };
+        let fname = entry.file_name().to_string_lossy().into_owned();
+        let ftype = entry
+            .file_type()
+            .map(|ft| {
+                if ft.is_dir() {
+                    "d"
+                } else if ft.is_symlink() {
+                    "l"
+                } else if ft.is_file() {
+                    "f"
+                } else {
+                    "u"
+                }
+            })
+            .unwrap_or("u");
+        // gawk readdir: arr[count] = "filename/filetype"
+        count += 1;
+        rt.array_set(
+            arr_name,
+            count.to_string(),
+            Value::Str(format!("{fname}/{ftype}")),
+        );
+    }
+    Ok(Value::Num(count as f64))
+}
+
+/// `getlocaltime(arr [, timestamp])` — populate **`arr`** with broken-down local time fields.
+/// Returns seconds since epoch. If **`timestamp`** is given, use it; otherwise use current time.
+pub(crate) fn getlocaltime(rt: &mut Runtime, arr_name: &str, ts: Option<f64>) -> Result<Value> {
+    rt.clear_errno();
+    let epoch_secs = ts.unwrap_or_else(|| {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0)
+    });
+    let secs_i64 = epoch_secs as i64;
+    // Use libc localtime_r on Unix for proper timezone handling
+    #[cfg(unix)]
+    {
+        use std::mem::MaybeUninit;
+        let mut tm: MaybeUninit<libc::tm> = MaybeUninit::uninit();
+        let time_t = secs_i64 as libc::time_t;
+        let result = unsafe { libc::localtime_r(&time_t, tm.as_mut_ptr()) };
+        if result.is_null() {
+            rt.set_errno_str("getlocaltime: localtime_r failed");
+            return Ok(Value::Num(-1.0));
+        }
+        let tm = unsafe { tm.assume_init() };
+        rt.array_delete(arr_name, None);
+        rt.array_set(arr_name, "sec".into(), Value::Num(tm.tm_sec as f64));
+        rt.array_set(arr_name, "min".into(), Value::Num(tm.tm_min as f64));
+        rt.array_set(arr_name, "hour".into(), Value::Num(tm.tm_hour as f64));
+        rt.array_set(arr_name, "mday".into(), Value::Num(tm.tm_mday as f64));
+        rt.array_set(arr_name, "mon".into(), Value::Num((tm.tm_mon + 1) as f64));
+        rt.array_set(
+            arr_name,
+            "year".into(),
+            Value::Num((tm.tm_year + 1900) as f64),
+        );
+        rt.array_set(arr_name, "wday".into(), Value::Num(tm.tm_wday as f64));
+        rt.array_set(arr_name, "yday".into(), Value::Num((tm.tm_yday + 1) as f64));
+        rt.array_set(arr_name, "isdst".into(), Value::Num(tm.tm_isdst as f64));
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = secs_i64;
+        rt.array_delete(arr_name, None);
+        rt.set_errno_str("getlocaltime: not supported on this platform");
+    }
+    Ok(Value::Num(epoch_secs))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

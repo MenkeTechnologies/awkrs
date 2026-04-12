@@ -85,6 +85,10 @@ pub fn run(bin_name: &str) -> Result<()> {
             println!("{} {}", bin_name, env!("CARGO_PKG_VERSION"));
             return Ok(());
         }
+        Err(MawkWAction::Dump) => {
+            // mawk -W dump: compile program and dump internal representation
+            args.dump_variables = Some(String::new());
+        }
     }
     if args.copyright {
         println!(

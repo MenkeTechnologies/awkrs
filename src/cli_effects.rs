@@ -305,21 +305,21 @@ pub fn dump_variables(rt: &Runtime, cp: &CompiledProgram, out: &mut dyn Write) -
 fn dump_value(out: &mut dyn Write, name: &str, v: &Value, tag: &str) -> Result<()> {
     match v {
         Value::Array(a) => {
+            // gawk format: array name with element count header
+            let prefix = if tag.is_empty() { String::new() } else { format!("{tag} ") };
+            writeln!(out, "{prefix}{name}: array, {n} elements", n = a.len()).map_err(Error::Io)?;
             let mut keys: Vec<_> = a.keys().cloned().collect();
             keys.sort();
             for k in keys {
                 if let Some(elem) = a.get(&k) {
-                    let fq = format!("{name}[{k}]");
+                    let fq = format!("{name}[\"{k}\"]");
                     dump_value(out, &fq, elem, tag)?;
                 }
             }
         }
         _ => {
-            if !tag.is_empty() {
-                writeln!(out, "{tag} {name} = {}", value_dump_scalar(v)).map_err(Error::Io)?;
-            } else {
-                writeln!(out, "{name} = {}", value_dump_scalar(v)).map_err(Error::Io)?;
-            }
+            let prefix = if tag.is_empty() { String::new() } else { format!("{tag} ") };
+            writeln!(out, "{prefix}{name}: {}", value_dump_scalar(v)).map_err(Error::Io)?;
         }
     }
     Ok(())
@@ -327,12 +327,12 @@ fn dump_value(out: &mut dyn Write, name: &str, v: &Value, tag: &str) -> Result<(
 
 fn value_dump_scalar(v: &Value) -> String {
     match v {
-        Value::Uninit => "(uninitialized)".to_string(),
-        Value::Str(s) | Value::StrLit(s) => format!("{s:?}"),
-        Value::Regexp(s) => format!("@/{s}/ (regexp)"),
-        Value::Num(n) => format!("{n}"),
-        Value::Mpfr(f) => f.to_string(),
-        Value::Array(_) => "(array)".to_string(),
+        Value::Uninit => "uninitialized".to_string(),
+        Value::Str(s) | Value::StrLit(s) => format!("string (\"{s}\")"),
+        Value::Regexp(s) => format!("regexp (@/{s}/)"),
+        Value::Num(n) => format!("number ({n})"),
+        Value::Mpfr(f) => format!("number ({f})"),
+        Value::Array(_) => "array".to_string(),
     }
 }
 
@@ -462,7 +462,18 @@ pub(crate) fn emit_lint_diagnostics(w: &impl Fn(&str), prog: &Program, lint_old:
         }
     }
     if lint_old {
-        w("-t/--lint-old: deprecated extension checks are not fully implemented");
+        w("-t/--lint-old: checking for deprecated / old-style awk constructs");
+        // Check for gawk-only features that old awk lacks
+        for r in &prog.rules {
+            for s in &r.stmts {
+                lint_old_constructs(s, w);
+            }
+        }
+        for fd in prog.funcs.values() {
+            for s in &fd.body {
+                lint_old_constructs(s, w);
+            }
+        }
     }
 
     let mut warned = FxHashSet::default();
@@ -1203,6 +1214,95 @@ fn printf_min_args_for_format(fmt: &str) -> Option<usize> {
         }
     }
     None
+}
+
+/// Lint checks for old-style / deprecated constructs (`-t`/`--lint-old`).
+fn lint_old_constructs(s: &Stmt, w: &impl Fn(&str)) {
+    match s {
+        Stmt::If { then_, else_, .. } => {
+            for st in then_ {
+                lint_old_constructs(st, w);
+            }
+            for st in else_ {
+                lint_old_constructs(st, w);
+            }
+        }
+        Stmt::While { body, .. } | Stmt::DoWhile { body, .. } | Stmt::ForIn { body, .. } => {
+            for st in body {
+                lint_old_constructs(st, w);
+            }
+        }
+        Stmt::ForC {
+            init, iter, body, ..
+        } => {
+            if let Some(i) = init {
+                lint_old_expr(i, w);
+            }
+            if let Some(u) = iter {
+                lint_old_expr(u, w);
+            }
+            for st in body {
+                lint_old_constructs(st, w);
+            }
+        }
+        Stmt::Switch { arms, .. } => {
+            w("lint-old: switch/case is a gawk extension (not in traditional awk)");
+            for arm in arms {
+                let stmts = match arm {
+                    SwitchArm::Case { stmts, .. } => stmts,
+                    SwitchArm::Default { stmts } => stmts,
+                };
+                for st in stmts {
+                    lint_old_constructs(st, w);
+                }
+            }
+        }
+        Stmt::Expr(e) => lint_old_expr(e, w),
+        Stmt::Print { args, .. } => {
+            for a in args {
+                lint_old_expr(a, w);
+            }
+        }
+        Stmt::Printf { args, .. } => {
+            for a in args {
+                lint_old_expr(a, w);
+            }
+        }
+        Stmt::Block(stmts) => {
+            for st in stmts {
+                lint_old_constructs(st, w);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn lint_old_expr(e: &Expr, w: &impl Fn(&str)) {
+    match e {
+        Expr::Call { name, args } => {
+            let gawk_ext = [
+                "gensub", "patsplit", "mkbool", "mktime", "strftime", "systime",
+                "isarray", "typeof", "strtonum", "and", "or", "xor", "compl",
+                "lshift", "rshift",
+            ];
+            if gawk_ext.contains(&name.as_str()) {
+                w(&format!("lint-old: `{name}()` is a gawk extension"));
+            }
+            for a in args {
+                lint_old_expr(a, w);
+            }
+        }
+        Expr::Binary { left, right, .. } => {
+            lint_old_expr(left, w);
+            lint_old_expr(right, w);
+        }
+        Expr::Ternary { cond, then_, else_ } => {
+            lint_old_expr(cond, w);
+            lint_old_expr(then_, w);
+            lint_old_expr(else_, w);
+        }
+        _ => {}
+    }
 }
 
 fn lint_stmt_printf_args(w: &impl Fn(&str), stmt: &Stmt) {

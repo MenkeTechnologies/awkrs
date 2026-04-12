@@ -180,10 +180,18 @@ impl Args {
                 match part {
                     "help" | "usage" => return Err(MawkWAction::Help),
                     "version" | "v" => return Err(MawkWAction::Version),
+                    "dump" => return Err(MawkWAction::Dump),
+                    "posix_space" => { /* mawk: makes RS ignore \\n in \\s class — accepted silently */ }
+                    "interactive" => { /* mawk: unbuffered stdout — accepted silently */ }
+                    "random" => { /* mawk: seed from pid — accepted silently */ }
                     _ => {}
                 }
                 if let Some(rest) = part.strip_prefix("exec=") {
                     self.exec_file = Some(PathBuf::from(rest));
+                }
+                if let Some(rest) = part.strip_prefix("sprintf=") {
+                    // mawk: set sprintf buffer size (silently accept any value)
+                    let _ = rest;
                 }
             }
         }
@@ -195,6 +203,7 @@ impl Args {
 pub enum MawkWAction {
     Help,
     Version,
+    Dump,
 }
 
 #[cfg(test)]

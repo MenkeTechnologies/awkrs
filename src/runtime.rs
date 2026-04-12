@@ -753,6 +753,7 @@ fn split_fields_into(
     fs: &str,
     field_ranges: &mut Vec<(u32, u32)>,
     ignore_case: bool,
+    characters_as_bytes: bool,
 ) {
     field_ranges.clear();
     // Rough NF estimate from record length reduces per-line `Vec` growth for whitespace/FS splits.
@@ -763,8 +764,14 @@ fn split_fields_into(
         }
     }
     if fs.is_empty() {
-        for (i, c) in record.char_indices() {
-            field_ranges.push((i as u32, (i + c.len_utf8()) as u32));
+        if characters_as_bytes {
+            for i in 0..record.len() {
+                field_ranges.push((i as u32, (i + 1) as u32));
+            }
+        } else {
+            for (i, c) in record.char_indices() {
+                field_ranges.push((i as u32, (i + c.len_utf8()) as u32));
+            }
         }
     } else if fs == " " {
         let bytes = record.as_bytes();
@@ -1247,6 +1254,21 @@ impl Runtime {
             .unwrap_or(0.0);
         p.insert("awkrs_binmode".into(), Value::Num(binmode));
 
+        // nproc: number of available CPUs
+        p.entry("nproc".into())
+            .or_insert(Value::Num(std::thread::available_parallelism()
+                .map(|n| n.get() as f64)
+                .unwrap_or(1.0)));
+
+        // sorted_in: default sort order for for-in (gawk compat)
+        p.entry("sorted_in".into())
+            .or_insert(Value::Str(String::new()));
+
+        // PREC (default precision) when not in bignum mode
+        if !self.bignum {
+            p.entry("prec".into()).or_insert(Value::Num(53.0));
+        }
+
         crate::procinfo::merge_procinfo_identifiers(&mut p, cp);
 
         let sep = self
@@ -1282,11 +1304,20 @@ impl Runtime {
 
     fn functab_refresh(&mut self, cp: &CompiledProgram) {
         let mut ft = AwkMap::default();
+        // User-defined functions
         for (name, f) in &cp.functions {
             let mut meta = AwkMap::default();
             meta.insert("type".into(), Value::Str("user".into()));
             meta.insert("arity".into(), Value::Num(f.params.len() as f64));
             ft.insert(name.clone(), Value::Array(meta));
+        }
+        // Builtin functions (gawk includes these in FUNCTAB)
+        for &name in crate::namespace::BUILTIN_NAMES {
+            if !ft.contains_key(name) {
+                let mut meta = AwkMap::default();
+                meta.insert("type".into(), Value::Str("builtin".into()));
+                ft.insert(name.into(), Value::Array(meta));
+            }
         }
         self.vars.insert("FUNCTAB".into(), Value::Array(ft));
     }
@@ -1991,6 +2022,7 @@ impl Runtime {
     }
 
     pub fn close_handle(&mut self, path: &str) -> f64 {
+        let mut exit_status: f64 = 0.0;
         if let Some(h) = self.coproc_handles.remove(path) {
             let _ = shutdown_coproc(h);
         }
@@ -2001,14 +2033,33 @@ impl Runtime {
             let _ = w.flush();
         }
         if let Some(mut ch) = self.pipe_children.remove(path) {
-            let _ = ch.wait();
+            match ch.wait() {
+                Ok(status) => {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::process::ExitStatusExt;
+                        if let Some(code) = status.code() {
+                            exit_status = code as f64;
+                        } else if let Some(sig) = status.signal() {
+                            exit_status = (256 + sig) as f64;
+                        }
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        exit_status = status.code().unwrap_or(-1) as f64;
+                    }
+                }
+                Err(_) => {
+                    exit_status = -1.0;
+                }
+            }
         }
         let _ = self.file_handles.remove(path);
         let _ = self.dir_read.remove(path);
         let _ = self.inet_tcp_read.remove(path);
         let _ = self.inet_tcp_write.remove(path);
         let _ = self.inet_udp.remove(path);
-        0.0
+        exit_status
     }
 
     pub fn rand(&mut self) -> f64 {
@@ -2111,14 +2162,15 @@ impl Runtime {
             }
         }
         // Use cached_fs (set by set_field_sep_split) to avoid HashMap lookup + String clone.
+        let cab = self.characters_as_bytes;
         if !self.cached_fs.is_empty() {
-            split_fields_into(record, &self.cached_fs, &mut self.field_ranges, ic);
+            split_fields_into(record, &self.cached_fs, &mut self.field_ranges, ic, cab);
         } else {
             match self.get_global_var("FS") {
-                None => split_fields_into(record, " ", &mut self.field_ranges, ic),
+                None => split_fields_into(record, " ", &mut self.field_ranges, ic, cab),
                 Some(v) => {
                     let fs = v.as_str_cow().into_owned();
-                    split_fields_into(record, &fs, &mut self.field_ranges, ic);
+                    split_fields_into(record, &fs, &mut self.field_ranges, ic, cab);
                 }
             }
         }

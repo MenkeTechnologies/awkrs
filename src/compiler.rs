@@ -855,7 +855,7 @@ impl Compiler {
 
     fn compile_call(&mut self, name: &str, args: &[Expr], ops: &mut Vec<Op>) {
         match name {
-            "stat" | "statvfs" | "fts" | "writea" | "reada" => {
+            "stat" | "statvfs" | "fts" | "writea" | "reada" | "readdir" => {
                 if args.len() == 2 {
                     if let Expr::Var(arr) = &args[1] {
                         self.compile_expr(&args[0], ops);
@@ -873,20 +873,26 @@ impl Compiler {
                     args.len() as u16,
                 ));
             }
-            "gettimeofday" => {
-                if args.len() == 1 {
-                    if let Expr::Var(arr) = &args[0] {
-                        let idx = self.strings.intern(arr);
-                        ops.push(Op::PushStr(idx));
-                        ops.push(Op::CallBuiltin(self.strings.intern("gettimeofday"), 1));
-                        return;
+            "gettimeofday" | "getlocaltime" => {
+                // Array is the first arg; optional extra args follow
+                if let Some(Expr::Var(arr)) = args.first() {
+                    let idx = self.strings.intern(arr);
+                    ops.push(Op::PushStr(idx));
+                    // Push remaining args (e.g. timestamp for getlocaltime)
+                    for a in &args[1..] {
+                        self.compile_expr(a, ops);
                     }
+                    ops.push(Op::CallBuiltin(
+                        self.strings.intern(name),
+                        args.len() as u16,
+                    ));
+                    return;
                 }
                 for a in args {
                     self.compile_expr(a, ops);
                 }
                 ops.push(Op::CallBuiltin(
-                    self.strings.intern("gettimeofday"),
+                    self.strings.intern(name),
                     args.len() as u16,
                 ));
             }
