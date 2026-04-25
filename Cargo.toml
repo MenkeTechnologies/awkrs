@@ -27,6 +27,7 @@ path = "src/bin/ars.rs"
 chrono = "0.4"
 clap = { version = "4.5", features = ["derive", "cargo", "env"] }
 gettext = "0.4"
+fusevm = { path = "../fusevm", features = ["jit"] }
 cranelift-codegen = "0.130.0"
 cranelift-frontend = "0.130.0"
 cranelift-jit = "0.130.0"
