@@ -2615,7 +2615,7 @@ fn try_fusevm_dispatch(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<Option<VmSi
     }
 
     // Translate ops (with remapped jump targets)
-    for (_awk_ip, op) in ops.iter().enumerate() {
+    for op in ops.iter() {
         match op {
             Op::PushNum(n) => {
                 builder.emit(fusevm::Op::LoadFloat(*n), 0);

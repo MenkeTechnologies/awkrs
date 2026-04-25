@@ -133,10 +133,7 @@ fn parse_conversion_rest(
     let mut alt = false;
     let mut pad_zero = false;
     let mut group = false;
-    loop {
-        let Some(flag) = fmt_peek(fmt, i) else {
-            break;
-        };
+    while let Some(flag) = fmt_peek(fmt, i) {
         match flag {
             '-' => {
                 left = true;
