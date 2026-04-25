@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta name="description" content="awkrs — a fast AWK implementation in Rust with parallel records, Cranelift JIT, and broad gawk/mawk/nawk CLI compatibility.">
+  <title>awkrs — Documentation</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;900&amp;family=Share+Tech+Mono&amp;display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="hud-static.css">
+  <link rel="stylesheet" href="tutorial.css">
+  <style>
+    .tutorial-main { max-width: 68rem; }
+    .docs-build-line {
+      margin: 0.35rem 0 0;
+      font-family: 'Share Tech Mono', ui-monospace, monospace;
+      font-size: 11px;
+      color: var(--text-dim);
+      letter-spacing: 0.03em;
+      max-width: 42rem;
+      opacity: 0.75;
+    }
+    .hub-scheme-strip {
+      border-bottom: 1px dashed var(--border);
+      background: color-mix(in srgb, var(--bg-secondary) 85%, transparent);
+      padding: 0.55rem 1.5rem 0.65rem;
+      position: relative;
+    }
+    .hub-scheme-strip-inner {
+      max-width: 68rem;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 0.85rem;
+    }
+    .hub-scheme-strip .hud-scheme-label {
+      flex: 0 0 auto;
+      font-family: 'Orbitron', sans-serif;
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      color: var(--accent);
+      text-align: left;
+    }
+    .hub-scheme-strip .scheme-grid {
+      flex: 1 1 auto;
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 6px;
+    }
+    @media (max-width: 720px) {
+      .hub-scheme-strip-inner { flex-direction: column; align-items: stretch; }
+      .hub-scheme-strip .scheme-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+
+    .reflection-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 0.6rem 0 0.2rem;
+      font-size: 12px;
+    }
+    .reflection-table th {
+      background: var(--bg-secondary);
+      color: var(--cyan);
+      font-family: 'Orbitron', sans-serif;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      text-align: left;
+      padding: 6px 10px;
+      border: 1px solid var(--border);
+    }
+    .reflection-table td {
+      padding: 6px 10px;
+      border: 1px solid var(--border);
+      color: var(--text-dim);
+      vertical-align: top;
+    }
+    .reflection-table td code { color: var(--accent-light); background: var(--bg); }
+
+    .oneliner {
+      margin: 0.4rem 0;
+      padding: 0.55rem 0.8rem;
+      border-left: 2px solid var(--cyan);
+      background: var(--bg);
+      font-family: 'Share Tech Mono', ui-monospace, monospace;
+      font-size: 12px;
+      color: var(--text);
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .oneliner .comment { color: var(--text-muted); }
+
+    .cat-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
+      gap: 0.6rem;
+      margin: 0.7rem 0;
+    }
+    .cat-card {
+      border: 1px solid var(--border);
+      border-left: 2px solid var(--cyan);
+      padding: 0.6rem 0.8rem;
+      background: color-mix(in srgb, var(--bg-card) 92%, transparent);
+      border-radius: 2px;
+    }
+    .cat-card h4 {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+      color: var(--cyan);
+      margin: 0 0 0.35rem;
+    }
+    .cat-card p {
+      margin: 0;
+      font-size: 11.5px;
+      color: var(--text-dim);
+      line-height: 1.5;
+    }
+    .cat-card code { font-size: 11px; color: var(--accent-light); }
+  </style>
+</head>
+<body>
+  <div class="app tutorial-app" id="docsApp">
+    <div class="crt-scanline" id="crtH" aria-hidden="true"></div>
+    <div class="crt-scanline-v" id="crtV" aria-hidden="true"></div>
+
+    <header class="tutorial-header">
+      <div class="tutorial-header-inner">
+        <div>
+          <h1 class="tutorial-brand">// AWKRS — AWK IN RUST</h1>
+          <nav class="tutorial-crumbs" aria-label="Breadcrumb">
+            <span class="current">Docs</span>
+            <span class="sep">/</span>
+            <a href="https://github.com/MenkeTechnologies/awkrs" target="_blank" rel="noopener noreferrer">GitHub</a>
+            <span class="sep">/</span>
+            <a href="https://crates.io/crates/awkrs" target="_blank" rel="noopener noreferrer">crates.io</a>
+            <span class="sep">/</span>
+            <a href="https://docs.rs/awkrs" target="_blank" rel="noopener noreferrer">docs.rs</a>
+          </nav>
+          <p class="docs-build-line" id="awkrsBuildLine">awkrs v0.1.39 · Rust-powered · Parallel records · Cranelift JIT · gawk/mawk/nawk compatible</p>
+        </div>
+        <div class="tutorial-toolbar">
+          <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
+          <button type="button" class="btn btn-secondary active" id="btnCrt" title="CRT scanline overlay">CRT</button>
+          <button type="button" class="btn btn-secondary active" id="btnNeon" title="Neon border pulse">Neon</button>
+          <a class="btn btn-secondary" href="https://github.com/MenkeTechnologies/awkrs" target="_blank" rel="noopener noreferrer">GitHub</a>
+          <a class="btn btn-secondary" href="https://github.com/MenkeTechnologies/awkrs/issues" target="_blank" rel="noopener noreferrer">Issues</a>
+        </div>
+      </div>
+    </header>
+
+    <div class="hub-scheme-strip">
+      <div class="hub-scheme-strip-inner">
+        <span class="hud-scheme-label">// Color scheme</span>
+        <div class="scheme-grid" id="hudSchemeGrid"></div>
+      </div>
+    </div>
+
+    <main class="tutorial-main">
+      <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>AWKRS REFERENCE</h2>
+      <p class="tutorial-subtitle">A fast AWK implementation written in Rust. Bytecode VM with optional Cranelift JIT, parallel record processing with rayon, and broad CLI compatibility with gawk, mawk, and nawk. Drop-in replacement for text processing pipelines.</p>
+
+      <section class="tutorial-section">
+        <h2>Quickstart</h2>
+        <p>Install from crates.io or build from source, then use <code>aw</code> (short) or <code>awkrs</code>:</p>
+<pre># install
+cargo install awkrs
+
+# from source
+git clone https://github.com/MenkeTechnologies/awkrs
+cd awkrs &amp;&amp; cargo build
+
+# one-liners
+aw 'BEGIN { print "hello, world" }'
+aw -F: '{ print $1 }' /etc/passwd
+aw '{ sum += $1 } END { print sum }' numbers.txt
+echo "1 2 3" | aw '{ print $1 + $2 + $3 }'
+
+# field processing
+ls -l | aw 'NR &gt; 1 { total += $5 } END { print total }'
+
+# pattern matching
+aw '/error/i { print FILENAME ":" NR ":" $0 }' *.log</pre>
+        <p>Full install + usage live in the <a href="https://github.com/MenkeTechnologies/awkrs#readme">README</a>.</p>
+      </section>
+
+      <section class="tutorial-section">
+        <h2>Why awkrs — Feature Comparison</h2>
+        <table class="comparison-table" style="width:100%; border-collapse:collapse; font-size:0.85em;">
+          <thead>
+            <tr style="border-bottom:2px solid #0ff;">
+              <th style="text-align:left; padding:4px;">Feature</th>
+              <th style="padding:4px;">awkrs</th>
+              <th style="padding:4px;">gawk</th>
+              <th style="padding:4px;">mawk</th>
+              <th style="padding:4px;">nawk</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td>Parallel records</td><td style="color:#0f0;">&#10003;</td><td>&#10007;</td><td>&#10007;</td><td>&#10007;</td></tr>
+            <tr><td>JIT compilation</td><td style="color:#0f0;">Cranelift</td><td>&#10007;</td><td>&#10007;</td><td>&#10007;</td></tr>
+            <tr><td>Bytecode VM</td><td style="color:#0f0;">&#10003;</td><td>&#10003;</td><td>&#10003;</td><td>&#10007;</td></tr>
+            <tr><td>Unicode support</td><td style="color:#0f0;">&#10003;</td><td>&#10003;</td><td>partial</td><td>&#10007;</td></tr>
+            <tr><td>CSV mode</td><td style="color:#0f0;">&#10003;</td><td>&#10003;</td><td>&#10007;</td><td>&#10007;</td></tr>
+            <tr><td>Regex backrefs</td><td style="color:#0f0;">&#10003;</td><td>&#10003;</td><td>&#10007;</td><td>&#10007;</td></tr>
+            <tr><td>Time functions</td><td style="color:#0f0;">&#10003;</td><td>&#10003;</td><td>&#10007;</td><td>&#10007;</td></tr>
+            <tr><td>I18N (gettext)</td><td style="color:#0f0;">&#10003;</td><td>&#10003;</td><td>&#10007;</td><td>&#10007;</td></tr>
+            <tr><td>Network I/O</td><td style="color:#0f0;">&#10003;</td><td>&#10003;</td><td>&#10007;</td><td>&#10007;</td></tr>
+            <tr><td>Single binary</td><td style="color:#0f0;">~8MB</td><td>pkg</td><td>~200KB</td><td>pkg</td></tr>
+            <tr><td>Memory safety</td><td style="color:#0f0;">Rust</td><td>C</td><td>C</td><td>C</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="tutorial-section">
+        <h2>Overview</h2>
+        <ul>
+          <li><strong>Parser &amp; compiler</strong> — recursive-descent parser producing an AST, compiled to bytecode for the VM. Hot paths can be JIT-compiled via Cranelift.</li>
+          <li><strong>Values</strong> — AWK values (string/number/uninitialized) with automatic coercion. Arrays are associative (hash maps).</li>
+          <li><strong>Regex</strong> — three-tier engine: Rust <code>regex</code> → <code>fancy-regex</code> (backrefs) → <code>pcre2</code> (advanced).</li>
+          <li><strong>Parallelism</strong> — <code>-P</code> flag enables parallel record processing via rayon work-stealing.</li>
+          <li><strong>Binary size</strong> — ~8MB stripped with LTO.</li>
+        </ul>
+      </section>
+
+      <section class="tutorial-section">
+        <h2>Built-in Variables</h2>
+        <table class="reflection-table">
+          <thead>
+            <tr><th>Variable</th><th>Description</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><code>$0</code></td><td>Current input record (entire line)</td></tr>
+            <tr><td><code>$1, $2, ...</code></td><td>Fields of the current record</td></tr>
+            <tr><td><code>NF</code></td><td>Number of fields in current record</td></tr>
+            <tr><td><code>NR</code></td><td>Total number of records read so far</td></tr>
+            <tr><td><code>FNR</code></td><td>Record number in current file</td></tr>
+            <tr><td><code>FILENAME</code></td><td>Name of current input file</td></tr>
+            <tr><td><code>FS</code></td><td>Input field separator (default: space)</td></tr>
+            <tr><td><code>RS</code></td><td>Input record separator (default: newline)</td></tr>
+            <tr><td><code>OFS</code></td><td>Output field separator</td></tr>
+            <tr><td><code>ORS</code></td><td>Output record separator</td></tr>
+            <tr><td><code>OFMT</code></td><td>Output format for numbers</td></tr>
+            <tr><td><code>CONVFMT</code></td><td>Conversion format for numbers</td></tr>
+            <tr><td><code>SUBSEP</code></td><td>Subscript separator for arrays</td></tr>
+            <tr><td><code>RSTART</code></td><td>Start of match from <code>match()</code></td></tr>
+            <tr><td><code>RLENGTH</code></td><td>Length of match from <code>match()</code></td></tr>
+            <tr><td><code>ARGC, ARGV</code></td><td>Command-line argument count and array</td></tr>
+            <tr><td><code>ENVIRON</code></td><td>Environment variables array</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="tutorial-section">
+        <h2>Built-in Functions</h2>
+        <div class="cat-grid">
+          <div class="cat-card"><h4>String</h4><p><code>length gsub sub match split substr index sprintf tolower toupper</code></p></div>
+          <div class="cat-card"><h4>Math</h4><p><code>sin cos atan2 exp log sqrt int rand srand</code></p></div>
+          <div class="cat-card"><h4>I/O</h4><p><code>print printf getline close fflush system</code></p></div>
+          <div class="cat-card"><h4>Time (gawk)</h4><p><code>systime mktime strftime</code></p></div>
+          <div class="cat-card"><h4>Bit ops (gawk)</h4><p><code>and or xor compl lshift rshift</code></p></div>
+          <div class="cat-card"><h4>Type (gawk)</h4><p><code>typeof isarray</code></p></div>
+          <div class="cat-card"><h4>Array (gawk)</h4><p><code>asort asorti delete</code></p></div>
+          <div class="cat-card"><h4>Regex (gawk)</h4><p><code>gensub patsplit</code></p></div>
+        </div>
+      </section>
+
+      <section class="tutorial-section">
+        <h2>Examples</h2>
+        <h3>Field extraction</h3>
+        <div class="oneliner">aw -F: '{ print $1, $3 }' /etc/passwd   <span class="comment"># username and UID</span></div>
+        <div class="oneliner">aw '{ print $NF }' file.txt            <span class="comment"># last field of each line</span></div>
+
+        <h3>Aggregation</h3>
+        <div class="oneliner">aw '{ sum += $1 } END { print sum }' numbers.txt</div>
+        <div class="oneliner">aw '{ count[$1]++ } END { for (k in count) print k, count[k] }' data.txt</div>
+
+        <h3>Pattern matching</h3>
+        <div class="oneliner">aw '/^#/ { next } { print }' config.txt  <span class="comment"># skip comments</span></div>
+        <div class="oneliner">aw 'NR == 1 || /error/' log.txt         <span class="comment"># header + error lines</span></div>
+
+        <h3>Text transformation</h3>
+        <div class="oneliner">aw '{ gsub(/foo/, "bar"); print }' file.txt</div>
+        <div class="oneliner">aw 'BEGIN { OFS="," } { $1=$1; print }' file.txt  <span class="comment"># to CSV</span></div>
+
+        <h3>Multi-file processing</h3>
+        <div class="oneliner">aw 'FNR == 1 { print "--- " FILENAME " ---" } { print }' *.txt</div>
+      </section>
+
+      <section class="tutorial-section">
+        <h2>CLI Flags</h2>
+<pre>-f FILE            # read program from file
+-F FS              # set field separator
+-v VAR=VAL         # set variable before execution
+-b                 # binary mode (no UTF-8)
+-c                 # CSV mode
+-d                 # debug: dump variables
+-e PROG            # program text (multiple allowed)
+-E FILE            # like -f, but different variable handling
+-g                 # GNU regex mode
+-i FILE            # include file (library)
+-k                 # CSV mode with header
+-l LIB             # load extension library
+-M                 # arbitrary precision math
+-n                 # no implicit input loop
+-N                 # decimal context for -M
+-o FILE            # pretty-print to file
+-O                 # optimize (enable JIT)
+-p FILE            # profile output
+-P                 # POSIX mode
+-r                 # extended regex (ERE)
+-s                 # sandbox mode
+-S                 # sandbox + safe mode
+-t                 # lint-old compatibility warnings
+-V                 # version
+-W OPT             # gawk-style option</pre>
+      </section>
+
+      <section class="tutorial-section">
+        <h2>Parallel Processing</h2>
+        <p>Use <code>-P</code> or <code>--parallel</code> to enable parallel record processing. Each record is processed independently using rayon work-stealing across all CPU cores.</p>
+<pre># process large file in parallel
+aw -P '{ complex_computation($0) }' huge_file.txt
+
+# parallel aggregation (thread-safe)
+aw -P '{ sum += $1 } END { print sum }' data.txt</pre>
+        <p>Note: Parallel mode may reorder output. Use <code>-P -s</code> for sorted output by record number.</p>
+      </section>
+
+      <section class="tutorial-section">
+        <h2>gawk Extensions</h2>
+        <p>awkrs implements many gawk extensions for compatibility:</p>
+        <ul>
+          <li><strong>BEGINFILE / ENDFILE</strong> — run before/after each input file</li>
+          <li><strong>nextfile</strong> — skip to next input file</li>
+          <li><strong>@include</strong> — include another awk file</li>
+          <li><strong>@namespace</strong> — namespace support</li>
+          <li><strong>Typed regex</strong> — <code>@/regex/</code> strongly typed regex constants</li>
+          <li><strong>Indirect function calls</strong> — <code>@func_name()</code></li>
+          <li><strong>Two-way pipes</strong> — <code>|&amp;</code> for coprocess communication</li>
+          <li><strong>Network I/O</strong> — <code>/inet/tcp/...</code> special files</li>
+          <li><strong>Time functions</strong> — <code>systime()</code>, <code>mktime()</code>, <code>strftime()</code></li>
+          <li><strong>Bit operations</strong> — <code>and()</code>, <code>or()</code>, <code>xor()</code>, etc.</li>
+        </ul>
+      </section>
+
+      <section class="tutorial-section">
+        <h2>Repository &amp; Links</h2>
+        <ul>
+          <li><strong>Source</strong> — <a href="https://github.com/MenkeTechnologies/awkrs">github.com/MenkeTechnologies/awkrs</a></li>
+          <li><strong>Crate</strong> — <a href="https://crates.io/crates/awkrs">crates.io/crates/awkrs</a> (<code>cargo install awkrs</code>)</li>
+          <li><strong>Rust API docs</strong> — <a href="https://docs.rs/awkrs">docs.rs/awkrs</a></li>
+          <li><strong>Issues</strong> — <a href="https://github.com/MenkeTechnologies/awkrs/issues">github.com/MenkeTechnologies/awkrs/issues</a></li>
+          <li><strong>Parity tests</strong> — <code>parity/</code> contains test cases comparing awkrs output against gawk.</li>
+        </ul>
+      </section>
+    </main>
+  </div>
+
+  <script src="hud-theme.js"></script>
+</body>
+</html>
