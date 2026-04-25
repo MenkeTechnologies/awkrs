@@ -1,6 +1,6 @@
-//! Bridge between awkrs's bytecode [`Op`] and fusevm's [`fusevm::Op`].
+//! Bridge between awkrs's bytecode `Op` and fusevm's `fusevm::Op`.
 //!
-//! Translates an awkrs [`Chunk`] into a fusevm [`fusevm::Chunk`], mapping:
+//! Translates an awkrs `Chunk` into a fusevm `fusevm::Chunk`, mapping:
 //! - Universal ops (arithmetic, comparison, control flow, slots, stack) → direct fusevm ops
 //! - AWK-specific ops (fields, arrays, regex, print, getline, etc.) → `fusevm::Op::Extended`
 //!
@@ -158,7 +158,7 @@ pub fn getline_source_to_u8(source: GetlineSource) -> u8 {
     }
 }
 
-/// Translate a single awkrs [`bytecode::Op`] into fusevm ops.
+/// Translate a single awkrs `bytecode::Op` into fusevm ops.
 /// Returns a vec because some awkrs ops may expand to multiple fusevm ops.
 pub fn translate_op(op: &bytecode::Op, line: u32) -> Vec<(fusevm::Op, u32)> {
     use bytecode::Op as A;
