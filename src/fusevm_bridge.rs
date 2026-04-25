@@ -8,7 +8,7 @@
 //! universal hot path while keeping AWK semantics in extension handlers.
 
 use crate::ast::BinOp;
-use crate::bytecode::{self, GetlineSource, RedirKind, SubTarget};
+use crate::bytecode::{self, GetlineSource, RedirKind};
 
 // ── AWK extension op IDs for fusevm::Op::Extended(id, arg) ──
 
@@ -212,29 +212,41 @@ pub fn translate_op(op: &bytecode::Op, line: u32) -> Vec<(fusevm::Op, u32)> {
         // ── AWK-specific → Extended ──
         A::GetField => vec![(F::Extended(AWK_GET_FIELD, 0), line)],
         A::SetField => vec![(F::Extended(AWK_SET_FIELD, 0), line)],
-        A::PushStr(idx) => vec![(F::Extended(AWK_PUSH_NUM_DECIMAL_STR, 0), line)], // pool string
-        A::PushRegexp(idx) => vec![(F::Extended(AWK_PUSH_REGEXP, 0), line)],
-        A::PushNumDecimalStr(idx) => vec![(F::Extended(AWK_PUSH_NUM_DECIMAL_STR, 0), line)],
+        A::PushStr(_idx) => vec![(F::Extended(AWK_PUSH_NUM_DECIMAL_STR, 0), line)], // pool string
+        A::PushRegexp(_idx) => vec![(F::Extended(AWK_PUSH_REGEXP, 0), line)],
+        A::PushNumDecimalStr(_idx) => vec![(F::Extended(AWK_PUSH_NUM_DECIMAL_STR, 0), line)],
 
-        A::CompoundAssignVar(idx, bop) => vec![(F::Extended(AWK_COMPOUND_ASSIGN_VAR, binop_to_u8(*bop)), line)],
-        A::CompoundAssignSlot(slot, bop) => vec![(F::Extended(AWK_COMPOUND_ASSIGN_SLOT, binop_to_u8(*bop)), line)],
-        A::CompoundAssignField(bop) => vec![(F::Extended(AWK_COMPOUND_ASSIGN_FIELD, binop_to_u8(*bop)), line)],
-        A::CompoundAssignIndex(idx, bop) => vec![(F::Extended(AWK_COMPOUND_ASSIGN_INDEX, binop_to_u8(*bop)), line)],
+        A::CompoundAssignVar(_idx, bop) => vec![(
+            F::Extended(AWK_COMPOUND_ASSIGN_VAR, binop_to_u8(*bop)),
+            line,
+        )],
+        A::CompoundAssignSlot(_slot, bop) => vec![(
+            F::Extended(AWK_COMPOUND_ASSIGN_SLOT, binop_to_u8(*bop)),
+            line,
+        )],
+        A::CompoundAssignField(bop) => vec![(
+            F::Extended(AWK_COMPOUND_ASSIGN_FIELD, binop_to_u8(*bop)),
+            line,
+        )],
+        A::CompoundAssignIndex(_idx, bop) => vec![(
+            F::Extended(AWK_COMPOUND_ASSIGN_INDEX, binop_to_u8(*bop)),
+            line,
+        )],
 
-        A::IncDecVar(idx, kind) => vec![(F::Extended(AWK_INCDEC_VAR, 0), line)],
-        A::IncrVar(idx) => vec![(F::Extended(AWK_INCR_VAR, 0), line)],
-        A::DecrVar(idx) => vec![(F::Extended(AWK_DECR_VAR, 0), line)],
-        A::IncDecSlot(slot, kind) => vec![(F::Extended(AWK_INCDEC_SLOT, 0), line)],
-        A::IncDecField(kind) => vec![(F::Extended(AWK_INCDEC_FIELD, 0), line)],
-        A::IncDecIndex(idx, kind) => vec![(F::Extended(AWK_INCDEC_INDEX, 0), line)],
+        A::IncDecVar(_idx, _kind) => vec![(F::Extended(AWK_INCDEC_VAR, 0), line)],
+        A::IncrVar(_idx) => vec![(F::Extended(AWK_INCR_VAR, 0), line)],
+        A::DecrVar(_idx) => vec![(F::Extended(AWK_DECR_VAR, 0), line)],
+        A::IncDecSlot(_slot, _kind) => vec![(F::Extended(AWK_INCDEC_SLOT, 0), line)],
+        A::IncDecField(_kind) => vec![(F::Extended(AWK_INCDEC_FIELD, 0), line)],
+        A::IncDecIndex(_idx, _kind) => vec![(F::Extended(AWK_INCDEC_INDEX, 0), line)],
 
         A::RegexMatch => vec![(F::Extended(AWK_REGEX_MATCH, 0), line)],
         A::RegexNotMatch => vec![(F::Extended(AWK_REGEX_NOT_MATCH, 0), line)],
         A::Pos => vec![(F::Extended(AWK_POS, 0), line)],
         A::ToBool => vec![(F::Extended(AWK_TO_BOOL, 0), line)],
 
-        A::Print { argc, redir } => vec![(F::Extended(AWK_PRINT, redir_to_u8(*redir)), line)],
-        A::Printf { argc, redir } => vec![(F::Extended(AWK_PRINTF, redir_to_u8(*redir)), line)],
+        A::Print { argc: _, redir } => vec![(F::Extended(AWK_PRINT, redir_to_u8(*redir)), line)],
+        A::Printf { argc: _, redir } => vec![(F::Extended(AWK_PRINTF, redir_to_u8(*redir)), line)],
 
         A::Next => vec![(F::Extended(AWK_NEXT, 0), line)],
         A::NextFile => vec![(F::Extended(AWK_NEXT_FILE, 0), line)],
@@ -242,8 +254,8 @@ pub fn translate_op(op: &bytecode::Op, line: u32) -> Vec<(fusevm::Op, u32)> {
         A::ExitDefault => vec![(F::Extended(AWK_EXIT_DEFAULT, 0), line)],
         A::ReturnEmpty => vec![(F::Extended(AWK_RETURN_EMPTY, 0), line)],
 
-        A::CallBuiltin(name, argc) => vec![(F::Extended(AWK_CALL_BUILTIN, *argc as u8), line)],
-        A::CallUser(name, argc) => vec![(F::Extended(AWK_CALL_USER, *argc as u8), line)],
+        A::CallBuiltin(_name, argc) => vec![(F::Extended(AWK_CALL_BUILTIN, *argc as u8), line)],
+        A::CallUser(_name, argc) => vec![(F::Extended(AWK_CALL_USER, *argc as u8), line)],
         A::CallIndirect(argc) => vec![(F::Extended(AWK_CALL_INDIRECT, *argc as u8), line)],
 
         A::TypeofVar(_) => vec![(F::Extended(AWK_TYPEOF_VAR, 0), line)],
@@ -261,10 +273,16 @@ pub fn translate_op(op: &bytecode::Op, line: u32) -> Vec<(fusevm::Op, u32)> {
         A::SymtabKeyCount => vec![(F::Extended(AWK_SYMTAB_KEY_COUNT, 0), line)],
 
         A::ForInStart(_) => vec![(F::Extended(AWK_FORIN_START, 0), line)],
-        A::ForInNext { var, end_jump } => vec![(F::ExtendedWide(AWK_FORIN_NEXT, *end_jump), line)],
+        A::ForInNext { var: _, end_jump } => {
+            vec![(F::ExtendedWide(AWK_FORIN_NEXT, *end_jump), line)]
+        }
         A::ForInEnd => vec![(F::Extended(AWK_FORIN_END, 0), line)],
 
-        A::GetLine { var, source, push_result } => {
+        A::GetLine {
+            var: _,
+            source,
+            push_result,
+        } => {
             let arg = getline_source_to_u8(*source) | if *push_result { 0x10 } else { 0 };
             vec![(F::Extended(AWK_GETLINE, arg), line)]
         }
@@ -272,12 +290,27 @@ pub fn translate_op(op: &bytecode::Op, line: u32) -> Vec<(fusevm::Op, u32)> {
         A::SubFn(_) => vec![(F::Extended(AWK_SUB_FN, 0), line)],
         A::GsubFn(_) => vec![(F::Extended(AWK_GSUB_FN, 0), line)],
 
-        A::Split { arr, has_fs } => vec![(F::Extended(AWK_SPLIT, if *has_fs { 1 } else { 0 }), line)],
-        A::Patsplit { arr, has_fp, seps } => vec![(F::Extended(AWK_PATSPLIT, if *has_fp { 1 } else { 0 }), line)],
-        A::MatchBuiltin { arr } => vec![(F::Extended(AWK_MATCH_BUILTIN, if arr.is_some() { 1 } else { 0 }), line)],
+        A::Split { arr: _, has_fs } => {
+            vec![(F::Extended(AWK_SPLIT, if *has_fs { 1 } else { 0 }), line)]
+        }
+        A::Patsplit {
+            arr: _,
+            has_fp,
+            seps: _,
+        } => vec![(F::Extended(AWK_PATSPLIT, if *has_fp { 1 } else { 0 }), line)],
+        A::MatchBuiltin { arr } => vec![(
+            F::Extended(AWK_MATCH_BUILTIN, if arr.is_some() { 1 } else { 0 }),
+            line,
+        )],
 
-        A::Asort { src, dest } => vec![(F::Extended(AWK_ASORT, if dest.is_some() { 1 } else { 0 }), line)],
-        A::Asorti { src, dest } => vec![(F::Extended(AWK_ASORTI, if dest.is_some() { 1 } else { 0 }), line)],
+        A::Asort { src: _, dest } => vec![(
+            F::Extended(AWK_ASORT, if dest.is_some() { 1 } else { 0 }),
+            line,
+        )],
+        A::Asorti { src: _, dest } => vec![(
+            F::Extended(AWK_ASORTI, if dest.is_some() { 1 } else { 0 }),
+            line,
+        )],
 
         // Catch-all for any remaining/fused ops — keep as Extended with debug info
         _ => vec![(F::Extended(0xFFFF, 0), line)], // unmapped — will trap at runtime

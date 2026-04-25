@@ -18,8 +18,8 @@ pub use jit::{
     try_compile_numeric_expr, try_compile_with_options, try_jit_dispatch_numeric_chunk,
     try_jit_execute, JitChunk, JitCompileOptions, JitNumericChunk, JitRuntimeState,
 };
-pub mod fusevm_bridge;
 mod flow;
+pub mod fusevm_bridge;
 mod gawk_extensions;
 mod gettext_util;
 mod lexer;

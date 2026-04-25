@@ -2513,12 +2513,32 @@ fn is_fusevm_eligible(ops: &[Op], bignum: bool) -> bool {
     }
     for op in ops {
         match op {
-            Op::PushNum(_) | Op::Add | Op::Sub | Op::Mul | Op::Div | Op::Mod | Op::Pow
-            | Op::Neg | Op::Not | Op::Pos | Op::ToBool | Op::Pop | Op::Dup
-            | Op::GetSlot(_) | Op::SetSlot(_)
-            | Op::CmpEq | Op::CmpNe | Op::CmpLt | Op::CmpLe | Op::CmpGt | Op::CmpGe
-            | Op::Jump(_) | Op::JumpIfFalsePop(_) | Op::JumpIfTruePop(_)
-            | Op::IncrSlot(_) | Op::DecrSlot(_)
+            Op::PushNum(_)
+            | Op::Add
+            | Op::Sub
+            | Op::Mul
+            | Op::Div
+            | Op::Mod
+            | Op::Pow
+            | Op::Neg
+            | Op::Not
+            | Op::Pos
+            | Op::ToBool
+            | Op::Pop
+            | Op::Dup
+            | Op::GetSlot(_)
+            | Op::SetSlot(_)
+            | Op::CmpEq
+            | Op::CmpNe
+            | Op::CmpLt
+            | Op::CmpLe
+            | Op::CmpGt
+            | Op::CmpGe
+            | Op::Jump(_)
+            | Op::JumpIfFalsePop(_)
+            | Op::JumpIfTruePop(_)
+            | Op::IncrSlot(_)
+            | Op::DecrSlot(_)
             | Op::CompoundAssignSlot(_, BinOp::Add)
             | Op::CompoundAssignSlot(_, BinOp::Sub)
             | Op::CompoundAssignSlot(_, BinOp::Mul)
@@ -2561,8 +2581,10 @@ fn try_fusevm_dispatch(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<Option<VmSi
             // slot op= rhs: GetSlot + <op> + Dup + SetSlot (4 ops)
             // Sub needs Swap: GetSlot + Swap + Sub + Dup + SetSlot (5 ops)
             Op::CompoundAssignSlot(_, BinOp::Sub) => 5,
-            Op::CompoundAssignSlot(_, BinOp::Add | BinOp::Mul
-                | BinOp::Div | BinOp::Mod | BinOp::Pow) => 4,
+            Op::CompoundAssignSlot(
+                _,
+                BinOp::Add | BinOp::Mul | BinOp::Div | BinOp::Mod | BinOp::Pow,
+            ) => 4,
             // Not → LoadFloat(0.0) + NumEq (AWK returns Num, not Bool)
             Op::Not => 2,
             // Pos → LoadFloat(0.0) + Add (coerce to number)
@@ -2593,16 +2615,32 @@ fn try_fusevm_dispatch(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<Option<VmSi
     }
 
     // Translate ops (with remapped jump targets)
-    for (awk_ip, op) in ops.iter().enumerate() {
+    for (_awk_ip, op) in ops.iter().enumerate() {
         match op {
-            Op::PushNum(n) => { builder.emit(fusevm::Op::LoadFloat(*n), 0); }
-            Op::Add => { builder.emit(fusevm::Op::Add, 0); }
-            Op::Sub => { builder.emit(fusevm::Op::Sub, 0); }
-            Op::Mul => { builder.emit(fusevm::Op::Mul, 0); }
-            Op::Div => { builder.emit(fusevm::Op::Div, 0); }
-            Op::Mod => { builder.emit(fusevm::Op::Mod, 0); }
-            Op::Pow => { builder.emit(fusevm::Op::Pow, 0); }
-            Op::Neg => { builder.emit(fusevm::Op::Negate, 0); }
+            Op::PushNum(n) => {
+                builder.emit(fusevm::Op::LoadFloat(*n), 0);
+            }
+            Op::Add => {
+                builder.emit(fusevm::Op::Add, 0);
+            }
+            Op::Sub => {
+                builder.emit(fusevm::Op::Sub, 0);
+            }
+            Op::Mul => {
+                builder.emit(fusevm::Op::Mul, 0);
+            }
+            Op::Div => {
+                builder.emit(fusevm::Op::Div, 0);
+            }
+            Op::Mod => {
+                builder.emit(fusevm::Op::Mod, 0);
+            }
+            Op::Pow => {
+                builder.emit(fusevm::Op::Pow, 0);
+            }
+            Op::Neg => {
+                builder.emit(fusevm::Op::Negate, 0);
+            }
             // AWK !x returns Num(0/1), not Bool — emit 0.0 == x (truthy→0, falsy→1)
             // Actually: !0 → 1, !nonzero → 0. Use LogNot which gives Bool, then convert.
             // Simpler: x == 0.0 gives the same result for numbers.
@@ -2620,26 +2658,58 @@ fn try_fusevm_dispatch(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<Option<VmSi
                 builder.emit(fusevm::Op::LoadFloat(0.0), 0);
                 builder.emit(fusevm::Op::NumNe, 0);
             }
-            Op::Pop => { builder.emit(fusevm::Op::Pop, 0); }
-            Op::Dup => { builder.emit(fusevm::Op::Dup, 0); }
-            Op::GetSlot(s) => { builder.emit(fusevm::Op::GetSlot(*s), 0); }
-            Op::SetSlot(s) => { builder.emit(fusevm::Op::SetSlot(*s), 0); }
-            Op::CmpEq => { builder.emit(fusevm::Op::NumEq, 0); }
-            Op::CmpNe => { builder.emit(fusevm::Op::NumNe, 0); }
-            Op::CmpLt => { builder.emit(fusevm::Op::NumLt, 0); }
-            Op::CmpLe => { builder.emit(fusevm::Op::NumLe, 0); }
-            Op::CmpGt => { builder.emit(fusevm::Op::NumGt, 0); }
-            Op::CmpGe => { builder.emit(fusevm::Op::NumGe, 0); }
+            Op::Pop => {
+                builder.emit(fusevm::Op::Pop, 0);
+            }
+            Op::Dup => {
+                builder.emit(fusevm::Op::Dup, 0);
+            }
+            Op::GetSlot(s) => {
+                builder.emit(fusevm::Op::GetSlot(*s), 0);
+            }
+            Op::SetSlot(s) => {
+                builder.emit(fusevm::Op::SetSlot(*s), 0);
+            }
+            Op::CmpEq => {
+                builder.emit(fusevm::Op::NumEq, 0);
+            }
+            Op::CmpNe => {
+                builder.emit(fusevm::Op::NumNe, 0);
+            }
+            Op::CmpLt => {
+                builder.emit(fusevm::Op::NumLt, 0);
+            }
+            Op::CmpLe => {
+                builder.emit(fusevm::Op::NumLe, 0);
+            }
+            Op::CmpGt => {
+                builder.emit(fusevm::Op::NumGt, 0);
+            }
+            Op::CmpGe => {
+                builder.emit(fusevm::Op::NumGe, 0);
+            }
             Op::Jump(t) => {
-                let target = if *t < ip_map.len() { ip_map[*t] } else { ip_map[ip_map.len() - 1] };
+                let target = if *t < ip_map.len() {
+                    ip_map[*t]
+                } else {
+                    ip_map[ip_map.len() - 1]
+                };
                 builder.emit(fusevm::Op::Jump(target), 0);
             }
             Op::JumpIfFalsePop(t) => {
-                let target = if *t < ip_map.len() { ip_map[*t] } else { ip_map[ip_map.len() - 1] };
+                let target = if *t < ip_map.len() {
+                    ip_map[*t]
+                } else {
+                    ip_map[ip_map.len() - 1]
+                };
                 builder.emit(fusevm::Op::JumpIfFalse(target), 0);
             }
             Op::JumpIfTruePop(t) => {
-                let target = if *t < ip_map.len() { ip_map[*t] } else { ip_map[ip_map.len() - 1] };
+                let target = if *t < ip_map.len() {
+                    ip_map[*t]
+                } else {
+                    ip_map[ip_map.len() - 1]
+                };
                 builder.emit(fusevm::Op::JumpIfTrue(target), 0);
             }
             Op::IncrSlot(s) => {
@@ -2739,8 +2809,16 @@ fn try_fusevm_dispatch(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<Option<VmSi
                 builder.emit(fusevm::Op::Add, 0);
                 builder.emit(fusevm::Op::SetSlot(*dst), 0);
             }
-            Op::JumpIfSlotGeNum { slot, limit, target } => {
-                let fuse_target = if *target < ip_map.len() { ip_map[*target] } else { ip_map[ip_map.len() - 1] };
+            Op::JumpIfSlotGeNum {
+                slot,
+                limit,
+                target,
+            } => {
+                let fuse_target = if *target < ip_map.len() {
+                    ip_map[*target]
+                } else {
+                    ip_map[ip_map.len() - 1]
+                };
                 builder.emit(fusevm::Op::GetSlot(*slot), 0);
                 builder.emit(fusevm::Op::LoadFloat(*limit), 0);
                 builder.emit(fusevm::Op::NumGe, 0);
@@ -2800,9 +2878,7 @@ fn try_fusevm_dispatch(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<Option<VmSi
             // No result value — rule body with side effects only
             Ok(Some(VmSignal::Normal))
         }
-        fusevm::VMResult::Error(msg) => {
-            Err(Error::Runtime(msg))
-        }
+        fusevm::VMResult::Error(msg) => Err(Error::Runtime(msg)),
     }
 }
 
