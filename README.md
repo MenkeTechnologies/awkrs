@@ -11,6 +11,7 @@
 [![Crates.io](https://img.shields.io/crates/v/awkrs.svg)](https://crates.io/crates/awkrs)
 [![Downloads](https://img.shields.io/crates/d/awkrs.svg)](https://crates.io/crates/awkrs)
 [![Docs.rs](https://docs.rs/awkrs/badge.svg)](https://docs.rs/awkrs)
+[![Docs](https://img.shields.io/badge/docs-online-blue.svg)](https://menketechnologies.github.io/awkrs/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ### `[WORLDS FASTEST AWK BYTECODE ENGINE // PARALLEL RECORD PROCESSOR // RUST CORE]`
