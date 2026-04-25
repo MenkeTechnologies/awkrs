@@ -2529,16 +2529,49 @@ fn is_fusevm_eligible(ops: &[Op], bignum: bool) -> bool {
     true
 }
 
-/// Translate an awkrs chunk to a fusevm chunk and run through fusevm's JIT.
+/// Translate an awkrs chunk to a fusevm chunk and execute via fusevm's VM.
+/// Handles slot marshaling and writeback for full side-effect support.
 fn try_fusevm_dispatch(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<Option<VmSignal>> {
     let ops = &chunk.ops;
     if !is_fusevm_eligible(ops, ctx.rt.bignum) {
         return Ok(None);
     }
+    if ops.is_empty() {
+        return Ok(Some(VmSignal::Normal));
+    }
 
-    // Build fusevm chunk
-    let mut builder = fusevm::ChunkBuilder::new();
+    // Multi-op expansions (DecrSlot → 3 ops, CompoundAssign → 4-5 ops) shift
+    // jump targets. Two-pass: first compute the ip offset map, then emit.
+    let mut ip_map: Vec<usize> = Vec::with_capacity(ops.len() + 1);
+    let mut fusevm_ip = 0usize;
+    // Slot init: PushFrame + N×(LoadFloat + SetSlot) = 1 + 2*N
+    let slot_count = ctx.rt.slots.len();
+    fusevm_ip += 1 + slot_count * 2; // PushFrame + slot init ops
+
     for op in ops {
+        ip_map.push(fusevm_ip);
+        fusevm_ip += match op {
+            Op::DecrSlot(_) => 3,
+            Op::CompoundAssignSlot(_, BinOp::Sub) => 5,
+            Op::CompoundAssignSlot(_, BinOp::Add | BinOp::Mul) => 4,
+            _ => 1,
+        };
+    }
+    ip_map.push(fusevm_ip); // sentinel: one past the end
+
+    // Build fusevm chunk with slot initialization preamble
+    let mut builder = fusevm::ChunkBuilder::new();
+
+    // Preamble: PushFrame + initialize all slots from awkrs runtime
+    builder.emit(fusevm::Op::PushFrame, 0);
+    for i in 0..slot_count {
+        let n = ctx.rt.slots[i].as_number();
+        builder.emit(fusevm::Op::LoadFloat(n), 0);
+        builder.emit(fusevm::Op::SetSlot(i as u16), 0);
+    }
+
+    // Translate ops (with remapped jump targets)
+    for (awk_ip, op) in ops.iter().enumerate() {
         match op {
             Op::PushNum(n) => { builder.emit(fusevm::Op::LoadFloat(*n), 0); }
             Op::Add => { builder.emit(fusevm::Op::Add, 0); }
@@ -2559,19 +2592,27 @@ fn try_fusevm_dispatch(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<Option<VmSi
             Op::CmpLe => { builder.emit(fusevm::Op::NumLe, 0); }
             Op::CmpGt => { builder.emit(fusevm::Op::NumGt, 0); }
             Op::CmpGe => { builder.emit(fusevm::Op::NumGe, 0); }
-            Op::Jump(t) => { builder.emit(fusevm::Op::Jump(*t), 0); }
-            Op::JumpIfFalsePop(t) => { builder.emit(fusevm::Op::JumpIfFalse(*t), 0); }
-            Op::JumpIfTruePop(t) => { builder.emit(fusevm::Op::JumpIfTrue(*t), 0); }
-            Op::IncrSlot(s) => { builder.emit(fusevm::Op::PreIncSlotVoid(*s), 0); }
+            Op::Jump(t) => {
+                let target = if *t < ip_map.len() { ip_map[*t] } else { ip_map[ip_map.len() - 1] };
+                builder.emit(fusevm::Op::Jump(target), 0);
+            }
+            Op::JumpIfFalsePop(t) => {
+                let target = if *t < ip_map.len() { ip_map[*t] } else { ip_map[ip_map.len() - 1] };
+                builder.emit(fusevm::Op::JumpIfFalse(target), 0);
+            }
+            Op::JumpIfTruePop(t) => {
+                let target = if *t < ip_map.len() { ip_map[*t] } else { ip_map[ip_map.len() - 1] };
+                builder.emit(fusevm::Op::JumpIfTrue(target), 0);
+            }
+            Op::IncrSlot(s) => {
+                builder.emit(fusevm::Op::PreIncSlotVoid(*s), 0);
+            }
             Op::DecrSlot(s) => {
-                // No direct fusevm op for void dec — emit GetSlot + Dec + SetSlot
                 builder.emit(fusevm::Op::GetSlot(*s), 0);
                 builder.emit(fusevm::Op::Dec, 0);
                 builder.emit(fusevm::Op::SetSlot(*s), 0);
             }
             Op::CompoundAssignSlot(s, BinOp::Add) => {
-                // slot += TOS: pop rhs, load slot, add, store back, push result
-                // fusevm doesn't have compound assign — expand inline
                 let slot = *s;
                 builder.emit(fusevm::Op::GetSlot(slot), 0);
                 builder.emit(fusevm::Op::Add, 0);
@@ -2580,9 +2621,6 @@ fn try_fusevm_dispatch(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<Option<VmSi
             }
             Op::CompoundAssignSlot(s, BinOp::Sub) => {
                 let slot = *s;
-                // AWK semantics: rhs on stack, compute slot - rhs
-                // Stack before: [rhs] → need slot_val - rhs → push result
-                // GetSlot pushes slot_val: [rhs, slot_val] → Swap → [slot_val, rhs] → Sub
                 builder.emit(fusevm::Op::GetSlot(slot), 0);
                 builder.emit(fusevm::Op::Swap, 0);
                 builder.emit(fusevm::Op::Sub, 0);
@@ -2596,50 +2634,64 @@ fn try_fusevm_dispatch(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<Option<VmSi
                 builder.emit(fusevm::Op::Dup, 0);
                 builder.emit(fusevm::Op::SetSlot(slot), 0);
             }
-            _ => return Ok(None), // shouldn't happen if is_fusevm_eligible passed
+            _ => return Ok(None),
         }
     }
     let fuse_chunk = builder.build();
 
-    // Marshal slots to i64 for fusevm JIT
-    let slot_count = ctx.rt.slots.len();
-    let slots_i64: Vec<i64> = ctx.rt.slots[..slot_count]
-        .iter()
-        .map(|v| v.as_number() as i64)
-        .collect();
+    // Execute via fusevm VM (full interpreter with control flow + slot support)
+    let mut vm = fusevm::VM::new(fuse_chunk);
+    let result = vm.run();
 
-    // Try fusevm JIT
-    let jit = fusevm::JitCompiler::new();
-    let result = jit.try_run_linear(&fuse_chunk, &slots_i64);
-
-    match result {
-        Some(fusevm::Value::Int(n)) => {
-            // Write back slots (fusevm modifies them in-place via the pointer)
-            // For now, slots aren't written back by the linear JIT — it only returns
-            // a value. Slot side-effects need the fusevm VM, not just the linear JIT.
-            // Fall through to the interpreter for chunks with slot mutations.
-            if has_slot_mutations(ops) {
-                return Ok(None);
+    // Write back modified slots from fusevm frame to awkrs runtime
+    if let Some(frame) = vm.frames.last() {
+        for i in 0..slot_count.min(frame.slots.len()) {
+            match &frame.slots[i] {
+                fusevm::Value::Float(f) => ctx.rt.slots[i] = Value::Num(*f),
+                fusevm::Value::Int(n) => ctx.rt.slots[i] = Value::Num(*n as f64),
+                _ => {}
             }
-            // Pure expression — result is on stack but we don't have a way to signal
-            // this back to the VmCtx yet. Fall through for now.
-            Ok(None)
         }
-        Some(fusevm::Value::Float(f)) => {
-            if has_slot_mutations(ops) {
-                return Ok(None);
-            }
-            Ok(None)
-        }
-        _ => Ok(None),
     }
-}
+    // Also check if the frame was already popped (VM ran to completion)
+    // — slots were in the last frame which may have been consumed
+    if vm.frames.is_empty() && slot_count > 0 {
+        // Frame was consumed by PopFrame or end-of-execution.
+        // The VM doesn't auto-pop PushFrame at end, so slots should still be there.
+        // If not, the original values are unchanged (no writeback needed).
+    }
 
-fn has_slot_mutations(ops: &[Op]) -> bool {
-    ops.iter().any(|op| matches!(op,
-        Op::SetSlot(_) | Op::IncrSlot(_) | Op::DecrSlot(_)
-        | Op::CompoundAssignSlot(_, _) | Op::IncDecSlot(_, _)
-    ))
+    // Map fusevm result back to awkrs stack + signal.
+    // VM::run() pops the last stack value into VMResult::Ok(val), so push it
+    // onto ctx.stack so callers that inspect the stack (e.g. pattern truthiness)
+    // see the result.
+    match result {
+        fusevm::VMResult::Ok(ref val) => {
+            match val {
+                fusevm::Value::Float(f) => ctx.push(Value::Num(*f)),
+                fusevm::Value::Int(n) => ctx.push(Value::Num(*n as f64)),
+                fusevm::Value::Bool(b) => ctx.push(Value::Num(if *b { 1.0 } else { 0.0 })),
+                _ => ctx.push(Value::Num(0.0)),
+            }
+            // Also push any remaining stack values (multi-value results)
+            for val in &vm.stack {
+                match val {
+                    fusevm::Value::Float(f) => ctx.push(Value::Num(*f)),
+                    fusevm::Value::Int(n) => ctx.push(Value::Num(*n as f64)),
+                    fusevm::Value::Bool(b) => ctx.push(Value::Num(if *b { 1.0 } else { 0.0 })),
+                    _ => ctx.push(Value::Num(0.0)),
+                }
+            }
+            Ok(Some(VmSignal::Normal))
+        }
+        fusevm::VMResult::Halted => {
+            // No result value — rule body with side effects only
+            Ok(Some(VmSignal::Normal))
+        }
+        fusevm::VMResult::Error(msg) => {
+            Err(Error::Runtime(msg))
+        }
+    }
 }
 
 // ── Core VM loop ────────────────────────────────────────────────────────────
