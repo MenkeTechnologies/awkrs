@@ -96,7 +96,7 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
 name = "awkrs"
-version = "0.1.39"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "clap",
@@ -517,9 +517,9 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
 name = "fusevm"
-version = "0.9.0"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cbc740a746da286a6ba951a68b41ea33462c96fc764ff4a8effa0c6f4c30aacc"
+checksum = "8308af019784cb6273853cc14b4ca684ee52247e600650ad18f5d6218f51caf4"
 dependencies = [
  "cranelift-codegen",
  "cranelift-frontend",
