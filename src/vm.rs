@@ -2501,10 +2501,158 @@ fn try_jit_dispatch(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<Option<VmSigna
     Ok(Some(VmSignal::Normal))
 }
 
+// ── fusevm dispatch (shared VM + JIT) ──────────────────────────────────────
+
+/// Check if a chunk is eligible for fusevm dispatch: pure-numeric, no strings,
+/// no mixed-mode ops, no bignum. These chunks get fusevm's Cranelift JIT for free.
+fn is_fusevm_eligible(ops: &[Op], bignum: bool) -> bool {
+    if bignum {
+        return false;
+    }
+    for op in ops {
+        match op {
+            // Universal ops that map directly to fusevm
+            Op::PushNum(_) | Op::Add | Op::Sub | Op::Mul | Op::Div | Op::Mod | Op::Pow
+            | Op::Neg | Op::Not | Op::Pop | Op::Dup
+            | Op::GetSlot(_) | Op::SetSlot(_)
+            | Op::CmpEq | Op::CmpNe | Op::CmpLt | Op::CmpLe | Op::CmpGt | Op::CmpGe
+            | Op::Jump(_) | Op::JumpIfFalsePop(_) | Op::JumpIfTruePop(_)
+            | Op::IncrSlot(_) | Op::DecrSlot(_) => continue,
+            // Fused slot ops
+            Op::CompoundAssignSlot(_, BinOp::Add)
+            | Op::CompoundAssignSlot(_, BinOp::Sub)
+            | Op::CompoundAssignSlot(_, BinOp::Mul) => continue,
+            // Anything else: bail to awkrs JIT or interpreter
+            _ => return false,
+        }
+    }
+    true
+}
+
+/// Translate an awkrs chunk to a fusevm chunk and run through fusevm's JIT.
+fn try_fusevm_dispatch(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<Option<VmSignal>> {
+    let ops = &chunk.ops;
+    if !is_fusevm_eligible(ops, ctx.rt.bignum) {
+        return Ok(None);
+    }
+
+    // Build fusevm chunk
+    let mut builder = fusevm::ChunkBuilder::new();
+    for op in ops {
+        match op {
+            Op::PushNum(n) => { builder.emit(fusevm::Op::LoadFloat(*n), 0); }
+            Op::Add => { builder.emit(fusevm::Op::Add, 0); }
+            Op::Sub => { builder.emit(fusevm::Op::Sub, 0); }
+            Op::Mul => { builder.emit(fusevm::Op::Mul, 0); }
+            Op::Div => { builder.emit(fusevm::Op::Div, 0); }
+            Op::Mod => { builder.emit(fusevm::Op::Mod, 0); }
+            Op::Pow => { builder.emit(fusevm::Op::Pow, 0); }
+            Op::Neg => { builder.emit(fusevm::Op::Negate, 0); }
+            Op::Not => { builder.emit(fusevm::Op::LogNot, 0); }
+            Op::Pop => { builder.emit(fusevm::Op::Pop, 0); }
+            Op::Dup => { builder.emit(fusevm::Op::Dup, 0); }
+            Op::GetSlot(s) => { builder.emit(fusevm::Op::GetSlot(*s), 0); }
+            Op::SetSlot(s) => { builder.emit(fusevm::Op::SetSlot(*s), 0); }
+            Op::CmpEq => { builder.emit(fusevm::Op::NumEq, 0); }
+            Op::CmpNe => { builder.emit(fusevm::Op::NumNe, 0); }
+            Op::CmpLt => { builder.emit(fusevm::Op::NumLt, 0); }
+            Op::CmpLe => { builder.emit(fusevm::Op::NumLe, 0); }
+            Op::CmpGt => { builder.emit(fusevm::Op::NumGt, 0); }
+            Op::CmpGe => { builder.emit(fusevm::Op::NumGe, 0); }
+            Op::Jump(t) => { builder.emit(fusevm::Op::Jump(*t), 0); }
+            Op::JumpIfFalsePop(t) => { builder.emit(fusevm::Op::JumpIfFalse(*t), 0); }
+            Op::JumpIfTruePop(t) => { builder.emit(fusevm::Op::JumpIfTrue(*t), 0); }
+            Op::IncrSlot(s) => { builder.emit(fusevm::Op::PreIncSlotVoid(*s), 0); }
+            Op::DecrSlot(s) => {
+                // No direct fusevm op for void dec — emit GetSlot + Dec + SetSlot
+                builder.emit(fusevm::Op::GetSlot(*s), 0);
+                builder.emit(fusevm::Op::Dec, 0);
+                builder.emit(fusevm::Op::SetSlot(*s), 0);
+            }
+            Op::CompoundAssignSlot(s, BinOp::Add) => {
+                // slot += TOS: pop rhs, load slot, add, store back, push result
+                // fusevm doesn't have compound assign — expand inline
+                let slot = *s;
+                builder.emit(fusevm::Op::GetSlot(slot), 0);
+                builder.emit(fusevm::Op::Add, 0);
+                builder.emit(fusevm::Op::Dup, 0);
+                builder.emit(fusevm::Op::SetSlot(slot), 0);
+            }
+            Op::CompoundAssignSlot(s, BinOp::Sub) => {
+                let slot = *s;
+                // AWK semantics: rhs on stack, compute slot - rhs
+                // Stack before: [rhs] → need slot_val - rhs → push result
+                // GetSlot pushes slot_val: [rhs, slot_val] → Swap → [slot_val, rhs] → Sub
+                builder.emit(fusevm::Op::GetSlot(slot), 0);
+                builder.emit(fusevm::Op::Swap, 0);
+                builder.emit(fusevm::Op::Sub, 0);
+                builder.emit(fusevm::Op::Dup, 0);
+                builder.emit(fusevm::Op::SetSlot(slot), 0);
+            }
+            Op::CompoundAssignSlot(s, BinOp::Mul) => {
+                let slot = *s;
+                builder.emit(fusevm::Op::GetSlot(slot), 0);
+                builder.emit(fusevm::Op::Mul, 0);
+                builder.emit(fusevm::Op::Dup, 0);
+                builder.emit(fusevm::Op::SetSlot(slot), 0);
+            }
+            _ => return Ok(None), // shouldn't happen if is_fusevm_eligible passed
+        }
+    }
+    let fuse_chunk = builder.build();
+
+    // Marshal slots to i64 for fusevm JIT
+    let slot_count = ctx.rt.slots.len();
+    let slots_i64: Vec<i64> = ctx.rt.slots[..slot_count]
+        .iter()
+        .map(|v| v.as_number() as i64)
+        .collect();
+
+    // Try fusevm JIT
+    let jit = fusevm::JitCompiler::new();
+    let result = jit.try_run_linear(&fuse_chunk, &slots_i64);
+
+    match result {
+        Some(fusevm::Value::Int(n)) => {
+            // Write back slots (fusevm modifies them in-place via the pointer)
+            // For now, slots aren't written back by the linear JIT — it only returns
+            // a value. Slot side-effects need the fusevm VM, not just the linear JIT.
+            // Fall through to the interpreter for chunks with slot mutations.
+            if has_slot_mutations(ops) {
+                return Ok(None);
+            }
+            // Pure expression — result is on stack but we don't have a way to signal
+            // this back to the VmCtx yet. Fall through for now.
+            Ok(None)
+        }
+        Some(fusevm::Value::Float(f)) => {
+            if has_slot_mutations(ops) {
+                return Ok(None);
+            }
+            Ok(None)
+        }
+        _ => Ok(None),
+    }
+}
+
+fn has_slot_mutations(ops: &[Op]) -> bool {
+    ops.iter().any(|op| matches!(op,
+        Op::SetSlot(_) | Op::IncrSlot(_) | Op::DecrSlot(_)
+        | Op::CompoundAssignSlot(_, _) | Op::IncDecSlot(_, _)
+    ))
+}
+
 // ── Core VM loop ────────────────────────────────────────────────────────────
 
 fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
     let ops = &chunk.ops;
+    // Tier 1: try fusevm JIT (shared VM, universal ops get Cranelift-compiled)
+    match try_fusevm_dispatch(chunk, ctx) {
+        Ok(Some(signal)) => return Ok(signal),
+        Ok(None) => {}
+        Err(e) => return Err(e),
+    }
+    // Tier 2: try awkrs standalone JIT (handles mixed-mode NaN-boxing, full op coverage)
     match try_jit_dispatch(chunk, ctx) {
         Ok(Some(signal)) => return Ok(signal),
         Ok(None) => {}
