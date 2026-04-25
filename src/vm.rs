@@ -2505,29 +2505,29 @@ fn try_jit_dispatch(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<Option<VmSigna
 
 /// Check if a chunk is eligible for fusevm dispatch: pure-numeric, no strings,
 /// no mixed-mode ops, no bignum. These chunks get fusevm's Cranelift JIT for free.
+/// Check if every op in the chunk can be lowered to fusevm.
+/// Universal ops map directly; currently limited to pure-numeric slot chunks.
 fn is_fusevm_eligible(ops: &[Op], bignum: bool) -> bool {
-    if bignum {
+    if bignum || ops.is_empty() {
         return false;
     }
     for op in ops {
         match op {
-            // Universal ops that map directly to fusevm
             Op::PushNum(_) | Op::Add | Op::Sub | Op::Mul | Op::Div | Op::Mod | Op::Pow
             | Op::Neg | Op::Not | Op::Pos | Op::ToBool | Op::Pop | Op::Dup
             | Op::GetSlot(_) | Op::SetSlot(_)
             | Op::CmpEq | Op::CmpNe | Op::CmpLt | Op::CmpLe | Op::CmpGt | Op::CmpGe
             | Op::Jump(_) | Op::JumpIfFalsePop(_) | Op::JumpIfTruePop(_)
-            | Op::IncrSlot(_) | Op::DecrSlot(_) => continue,
-            // Compound assign on slots (all BinOp variants that are arithmetic)
-            Op::CompoundAssignSlot(_, BinOp::Add)
+            | Op::IncrSlot(_) | Op::DecrSlot(_)
+            | Op::CompoundAssignSlot(_, BinOp::Add)
             | Op::CompoundAssignSlot(_, BinOp::Sub)
             | Op::CompoundAssignSlot(_, BinOp::Mul)
             | Op::CompoundAssignSlot(_, BinOp::Div)
             | Op::CompoundAssignSlot(_, BinOp::Mod)
-            | Op::CompoundAssignSlot(_, BinOp::Pow) => continue,
-            // Fused slot ops
-            Op::AddSlotToSlot { .. } | Op::JumpIfSlotGeNum { .. } => continue,
-            // Anything else: bail to awkrs JIT or interpreter
+            | Op::CompoundAssignSlot(_, BinOp::Pow)
+            | Op::AddSlotToSlot { .. }
+            | Op::JumpIfSlotGeNum { .. }
+            | Op::IncDecSlot(_, _) => continue,
             _ => return false,
         }
     }
@@ -2574,6 +2574,8 @@ fn try_fusevm_dispatch(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<Option<VmSi
             Op::AddSlotToSlot { .. } => 4,
             // JumpIfSlotGeNum: GetSlot + LoadFloat + NumGe + JumpIfTrue = 4
             Op::JumpIfSlotGeNum { .. } => 4,
+            // IncDecSlot: 5 ops (GetSlot + Dup/LoadFloat + Add/Sub + Dup/SetSlot + SetSlot)
+            Op::IncDecSlot(_, _) => 5,
             _ => 1,
         };
     }
@@ -2696,6 +2698,40 @@ fn try_fusevm_dispatch(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<Option<VmSi
                 builder.emit(fusevm::Op::Pow, 0);
                 builder.emit(fusevm::Op::Dup, 0);
                 builder.emit(fusevm::Op::SetSlot(slot), 0);
+            }
+            Op::IncDecSlot(s, kind) => {
+                use crate::ast::IncDecOp;
+                let slot = *s;
+                match kind {
+                    IncDecOp::PreInc => {
+                        builder.emit(fusevm::Op::GetSlot(slot), 0);
+                        builder.emit(fusevm::Op::LoadFloat(1.0), 0);
+                        builder.emit(fusevm::Op::Add, 0);
+                        builder.emit(fusevm::Op::Dup, 0);
+                        builder.emit(fusevm::Op::SetSlot(slot), 0);
+                    }
+                    IncDecOp::PostInc => {
+                        builder.emit(fusevm::Op::GetSlot(slot), 0);
+                        builder.emit(fusevm::Op::Dup, 0);
+                        builder.emit(fusevm::Op::LoadFloat(1.0), 0);
+                        builder.emit(fusevm::Op::Add, 0);
+                        builder.emit(fusevm::Op::SetSlot(slot), 0);
+                    }
+                    IncDecOp::PreDec => {
+                        builder.emit(fusevm::Op::GetSlot(slot), 0);
+                        builder.emit(fusevm::Op::LoadFloat(1.0), 0);
+                        builder.emit(fusevm::Op::Sub, 0);
+                        builder.emit(fusevm::Op::Dup, 0);
+                        builder.emit(fusevm::Op::SetSlot(slot), 0);
+                    }
+                    IncDecOp::PostDec => {
+                        builder.emit(fusevm::Op::GetSlot(slot), 0);
+                        builder.emit(fusevm::Op::Dup, 0);
+                        builder.emit(fusevm::Op::LoadFloat(1.0), 0);
+                        builder.emit(fusevm::Op::Sub, 0);
+                        builder.emit(fusevm::Op::SetSlot(slot), 0);
+                    }
+                }
             }
             Op::AddSlotToSlot { src, dst } => {
                 builder.emit(fusevm::Op::GetSlot(*src), 0);

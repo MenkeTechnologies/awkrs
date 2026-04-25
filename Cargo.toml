@@ -1,6 +1,6 @@
 [package]
 name = "awkrs"
-version = "0.1.38"
+version = "0.1.39"
 edition = "2021"
 # `parity/` stays in the git repo for local/CI testing vs gawk; omit from `cargo package` / crates.io tarball.
 exclude = ["parity", ".github"]
@@ -27,7 +27,7 @@ path = "src/bin/ars.rs"
 chrono = "0.4"
 clap = { version = "4.5", features = ["derive", "cargo", "env"] }
 gettext = "0.4"
-fusevm = { path = "../fusevm", features = ["jit"] }
+fusevm = { version = "0.9.0", features = ["jit"] }
 cranelift-codegen = "0.130.0"
 cranelift-frontend = "0.130.0"
 cranelift-jit = "0.130.0"
