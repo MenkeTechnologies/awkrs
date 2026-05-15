@@ -1,0 +1,435 @@
+.\" Manpage for awkrs.
+.\" Contact https://github.com/MenkeTechnologies/awkrs to correct errors or omissions.
+.TH AWKRS 1 "2026-05-14" "awkrs 0.3.1" "User Commands"
+.SH NAME
+awkrs \- pattern-directed scanning and processing language (Rust awk with parallel records and Cranelift JIT)
+.SH SYNOPSIS
+.B awkrs
+[\fIOPTIONS\fR] [\fB\-f\fR \fIprogfile\fR | \fB\-e\fR \fIprogram\fR | \fIprogram\fR] [\fB\-\-\fR] [\fIfile\fR ...]
+.SH DESCRIPTION
+.B awkrs
+runs
+.B pattern \[->] action
+programs over input records like POSIX
+.BR awk ,
+GNU
+.BR gawk ,
+and
+.BR mawk .
+The CLI accepts the union of POSIX, gawk, and mawk
+.RB ( \-W )
+options. The execution engine is a Cranelift\-JIT bytecode VM with a parallel record
+processor that activates automatically when the program is parallel\-safe and
+.B \-j
+selects more than one thread; otherwise execution is sequential.
+.PP
+The program text is taken from the first non\-option argument unless
+.B \-f
+or
+.B \-e
+is given. Remaining non\-option arguments are input files; if none are given,
+standard input is read.
+.SH OPTIONS
+.SS POSIX
+.TP
+.BR \-f " \fIPROGFILE\fR, " \-\-file =\fIPROGFILE\fR
+Read program source from
+.IR PROGFILE .
+May be repeated; sources are concatenated.
+.TP
+.BR \-F " \fIFS\fR, " \-\-field\-separator =\fIFS\fR
+Set the input field separator
+.RB ( FS ).
+.TP
+.BR \-v " \fIvar=val\fR, " \-\-assign =\fIvar=val\fR
+Assign
+.I val
+to
+.I var
+before
+.B BEGIN
+runs. Repeatable.
+.SS GNU program sources
+.TP
+.BR \-e " \fIPROGRAM\fR, " \-\-source =\fIPROGRAM\fR
+Inline program text. Repeatable; sources are concatenated.
+.TP
+.BR \-i " \fIFILE\fR, " \-\-include =\fIFILE\fR
+Include awk source file (gawk
+.BR @include
+behavior). Repeatable.
+.SS gawk extensions
+.TP
+.BR \-b ", " \-\-characters\-as\-bytes
+Use byte length for
+.BR length ,
+.BR substr ,
+.BR index .
+.TP
+.BR \-c ", " \-\-traditional
+Traditional POSIX awk mode (stored on the runtime; minimal effect today).
+.TP
+.BR \-C ", " \-\-copyright
+Print copyright information.
+.TP
+.BR \-d "[\fIFILE\fR], " \-\-dump\-variables [=\fIFILE\fR]
+Dump globals after the program runs. Argument is a path,
+.BR \- ,
+or empty for stdout.
+.TP
+.BR \-D "[\fIFILE\fR], " \-\-debug [=\fIFILE\fR]
+Static rule/function listing to
+.I FILE
+or stderr. Not gawk's interactive debugger.
+.TP
+.BR \-E " \fIFILE\fR, " \-\-exec =\fIFILE\fR
+Execute program from
+.I FILE
+then exit (gawk
+.BR \-E ).
+.TP
+.BR \-g ", " \-\-gen\-pot
+Generate gettext
+.B .pot
+output and exit before execution.
+.TP
+.BR \-I ", " \-\-trace
+Trace execution.
+.TP
+.BR \-k ", " \-\-csv
+CSV mode. Sets
+.B FS
+to comma and
+.B FPAT
+to handle quoted fields with
+.B ""
+escapes.
+.TP
+.BR \-l " \fILIB\fR, " \-\-load =\fILIB\fR
+Load
+.IB LIB .awk
+from
+.B AWKPATH
+(default
+.BR . ).
+Bundled gawk extension names
+.RB ( filefuncs ", " readdir ", " time ", "
+\&...) are accepted as no\-ops; arbitrary
+.B .so
+modules error at parse time.
+.TP
+.BR \-L " \fILEVEL\fR, " \-\-lint =\fILEVEL\fR
+Lint level:
+.BR fatal ", " invalid ", " no\-ext .
+When the runtime variable
+.B LINT
+is truthy, additionally emits
+.B awkrs: warning:
+diagnostics on stderr for
+.B sqrt
+and
+.B log
+domain issues.
+.TP
+.BR \-M ", " \-\-bignum
+Arbitrary\-precision arithmetic via MPFR
+.RB ( rug ,
+default 256 bits;
+.BR PROCINFO["prec"] / PROCINFO["roundmode"]
+apply). Disables the JIT.
+.TP
+.BR \-N ", " \-\-use\-lc\-numeric
+Apply
+.B LC_NUMERIC
+to
+.BR sprintf / printf / print
+and
+.BR %' \ grouping.
+String\-to\-number parsing for
+.BR $n / $0
+still uses
+.BR . .
+.TP
+.BR \-n ", " \-\-non\-decimal\-data
+Allow non\-decimal input data
+.RB ( strtonum \-style
+hex/octal coercion).
+.TP
+.BR \-o "[\fIFILE\fR], " \-\-pretty\-print [=\fIFILE\fR]
+Awkrs AST listing. Not gawk's canonical reformatter.
+.TP
+.BR \-O ", " \-\-optimize
+Accepted for parity. The Cranelift JIT is on by default; use
+.B \-s
+to disable.
+.TP
+.BR \-p "[\fIFILE\fR], " \-\-profile [=\fIFILE\fR]
+Wall\-clock summary plus per\-record\-rule hit counts
+.RB ( "\-j 1"
+only). Not gawk's per\-line profiler.
+.TP
+.BR \-P ", " \-\-posix
+Strict POSIX mode (stored on the runtime; minimal effect today).
+.TP
+.BR \-r ", " \-\-re\-interval
+Accepted as a no\-op;
+.B {m,n}
+interval syntax is always enabled.
+.TP
+.BR \-s ", " \-\-no\-optimize
+Disable the Cranelift JIT.
+.TP
+.BR \-S ", " \-\-sandbox
+Block
+.BR system() ,
+file redirects, pipes, coprocesses, and inet I/O.
+.TP
+.BR \-t ", " \-\-lint\-old
+Lint old\-style awk constructs.
+.SS mawk / BusyBox
+.TP
+.BI \-W \ OPT
+mawk\-style option(s), comma\-separated.
+.B help
+and
+.B usage
+print help and exit;
+.B version
+or
+.B v
+print the version;
+.B dump
+triggers a dump action.
+.BI exec= FILE
+sets the exec file. Other tokens
+.RB ( posix_space ", " interactive ", " random ", "
+.BI sprintf= N\fR)
+are accepted silently for compatibility.
+.SS awkrs\-specific
+.TP
+.BR \-j " \fIN\fR, " \-\-threads =\fIN\fR
+Worker threads for the parallel record engine. Default
+.BR 1 .
+The engine downgrades to sequential automatically when the program is not parallel\-safe.
+.TP
+.BI \-\-read\-ahead\fR= N
+Lines per batch read from stdin in
+.B \-j
+parallel mode without input files. Each batch is processed in parallel and
+printed in order before the next batch is read. Default
+.BR 1024 .
+.TP
+.BR \-h ", " \-\-help
+Print the cyberpunk HUD help and exit.
+.TP
+.BR \-V ", " \-\-version
+Print the version and exit.
+.SH PROGRAM TEXT
+Program text follows POSIX awk and the gawk extensions documented in the project
+README. Highlights:
+.IP \[bu] 2
+Rules:
+.BR BEGIN ", " END ", " BEGINFILE ", " ENDFILE ,
+empty pattern,
+.BR /regex/ ,
+expression patterns, range patterns
+.RB ( /a/,/b/ " or " "NR==1,NR==5" ).
+The four special patterns must use
+.BR { \ ... \ } ;
+record rules may omit braces for the default
+.BR "{ print $0 }" .
+.IP \[bu] 2
+Statements:
+.BR if ", " while ", " do\-while ", " for
+(C\-style and
+.BR "for (i in arr)" ),
+.BR switch / case / default
+(gawk\-style: no fall\-through, regex
+.BR "case /re/" ),
+.BR print / printf
+with
+.BR > ", " >> ", " | ", " |&
+redirection,
+.BR break ", " continue ", " next ", " nextfile ", " exit ", " delete ", " return ", " getline .
+.IP \[bu] 2
+.B getline
+as expression returns
+.B 1
+(read),
+.B 0
+(EOF),
+.B \-1
+(error),
+.B \-2
+(gawk retryable I/O when
+.BR PROCINFO[input,"RETRY"]
+is set).
+.IP \[bu] 2
+Records and fields:
+.B RS
+is newline by default; one (UTF\-8) char is a literal delimiter;
+.BR RS=""
+is paragraph mode; multi\-char is a gawk regex
+.RB ( RT
+holds the matched text).
+.B FIELDWIDTHS
+selects fixed\-width when non\-empty.
+.B FPAT
+selects pattern\-based fields.
+.IP \[bu] 2
+Namespaces and modules:
+.BR @include ", " @load ", " @namespace .
+.IP \[bu] 2
+Networking:
+.BR /inet/tcp/... ", " /inet/udp/...
+endpoints for
+.BR getline / print
+and the coprocess operator
+.BR |& .
+.IP \[bu] 2
+Introspection:
+.BR PROCINFO ", " SYMTAB ", " FUNCTAB
+populated in gawk\-compatible form
+.RB ( PROCINFO["sorted_in"]
+supports
+.BI @ind_ X ,
+.BI @val_ X ,
+and 2\- or 4\-arg user comparator functions).
+.SH ENVIRONMENT
+.TP
+.B AWKPATH
+Search path for
+.B \-l
+and
+.BR @include .
+Default
+.BR . .
+.TP
+.B AWKLIBPATH
+Search path for
+.BR @load .
+.TP
+.B GAWK_READ_TIMEOUT
+Default read timeout (ms) used as the fallback for
+.BR PROCINFO[input,"READ_TIMEOUT"] .
+.TP
+.B LC_NUMERIC
+Locale decimal radix and thousands grouping when
+.B \-N
+is set; affects
+.BR sprintf / printf / print
+output only, not
+.BR $n / $0
+parsing.
+.SH EXIT STATUS
+.TP
+.B 0
+Successful completion.
+.TP
+.B 1
+Error during program execution or invalid usage. Errors are written to stderr in the form
+.BR "awkrs: \fIcommand\fR: \fIreason\fR" .
+.TP
+.IR n
+The program may exit with any status by calling
+.BR exit\ \fIn\fR .
+.SH EXAMPLES
+Print the second whitespace\-separated field of every line:
+.RS
+.nf
+awkrs '{ print $2 }' input.txt
+.fi
+.RE
+.PP
+Sum a CSV column with quoted\-field handling and four worker threads:
+.RS
+.nf
+awkrs \-k \-j 4 'NR>1 { s += $3 } END { print s }' data.csv
+.fi
+.RE
+.PP
+Run a program from a file, assign a variable, and read multiple inputs:
+.RS
+.nf
+awkrs \-f report.awk \-v threshold=100 a.log b.log
+.fi
+.RE
+.PP
+Disable the JIT (pure bytecode VM):
+.RS
+.nf
+awkrs \-s '{ print NR, $0 }' big.txt
+.fi
+.RE
+.PP
+Wall\-clock profile to a file (sequential mode required):
+.RS
+.nf
+awkrs \-j 1 \-p prof.out \-f program.awk input.txt
+.fi
+.RE
+.PP
+Arbitrary\-precision arithmetic:
+.RS
+.nf
+awkrs \-M 'BEGIN { PREC=200; print 2^200 }'
+.fi
+.RE
+.SH FILES
+.TP
+.I completions/_awkrs
+Zsh completion. Add the directory to
+.B fpath
+and run
+.BR "autoload -Uz compinit && compinit" .
+.SH PARITY GAPS
+.B awkrs
+diverges from gawk in the following documented ways:
+.IP \[bu] 2
+.BR \-D ", " \-o ", " \-p
+produce awkrs\-specific output, not gawk's debugger / pretty\-printer / per\-line profiler formats.
+.IP \[bu] 2
+.BR \-c ", " \-P
+are accepted but currently have minimal runtime effect.
+.IP \[bu] 2
+.BR \-r
+is a no\-op; interval regex syntax is always available.
+.IP \[bu] 2
+.BR \-N
+does not affect string\-to\-number parsing for
+.BR $n / $0 .
+.IP \[bu] 2
+.B @load
+of arbitrary
+.B .so
+gawkapi modules is rejected; bundled extension names are accepted as no\-ops because the builtins are native.
+.IP \[bu] 2
+.B PROCINFO["platform"]
+returns gawk values
+.RB ( posix ", " mingw ", " vms ),
+not Rust target names.
+.IP \[bu] 2
+.B \-M
+disables the Cranelift JIT.
+.IP \[bu] 2
+JIT
+.B getline
+failures abort the JIT chunk instead of returning
+.BR \-1 / \-2 ;
+the VM path is fully gawk\-compatible.
+.SH SEE ALSO
+.BR awk (1),
+.BR gawk (1),
+.BR mawk (1)
+.PP
+Project README, compatibility matrix, and benchmarks:
+.UR https://github.com/MenkeTechnologies/awkrs
+github.com/MenkeTechnologies/awkrs
+.UE
+.SH AUTHOR
+Jacob Menke (MenkeTechnologies) <linux.dev25@gmail.com>.
+.SH BUGS
+Report issues at
+.UR https://github.com/MenkeTechnologies/awkrs/issues
+github.com/MenkeTechnologies/awkrs/issues
+.UE .
