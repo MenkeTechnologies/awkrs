@@ -2081,6 +2081,122 @@ mod lib_internal_tests {
         let rt = Runtime::new();
         assert!(detect_inline_program(&cp, &rt).is_none());
     }
+
+    // ── cacheable_script_path: gates the bytecode cache fast path ────────────
+    // Every rejection criterion gets its own test so a regression that drops a
+    // single guard surfaces as one failed test naming the exact criterion.
+    // Cache engagement on the wrong invocation type would either cache bogus
+    // programs (e.g. `-e` text not on disk) or skip required AST work
+    // (e.g. --debug listing). Each test must fail if its guard is removed.
+
+    fn parse_args(argv: &[&str]) -> Args {
+        // First element is the program name; clap requires it.
+        let mut full = vec!["awkrs"];
+        full.extend_from_slice(argv);
+        Args::try_parse_from(full).expect("test argv must parse")
+    }
+
+    #[test]
+    fn cacheable_single_f_accepted() {
+        let args = parse_args(&["-f", "/tmp/foo.awk"]);
+        assert_eq!(
+            super::cacheable_script_path(&args),
+            Some(PathBuf::from("/tmp/foo.awk"))
+        );
+    }
+
+    #[test]
+    fn cacheable_two_f_rejected() {
+        let args = parse_args(&["-f", "/tmp/a.awk", "-f", "/tmp/b.awk"]);
+        assert!(super::cacheable_script_path(&args).is_none(),
+            "multiple -f composes program from N files — caching one would be wrong");
+    }
+
+    #[test]
+    fn cacheable_f_plus_e_rejected() {
+        let args = parse_args(&["-f", "/tmp/a.awk", "-e", "BEGIN { print 1 }"]);
+        assert!(super::cacheable_script_path(&args).is_none(),
+            "-f + -e mixes file source with inline source — not a single-file invocation");
+    }
+
+    #[test]
+    fn cacheable_f_plus_include_rejected() {
+        let args = parse_args(&["-f", "/tmp/a.awk", "-i", "/tmp/inc.awk"]);
+        assert!(super::cacheable_script_path(&args).is_none(),
+            "--include prepends a second source file — not cacheable by path alone");
+    }
+
+    #[test]
+    fn cacheable_f_plus_load_rejected() {
+        let args = parse_args(&["-f", "/tmp/a.awk", "-l", "filefuncs"]);
+        assert!(super::cacheable_script_path(&args).is_none(),
+            "--load injects library source — not cacheable by path alone");
+    }
+
+    #[test]
+    fn cacheable_f_plus_exec_rejected() {
+        let args = parse_args(&["-f", "/tmp/a.awk", "-E", "/tmp/exec.awk"]);
+        assert!(super::cacheable_script_path(&args).is_none(),
+            "-E appends additional program text — not cacheable by single path");
+    }
+
+    #[test]
+    fn cacheable_f_plus_debug_rejected() {
+        // --debug = -D needs the AST post-compile (write_debug_listing).
+        let args = parse_args(&["-f", "/tmp/a.awk", "-D"]);
+        assert!(super::cacheable_script_path(&args).is_none(),
+            "--debug requires the AST after compile — cache hit would skip it");
+    }
+
+    #[test]
+    fn cacheable_f_plus_lint_rejected() {
+        let args = parse_args(&["-f", "/tmp/a.awk", "-L", "fatal"]);
+        assert!(super::cacheable_script_path(&args).is_none(),
+            "--lint requires the AST for emit_lint_warnings");
+    }
+
+    #[test]
+    fn cacheable_f_plus_lint_old_rejected() {
+        let args = parse_args(&["-f", "/tmp/a.awk", "-t"]);
+        assert!(super::cacheable_script_path(&args).is_none(),
+            "--lint-old requires the AST for emit_lint_warnings");
+    }
+
+    #[test]
+    fn cacheable_f_plus_pretty_print_rejected() {
+        let args = parse_args(&["-f", "/tmp/a.awk", "-o"]);
+        assert!(super::cacheable_script_path(&args).is_none(),
+            "--pretty-print returns AST-formatted output before compile");
+    }
+
+    #[test]
+    fn cacheable_f_plus_gen_pot_rejected() {
+        let args = parse_args(&["-f", "/tmp/a.awk", "-g"]);
+        assert!(super::cacheable_script_path(&args).is_none(),
+            "--gen-pot extracts translatable strings from the AST");
+    }
+
+    #[test]
+    fn cacheable_inline_program_rejected() {
+        // bare-arg inline form: `awkrs '{print $1}' file` — no -f, program in rest[0].
+        let args = parse_args(&["BEGIN { print 1 }"]);
+        assert!(super::cacheable_script_path(&args).is_none(),
+            "inline program text has no source path — nothing to key the cache by");
+    }
+
+    #[test]
+    fn cacheable_orthogonal_flags_dont_block() {
+        // -F / -v / -j / --csv etc. don't reshape the program source, so they
+        // must not prevent caching. Guards against an over-conservative regression.
+        let args = parse_args(&[
+            "-f", "/tmp/a.awk", "-F", ":", "-v", "x=1", "-j", "4", "--csv",
+        ]);
+        assert_eq!(
+            super::cacheable_script_path(&args),
+            Some(PathBuf::from("/tmp/a.awk")),
+            "orthogonal runtime flags must not disable caching"
+        );
+    }
 }
 
 #[cfg(test)]

@@ -535,4 +535,325 @@ mod tests {
         cache.clear().unwrap();
         assert!(!cache_path.exists());
     }
+
+    // ── Header-drift tests: each writes a hand-crafted shard with one wrong
+    // header field and verifies the cache treats every entry inside as a miss.
+    // These guard against silent acceptance of cross-version / cross-arch shards
+    // that would feed mismatched bytecode into the VM.
+
+    /// Build a shard with arbitrary header + one entry, write it through the
+    /// atomic-rename path, and return the path it was written to.
+    fn write_shard_with_header(
+        dir: &std::path::Path,
+        header: ShardHeader,
+        script_path: &str,
+        mtime_s: i64,
+        mtime_ns: i64,
+        bin_mtime: i64,
+        cp: &CompiledProgram,
+    ) -> PathBuf {
+        let cache_path = dir.join("scripts.rkyv");
+        let mut entries = HashMap::new();
+        entries.insert(
+            script_path.to_string(),
+            ScriptEntry {
+                mtime_secs: mtime_s,
+                mtime_nsecs: mtime_ns,
+                binary_mtime_at_cache: bin_mtime,
+                cached_at_secs: 0,
+                cp_blob: bincode::serialize(cp).unwrap(),
+            },
+        );
+        let shard = ScriptShard { header, entries };
+        write_shard_atomic(&cache_path, &shard).unwrap();
+        cache_path
+    }
+
+    #[test]
+    fn format_version_drift_rejects() {
+        let dir = tempdir().unwrap();
+        let script_path = dir.path().join("t.awk");
+        std::fs::write(&script_path, "BEGIN { 1 }").unwrap();
+        let (s, ns) = file_mtime(&script_path).unwrap();
+
+        // Header with bumped format_version — cache MUST reject every entry.
+        let header = ShardHeader {
+            magic: SHARD_MAGIC,
+            format_version: SHARD_FORMAT_VERSION + 1,
+            awkrs_version: env!("CARGO_PKG_VERSION").to_string(),
+            pointer_width: std::mem::size_of::<usize>() as u32,
+            built_at_secs: 0,
+        };
+        let cache_path = write_shard_with_header(
+            dir.path(),
+            header,
+            &script_path.to_string_lossy(),
+            s,
+            ns,
+            i64::MAX, // future-dated bin_mtime so the bin-mtime check can't fail first
+            &compile("BEGIN { 1 }"),
+        );
+        let cache = ScriptCache::open(&cache_path).unwrap();
+        assert!(
+            cache.get(&script_path.to_string_lossy(), s, ns).is_none(),
+            "format_version drift must invalidate cached entries"
+        );
+    }
+
+    #[test]
+    fn awkrs_version_drift_rejects() {
+        let dir = tempdir().unwrap();
+        let script_path = dir.path().join("t.awk");
+        std::fs::write(&script_path, "BEGIN { 1 }").unwrap();
+        let (s, ns) = file_mtime(&script_path).unwrap();
+
+        let header = ShardHeader {
+            magic: SHARD_MAGIC,
+            format_version: SHARD_FORMAT_VERSION,
+            awkrs_version: "999.999.999".to_string(),
+            pointer_width: std::mem::size_of::<usize>() as u32,
+            built_at_secs: 0,
+        };
+        let cache_path = write_shard_with_header(
+            dir.path(),
+            header,
+            &script_path.to_string_lossy(),
+            s,
+            ns,
+            i64::MAX,
+            &compile("BEGIN { 1 }"),
+        );
+        let cache = ScriptCache::open(&cache_path).unwrap();
+        assert!(
+            cache.get(&script_path.to_string_lossy(), s, ns).is_none(),
+            "awkrs_version drift must invalidate cached entries"
+        );
+    }
+
+    #[test]
+    fn pointer_width_drift_rejects() {
+        let dir = tempdir().unwrap();
+        let script_path = dir.path().join("t.awk");
+        std::fs::write(&script_path, "BEGIN { 1 }").unwrap();
+        let (s, ns) = file_mtime(&script_path).unwrap();
+
+        let wrong_width = if std::mem::size_of::<usize>() == 8 { 4 } else { 8 };
+        let header = ShardHeader {
+            magic: SHARD_MAGIC,
+            format_version: SHARD_FORMAT_VERSION,
+            awkrs_version: env!("CARGO_PKG_VERSION").to_string(),
+            pointer_width: wrong_width as u32,
+            built_at_secs: 0,
+        };
+        let cache_path = write_shard_with_header(
+            dir.path(),
+            header,
+            &script_path.to_string_lossy(),
+            s,
+            ns,
+            i64::MAX,
+            &compile("BEGIN { 1 }"),
+        );
+        let cache = ScriptCache::open(&cache_path).unwrap();
+        assert!(
+            cache.get(&script_path.to_string_lossy(), s, ns).is_none(),
+            "pointer_width drift must invalidate cached entries"
+        );
+    }
+
+    #[test]
+    fn binary_mtime_invalidation_rejects() {
+        // Entry stamped with a binary mtime far in the past — the running
+        // binary's mtime will be newer, so the entry must be invalidated.
+        let dir = tempdir().unwrap();
+        let script_path = dir.path().join("t.awk");
+        std::fs::write(&script_path, "BEGIN { 1 }").unwrap();
+        let (s, ns) = file_mtime(&script_path).unwrap();
+
+        let header = ShardHeader {
+            magic: SHARD_MAGIC,
+            format_version: SHARD_FORMAT_VERSION,
+            awkrs_version: env!("CARGO_PKG_VERSION").to_string(),
+            pointer_width: std::mem::size_of::<usize>() as u32,
+            built_at_secs: 0,
+        };
+        let cache_path = write_shard_with_header(
+            dir.path(),
+            header,
+            &script_path.to_string_lossy(),
+            s,
+            ns,
+            0, // entry stamped 1970 — binary is newer (mtime > 0)
+            &compile("BEGIN { 1 }"),
+        );
+        let cache = ScriptCache::open(&cache_path).unwrap();
+        // Only meaningful if the binary actually has a positive mtime; on every
+        // real system the awkrs test binary has been written, so its mtime > 0.
+        if current_binary_mtime_secs().unwrap_or(0) > 0 {
+            assert!(
+                cache.get(&script_path.to_string_lossy(), s, ns).is_none(),
+                "entry with bin_mtime_at_cache < running binary mtime must miss"
+            );
+        }
+    }
+
+    // ── evict_stale tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn evict_stale_removes_vanished_sources() {
+        let dir = tempdir().unwrap();
+        let cache_path = dir.path().join("scripts.rkyv");
+        let cache = ScriptCache::open(&cache_path).unwrap();
+
+        let p1 = dir.path().join("keep.awk");
+        let p2 = dir.path().join("vanish.awk");
+        std::fs::write(&p1, "BEGIN { 1 }").unwrap();
+        std::fs::write(&p2, "BEGIN { 2 }").unwrap();
+        let (s1, n1) = file_mtime(&p1).unwrap();
+        let (s2, n2) = file_mtime(&p2).unwrap();
+        cache
+            .put(&p1.to_string_lossy(), s1, n1, &compile("BEGIN { 1 }"))
+            .unwrap();
+        cache
+            .put(&p2.to_string_lossy(), s2, n2, &compile("BEGIN { 2 }"))
+            .unwrap();
+
+        // Delete one source file out from under the cache.
+        std::fs::remove_file(&p2).unwrap();
+
+        let evicted = cache.evict_stale();
+        assert_eq!(evicted, 1, "vanished source must be evicted");
+        assert!(cache.get(&p1.to_string_lossy(), s1, n1).is_some());
+        assert!(cache.get(&p2.to_string_lossy(), s2, n2).is_none());
+    }
+
+    #[test]
+    fn evict_stale_removes_mtime_changed() {
+        let dir = tempdir().unwrap();
+        let cache_path = dir.path().join("scripts.rkyv");
+        let cache = ScriptCache::open(&cache_path).unwrap();
+
+        let p = dir.path().join("t.awk");
+        std::fs::write(&p, "BEGIN { 1 }").unwrap();
+        let (s, ns) = file_mtime(&p).unwrap();
+        cache
+            .put(&p.to_string_lossy(), s, ns, &compile("BEGIN { 1 }"))
+            .unwrap();
+
+        // Bump the source file's mtime by rewriting (filesystem grants new mtime).
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::fs::write(&p, "BEGIN { 2 }").unwrap();
+        let (s2, _ns2) = file_mtime(&p).unwrap();
+        assert!(s2 >= s, "rewrite did not advance mtime — fs precision?");
+
+        let evicted = cache.evict_stale();
+        assert_eq!(evicted, 1, "mtime-changed source must be evicted");
+    }
+
+    #[test]
+    fn evict_stale_returns_zero_when_clean() {
+        let dir = tempdir().unwrap();
+        let cache_path = dir.path().join("scripts.rkyv");
+        let cache = ScriptCache::open(&cache_path).unwrap();
+        let p = dir.path().join("t.awk");
+        std::fs::write(&p, "BEGIN { 1 }").unwrap();
+        let (s, ns) = file_mtime(&p).unwrap();
+        cache
+            .put(&p.to_string_lossy(), s, ns, &compile("BEGIN { 1 }"))
+            .unwrap();
+        assert_eq!(cache.evict_stale(), 0);
+    }
+
+    // ── stats() + multi-entry behavior ───────────────────────────────────────
+
+    #[test]
+    fn stats_sums_blob_bytes_across_entries() {
+        let dir = tempdir().unwrap();
+        let cache_path = dir.path().join("scripts.rkyv");
+        let cache = ScriptCache::open(&cache_path).unwrap();
+
+        // Three distinct scripts so the entries are independent.
+        for (i, src) in ["BEGIN { 1 }", "BEGIN { print 2 }", "BEGIN { x = 3; print x }"]
+            .iter()
+            .enumerate()
+        {
+            let p = dir.path().join(format!("s{i}.awk"));
+            std::fs::write(&p, src).unwrap();
+            let (s, ns) = file_mtime(&p).unwrap();
+            cache.put(&p.to_string_lossy(), s, ns, &compile(src)).unwrap();
+        }
+
+        let (count, bytes) = cache.stats();
+        assert_eq!(count, 3);
+        assert!(bytes > 0, "stats must sum non-zero cp_blob bytes");
+    }
+
+    // ── CompiledProgram field roundtrip ──────────────────────────────────────
+    //
+    // The new parallel_safe / prog_rules_len fields on CompiledProgram are what
+    // let cache hits skip AST re-parsing. If serde drops them, cache hits will
+    // silently report parallel_safe=false / prog_rules_len=0 and break the
+    // parallel-record fast path + range_state sizing.
+
+    #[test]
+    fn parallel_safe_round_trips_true() {
+        let dir = tempdir().unwrap();
+        let cache_path = dir.path().join("scripts.rkyv");
+        let cache = ScriptCache::open(&cache_path).unwrap();
+        let p = dir.path().join("t.awk");
+        std::fs::write(&p, "{ print $1 }").unwrap();
+        let (s, ns) = file_mtime(&p).unwrap();
+        let cp = compile("{ print $1 }");
+        assert!(cp.parallel_safe, "control: simple field-print is parallel-safe");
+        cache.put(&p.to_string_lossy(), s, ns, &cp).unwrap();
+        let loaded = cache.get(&p.to_string_lossy(), s, ns).unwrap();
+        assert!(
+            loaded.cp.parallel_safe,
+            "parallel_safe must survive cache roundtrip"
+        );
+        assert_eq!(loaded.cp.prog_rules_len, cp.prog_rules_len);
+    }
+
+    #[test]
+    fn parallel_safe_round_trips_false() {
+        let dir = tempdir().unwrap();
+        let cache_path = dir.path().join("scripts.rkyv");
+        let cache = ScriptCache::open(&cache_path).unwrap();
+        let p = dir.path().join("t.awk");
+        // Range patterns track state across records — definitively not parallel-safe
+        // (see ast/parallel.rs::tests::parallel_unsafe_range_pattern).
+        let src = "/a/,/b/ { print }";
+        std::fs::write(&p, src).unwrap();
+        let (s, ns) = file_mtime(&p).unwrap();
+        let cp = compile(src);
+        assert!(
+            !cp.parallel_safe,
+            "control: range patterns are not parallel-safe"
+        );
+        cache.put(&p.to_string_lossy(), s, ns, &cp).unwrap();
+        let loaded = cache.get(&p.to_string_lossy(), s, ns).unwrap();
+        assert!(
+            !loaded.cp.parallel_safe,
+            "parallel_safe=false must survive cache roundtrip"
+        );
+    }
+
+    #[test]
+    fn prog_rules_len_round_trips_multiple_rules() {
+        let dir = tempdir().unwrap();
+        let cache_path = dir.path().join("scripts.rkyv");
+        let cache = ScriptCache::open(&cache_path).unwrap();
+        let p = dir.path().join("t.awk");
+        let src = "{ print $1 } { print $2 } /foo/ { print $3 }";
+        std::fs::write(&p, src).unwrap();
+        let (s, ns) = file_mtime(&p).unwrap();
+        let cp = compile(src);
+        assert_eq!(cp.prog_rules_len, 3, "control: source has 3 rules");
+        cache.put(&p.to_string_lossy(), s, ns, &cp).unwrap();
+        let loaded = cache.get(&p.to_string_lossy(), s, ns).unwrap();
+        assert_eq!(
+            loaded.cp.prog_rules_len, 3,
+            "prog_rules_len must survive cache roundtrip"
+        );
+    }
 }
