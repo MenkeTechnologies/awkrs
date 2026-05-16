@@ -1,9 +1,9 @@
 [package]
 name = "awkrs"
-version = "0.3.1"
+version = "0.4.1"
 edition = "2021"
 # `parity/` stays in the git repo for local/CI testing vs gawk; omit from `cargo package` / crates.io tarball.
-exclude = ["parity", ".github"]
+exclude = ["/parity/", "/.github/", "/tests/", "/docs/"]
 description = "Awk implementation in Rust with broad CLI compatibility, parallel records, and experimental Cranelift JIT"
 license = "MIT"
 repository = "https://github.com/MenkeTechnologies/awkrs"

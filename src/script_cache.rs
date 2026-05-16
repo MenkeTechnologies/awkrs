@@ -137,8 +137,7 @@ impl ScriptCache {
         mtime_nsecs: i64,
         cp: &CompiledProgram,
     ) -> std::io::Result<()> {
-        let cp_blob = bincode::serialize(cp)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+        let cp_blob = bincode::serialize(cp).map_err(|e| std::io::Error::other(e.to_string()))?;
 
         let _lock = match acquire_lock(&self.lock_path) {
             Some(l) => l,
@@ -251,8 +250,7 @@ fn acquire_lock(path: &Path) -> Option<nix::fcntl::Flock<File>> {
 }
 
 fn write_shard_atomic(path: &Path, shard: &ScriptShard) -> std::io::Result<()> {
-    let bytes = bincode::serialize(shard)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+    let bytes = bincode::serialize(shard).map_err(|e| std::io::Error::other(e.to_string()))?;
     let parent = path.parent().expect("cache path has parent");
     let _ = std::fs::create_dir_all(parent);
     let pid = std::process::id();

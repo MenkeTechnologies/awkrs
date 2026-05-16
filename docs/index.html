@@ -338,6 +338,26 @@ aw -P '{ sum += $1 } END { print sum }' data.txt</pre>
 
       <section class="tutorial-section">
         <h2>Bytecode Cache</h2>
+        <p>Based on a survey of the major public awk implementations (BWK awk, gawk, mawk, goawk, frawk, zawk), awkrs appears to be the <strong>first awk implementation to combine a bytecode VM, a JIT compiler, and a persistent on-disk bytecode cache</strong>. frawk is the closest prior art — it has VM + Cranelift/LLVM JIT — but re-compiles on every invocation. gawk's <em>pm-gawk</em> persists script variables, not compiled bytecode.</p>
+        <table class="comparison-table" style="width:100%; border-collapse:collapse; font-size:0.85em; margin-bottom:12px;">
+          <thead>
+            <tr style="border-bottom:2px solid #0ff;">
+              <th style="text-align:left; padding:4px;">Implementation</th>
+              <th style="padding:4px;">Bytecode VM</th>
+              <th style="padding:4px;">JIT</th>
+              <th style="padding:4px;">Persistent bytecode cache</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td>BWK awk (one-true-awk)</td><td>&#10007;</td><td>&#10007;</td><td>&#10007;</td></tr>
+            <tr><td>gawk</td><td>&#10003;</td><td>&#10007;</td><td>&#10007;</td></tr>
+            <tr><td>mawk</td><td>&#10003;</td><td>&#10007;</td><td>&#10007;</td></tr>
+            <tr><td>goawk</td><td>&#10003;</td><td>&#10007;</td><td>&#10007;</td></tr>
+            <tr><td>frawk</td><td>&#10003;</td><td>&#10003; (Cranelift + LLVM)</td><td>&#10007;</td></tr>
+            <tr><td>zawk (frawk fork)</td><td>&#10003;</td><td>&#10003; (Cranelift + LLVM)</td><td>&#10007;</td></tr>
+            <tr style="background:rgba(0,255,0,0.05);"><td><strong>awkrs</strong></td><td style="color:#0f0;">&#10003;</td><td style="color:#0f0;">&#10003; (Cranelift)</td><td style="color:#0f0;">&#10003;</td></tr>
+          </tbody>
+        </table>
         <p>Invocations of the form <code>awkrs -f script.awk ...</code> memoize the compiled <code>CompiledProgram</code> to a single bincode shard at <code>~/.awkrs/scripts.bin</code>. On the 2nd+ run of the same script, awkrs skips lex/parse/compile entirely — load is bincode-deserialize plus an mtime check.</p>
 <pre># 1st run: parse + compile + populate ~/.awkrs/scripts.bin
 awkrs -f script.awk input.txt

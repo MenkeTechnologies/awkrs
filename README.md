@@ -180,6 +180,18 @@ awkrs compiles AWK programs into a flat bytecode instruction stream and runs the
 
 **Bytecode cache:** `-f script.awk` invocations memoize the compiled `CompiledProgram` to `~/.awkrs/scripts.bin` (single bincode shard, `flock`-serialized writes, atomic rename). Repeat runs skip lex/parse/compile entirely — load is bincode-deserialize plus mtime check. Entries are invalidated on source-file mtime change or when the running `awkrs` binary is newer than the cached entry (any rebuild silently rebuilds the cache). Disable with `AWKRS_CACHE=0`. The cache only engages for the simple `-f script.awk` form — inline `-e`/`--source`, `-E`, `-i`/`--include`, `-l`/`--load`, `--debug`, `--lint`, `--pretty-print`, and `--gen-pot` skip the cache because they need the AST.
 
+Based on a survey of the major public awk implementations (BWK awk, gawk, mawk, goawk, [frawk](https://github.com/ezrosent/frawk), [zawk](https://github.com/linux-china/zawk)), awkrs appears to be the **first awk implementation to combine a bytecode VM, a JIT compiler, and a persistent on-disk bytecode cache**. frawk is the closest prior art — it has VM + Cranelift/LLVM JIT — but re-compiles on every invocation; its [overview](https://github.com/ezrosent/frawk/blob/master/info/overview.md) and [README](https://github.com/ezrosent/frawk/blob/master/README.md) contain no mention of disk-persisted compiled artifacts. gawk's [pm-gawk](https://www.gnu.org/software/gawk/manual/pm-gawk/pm-gawk.html) persists script-defined *variables and functions* across runs, not compiled bytecode — different feature.
+
+| Implementation | Bytecode VM | JIT | Persistent bytecode cache |
+|---|---|---|---|
+| BWK awk (one-true-awk) | ✗ tree-walker | ✗ | ✗ |
+| gawk | ✓ | ✗ | ✗ (`pm-gawk` is for vars) |
+| mawk | ✓ | ✗ | ✗ |
+| goawk | ✓ | ✗ | ✗ |
+| frawk | ✓ | ✓ Cranelift + LLVM | ✗ |
+| zawk (frawk fork) | ✓ | ✓ Cranelift + LLVM | ✗ |
+| **awkrs** | **✓** | **✓ Cranelift** | **✓** |
+
 **Raw byte field extraction:** `print $N` with default `FS` scans raw bytes in the mapped file buffer to find the Nth whitespace field, writes it to the output buffer, and appends `Runtime::ors_bytes` — no record copy, no UTF-8 validation.
 
 **Other optimizations:**
