@@ -625,11 +625,11 @@ pub fn asorti(rt: &mut Runtime, src: &str, dest: Option<&str>) -> Result<f64> {
     Ok(n as f64)
 }
 
-/// Classify a [`Value`] for the `typeof()` builtin (`"uninitialized"` only for [`Value::Uninit`]).
+/// Classify a [`Value`] for the `typeof()` builtin (`"unassigned"` only for [`Value::Uninit`]).
 #[inline]
 pub fn awk_typeof_value(v: &Value) -> &'static str {
     match v {
-        Value::Uninit => "uninitialized",
+        Value::Uninit => "unassigned",
         Value::Num(_) => "number",
         Value::Mpfr(_) => "number",
         Value::Str(_) | Value::StrLit(_) => "string",
@@ -644,8 +644,8 @@ pub fn awk_typeof_array_elem(rt: &Runtime, name: &str, key: &str) -> &'static st
         Some(Value::Array(a)) => a
             .get(key)
             .map(|v| awk_typeof_value(v))
-            .unwrap_or("uninitialized"),
-        _ => "uninitialized",
+            .unwrap_or("unassigned"),
+        _ => "unassigned",
     }
 }
 
@@ -725,7 +725,7 @@ mod tests {
         rt.array_set("cap", "1".into(), Value::Str("keep".into()));
         let n = match_fn(&mut rt, "zzz", "a+", Some("cap")).unwrap();
         assert_eq!(n, 0.0);
-        assert_eq!(awk_typeof_array_elem(&rt, "cap", "1"), "uninitialized");
+        assert_eq!(awk_typeof_array_elem(&rt, "cap", "1"), "unassigned");
     }
 
     #[test]
@@ -760,7 +760,7 @@ mod tests {
 
     #[test]
     fn awk_typeof_value_variants() {
-        assert_eq!(awk_typeof_value(&Value::Uninit), "uninitialized");
+        assert_eq!(awk_typeof_value(&Value::Uninit), "unassigned");
         assert_eq!(awk_typeof_value(&Value::Num(0.0)), "number");
         assert_eq!(awk_typeof_value(&Value::Str("".into())), "string");
         assert_eq!(awk_typeof_value(&Value::StrLit("x".into())), "string");
@@ -775,10 +775,10 @@ mod tests {
         let mut rt = Runtime::new();
         rt.array_set("t", "k".into(), Value::Str("v".into()));
         assert_eq!(awk_typeof_array_elem(&rt, "t", "k"), "string");
-        assert_eq!(awk_typeof_array_elem(&rt, "t", "missing"), "uninitialized");
+        assert_eq!(awk_typeof_array_elem(&rt, "t", "missing"), "unassigned");
         assert_eq!(
             awk_typeof_array_elem(&rt, "not_array", "k"),
-            "uninitialized"
+            "unassigned"
         );
     }
 

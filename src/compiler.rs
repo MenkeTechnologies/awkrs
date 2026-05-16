@@ -177,7 +177,7 @@ impl Compiler {
     fn compile_chunk(&mut self, stmts: &[Stmt]) -> Chunk {
         let mut ops = Vec::new();
         self.compile_stmts(stmts, &mut ops);
-        peephole_optimize(&mut ops);
+        peephole_optimize(&mut ops, &self.strings);
         Chunk::from_ops(ops)
     }
 
@@ -195,7 +195,7 @@ impl Compiler {
             Pattern::Expr(e) => {
                 let mut ops = Vec::new();
                 self.compile_expr(e, &mut ops);
-                peephole_optimize(&mut ops);
+                peephole_optimize(&mut ops, &self.strings);
                 CompiledPattern::Expr(Chunk::from_ops(ops))
             }
             Pattern::Range(p1, p2) => CompiledPattern::Range {
@@ -222,7 +222,7 @@ impl Compiler {
             Pattern::Expr(e) => {
                 let mut ops = Vec::new();
                 self.compile_expr(e, &mut ops);
-                peephole_optimize(&mut ops);
+                peephole_optimize(&mut ops, &self.strings);
                 CompiledRangeEndpoint::Expr(Chunk::from_ops(ops))
             }
             Pattern::Begin | Pattern::End | Pattern::BeginFile | Pattern::EndFile => {
@@ -1413,9 +1413,43 @@ fn collect_array_names_expr(e: &Expr, names: &mut HashSet<String>) {
     }
 }
 
+/// Normalize integer-literal field indices: `PushNumDecimalStr(idx) + GetField`
+/// becomes `PushNum(n) + GetField` when the decimal string parses to a u16.
+///
+/// Without this, the parser emits `PushNumDecimalStr` for every `$N` (since N
+/// is `Expr::IntegerLiteral`), but every downstream peephole pattern matches
+/// `Op::PushNum(n)` — so field-index fusions (`PrintFieldStdout`, `AddFieldToSlot`,
+/// `PushFieldNum`, `AddMulFieldsToSlot`, `ArrayFieldAddConst`,
+/// `PrintFieldSepField`, `PrintThreeFieldsStdout`) never fire on real programs.
+///
+/// Semantically safe: GetField casts the pushed value via `as_number() as i32`,
+/// which yields the same result whether the value was `Value::Num(n)` or
+/// `Value::Mpfr(n)` for any small non-negative integer. Field indices fit in
+/// `u16` by construction; this normalization only fires when the string parses
+/// as such, so bignum-mode exact-decimal arithmetic on large literals is
+/// untouched.
+fn normalize_field_indices(ops: &mut Vec<Op>, strings: &StringPool) {
+    let mut i = 0;
+    while i + 1 < ops.len() {
+        if matches!(ops[i + 1], Op::GetField) {
+            if let Op::PushNumDecimalStr(idx) = ops[i] {
+                let s = strings.get(idx);
+                if let Ok(n) = s.parse::<u16>() {
+                    ops[i] = Op::PushNum(n as f64);
+                }
+            }
+        }
+        i += 1;
+    }
+}
+
 /// Peephole optimizer: fuse common multi-op sequences into single opcodes.
 /// Runs in a single pass, recording removals, then adjusting jump targets.
-fn peephole_optimize(ops: &mut Vec<Op>) {
+fn peephole_optimize(ops: &mut Vec<Op>, strings: &StringPool) {
+    // Pre-pass: normalize integer-literal field indices so the PushNum-based
+    // patterns below actually fire on `$1`/`$N` from source.
+    normalize_field_indices(ops, strings);
+
     // Phase 1: identify fusions. We build a list of (position, replacement_op, count_removed).
     // To avoid invalidating indices, we scan and collect, then apply in reverse order.
     let mut fusions: Vec<(usize, Op, usize)> = Vec::new(); // (pos, new_op, ops_removed_after_pos)
@@ -2662,26 +2696,14 @@ mod peephole_pinning {
     }
 
     #[test]
-    fn print_dollar_n_peephole_currently_dormant() {
-        // FIXME: the PrintFieldStdout peephole at compiler.rs:1425 matches
-        // PushNum(N) + GetField + Print{...}. But integer literals like `$1`
-        // compile to PushNumDecimalStr(idx), not PushNum(N) — so this fusion
-        // NEVER fires for any normal awk program. The opcode exists but is
-        // unreachable code. Either:
-        //   (a) parser should emit PushNum for integer field indices, or
-        //   (b) peephole should match PushNumDecimalStr too.
-        // Pin the current (broken) state so a fix surfaces as a named test
-        // update naming the dormant peephole.
+    fn print_dollar_n_fuses_to_print_field_stdout() {
+        // After normalize_field_indices() in peephole_optimize: integer-literal
+        // field indices (PushNumDecimalStr → PushNum) flow into the
+        // PrintFieldStdout fusion. `print $1` collapses to a single op.
         let ops = compile_begin_ops("BEGIN { print $1 }");
         assert!(
-            !contains_op(&ops, |op| matches!(op, Op::PrintFieldStdout(_))),
-            "FIXME: PrintFieldStdout fusion fires now? peephole rule activated? ops={ops:?}"
-        );
-        // The actual unfused sequence:
-        assert!(
-            contains_op(&ops, |op| matches!(op, Op::GetField))
-                && contains_op(&ops, |op| matches!(op, Op::Print { argc: 1, .. })),
-            "unfused sequence expected, got: {ops:?}"
+            contains_op(&ops, |op| matches!(op, Op::PrintFieldStdout(1))),
+            "expected PrintFieldStdout(1), got: {ops:?}"
         );
     }
 
@@ -2705,20 +2727,13 @@ mod peephole_pinning {
     }
 
     #[test]
-    fn add_field_to_slot_peephole_currently_dormant() {
-        // FIXME: same root cause as PrintFieldStdout — AddFieldToSlot peephole
-        // at compiler.rs:1447 matches PushNum(N), but integer field indices
-        // compile to PushNumDecimalStr. So `s += $1` never fuses to
-        // AddFieldToSlot in normal programs. Pin current state.
+    fn add_field_to_slot_fuses() {
+        // After normalize_field_indices() in peephole_optimize: `s += $1`
+        // collapses to AddFieldToSlot { field: 1, slot: s_slot }.
         let ops = compile_begin_ops("BEGIN { s = 0; s += $1 }");
         assert!(
-            !contains_op(&ops, |op| matches!(op, Op::AddFieldToSlot { .. })),
-            "FIXME: AddFieldToSlot fusion fires now? ops={ops:?}"
-        );
-        // Unfused sequence: GetField + CompoundAssignSlot + Pop
-        assert!(
-            contains_op(&ops, |op| matches!(op, Op::CompoundAssignSlot(_, _))),
-            "expected unfused CompoundAssignSlot: {ops:?}"
+            contains_op(&ops, |op| matches!(op, Op::AddFieldToSlot { field: 1, .. })),
+            "expected AddFieldToSlot{{field:1,..}}, got: {ops:?}"
         );
     }
 

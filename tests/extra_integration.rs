@@ -680,7 +680,7 @@ fn typeof_builtin_classifies_numbers_strings_and_uninitialized() {
         "",
     );
     assert_eq!(c, 0);
-    assert_eq!(o, "number string uninitialized\nnumber\n");
+    assert_eq!(o, "number string unassigned\nnumber\n");
 }
 
 #[test]
@@ -1323,7 +1323,7 @@ fn jit_typeof_field_unassigned() {
         std::iter::empty::<(OsString, OsString)>(),
     );
     assert_eq!(c, 0, "stderr: {e}");
-    assert_eq!(o.trim(), "uninitialized");
+    assert_eq!(o.trim(), "unassigned");
 }
 
 #[test]

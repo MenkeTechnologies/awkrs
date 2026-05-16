@@ -179,15 +179,15 @@ pub enum Op {
     /// Pop `argc` args then callee name (TOS), resolve builtin or user function, push result.
     CallIndirect(u16),
 
-    /// `typeof(var)` — interned name; push `"string"` / `"number"` / `"array"` / `"uninitialized"`.
+    /// `typeof(var)` — interned name; push `"string"` / `"number"` / `"array"` / `"unassigned"`.
     TypeofVar(u32),
     /// `typeof` for a scalar in a slot (same semantics as [`TypeofVar`]).
     TypeofSlot(u16),
-    /// Pop key, `typeof(arr[key])` for existing array or `"uninitialized"`.
+    /// Pop key, `typeof(arr[key])` for existing array or `"unassigned"`.
     TypeofArrayElem(u32),
-    /// Pop field index, `typeof($n)` — fields beyond `NF` are `"uninitialized"`.
+    /// Pop field index, `typeof($n)` — fields beyond `NF` are `"unassigned"`.
     TypeofField,
-    /// Pop any value; `typeof` never reports `"uninitialized"` (only from lvalue forms above).
+    /// Pop any value; `typeof` never reports `"unassigned"` (only from lvalue forms above).
     TypeofValue,
 
     // ── Array operations ────────────────────────────────────────────────

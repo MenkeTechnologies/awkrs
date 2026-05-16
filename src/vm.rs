@@ -290,7 +290,7 @@ impl<'a> VmCtx<'a> {
         if let Some(v) = self.rt.get_global_var(name) {
             return Value::Str(builtins::awk_typeof_value(v).into());
         }
-        Value::Str("uninitialized".into())
+        Value::Str("unassigned".into())
     }
 }
 
@@ -580,7 +580,7 @@ fn typeof_scalar_name_for_jit(ctx: &mut VmCtx<'_>, name: &str) -> Value {
     if let Some(v) = ctx.rt.get_global_var(name) {
         return Value::Str(builtins::awk_typeof_value(v).into());
     }
-    Value::Str("uninitialized".into())
+    Value::Str("unassigned".into())
 }
 
 fn value_to_jit_f64(_ctx: &mut VmCtx<'_>, v: Value) -> f64 {
@@ -1264,7 +1264,7 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
         MIXED_TYPEOF_FIELD => {
             let i = a2 as i32;
             let t = if ctx.rt.field_is_unassigned(i) {
-                "uninitialized"
+                "unassigned"
             } else {
                 "string"
             };
@@ -2961,9 +2961,15 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             }
             Op::GetArrayElem(arr) => {
                 let key_val = ctx.pop();
-                let k = key_val.as_str_cow();
-                let name = ctx.str_ref(arr);
-                let v = ctx.array_elem_get(name, k.as_ref());
+                let k = key_val.as_str_cow().into_owned();
+                let name = ctx.str_ref(arr).to_string();
+                // POSIX: reading `a[k]` auto-creates the entry as `Uninit` if
+                // missing. Subsequent `k in a` returns 1, `typeof(a[k])` is
+                // "unassigned" (rather than "string" from a coerced "").
+                if name != "SYMTAB" && !ctx.rt.array_has(&name, &k) {
+                    ctx.rt.array_set(&name, k.clone(), Value::Uninit);
+                }
+                let v = ctx.array_elem_get(&name, &k);
                 ctx.push(v);
             }
             Op::SymtabKeyCount => {
@@ -3014,7 +3020,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                     return Err(Error::Runtime("attempt to access field number -1".into()));
                 }
                 let t = if ctx.rt.field_is_unassigned(i) {
-                    "uninitialized"
+                    "unassigned"
                 } else {
                     "string"
                 };
@@ -3738,11 +3744,18 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
 
             // ── Fused opcodes ──────────────────────────────────────────
             Op::ConcatPoolStr(idx) => {
-                let pool_str = ctx.cp.strings.get(idx);
-                // Reuse the TOS String allocation: pop, append, push back.
+                // POSIX: number→string in concat context uses CONVFMT. The
+                // generic `Value::into_string()` path calls `format_number`
+                // which ignores CONVFMT; we must dispatch on `Value::Num`/
+                // `Value::Mpfr` here to honor the user-visible format global.
                 let v = ctx.pop();
                 let lit = matches!(v, Value::StrLit(_));
-                let mut s = v.into_string();
+                let mut s = match v {
+                    Value::Num(n) => ctx.rt.num_to_string_convfmt(n),
+                    Value::Mpfr(ref f) => ctx.rt.mpfr_to_string_convfmt(f),
+                    other => other.into_string(),
+                };
+                let pool_str = ctx.cp.strings.get(idx);
                 s.push_str(pool_str);
                 ctx.push(if lit { Value::StrLit(s) } else { Value::Str(s) });
             }
@@ -5987,20 +6000,15 @@ mod tests {
     }
 
     #[test]
-    fn array_index_read_does_not_auto_create_in_awkrs() {
-        // POSIX/gawk: `x = a[k]` MUST auto-create `a[k]` as uninit. awkrs
-        // currently does NOT — this test pins the divergence so a fix is a
-        // tracked test update, not a silent behavior flip.
-        //
-        // gawk:  BEGIN { x = a["k"]; print ("k" in a) }   →  1
-        // awkrs: BEGIN { x = a["k"]; print ("k" in a) }   →  0
+    fn array_index_read_auto_creates_uninit_entry() {
+        // POSIX/gawk: `x = a[k]` auto-creates `a[k]` as Uninit. After the read,
+        // `k in a` must be true. Implemented in the GetArrayElem dispatch:
+        // if name != "SYMTAB" and the key is missing, insert Value::Uninit
+        // before returning.
         let out = run_begin_capture(
             r#"BEGIN { x = a["k"]; print ("k" in a) }"#,
         );
-        assert_eq!(
-            out, "0\n",
-            "FIXME: awkrs doesn't auto-create on a[k] read (POSIX/gawk: 1)"
-        );
+        assert_eq!(out, "1\n");
     }
 
     #[test]
@@ -6077,13 +6085,10 @@ mod tests {
     // ── typeof variants ──────────────────────────────────────────────────────
 
     #[test]
-    fn typeof_uninitialized_var() {
-        // awkrs returns "uninitialized" for unset scalars. gawk returns
-        // "unassigned" for the same case — keep our wording as-is for now;
-        // pin it so any change to the typeof vocabulary surfaces as a named
-        // test update.
+    fn typeof_unassigned_var() {
+        // typeof(unset scalar) returns "unassigned" — matches gawk vocabulary.
         let out = run_begin_capture(r#"BEGIN { print typeof(u) }"#);
-        assert_eq!(out, "uninitialized\n", "{out:?}");
+        assert_eq!(out, "unassigned\n");
     }
 
     #[test]
@@ -6198,35 +6203,21 @@ mod tests {
     // ── CONVFMT / OFMT ───────────────────────────────────────────────────────
 
     #[test]
-    fn convfmt_default_currently_verbatim_in_awkrs() {
-        // POSIX/gawk: default CONVFMT = "%.6g" — `x ""` of 3.141592653 yields
-        // "3.14159". awkrs currently prints the f64 verbatim ("3.141592653").
-        // Pin the divergence so a CONVFMT implementation surfaces as a named
-        // test failure naming this contract.
-        //
-        // gawk:  BEGIN { x=3.141592653; print x "" }   →  3.14159
-        // awkrs: BEGIN { x=3.141592653; print x "" }   →  3.141592653
+    fn convfmt_default_six_significant_digits() {
+        // POSIX/gawk: default CONVFMT = "%.6g" applies to float→string in
+        // concat context. The ConcatPoolStr peephole path was bypassing it via
+        // `Value::into_string()` (format_number); fixed to dispatch through
+        // `num_to_string_convfmt` for Num/Mpfr.
         let out = run_begin_capture(r#"BEGIN { x=3.141592653; print x "" }"#);
-        assert_eq!(
-            out, "3.141592653\n",
-            "FIXME: awkrs ignores default CONVFMT %.6g (gawk: 3.14159)"
-        );
+        assert_eq!(out, "3.14159\n");
     }
 
     #[test]
-    fn convfmt_custom_currently_ignored_in_awkrs() {
-        // POSIX/gawk: setting CONVFMT="%.2f" reformats stringified floats.
-        // awkrs currently ignores CONVFMT entirely.
-        //
-        // gawk:  BEGIN { CONVFMT="%.2f"; x=3.141592653; print x "" }  →  3.14
-        // awkrs: same input                                            →  3.141592653
+    fn convfmt_custom_two_decimals() {
         let out = run_begin_capture(
             r#"BEGIN { CONVFMT="%.2f"; x=3.141592653; print x "" }"#,
         );
-        assert_eq!(
-            out, "3.141592653\n",
-            "FIXME: awkrs doesn't honor CONVFMT (gawk: 3.14)"
-        );
+        assert_eq!(out, "3.14\n");
     }
 
     #[test]
