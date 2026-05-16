@@ -1428,7 +1428,7 @@ fn collect_array_names_expr(e: &Expr, names: &mut HashSet<String>) {
 /// `u16` by construction; this normalization only fires when the string parses
 /// as such, so bignum-mode exact-decimal arithmetic on large literals is
 /// untouched.
-fn normalize_field_indices(ops: &mut Vec<Op>, strings: &StringPool) {
+fn normalize_field_indices(ops: &mut [Op], strings: &StringPool) {
     let mut i = 0;
     while i + 1 < ops.len() {
         if matches!(ops[i + 1], Op::GetField) {

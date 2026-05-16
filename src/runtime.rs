@@ -754,7 +754,7 @@ fn split_fields_fpat(
             if let Some(m) = re.find(tail) {
                 // `^(?:…)` ensures m.start() == 0.
                 let end = m.end();
-                if end > 0 && best_end.map_or(true, |b| end > b) {
+                if end > 0 && best_end.is_none_or(|b| end > b) {
                     best_end = Some(end);
                 }
             }
@@ -777,9 +777,10 @@ fn utf8_char_len_at(bytes: &[u8], pos: usize) -> usize {
         return 1;
     }
     let b = bytes[pos];
-    if b < 0x80 {
-        1
-    } else if b < 0xC0 {
+    // b < 0xC0 covers both ASCII (< 0x80) and continuation bytes (0x80..0xC0);
+    // both advance by 1 byte. Continuation bytes shouldn't appear at a char
+    // boundary, but treat them safely as 1-byte advances.
+    if b < 0xC0 {
         1
     } else if b < 0xE0 {
         2
@@ -3612,9 +3613,11 @@ mod awk_binop_values_pinning {
 
     #[test]
     fn binop_mul_with_alpha_suffix_coerces_to_prefix() {
-        // POSIX: "3.14abc" + 0 → 3.14. Multiplication should see 3.14 on the LHS.
-        let n = binop_num(BinOp::Mul, Value::Str("3.14abc".into()), Value::Num(2.0));
-        assert!((n - 6.28).abs() < 1e-9, "expected ~6.28, got {n}");
+        // POSIX: "2.5abc" + 0 → 2.5. Multiplication should see 2.5 on the LHS.
+        // (Use 2.5 instead of 3.14 to avoid clippy::approx_constant flagging the
+        // intermediate 6.28 as approximating TAU.)
+        let n = binop_num(BinOp::Mul, Value::Str("2.5abc".into()), Value::Num(4.0));
+        assert!((n - 10.0).abs() < 1e-9, "expected 10.0, got {n}");
     }
 
     #[test]
