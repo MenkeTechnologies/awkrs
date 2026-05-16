@@ -1951,7 +1951,12 @@ impl Runtime {
     }
 
     /// POSIX / gawk: format a number using **`CONVFMT`** (string coercion).
+    /// Integer-valued numbers bypass CONVFMT and display in integer form —
+    /// matches gawk where `n` with `n.fract()==0 && |n|<1e15` prints exact.
     pub fn num_to_string_convfmt(&self, n: f64) -> String {
+        if n.is_finite() && n.fract() == 0.0 && n.abs() < 1e15 {
+            return format!("{}", n as i64);
+        }
         let fmt = self
             .get_global_var("CONVFMT")
             .map(|v| v.as_str())
@@ -1967,7 +1972,12 @@ impl Runtime {
     }
 
     /// POSIX: `print` formats numbers with **`OFMT`** (distinct from [`Self::num_to_string_convfmt`]).
+    /// Integer-valued numbers bypass OFMT and display in integer form so e.g.
+    /// `print 999999999999` produces `"999999999999"` not `"1e+12"`.
     pub fn num_to_string_ofmt(&self, n: f64) -> String {
+        if n.is_finite() && n.fract() == 0.0 && n.abs() < 1e15 {
+            return format!("{}", n as i64);
+        }
         let fmt = self
             .get_global_var("OFMT")
             .map(|v| v.as_str())

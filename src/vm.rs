@@ -129,10 +129,24 @@ impl<'a> VmCtx<'a> {
         }
     }
 
-    /// `arr[key]` — `SYMTAB` uses live global/slot resolution (gawk lvalue semantics).
+    /// `arr[key]` — `SYMTAB` uses live global/slot resolution (gawk lvalue
+    /// semantics). Function parameters that are arrays live in the current
+    /// frame (`self.locals.last()`); consult them first so writes/reads
+    /// through a by-reference array param hit the caller's data.
     fn array_elem_get(&self, name: &str, key: &str) -> Value {
         if name == "SYMTAB" {
             return self.rt.symtab_elem_get(key);
+        }
+        // Check the current (innermost) frame for an array param with this
+        // name — POSIX array call-by-reference for user functions.
+        for frame in self.locals.iter().rev() {
+            if let Some(Value::Array(a)) = frame.get(name) {
+                return match a.get(key) {
+                    Some(Value::Num(n)) => Value::Num(*n),
+                    Some(v) => v.clone(),
+                    None => Value::Str(String::new()),
+                };
+            }
         }
         self.rt.array_get(name, key)
     }
@@ -141,6 +155,24 @@ impl<'a> VmCtx<'a> {
         if name == "SYMTAB" {
             self.rt.symtab_elem_set(&key, val);
             return;
+        }
+        // POSIX array call-by-reference: writes through a function array
+        // param go to the current frame, not global vars.
+        for frame in self.locals.iter_mut().rev() {
+            if let Some(slot) = frame.get_mut(name) {
+                if let Value::Array(a) = slot {
+                    a.insert(key, val);
+                    return;
+                }
+                // If the local was uninit (no value yet), promote to an
+                // array — POSIX allows lazy array creation.
+                if matches!(slot, Value::Uninit) {
+                    let mut a = crate::runtime::AwkMap::default();
+                    a.insert(key, val);
+                    *slot = Value::Array(a);
+                    return;
+                }
+            }
         }
         self.rt.array_set(name, key, val);
     }
@@ -156,6 +188,16 @@ impl<'a> VmCtx<'a> {
     /// Keys for `for (k in …)` / `SYMTAB` iteration order, including **`PROCINFO["sorted_in"]`** and
     /// user-defined comparators (`cmp` with two index arguments).
     pub(crate) fn for_in_keys(&mut self, name: &str) -> Result<Vec<String>> {
+        // POSIX array call-by-reference: check the current frame for an
+        // array param with this name before falling through to global vars.
+        let frame_keys: Option<Vec<String>> = self.locals.iter().rev().find_map(|frame| {
+            if let Some(Value::Array(a)) = frame.get(name) {
+                Some(a.keys().cloned().collect())
+            } else {
+                None
+            }
+        });
+
         if let SortedInMode::CustomFn(fname) = sorted_in_mode(self.rt) {
             if name == "SYMTAB" {
                 let mut keys = self.rt.symtab_keys_reflect();
@@ -165,14 +207,22 @@ impl<'a> VmCtx<'a> {
                 sort_keys_with_custom_cmp(self, &mut keys, fname.as_str(), name)?;
                 return Ok(keys);
             }
-            let Some(Value::Array(a)) = self.rt.get_global_var(name) else {
-                return Ok(Vec::new());
+            let mut keys = match frame_keys {
+                Some(k) => k,
+                None => {
+                    let Some(Value::Array(a)) = self.rt.get_global_var(name) else {
+                        return Ok(Vec::new());
+                    };
+                    a.keys().cloned().collect::<Vec<String>>()
+                }
             };
-            let mut keys: Vec<String> = a.keys().cloned().collect();
             if self.rt.posix {
                 return Ok(keys);
             }
             sort_keys_with_custom_cmp(self, &mut keys, fname.as_str(), name)?;
+            return Ok(keys);
+        }
+        if let Some(keys) = frame_keys {
             return Ok(keys);
         }
         Ok(self.rt.array_keys(name))
@@ -3595,6 +3645,10 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 let name = ctx.str_ref(name_idx).to_string();
                 exec_call_user(ctx, &name, argc)?;
             }
+            Op::CallUserBindArrays(name_idx, argc) => {
+                let name = ctx.str_ref(name_idx).to_string();
+                exec_call_user_bind_arrays(ctx, &name, argc)?;
+            }
 
             // ── Array ops ───────────────────────────────────────────────
             Op::InArray(arr) => {
@@ -5150,6 +5204,128 @@ fn exec_call_user(ctx: &mut VmCtx<'_>, name: &str, argc: u16) -> Result<()> {
     let result = exec_call_user_inner(ctx, name, vals)?;
     ctx.push(result);
     Ok(())
+}
+
+/// POSIX array call-by-reference for user functions. Stack layout (top-down):
+/// `[name_argc, …, name_1, val_argc, …, val_1]`. Each `name_i` is the
+/// caller-side variable name (or `""` for non-Var args). After the call,
+/// any frame parameter that holds a `Value::Array` is propagated back to
+/// the caller's variable with the matching name. Scalars are discarded
+/// (awk passes scalars by value).
+fn exec_call_user_bind_arrays(ctx: &mut VmCtx<'_>, name: &str, argc: u16) -> Result<()> {
+    let argc = argc as usize;
+    let total = argc * 2;
+    let start = ctx.stack.len() - total;
+    // drain returns values in stack order (bottom→top); names come first.
+    let mut all: Vec<Value> = ctx.stack.drain(start..).collect();
+    let vals: Vec<Value> = all.split_off(argc);
+    let names: Vec<String> = all.into_iter().map(|v| v.into_string()).collect();
+
+    let param_names: Vec<String> = ctx
+        .cp
+        .functions
+        .get(name)
+        .ok_or_else(|| Error::Runtime(format!("unknown function `{name}`")))?
+        .params
+        .clone();
+
+    let (result, frame_after) = exec_call_user_inner_with_frame(ctx, name, vals)?;
+
+    for (i, caller_name) in names.iter().enumerate() {
+        if caller_name.is_empty() {
+            continue;
+        }
+        let Some(param_name) = param_names.get(i) else {
+            continue;
+        };
+        if let Some(v) = frame_after.get(param_name) {
+            if matches!(v, Value::Array(_)) {
+                // Frame-aware write-back: if the caller name lives in an
+                // outer function frame (nested call), update that frame.
+                // Otherwise fall through to global vars.
+                let mut wrote = false;
+                for frame in ctx.locals.iter_mut().rev() {
+                    if frame.contains_key(caller_name.as_str()) {
+                        frame.insert(caller_name.clone(), v.clone());
+                        wrote = true;
+                        break;
+                    }
+                }
+                if !wrote {
+                    ctx.rt.vars.insert(caller_name.clone(), v.clone());
+                }
+            }
+        }
+    }
+
+    ctx.push(result);
+    Ok(())
+}
+
+/// Same as [`exec_call_user_inner`] but returns the final function frame
+/// alongside the result so the caller can write array params back.
+fn exec_call_user_inner_with_frame(
+    ctx: &mut VmCtx<'_>,
+    name: &str,
+    mut vals: Vec<Value>,
+) -> Result<(Value, crate::runtime::AwkMap<String, Value>)> {
+    let func = ctx
+        .cp
+        .functions
+        .get(name)
+        .ok_or_else(|| Error::Runtime(format!("unknown function `{name}`")))?
+        .clone();
+
+    if ctx.locals.len() >= crate::limits::MAX_USER_CALL_DEPTH {
+        return Err(Error::Runtime(format!(
+            "maximum user function call depth ({}) exceeded",
+            crate::limits::MAX_USER_CALL_DEPTH
+        )));
+    }
+
+    while vals.len() < func.params.len() {
+        vals.push(Value::Uninit);
+    }
+    vals.truncate(func.params.len());
+
+    let mut frame = crate::runtime::AwkMap::default();
+    for (p, v) in func.params.iter().zip(vals) {
+        frame.insert(p.clone(), v);
+    }
+    ctx.locals.push(frame);
+    let was_fn = ctx.in_function;
+    ctx.in_function = true;
+
+    let result = match execute(&func.body, ctx) {
+        Ok(VmSignal::Normal) => Value::Str(String::new()),
+        Ok(VmSignal::Return(v)) => v,
+        Ok(VmSignal::Next) => {
+            ctx.locals.pop();
+            ctx.in_function = was_fn;
+            return Err(Error::Runtime("invalid jump out of function (next)".into()));
+        }
+        Ok(VmSignal::NextFile) => {
+            ctx.locals.pop();
+            ctx.in_function = was_fn;
+            return Err(Error::Runtime(
+                "invalid jump out of function (nextfile)".into(),
+            ));
+        }
+        Ok(VmSignal::ExitPending) => {
+            ctx.locals.pop();
+            ctx.in_function = was_fn;
+            return Err(Error::Exit(ctx.rt.exit_code));
+        }
+        Err(e) => {
+            ctx.locals.pop();
+            ctx.in_function = was_fn;
+            return Err(e);
+        }
+    };
+
+    let frame = ctx.locals.pop().unwrap_or_default();
+    ctx.in_function = was_fn;
+    Ok((result, frame))
 }
 
 #[cfg(test)]
@@ -7620,20 +7796,32 @@ mod tests {
     // ── Function arg semantics ───────────────────────────────────────────────
 
     #[test]
-    fn array_passed_to_function_currently_not_visible_caller_in_awkrs() {
-        // FIXME: POSIX/gawk: arrays are passed BY REFERENCE — modifications
-        // inside the function are visible to the caller. awkrs currently does
-        // not propagate the modification (or passes by value silently).
-        //
-        // gawk:  function f(a) { a["new"]=99 } BEGIN { f(x); print x["new"] } → "99"
-        // awkrs: same input                                                   → ""
+    fn array_passed_to_function_is_call_by_reference() {
+        // POSIX: arrays are passed by reference; modifications inside the
+        // function are visible to the caller. Fixed via the new
+        // Op::CallUserBindArrays opcode + frame-aware array_elem_get/set/
+        // for_in_keys in VmCtx.
         let out = run_begin_capture(
             r#"function f(a) { a["new"] = 99 } BEGIN { x["old"] = 1; f(x); print x["new"] }"#,
         );
-        assert_eq!(
-            out, "\n",
-            "FIXME: array params should be call-by-reference (gawk: 99)"
+        assert_eq!(out, "99\n");
+    }
+
+    #[test]
+    fn array_by_reference_preserves_existing_keys() {
+        // Caller's pre-existing entries must survive the by-ref pass.
+        let out = run_begin_capture(
+            r#"function f(a) { a["new"] = 99 } BEGIN { x["old"] = 1; f(x); print x["old"]; print x["new"] }"#,
         );
+        assert_eq!(out, "1\n99\n");
+    }
+
+    #[test]
+    fn array_by_reference_fills_empty_array() {
+        let out = run_begin_capture(
+            r#"function fill(a, n,    i) { for(i=1;i<=n;i++) a[i] = i*10 } BEGIN { fill(arr, 3); print arr[1], arr[2], arr[3] }"#,
+        );
+        assert_eq!(out, "10 20 30\n");
     }
 
     #[test]
@@ -7677,23 +7865,26 @@ mod tests {
     }
 
     #[test]
-    fn large_integer_print_uses_ofmt_currently_in_awkrs() {
-        // FIXME: gawk/POSIX: integer-valued numbers in print bypass OFMT and
-        // display in integer form regardless of magnitude (up to 2^53-1).
-        // awkrs's print path goes through num_to_string_ofmt which applies
-        // %.6g by default, so 999999999999 (exactly representable in f64) is
-        // truncated to scientific notation.
-        //
-        // gawk:  print 999999999999  →  "999999999999"
-        // awkrs: same input          →  "1e+12"
-        //
-        // Fix should ensure integer-valued path in num_to_string_ofmt mirrors
-        // format_number()'s "abs < 1e15 && fract == 0" check.
+    fn large_integer_print_bypasses_ofmt() {
+        // Integer-valued numbers print exact (up to ~2^53) regardless of OFMT.
+        // Fixed in runtime.rs::num_to_string_ofmt / num_to_string_convfmt by
+        // applying the same `fract==0 && |n|<1e15` bypass that format_number
+        // already used for the direct write_to path.
         let out = run_begin_capture(r#"BEGIN { print 999999999999 }"#);
-        assert_eq!(
-            out, "1e+12\n",
-            "FIXME: print integer-valued bypass for OFMT (gawk: 999999999999)"
-        );
+        assert_eq!(out, "999999999999\n");
+    }
+
+    #[test]
+    fn one_million_prints_as_integer_not_scientific() {
+        let out = run_begin_capture(r#"BEGIN { print 1000000 }"#);
+        assert_eq!(out, "1000000\n");
+    }
+
+    #[test]
+    fn ofmt_still_applied_for_non_integer_floats() {
+        // Regression guard: OFMT continues to format non-integer floats.
+        let out = run_begin_capture(r#"BEGIN { OFMT="%.3f"; print 3.14159 }"#);
+        assert_eq!(out, "3.142\n");
     }
 
     // ── Concat with empty edges ──────────────────────────────────────────────

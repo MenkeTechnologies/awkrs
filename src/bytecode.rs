@@ -178,6 +178,12 @@ pub enum Op {
     CallUser(u32, u16),
     /// Pop `argc` args then callee name (TOS), resolve builtin or user function, push result.
     CallIndirect(u16),
+    /// Pop `argc` args + `argc` names (in two consecutive groups), call user
+    /// function, then write-back each Value::Array param to the caller's
+    /// named var if name is non-empty. Enables POSIX array call-by-reference.
+    /// Stack layout (top-down): [name_argc, ..., name_1, value_argc, ..., value_1].
+    /// `name_idx` is the function name's string-pool index; `argc` is the arg count.
+    CallUserBindArrays(u32, u16),
 
     /// `typeof(var)` — interned name; push `"string"` / `"number"` / `"array"` / `"unassigned"`.
     TypeofVar(u32),

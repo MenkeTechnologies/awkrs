@@ -66,6 +66,10 @@ pub struct Compiler {
     array_names: HashSet<String>,
     /// Parameter names of the function currently being compiled (if any).
     current_func_params: HashSet<String>,
+    /// Names of user-defined functions in this program. Set at the top of
+    /// `compile_program` so call sites can compile-time route user-function
+    /// calls through `Op::CallUserBindArrays` for array-by-reference.
+    user_funcs: HashSet<String>,
 }
 
 impl Compiler {
@@ -81,6 +85,7 @@ impl Compiler {
             next_slot: 0,
             array_names,
             current_func_params: HashSet::new(),
+            user_funcs: prog.funcs.keys().cloned().collect(),
         };
 
         let mut begin_chunks = Vec::new();
@@ -957,12 +962,53 @@ impl Compiler {
                 }
             }
             _ => {
-                for a in args {
-                    self.compile_expr(a, ops);
+                // User function call with potential by-reference array args:
+                // emit `CallUserBindArrays` if the callee is a known user
+                // function AND at least one arg is `Expr::Var(arr)` where
+                // `arr` is in array_names. Stack layout (top-down): argc
+                // name-strings, then argc values. After the function returns,
+                // any param value that became a `Value::Array` is written
+                // back to caller's `vars[name]`.
+                let is_user_fn = self.user_funcs.contains(name);
+                // ANY `Expr::Var(n)` arg is a potential by-ref array — we
+                // can't know at compile time whether `n` is statically an
+                // array (it may be a function param itself, indirected).
+                // The runtime write-back is a noop for non-Array values,
+                // so emitting CallUserBindArrays for any Var arg is safe.
+                let by_ref_array_args: Vec<Option<String>> = if is_user_fn {
+                    args.iter()
+                        .map(|a| match a {
+                            Expr::Var(n) => Some(n.clone()),
+                            _ => None,
+                        })
+                        .collect()
+                } else {
+                    args.iter().map(|_| None).collect()
+                };
+                let any_by_ref = by_ref_array_args.iter().any(|n| n.is_some());
+
+                if is_user_fn && any_by_ref {
+                    // Push the names first (one PushStr per arg position, or
+                    // empty for non-Var args). Then push the values.
+                    for n in &by_ref_array_args {
+                        let s = n.as_deref().unwrap_or("");
+                        let idx = self.strings.intern(s);
+                        ops.push(Op::PushStr(idx));
+                    }
+                    for a in args {
+                        self.compile_expr(a, ops);
+                    }
+                    let name_idx = self.strings.intern(name);
+                    let argc = args.len() as u16;
+                    ops.push(Op::CallUserBindArrays(name_idx, argc));
+                } else {
+                    for a in args {
+                        self.compile_expr(a, ops);
+                    }
+                    let name_idx = self.strings.intern(name);
+                    let argc = args.len() as u16;
+                    ops.push(Op::CallBuiltin(name_idx, argc));
                 }
-                let name_idx = self.strings.intern(name);
-                let argc = args.len() as u16;
-                ops.push(Op::CallBuiltin(name_idx, argc));
             }
         }
     }
@@ -1175,6 +1221,7 @@ fn compiler_isolated() -> Compiler {
         next_slot: 0,
         array_names: HashSet::new(),
         current_func_params: HashSet::new(),
+        user_funcs: HashSet::new(),
     }
 }
 
