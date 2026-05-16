@@ -207,6 +207,7 @@ aw '/error/i { print FILENAME ":" NR ":" $0 }' *.log</pre>
             <tr><td>Parallel records</td><td style="color:#0f0;">&#10003;</td><td>&#10007;</td><td>&#10007;</td><td>&#10007;</td></tr>
             <tr><td>JIT compilation</td><td style="color:#0f0;">Cranelift</td><td>&#10007;</td><td>&#10007;</td><td>&#10007;</td></tr>
             <tr><td>Bytecode VM</td><td style="color:#0f0;">&#10003;</td><td>&#10003;</td><td>&#10003;</td><td>&#10007;</td></tr>
+            <tr><td>Persistent bytecode cache</td><td style="color:#0f0;">&#10003;</td><td>&#10007;</td><td>&#10007;</td><td>&#10007;</td></tr>
             <tr><td>Unicode support</td><td style="color:#0f0;">&#10003;</td><td>&#10003;</td><td>partial</td><td>&#10007;</td></tr>
             <tr><td>CSV mode</td><td style="color:#0f0;">&#10003;</td><td>&#10003;</td><td>&#10007;</td><td>&#10007;</td></tr>
             <tr><td>Regex backrefs</td><td style="color:#0f0;">&#10003;</td><td>&#10003;</td><td>&#10007;</td><td>&#10007;</td></tr>
@@ -226,6 +227,7 @@ aw '/error/i { print FILENAME ":" NR ":" $0 }' *.log</pre>
           <li><strong>Values</strong> — AWK values (string/number/uninitialized) with automatic coercion. Arrays are associative (hash maps).</li>
           <li><strong>Regex</strong> — three-tier engine: Rust <code>regex</code> → <code>fancy-regex</code> (backrefs) → <code>pcre2</code> (advanced).</li>
           <li><strong>Parallelism</strong> — <code>-P</code> flag enables parallel record processing via rayon work-stealing.</li>
+          <li><strong>Bytecode cache</strong> — <code>-f script.awk</code> runs memoize compiled bytecode to <code>~/.awkrs/scripts.bin</code>; repeat invocations skip lex/parse/compile.</li>
           <li><strong>Binary size</strong> — ~8MB stripped with LTO.</li>
         </ul>
       </section>
@@ -332,6 +334,35 @@ aw -P '{ complex_computation($0) }' huge_file.txt
 # parallel aggregation (thread-safe)
 aw -P '{ sum += $1 } END { print sum }' data.txt</pre>
         <p>Note: Parallel mode may reorder output. Use <code>-P -s</code> for sorted output by record number.</p>
+      </section>
+
+      <section class="tutorial-section">
+        <h2>Bytecode Cache</h2>
+        <p>Invocations of the form <code>awkrs -f script.awk ...</code> memoize the compiled <code>CompiledProgram</code> to a single bincode shard at <code>~/.awkrs/scripts.bin</code>. On the 2nd+ run of the same script, awkrs skips lex/parse/compile entirely — load is bincode-deserialize plus an mtime check.</p>
+<pre># 1st run: parse + compile + populate ~/.awkrs/scripts.bin
+awkrs -f script.awk input.txt
+
+# 2nd run: cache hit, skips parse/compile
+awkrs -f script.awk input.txt
+
+# disable the cache for one run
+AWKRS_CACHE=0 awkrs -f script.awk input.txt
+
+# wipe the cache
+rm ~/.awkrs/scripts.bin</pre>
+        <p><strong>Invalidation</strong> is automatic and silent:</p>
+        <ul>
+          <li><strong>Source mtime change</strong> — editing <code>script.awk</code> causes the next run to miss and recompile.</li>
+          <li><strong>Binary mtime newer than entry</strong> — rebuilding awkrs (any <code>cargo install</code> / <code>cargo build</code>) invalidates every entry so old bytecode never runs against new code.</li>
+          <li><strong>Schema / version drift</strong> — package version, format-version byte, and host pointer width are all validated; a fresh shard is written on mismatch.</li>
+        </ul>
+        <p><strong>Engagement criteria</strong> — the cache only kicks in for the simple <code>-f script.awk</code> form. The following skip the cache because they need the AST or are short-lived modes:</p>
+        <ul>
+          <li>inline programs (<code>-e</code>/<code>--source</code>, <code>-E</code>, or bare-arg form like <code>awkrs '{print $1}' file</code>)</li>
+          <li>multi-source assembly (<code>-i</code>/<code>--include</code>, <code>-l</code>/<code>--load</code>, or multiple <code>-f</code>)</li>
+          <li>AST-only flags: <code>--debug</code>, <code>--lint</code>, <code>--lint-old</code>, <code>--pretty-print</code>, <code>--gen-pot</code></li>
+        </ul>
+        <p><strong>Storage</strong> — single file, atomic-rename writes, <code>flock(LOCK_EX)</code> on a sibling lockfile so concurrent <code>awkrs</code> processes serialize their writes. Reads are unlocked and rely on the validated header.</p>
       </section>
 
       <section class="tutorial-section">
