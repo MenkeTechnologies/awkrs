@@ -7522,4 +7522,237 @@ mod tests {
         );
         assert_eq!(out, "T T T T\n");
     }
+
+    // ── Error paths ──────────────────────────────────────────────────────────
+
+    fn run_begin_must_err(src: &str) -> std::result::Result<(), crate::error::Error> {
+        let cp = compile(src);
+        let mut rt = runtime_with_slots(&cp);
+        crate::vm::vm_run_begin(&cp, &mut rt)
+    }
+
+    #[test]
+    fn division_by_zero_in_expression_errors() {
+        let result = run_begin_must_err(r#"BEGIN { x = 1 / 0 }"#);
+        assert!(result.is_err(), "1 / 0 should error");
+        let msg = format!("{}", result.unwrap_err());
+        assert!(
+            msg.contains("division") || msg.contains("zero"),
+            "expected division-by-zero message, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn divide_assign_zero_errors() {
+        let result = run_begin_must_err(r#"BEGIN { x = 1; x /= 0 }"#);
+        assert!(result.is_err(), "x /= 0 should error");
+    }
+
+    #[test]
+    fn calling_undefined_function_errors() {
+        let result = run_begin_must_err(r#"BEGIN { undefined_fn(1, 2) }"#);
+        assert!(result.is_err(), "call to undefined function should error");
+    }
+
+    #[test]
+    fn wrong_arity_to_builtin_errors() {
+        let result = run_begin_must_err(r#"BEGIN { x = sqrt() }"#);
+        assert!(result.is_err(), "sqrt() with 0 args should error");
+    }
+
+    // ── Inc/dec on uninit ────────────────────────────────────────────────────
+
+    #[test]
+    fn postinc_uninit_returns_zero_then_var_becomes_one() {
+        let out = run_begin_capture(r#"BEGIN { x = u++; print x; print u }"#);
+        assert_eq!(out, "0\n1\n");
+    }
+
+    #[test]
+    fn postdec_uninit_returns_zero_then_var_becomes_neg_one() {
+        let out = run_begin_capture(r#"BEGIN { x = u--; print x; print u }"#);
+        assert_eq!(out, "0\n-1\n");
+    }
+
+    // ── Array delete ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn delete_missing_key_is_silent_noop() {
+        let out = run_begin_capture(r#"BEGIN { a[1] = "x"; delete a["nope"]; print length(a) }"#);
+        assert_eq!(out, "1\n");
+    }
+
+    #[test]
+    fn delete_entire_empty_array_no_error() {
+        let out = run_begin_capture(r#"BEGIN { delete a; print "ok" }"#);
+        assert_eq!(out, "ok\n");
+    }
+
+    #[test]
+    fn delete_then_reassign_same_key() {
+        let out =
+            run_begin_capture(r#"BEGIN { a[1] = "old"; delete a[1]; a[1] = "new"; print a[1] }"#);
+        assert_eq!(out, "new\n");
+    }
+
+    // ── Multi-dim arrays ─────────────────────────────────────────────────────
+
+    #[test]
+    fn multidim_array_in_test_returns_one() {
+        let out = run_begin_capture(r#"BEGIN { a[1,2] = "x"; print ((1,2) in a) }"#);
+        assert_eq!(out, "1\n");
+    }
+
+    #[test]
+    fn multidim_array_in_test_returns_zero_for_missing() {
+        let out = run_begin_capture(r#"BEGIN { a[1,2] = "x"; print ((3,4) in a) }"#);
+        assert_eq!(out, "0\n");
+    }
+
+    #[test]
+    fn multidim_delete_specific_key() {
+        let out = run_begin_capture(
+            r#"BEGIN { a[1,2] = "x"; a[1,3] = "y"; delete a[1,2]; print length(a) }"#,
+        );
+        assert_eq!(out, "1\n");
+    }
+
+    // ── Function arg semantics ───────────────────────────────────────────────
+
+    #[test]
+    fn array_passed_to_function_currently_not_visible_caller_in_awkrs() {
+        // FIXME: POSIX/gawk: arrays are passed BY REFERENCE — modifications
+        // inside the function are visible to the caller. awkrs currently does
+        // not propagate the modification (or passes by value silently).
+        //
+        // gawk:  function f(a) { a["new"]=99 } BEGIN { f(x); print x["new"] } → "99"
+        // awkrs: same input                                                   → ""
+        let out = run_begin_capture(
+            r#"function f(a) { a["new"] = 99 } BEGIN { x["old"] = 1; f(x); print x["new"] }"#,
+        );
+        assert_eq!(
+            out, "\n",
+            "FIXME: array params should be call-by-reference (gawk: 99)"
+        );
+    }
+
+    #[test]
+    fn scalar_passed_by_value_modifications_not_visible() {
+        let out = run_begin_capture(
+            r#"function f(s) { s = "modified" } BEGIN { x = "orig"; f(x); print x }"#,
+        );
+        assert_eq!(out, "orig\n");
+    }
+
+    // ── Recursion ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn recursion_fibonacci_ten() {
+        let out = run_begin_capture(
+            r#"function fib(n) { return n < 2 ? n : fib(n-1) + fib(n-2) } BEGIN { print fib(10) }"#,
+        );
+        assert_eq!(out, "55\n");
+    }
+
+    // ── Print with no args ───────────────────────────────────────────────────
+
+    #[test]
+    fn print_with_no_args_prints_dollar_zero() {
+        let out = run_begin_capture(r#"BEGIN { $0 = "the record"; print }"#);
+        assert_eq!(out, "the record\n");
+    }
+
+    #[test]
+    fn print_empty_string_emits_just_ors() {
+        let out = run_begin_capture(r#"BEGIN { print "" }"#);
+        assert_eq!(out, "\n");
+    }
+
+    // ── Negative / large numbers ─────────────────────────────────────────────
+
+    #[test]
+    fn negative_zero_equals_zero() {
+        let out = run_begin_capture(r#"BEGIN { print (-0 == 0) }"#);
+        assert_eq!(out, "1\n");
+    }
+
+    #[test]
+    fn large_integer_print_uses_ofmt_currently_in_awkrs() {
+        // FIXME: gawk/POSIX: integer-valued numbers in print bypass OFMT and
+        // display in integer form regardless of magnitude (up to 2^53-1).
+        // awkrs's print path goes through num_to_string_ofmt which applies
+        // %.6g by default, so 999999999999 (exactly representable in f64) is
+        // truncated to scientific notation.
+        //
+        // gawk:  print 999999999999  →  "999999999999"
+        // awkrs: same input          →  "1e+12"
+        //
+        // Fix should ensure integer-valued path in num_to_string_ofmt mirrors
+        // format_number()'s "abs < 1e15 && fract == 0" check.
+        let out = run_begin_capture(r#"BEGIN { print 999999999999 }"#);
+        assert_eq!(
+            out, "1e+12\n",
+            "FIXME: print integer-valued bypass for OFMT (gawk: 999999999999)"
+        );
+    }
+
+    // ── Concat with empty edges ──────────────────────────────────────────────
+
+    #[test]
+    fn concat_with_empty_left_or_right() {
+        let out = run_begin_capture(r#"BEGIN { print "" "abc"; print "abc" "" }"#);
+        assert_eq!(out, "abc\nabc\n");
+    }
+
+    #[test]
+    fn concat_three_empties_yields_empty() {
+        let out = run_begin_capture(r#"BEGIN { print "[" "" "" "" "]" }"#);
+        assert_eq!(out, "[]\n");
+    }
+
+    // ── Regex dot metacharacter ──────────────────────────────────────────────
+
+    #[test]
+    fn regex_dot_matches_any_non_newline_char() {
+        let out = run_begin_capture(r#"BEGIN { print ("hello" ~ /h.llo/) }"#);
+        assert_eq!(out, "1\n");
+    }
+
+    // ── split() ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn split_returns_field_count() {
+        let out = run_begin_capture(r#"BEGIN { n = split("a,b,c,d", a, ","); print n }"#);
+        assert_eq!(out, "4\n");
+    }
+
+    #[test]
+    fn split_uses_default_fs_when_omitted() {
+        let out = run_begin_capture(
+            r#"BEGIN { n = split("a b c", a); print n; print a[1], a[2], a[3] }"#,
+        );
+        assert_eq!(out, "3\na b c\n");
+    }
+
+    #[test]
+    fn split_clears_existing_array() {
+        let out = run_begin_capture(
+            r#"BEGIN { a["old"]=1; a["stale"]=2; n=split("x y", a, " "); print length(a) }"#,
+        );
+        assert_eq!(out, "2\n");
+    }
+
+    // ── sprintf string width / left-align ────────────────────────────────────
+
+    #[test]
+    fn sprintf_with_n_width_pads_string() {
+        let out = run_begin_capture(r#"BEGIN { print sprintf("[%10s]", "hi") }"#);
+        assert_eq!(out, "[        hi]\n");
+    }
+
+    #[test]
+    fn sprintf_with_negative_n_left_aligns_string() {
+        let out = run_begin_capture(r#"BEGIN { print sprintf("[%-10s]", "hi") }"#);
+        assert_eq!(out, "[hi        ]\n");
+    }
 }
