@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta name="description" content="awkrs — Engineering report. AWK implementation in Rust: ~37k Rust lines, 1,557 tests, Cranelift JIT, rkyv-backed bytecode cache, 102 opcodes, 54 builtins, parallel record processing via rayon.">
+  <title>awkrs &mdash; Engineering Report</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;900&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="hud-static.css">
+  <link rel="stylesheet" href="tutorial.css">
+  <style>
+    .tutorial-main { max-width: 76rem; }
+
+    .file-table { width:100%;border-collapse:collapse;margin:0.6rem 0;font-size:12px; }
+    .file-table th { background:var(--bg-secondary);color:var(--cyan);font-family:'Orbitron',sans-serif;font-size:10px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;text-align:left;padding:7px 10px;border:1px solid var(--border); }
+    .file-table td { padding:6px 10px;border:1px solid var(--border);color:var(--text-dim);vertical-align:middle; }
+    .file-table tr:hover td { background:var(--bg-hover); }
+    .file-table td:first-child { font-family:'Share Tech Mono',monospace;color:var(--accent-light);font-weight:600;white-space:nowrap; }
+    .file-table .num { text-align:right;font-family:'Share Tech Mono',monospace; }
+    .file-table .total-row td { background:var(--bg-secondary);font-weight:700;color:var(--text);border-top:2px solid var(--cyan); }
+    .file-table code { font-size:11px;color:var(--accent-light);background:var(--bg-primary);padding:1px 4px;border-radius:2px; }
+
+    .stat-grid { display:grid;grid-template-columns:repeat(auto-fill,minmax(14rem,1fr));gap:0.75rem;margin:1.2rem 0; }
+    .stat-card { border:1px solid var(--border);border-top:3px solid var(--cyan);background:var(--bg-card);padding:1rem 1.2rem;border-radius:2px;text-align:center; }
+    .stat-card .stat-val { font-family:'Orbitron',sans-serif;font-size:28px;font-weight:900;color:var(--cyan);line-height:1.1;text-shadow:0 0 20px var(--cyan-glow); }
+    .stat-card .stat-val.accent { color:var(--accent);text-shadow:0 0 20px var(--accent-glow); }
+    .stat-card .stat-val.green  { color:var(--green);text-shadow:0 0 20px rgba(57,255,20,.3); }
+    .stat-card .stat-label { font-family:'Orbitron',sans-serif;font-size:9px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:var(--text-muted);margin-top:0.5rem; }
+    @keyframes glow-pulse { 0%,100%{text-shadow:0 0 20px var(--cyan-glow)}50%{text-shadow:0 0 40px var(--cyan-glow),0 0 80px var(--cyan-dim)} }
+    .stat-card .stat-val { animation:glow-pulse 3s ease-in-out infinite; }
+
+    .feature-grid { display:grid;grid-template-columns:repeat(auto-fill,minmax(22rem,1fr));gap:0.65rem;margin:0.8rem 0; }
+    .feature-card { border:1px solid var(--border);border-left:3px solid var(--cyan);background:var(--bg-card);padding:0.7rem 1rem;border-radius:2px; }
+    .feature-card h4 { font-family:'Orbitron',sans-serif;font-size:10px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:var(--cyan);margin:0 0 0.3rem; }
+    .feature-card p { margin:0;font-size:11px;color:var(--text-dim);line-height:1.55; }
+    .feature-card code { font-size:10.5px;color:var(--accent-light);background:var(--bg-primary);padding:1px 4px;border-radius:2px; }
+    .feature-card ul { margin:0.3rem 0 0;padding-left:1.2rem;font-size:11px;color:var(--text-dim);line-height:1.6; }
+    .feature-card li code { font-size:10px; }
+
+    .section-rule { border:none;border-top:1px dashed var(--border);margin:2rem 0; }
+  </style>
+</head>
+<body>
+  <div class="app tutorial-app" id="reportApp">
+    <div class="crt-scanline" id="crtH" aria-hidden="true"></div>
+    <div class="crt-scanline-v" id="crtV" aria-hidden="true"></div>
+
+    <header class="tutorial-header">
+      <div class="tutorial-header-inner">
+        <div>
+          <h1 class="tutorial-brand">// AWKRS &mdash; ENGINEERING REPORT</h1>
+          <nav class="tutorial-crumbs" aria-label="Breadcrumb">
+            <span class="current">Engineering Report</span>
+            <span class="sep">/</span>
+            <a href="index.html">awkrs Docs</a>
+            <span class="sep">/</span>
+            <a href="https://github.com/MenkeTechnologies/awkrs" target="_blank" rel="noopener noreferrer">GitHub</a>
+            <span class="sep">/</span>
+            <a href="https://crates.io/crates/awkrs" target="_blank" rel="noopener noreferrer">crates.io</a>
+          </nav>
+          <p style="margin:0.35rem 0 0;font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--text-dim);letter-spacing:0.03em;opacity:0.75;">
+            AWK implementation in Rust &middot; bytecode VM + Cranelift JIT &middot; rkyv bytecode cache &middot; parallel records via rayon &middot; POSIX + gawk + mawk compatibility
+          </p>
+        </div>
+        <div class="tutorial-toolbar">
+          <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
+          <button type="button" class="btn btn-secondary active" id="btnCrt" title="CRT scanline overlay">CRT</button>
+          <button type="button" class="btn btn-secondary active" id="btnNeon" title="Neon border pulse">Neon</button>
+        </div>
+      </div>
+    </header>
+
+    <div class="hub-scheme-strip">
+      <div class="hub-scheme-strip-inner">
+        <span class="hud-scheme-label">// Color scheme</span>
+        <div class="scheme-grid" id="hudSchemeGrid"></div>
+      </div>
+    </div>
+
+    <main class="tutorial-main">
+
+      <!-- ═══════════════════════════════════════ -->
+      <!-- SECTION 1: EXECUTIVE SUMMARY           -->
+      <!-- ═══════════════════════════════════════ -->
+      <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>EXECUTIVE SUMMARY</h2>
+      <p class="tutorial-subtitle">awkrs is a single-binary AWK implementation written in Rust. The interpreter compiles AWK source to a 102-opcode bytecode, runs it on a stack VM with peephole-fused instructions, and JITs hot chunks via Cranelift to native code with tiered compilation. Parallel record processing rides on rayon work-stealing. <strong>First AWK implementation to combine bytecode VM + Cranelift JIT + persistent on-disk bytecode cache</strong> (rkyv-backed at <code>~/.awkrs/scripts.rkyv</code>) &mdash; repeat <code>-f script.awk</code> runs skip lex/parse/compile entirely.</p>
+
+      <div class="stat-grid">
+        <div class="stat-card"><div class="stat-val">37,302</div><div class="stat-label">Rust Lines</div></div>
+        <div class="stat-card"><div class="stat-val accent">1,557</div><div class="stat-label">Tests (Total)</div></div>
+        <div class="stat-card"><div class="stat-val green">1,036</div><div class="stat-label">Unit Tests (Lib)</div></div>
+        <div class="stat-card"><div class="stat-val">102</div><div class="stat-label">VM Opcodes</div></div>
+        <div class="stat-card"><div class="stat-val">54</div><div class="stat-label">Builtin Functions</div></div>
+        <div class="stat-card"><div class="stat-val accent">0</div><div class="stat-label">Test Failures</div></div>
+        <div class="stat-card"><div class="stat-val green">2,036</div><div class="stat-label">Parity Files (vs gawk)</div></div>
+        <div class="stat-card"><div class="stat-val">v0.4.1</div><div class="stat-label">crates.io Release</div></div>
+      </div>
+
+      <hr class="section-rule">
+
+      <!-- ═══════════════════════════════════════ -->
+      <!-- SECTION 2: ARCHITECTURE                -->
+      <!-- ═══════════════════════════════════════ -->
+      <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>ARCHITECTURE</h2>
+      <p class="tutorial-subtitle">Single-pass pipeline: <code>lexer.rs</code> &rarr; <code>parser.rs</code> &rarr; AST in <code>ast.rs</code> &rarr; <code>compiler.rs</code> emits bytecode <code>Chunk</code>s with peephole fusion &rarr; <code>vm.rs</code> runs the stack VM &rarr; <code>jit.rs</code> tiered-compiles hot chunks via Cranelift. <code>script_cache.rs</code> memoizes the <code>CompiledProgram</code> as an rkyv archive so the next run mmaps it zero-copy. <code>runtime.rs</code> holds the central state (fields, $0, vars, slots).</p>
+
+      <h3 style="font-family:'Orbitron',sans-serif;font-size:14px;color:var(--cyan);letter-spacing:1.5px;margin-top:1.2rem;">Source layout</h3>
+      <table class="file-table">
+        <thead>
+          <tr><th>Module</th><th class="num">LOC</th><th class="num">Tests</th><th>Role</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>vm.rs</td><td class="num">7,525</td><td class="num">263</td><td>Stack VM main loop, opcode dispatch, fused fast paths</td></tr>
+          <tr><td>jit.rs</td><td class="num">5,598</td><td class="num">104</td><td>Cranelift JIT, tiered compilation, mixed-mode NaN-boxing</td></tr>
+          <tr><td>runtime.rs</td><td class="num">3,800</td><td class="num">80</td><td>Field/record state, FS handling, MPFR (-M) integration</td></tr>
+          <tr><td>compiler.rs</td><td class="num">2,776</td><td class="num">55</td><td>AST &rarr; bytecode, slot allocation, peephole fusion</td></tr>
+          <tr><td>parser.rs</td><td class="num">2,721</td><td class="num">75</td><td>Recursive-descent parser, gawk extensions</td></tr>
+          <tr><td>lib.rs</td><td class="num">2,236</td><td class="num">54</td><td>CLI entry, parallel record driver, file plumbing</td></tr>
+          <tr><td>cli_effects.rs</td><td class="num">1,982</td><td class="num">34</td><td>--debug / --lint / --pretty-print / --gen-pot output</td></tr>
+          <tr><td>lexer.rs</td><td class="num">1,219</td><td class="num">61</td><td>POSIX + gawk tokens, string escapes, regex mode</td></tr>
+          <tr><td>format.rs</td><td class="num">1,159</td><td class="num">52</td><td>sprintf / printf formatting (all POSIX specifiers)</td></tr>
+          <tr><td>namespace.rs</td><td class="num">1,054</td><td class="num">29</td><td>gawk-style @namespace + qualified identifiers</td></tr>
+          <tr><td>builtins.rs</td><td class="num">1,053</td><td class="num">41</td><td>gsub/sub/match/split/asort/strftime/strtonum/&hellip;</td></tr>
+          <tr><td>script_cache.rs</td><td class="num">872</td><td class="num">16</td><td>rkyv shard at ~/.awkrs/scripts.rkyv, flock-serialized writes</td></tr>
+          <tr><td>bytecode.rs</td><td class="num">670</td><td class="num">11</td><td>Op enum (102 variants), Chunk, CompiledProgram</td></tr>
+          <tr><td>gawk_extensions.rs</td><td class="num">605</td><td class="num">15</td><td>ord/chr/intdiv/readdir/stat/readfile/writea/reada</td></tr>
+          <tr><td>(other modules)</td><td class="num">~3,300</td><td class="num">~120</td><td>ast, ast_fmt, error, flow, format, locale, procinfo, &hellip;</td></tr>
+          <tr class="total-row"><td>TOTAL</td><td class="num">37,302</td><td class="num">1,036</td><td>+521 integration tests = 1,557 total</td></tr>
+        </tbody>
+      </table>
+
+      <hr class="section-rule">
+
+      <!-- ═══════════════════════════════════════ -->
+      <!-- SECTION 3: PERFORMANCE STACK           -->
+      <!-- ═══════════════════════════════════════ -->
+      <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>PERFORMANCE STACK</h2>
+      <p class="tutorial-subtitle">Three layers compound to produce competitive runtimes vs gawk / mawk / BSD awk on supported workloads (see <a href="../benchmarks/benchmark-results.md">benchmarks/benchmark-results.md</a>). Each layer carries its own cost recovery threshold; tests pin the boundaries so a regression surfaces as a named test failure.</p>
+
+      <div class="feature-grid">
+        <div class="feature-card">
+          <h4>Bytecode VM with peephole fusion</h4>
+          <p>Compiler emits a flat <code>Vec&lt;Op&gt;</code> per chunk. Peephole pass fuses common idioms into single opcodes that skip stack traffic:</p>
+          <ul>
+            <li><code>print $N</code> &rarr; <code>PrintFieldStdout(N)</code> (direct field write to print_buf)</li>
+            <li><code>s += $N</code> &rarr; <code>AddFieldToSlot</code> (in-place numeric parse)</li>
+            <li><code>i++</code> / <code>++i</code> &rarr; <code>IncrSlot</code> (one numeric add)</li>
+            <li><code>s "lit"</code> &rarr; <code>ConcatPoolStr</code> (no PushStr)</li>
+            <li>3 fused field-print variants + array-arithmetic fusion</li>
+          </ul>
+        </div>
+        <div class="feature-card">
+          <h4>Cranelift JIT (tiered)</h4>
+          <p>Hot bytecode chunks are JIT-compiled by Cranelift with <code>opt_level=speed</code>. <strong>Tiered</strong>: chunks run on the interpreter until they cross <code>AWKRS_JIT_MIN_INVOCATIONS</code> (default 3) &mdash; avoids compile cost on one-shot BEGIN blocks.</p>
+          <p>ABI: <code>(vmctx, slots, field_fn, array_field_add, var_dispatch, field_dispatch, io_dispatch, val_dispatch) &rarr; f64</code>. Mixed-mode chunks NaN-box <code>Value</code> in slots; non-mixed chunks keep slots in Cranelift SSA. Unsupported opcodes fall back to bytecode.</p>
+        </div>
+        <div class="feature-card">
+          <h4>Persistent bytecode cache (rkyv)</h4>
+          <p>Single archive at <code>~/.awkrs/scripts.rkyv</code>: rkyv-archived outer shard, bincode-encoded <code>CompiledProgram</code> blobs. Read path is <code>mmap</code> + zero-copy <code>ArchivedHashMap</code> lookup + bincode-decode of the matched entry only. Writes are <code>flock</code>-serialized with atomic rename.</p>
+          <p>Invalidated automatically on source mtime change OR a newer <code>awkrs</code> binary. Disable with <code>AWKRS_CACHE=0</code>.</p>
+        </div>
+        <div class="feature-card">
+          <h4>Parallel record processing (rayon)</h4>
+          <p><code>-j N</code> spawns a rayon thread pool. Records are processed in parallel when the program is parallel-safe (no range patterns, no <code>exit</code>, no primary <code>getline</code>, no cross-record assignments). Output is reassembled in order.</p>
+          <p>Files use RS-aware mmap-and-split; stdin uses chunked line buffering. Worker runtime is a per-thread <code>Runtime</code> with shared <code>Arc&lt;CompiledProgram&gt;</code>.</p>
+        </div>
+        <div class="feature-card">
+          <h4>Inline fast paths</h4>
+          <p>For single-rule programs with one fused opcode (e.g. <code>{ print $1 }</code>, <code>{ s += $1 }</code>), the record loop bypasses <code>VmCtx</code> entirely and writes fields directly from the mmap'd input. Literal <code>gsub("lit", "repl"); print</code> on absent needles skips the VM and copies lines verbatim.</p>
+        </div>
+        <div class="feature-card">
+          <h4>Direct-to-buffer I/O</h4>
+          <p>Stdout writes accumulate in a 64 KB <code>Vec&lt;u8&gt;</code> flushed at file boundaries &mdash; no per-record <code>String</code>, no <code>format!()</code>, no per-record stdout locking. <code>OFS</code> / <code>ORS</code> bytes are cached on the runtime and updated only on assignment.</p>
+        </div>
+      </div>
+
+      <hr class="section-rule">
+
+      <!-- ═══════════════════════════════════════ -->
+      <!-- SECTION 4: TESTING                     -->
+      <!-- ═══════════════════════════════════════ -->
+      <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>TESTING</h2>
+      <p class="tutorial-subtitle">1,557 tests, 0 failures. The unit suite is the catcher for behavioral regressions; the parity suite (2,036 files) cross-checks against gawk. The recent test-driven push exposed 15 POSIX/gawk divergences &mdash; each was first surfaced by a pinning test, then fixed, then the FIXME marker removed.</p>
+
+      <table class="file-table">
+        <thead>
+          <tr><th>Layer</th><th class="num">Count</th><th>Style</th><th>Catches</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Lib unit tests</td><td class="num">1,036</td><td>Per-function pinning</td><td>Function-level contracts, POSIX semantics, opcode dispatch shapes</td></tr>
+          <tr><td>Integration tests</td><td class="num">521</td><td>Subprocess via <code>run_awkrs_stdin</code></td><td>End-to-end CLI behavior, exit codes, stdin/stdout/stderr</td></tr>
+          <tr><td>Parity files</td><td class="num">2,036</td><td>Diff vs gawk output</td><td>gawk compatibility across the awk language surface</td></tr>
+          <tr><td>cargo fmt</td><td class="num">&mdash;</td><td>rustfmt --check</td><td>Style drift</td></tr>
+          <tr><td>cargo clippy</td><td class="num">&mdash;</td><td>--all-targets</td><td>Lint regressions: ptr_arg, approx_constant, etc.</td></tr>
+        </tbody>
+      </table>
+
+      <h3 style="font-family:'Orbitron',sans-serif;font-size:14px;color:var(--cyan);letter-spacing:1.5px;margin-top:1.2rem;">Divergences fixed via the test-then-fix loop</h3>
+      <div class="feature-grid">
+        <div class="feature-card">
+          <h4>POSIX semantics (8 fixes)</h4>
+          <ul>
+            <li>Array auto-create on <code>x = a[k]</code> read</li>
+            <li>CONVFMT honored in concat (was bypassed by ConcatPoolStr peephole)</li>
+            <li>CONVFMT honored in array subscripts</li>
+            <li><code>typeof</code> returns "unassigned" (was "uninitialized")</li>
+            <li><code>"0"</code> string literal is truthy (gawk parity)</li>
+            <li><code>^=</code> / <code>**=</code> compound assignment</li>
+            <li>Comment-as-statement-terminator (newline preserved after #)</li>
+            <li><code>%05d</code> of -42 = "-0042" (zeros after sign, not before)</li>
+          </ul>
+        </div>
+        <div class="feature-card">
+          <h4>gawk parity (4 fixes)</h4>
+          <ul>
+            <li>FPAT leftmost-longest semantic (alternation regex)</li>
+            <li>gensub <code>\N</code> capture-group backref expansion</li>
+            <li>CSV mode leading-comma field count (<code>,,,</code> = NF=4)</li>
+            <li>Lexer scientific notation (<code>1e7</code> single token)</li>
+          </ul>
+        </div>
+        <div class="feature-card">
+          <h4>Lexer / runtime (3 fixes)</h4>
+          <ul>
+            <li>Escape sequences <code>\a \b \f \v \/ \xHH \NNN</code> all decode</li>
+            <li><code>sprintf("%.5d", 42)</code> &rarr; "00042" (precision honored)</li>
+            <li>7 dormant peephole fusions activated via <code>normalize_field_indices()</code> (PushNumDecimalStr-to-PushNum for small integers preceding GetField)</li>
+          </ul>
+        </div>
+      </div>
+
+      <hr class="section-rule">
+
+      <!-- ═══════════════════════════════════════ -->
+      <!-- SECTION 5: COMPETITIVE LANDSCAPE       -->
+      <!-- ═══════════════════════════════════════ -->
+      <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>COMPETITIVE LANDSCAPE</h2>
+      <p class="tutorial-subtitle">Based on a survey of major public AWK implementations: <strong>awkrs is the first to combine a bytecode VM, a JIT compiler, and a persistent on-disk bytecode cache</strong>. frawk has VM + Cranelift/LLVM JIT but recompiles per invocation. gawk's <em>pm-gawk</em> persists script variables (heap), not compiled bytecode.</p>
+
+      <table class="file-table">
+        <thead>
+          <tr><th>Implementation</th><th class="num">Bytecode VM</th><th class="num">JIT</th><th class="num">Persistent bytecode cache</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>BWK awk (one-true-awk)</td><td class="num">&mdash;</td><td class="num">&mdash;</td><td class="num">&mdash;</td></tr>
+          <tr><td>gawk</td><td class="num">✓</td><td class="num">&mdash;</td><td class="num">&mdash; (pm-gawk is for vars)</td></tr>
+          <tr><td>mawk</td><td class="num">✓</td><td class="num">&mdash;</td><td class="num">&mdash;</td></tr>
+          <tr><td>goawk</td><td class="num">✓</td><td class="num">&mdash;</td><td class="num">&mdash;</td></tr>
+          <tr><td>frawk</td><td class="num">✓</td><td class="num">Cranelift + LLVM</td><td class="num">&mdash;</td></tr>
+          <tr><td>zawk (frawk fork)</td><td class="num">✓</td><td class="num">Cranelift + LLVM</td><td class="num">&mdash;</td></tr>
+          <tr class="total-row"><td>awkrs</td><td class="num">✓</td><td class="num">Cranelift</td><td class="num">✓ (rkyv mmap)</td></tr>
+        </tbody>
+      </table>
+
+      <hr class="section-rule">
+
+      <!-- ═══════════════════════════════════════ -->
+      <!-- SECTION 6: LANGUAGE COVERAGE           -->
+      <!-- ═══════════════════════════════════════ -->
+      <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>LANGUAGE COVERAGE</h2>
+
+      <div class="feature-grid">
+        <div class="feature-card">
+          <h4>POSIX core</h4>
+          <p>All patterns (BEGIN, END, regex, expression, range), all builtins (print, printf, sprintf, substr, index, length, split, gsub, sub, match, getline, sprintf, system, &hellip;), all numeric/string coercion rules including CONVFMT/OFMT.</p>
+        </div>
+        <div class="feature-card">
+          <h4>gawk extensions</h4>
+          <ul>
+            <li><code>BEGINFILE</code> / <code>ENDFILE</code></li>
+            <li>Coprocess <code>|&amp;</code> two-way pipes</li>
+            <li><code>--csv</code> / FPAT (leftmost-longest)</li>
+            <li><code>PROCINFO</code> / <code>SYMTAB</code> / <code>FUNCTAB</code></li>
+            <li><code>@include</code> / <code>@load</code> / <code>@namespace</code></li>
+            <li><code>/inet/tcp|udp/...</code> sockets via socket2</li>
+            <li>MPFR via <code>-M</code> using <code>rug</code></li>
+            <li><code>gensub</code> with <code>\N</code> backrefs</li>
+            <li>Typed regex <code>@/pat/</code></li>
+            <li>Indirect calls <code>@func(args)</code></li>
+            <li><code>typeof()</code>, <code>strtonum()</code>, <code>mkbool()</code></li>
+            <li>Bit ops: <code>and/or/xor/lshift/rshift/compl</code></li>
+          </ul>
+        </div>
+        <div class="feature-card">
+          <h4>awkrs-specific extensions</h4>
+          <ul>
+            <li><code>-j N</code> parallel record processing</li>
+            <li><code>--read-ahead</code> stdin chunk sizing</li>
+            <li><code>-O</code>/<code>-s</code> JIT enable/disable</li>
+            <li>Persistent bytecode cache (auto)</li>
+            <li>Cyberpunk HUD help (<code>-h</code>) with theme switching</li>
+            <li>Compatibility flags from <em>mawk</em> (<code>-W</code>) and <em>BSD awk</em></li>
+          </ul>
+        </div>
+      </div>
+
+      <hr class="section-rule">
+
+      <!-- ═══════════════════════════════════════ -->
+      <!-- SECTION 7: REPOSITORY                  -->
+      <!-- ═══════════════════════════════════════ -->
+      <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>REPOSITORY</h2>
+      <ul style="font-size:12px;color:var(--text-dim);line-height:1.7;">
+        <li><strong>Source</strong> &mdash; <a href="https://github.com/MenkeTechnologies/awkrs">github.com/MenkeTechnologies/awkrs</a></li>
+        <li><strong>Crate</strong> &mdash; <a href="https://crates.io/crates/awkrs">crates.io/crates/awkrs</a> (<code>cargo install awkrs</code>)</li>
+        <li><strong>API docs</strong> &mdash; <a href="https://docs.rs/awkrs">docs.rs/awkrs</a></li>
+        <li><strong>User docs</strong> &mdash; <a href="index.html">awkrs documentation</a></li>
+        <li><strong>Bytecode cache section</strong> &mdash; <a href="index.html#bytecode-cache">~/.awkrs/scripts.rkyv layout + invalidation rules</a></li>
+        <li><strong>Parity tests</strong> &mdash; <code>parity/</code> directory cross-checks output against gawk for 2,036 cases</li>
+        <li><strong>License</strong> &mdash; MIT</li>
+      </ul>
+
+      <p style="font-family:'Share Tech Mono',monospace;font-size:10px;color:var(--text-muted);margin-top:2rem;opacity:0.65;">
+        Stats snapshot: 2026-05-16 &middot; awkrs v0.4.1 &middot; built with <code>cargo build</code> (no <code>--release</code>; dev profile)
+      </p>
+    </main>
+  </div>
+
+  <script src="hud-theme.js"></script>
+</body>
+</html>

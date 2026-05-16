@@ -1,3 +1,6 @@
 /target/
 # transient raw capture for termshot (see scripts/gen-help-screenshot.sh)
 assets/help.raw
+# stray file from any `print x > 0` test gotcha — `> 0` is a redirect to
+# file "0" unless parenthesized. New tests must use `print (x > 0)`.
+/0
