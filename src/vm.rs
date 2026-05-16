@@ -5911,4 +5911,335 @@ mod tests {
         rt.set_record_from_line("second");
         assert!(vm_match_range_endpoint(&start, &cp, &mut rt).unwrap());
     }
+
+    // ── Field operations: pin POSIX field semantics ──────────────────────────
+    //
+    // Field operations are the awk hot path: `$N`, `$N = …`, `NF = n`. POSIX
+    // mandates a specific rebuild order: writing $N may extend NF with empty
+    // fields up to N, $0 must be rebuilt with OFS, and setting NF truncates
+    // fields and re-builds $0. Off-by-one in these operations breaks every awk
+    // program — pin each contract.
+
+    fn run_begin_capture(src: &str) -> String {
+        let cp = compile(src);
+        let mut rt = runtime_with_slots(&cp);
+        vm_run_begin(&cp, &mut rt).unwrap();
+        String::from_utf8_lossy(&rt.print_buf).into_owned()
+    }
+
+    #[test]
+    fn field_assignment_extends_nf_with_empty_fields() {
+        // POSIX: $5 = "x" when NF was 0 must extend $0 to "    x" (with OFS).
+        let out = run_begin_capture(r#"BEGIN { $5 = "x"; print NF; print $0 }"#);
+        assert_eq!(out, "5\n    x\n", "{out:?}");
+    }
+
+    #[test]
+    fn field_set_rebuilds_dollar_zero_with_ofs() {
+        // OFS = "|" must separate fields when $0 is rebuilt after $N=.
+        let out = run_begin_capture(
+            r#"BEGIN { OFS="|"; $1="a"; $2="b"; $3="c"; print $0 }"#,
+        );
+        assert_eq!(out, "a|b|c\n", "{out:?}");
+    }
+
+    #[test]
+    fn nf_truncate_shortens_record() {
+        // NF=2 on a 4-field $0 must drop fields 3-4 and rebuild $0.
+        let out = run_begin_capture(
+            r#"BEGIN { $0="a b c d"; NF=2; print NF; print $0 }"#,
+        );
+        assert_eq!(out, "2\na b\n", "{out:?}");
+    }
+
+    #[test]
+    fn nf_extend_pads_with_empty_fields() {
+        let out = run_begin_capture(
+            r#"BEGIN { $0="a b"; NF=4; print NF; print $0 }"#,
+        );
+        // NF was 2, now 4; new fields are empty. Default OFS=" ".
+        assert_eq!(out, "4\na b  \n", "{out:?}");
+    }
+
+    #[test]
+    fn dynamic_field_access_computed_index() {
+        // `$(1+1)` must read $2, not the string "2" or field 1+1=2 as different.
+        let out = run_begin_capture(r#"BEGIN { $0="x y z"; print $(1+1) }"#);
+        assert_eq!(out, "y\n", "{out:?}");
+    }
+
+    // ── Array operations: pin POSIX array semantics ──────────────────────────
+
+    #[test]
+    fn array_in_returns_one_for_existing_key() {
+        let out = run_begin_capture(r#"BEGIN { a["k"]=1; print ("k" in a) }"#);
+        assert_eq!(out, "1\n");
+    }
+
+    #[test]
+    fn array_in_returns_zero_for_missing_key_without_creating() {
+        // POSIX: `k in a` MUST NOT auto-create the key (unlike a[k] read).
+        let out = run_begin_capture(
+            r#"BEGIN { print ("nope" in a); for (k in a) print k }"#,
+        );
+        // First print: 0; for-in finds zero keys, prints nothing more.
+        assert_eq!(out, "0\n", "in-test must not auto-create: {out:?}");
+    }
+
+    #[test]
+    fn array_index_read_does_not_auto_create_in_awkrs() {
+        // POSIX/gawk: `x = a[k]` MUST auto-create `a[k]` as uninit. awkrs
+        // currently does NOT — this test pins the divergence so a fix is a
+        // tracked test update, not a silent behavior flip.
+        //
+        // gawk:  BEGIN { x = a["k"]; print ("k" in a) }   →  1
+        // awkrs: BEGIN { x = a["k"]; print ("k" in a) }   →  0
+        let out = run_begin_capture(
+            r#"BEGIN { x = a["k"]; print ("k" in a) }"#,
+        );
+        assert_eq!(
+            out, "0\n",
+            "FIXME: awkrs doesn't auto-create on a[k] read (POSIX/gawk: 1)"
+        );
+    }
+
+    #[test]
+    fn delete_single_element_keeps_others() {
+        let out = run_begin_capture(
+            r#"BEGIN { a["x"]=1; a["y"]=2; delete a["x"]; print ("x" in a); print ("y" in a) }"#,
+        );
+        assert_eq!(out, "0\n1\n");
+    }
+
+    #[test]
+    fn delete_entire_array_removes_all_entries() {
+        let out = run_begin_capture(
+            r#"BEGIN { a["x"]=1; a["y"]=2; delete a; print length(a) }"#,
+        );
+        assert_eq!(out, "0\n");
+    }
+
+    #[test]
+    fn multidim_array_uses_subsep_join() {
+        // Default SUBSEP is \x1c. a[1,2] indexes by "1\x1c2".
+        let out = run_begin_capture(
+            r#"BEGIN { a[1,2]=42; print a[1,2]; print ((1,2) in a) }"#,
+        );
+        assert_eq!(out, "42\n1\n");
+    }
+
+    #[test]
+    fn for_in_iterates_all_keys() {
+        // We can't assert order (impl-defined) but we can assert count + sum.
+        let out = run_begin_capture(
+            r#"BEGIN { a[1]=10; a[2]=20; a[3]=30; n=0; s=0; for (k in a) { n++; s += a[k] } print n; print s }"#,
+        );
+        assert_eq!(out, "3\n60\n");
+    }
+
+    // ── Control flow ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn while_loop_runs_until_condition_false() {
+        let out = run_begin_capture(r#"BEGIN { i=0; while (i<3) { print i; i++ } }"#);
+        assert_eq!(out, "0\n1\n2\n");
+    }
+
+    #[test]
+    fn do_while_runs_body_at_least_once() {
+        // Body must run even when condition is initially false.
+        let out = run_begin_capture(r#"BEGIN { i=10; do { print i; i++ } while (i<3) }"#);
+        assert_eq!(out, "10\n", "do-while must run at least once: {out:?}");
+    }
+
+    #[test]
+    fn break_exits_innermost_loop_only() {
+        let out = run_begin_capture(
+            r#"BEGIN { for (i=0; i<3; i++) { for (j=0; j<3; j++) { if (j==1) break; print i":"j } } }"#,
+        );
+        assert_eq!(out, "0:0\n1:0\n2:0\n");
+    }
+
+    #[test]
+    fn continue_skips_to_next_iteration() {
+        let out = run_begin_capture(
+            r#"BEGIN { for (i=0; i<5; i++) { if (i==2) continue; print i } }"#,
+        );
+        assert_eq!(out, "0\n1\n3\n4\n");
+    }
+
+    #[test]
+    fn for_c_init_cond_iter_all_phases_run() {
+        let out = run_begin_capture(r#"BEGIN { for (i=0; i<3; i++) print i*10 }"#);
+        assert_eq!(out, "0\n10\n20\n");
+    }
+
+    // ── typeof variants ──────────────────────────────────────────────────────
+
+    #[test]
+    fn typeof_uninitialized_var() {
+        // awkrs returns "uninitialized" for unset scalars. gawk returns
+        // "unassigned" for the same case — keep our wording as-is for now;
+        // pin it so any change to the typeof vocabulary surfaces as a named
+        // test update.
+        let out = run_begin_capture(r#"BEGIN { print typeof(u) }"#);
+        assert_eq!(out, "uninitialized\n", "{out:?}");
+    }
+
+    #[test]
+    fn typeof_string_value() {
+        let out = run_begin_capture(r#"BEGIN { s="hi"; print typeof(s) }"#);
+        assert_eq!(out, "string\n");
+    }
+
+    #[test]
+    fn typeof_numeric_value() {
+        let out = run_begin_capture(r#"BEGIN { n=42; print typeof(n) }"#);
+        assert_eq!(out, "number\n");
+    }
+
+    #[test]
+    fn typeof_array_value() {
+        let out = run_begin_capture(r#"BEGIN { a[1]=1; print typeof(a) }"#);
+        assert_eq!(out, "array\n");
+    }
+
+    // ── sub/gsub return value semantics ──────────────────────────────────────
+
+    #[test]
+    fn sub_returns_one_on_match() {
+        let out = run_begin_capture(
+            r#"BEGIN { s="hello"; n=sub("ell","ELL",s); print n; print s }"#,
+        );
+        assert_eq!(out, "1\nhELLo\n");
+    }
+
+    #[test]
+    fn sub_returns_zero_on_no_match() {
+        let out = run_begin_capture(
+            r#"BEGIN { s="hello"; n=sub("xyz","X",s); print n; print s }"#,
+        );
+        assert_eq!(out, "0\nhello\n");
+    }
+
+    #[test]
+    fn gsub_returns_count_of_replacements() {
+        let out = run_begin_capture(
+            r#"BEGIN { s="abababab"; n=gsub("ab","X",s); print n; print s }"#,
+        );
+        assert_eq!(out, "4\nXXXX\n");
+    }
+
+    #[test]
+    fn gsub_on_dollar_zero_rebuilds_fields() {
+        // Modifying $0 via gsub must update the field array.
+        let out = run_begin_capture(
+            r#"BEGIN { $0="a b c d"; gsub("b","BBB"); print $2 }"#,
+        );
+        assert_eq!(out, "BBB\n");
+    }
+
+    // ── sprintf format specifiers ────────────────────────────────────────────
+
+    #[test]
+    fn sprintf_percent_d_truncates_to_integer() {
+        let out = run_begin_capture(r#"BEGIN { print sprintf("%d", 3.7) }"#);
+        assert_eq!(out, "3\n");
+    }
+
+    #[test]
+    fn sprintf_percent_f_default_six_decimals() {
+        let out = run_begin_capture(r#"BEGIN { print sprintf("%f", 1.5) }"#);
+        assert_eq!(out, "1.500000\n");
+    }
+
+    #[test]
+    fn sprintf_percent_s_string() {
+        let out = run_begin_capture(r#"BEGIN { print sprintf("[%s]", "hi") }"#);
+        assert_eq!(out, "[hi]\n");
+    }
+
+    #[test]
+    fn sprintf_width_padding_right_aligned() {
+        let out = run_begin_capture(r#"BEGIN { print sprintf("[%5d]", 42) }"#);
+        assert_eq!(out, "[   42]\n");
+    }
+
+    #[test]
+    fn sprintf_negative_width_left_aligned() {
+        let out = run_begin_capture(r#"BEGIN { print sprintf("[%-5d]", 42) }"#);
+        assert_eq!(out, "[42   ]\n");
+    }
+
+    #[test]
+    fn sprintf_zero_pad() {
+        let out = run_begin_capture(r#"BEGIN { print sprintf("[%05d]", 42) }"#);
+        assert_eq!(out, "[00042]\n");
+    }
+
+    #[test]
+    fn sprintf_percent_x_hex() {
+        let out = run_begin_capture(r#"BEGIN { print sprintf("%x", 255) }"#);
+        assert_eq!(out, "ff\n");
+    }
+
+    #[test]
+    fn sprintf_percent_o_octal() {
+        let out = run_begin_capture(r#"BEGIN { print sprintf("%o", 8) }"#);
+        assert_eq!(out, "10\n");
+    }
+
+    #[test]
+    fn sprintf_double_percent_emits_literal_percent() {
+        let out = run_begin_capture(r#"BEGIN { print sprintf("100%%") }"#);
+        assert_eq!(out, "100%\n");
+    }
+
+    // ── CONVFMT / OFMT ───────────────────────────────────────────────────────
+
+    #[test]
+    fn convfmt_default_currently_verbatim_in_awkrs() {
+        // POSIX/gawk: default CONVFMT = "%.6g" — `x ""` of 3.141592653 yields
+        // "3.14159". awkrs currently prints the f64 verbatim ("3.141592653").
+        // Pin the divergence so a CONVFMT implementation surfaces as a named
+        // test failure naming this contract.
+        //
+        // gawk:  BEGIN { x=3.141592653; print x "" }   →  3.14159
+        // awkrs: BEGIN { x=3.141592653; print x "" }   →  3.141592653
+        let out = run_begin_capture(r#"BEGIN { x=3.141592653; print x "" }"#);
+        assert_eq!(
+            out, "3.141592653\n",
+            "FIXME: awkrs ignores default CONVFMT %.6g (gawk: 3.14159)"
+        );
+    }
+
+    #[test]
+    fn convfmt_custom_currently_ignored_in_awkrs() {
+        // POSIX/gawk: setting CONVFMT="%.2f" reformats stringified floats.
+        // awkrs currently ignores CONVFMT entirely.
+        //
+        // gawk:  BEGIN { CONVFMT="%.2f"; x=3.141592653; print x "" }  →  3.14
+        // awkrs: same input                                            →  3.141592653
+        let out = run_begin_capture(
+            r#"BEGIN { CONVFMT="%.2f"; x=3.141592653; print x "" }"#,
+        );
+        assert_eq!(
+            out, "3.141592653\n",
+            "FIXME: awkrs doesn't honor CONVFMT (gawk: 3.14)"
+        );
+    }
+
+    #[test]
+    fn ofmt_used_by_print_for_floats() {
+        // print uses OFMT for floats, CONVFMT for concatenation.
+        let out = run_begin_capture(r#"BEGIN { OFMT="%.3f"; print 3.141592653 }"#);
+        assert_eq!(out, "3.142\n", "{out:?}");
+    }
+
+    #[test]
+    fn convfmt_bypassed_for_integer_valued_floats() {
+        // POSIX: integer-valued numbers print exact (no CONVFMT/OFMT), no ".000000".
+        let out = run_begin_capture(r#"BEGIN { x=42; print x "" }"#);
+        assert_eq!(out, "42\n");
+    }
 }

@@ -2543,3 +2543,215 @@ mod tests {
         assert!(vm_match_range_endpoint(&ep, &cp, &mut rt).unwrap());
     }
 }
+
+// ── Slot allocation: pin which variables get slots and which don't ───────────
+//
+// User scalars get u16 slots (fast Vec-indexed path). Array names, specials
+// (NR/FS/...), and function parameters do NOT get slots — they stay on the
+// HashMap path. A regression that wrongly slots an array name silently breaks
+// every `arr[k]` access because the VM dispatches differently for slotted vs
+// hashmap variables. Pin each rule.
+
+#[cfg(test)]
+mod slot_allocation_pinning {
+    use super::Compiler;
+    use crate::parser::parse_program;
+
+    fn cp(src: &str) -> crate::bytecode::CompiledProgram {
+        Compiler::compile_program(&parse_program(src).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn user_scalar_gets_slot() {
+        let p = cp("BEGIN { x = 1; print x }");
+        assert!(
+            p.slot_map.contains_key("x"),
+            "x should be slotted: {:?}",
+            p.slot_map
+        );
+    }
+
+    #[test]
+    fn array_name_excluded_from_slots() {
+        let p = cp("BEGIN { a[1] = 2 }");
+        assert!(
+            !p.slot_map.contains_key("a"),
+            "array name `a` must NOT have a slot (would break array dispatch): {:?}",
+            p.slot_map
+        );
+        assert!(
+            p.array_var_names.iter().any(|n| n == "a"),
+            "array name should be in array_var_names: {:?}",
+            p.array_var_names
+        );
+    }
+
+    #[test]
+    fn special_vars_excluded_from_slots() {
+        // NR / FS / NF etc. must stay on the HashMap path so runtime mutations
+        // (e.g. the record loop incrementing NR) bypass the slot cache.
+        let p = cp("BEGIN { print NR; print NF; print FS }");
+        for special in ["NR", "NF", "FS", "OFS", "ORS", "RS", "FILENAME"] {
+            assert!(
+                !p.slot_map.contains_key(special),
+                "special variable {special} must not be slotted: {:?}",
+                p.slot_map
+            );
+        }
+    }
+
+    #[test]
+    fn function_parameter_excluded_from_callers_slots() {
+        // Function params are local to the function call frame, not global slots.
+        // If `n` got a slot, the caller's `n` would alias the parameter.
+        let p = cp("function f(n) { return n*2 } BEGIN { print f(10) }");
+        assert!(
+            !p.slot_map.contains_key("n"),
+            "function param `n` must not pollute slot map: {:?}",
+            p.slot_map
+        );
+    }
+
+    #[test]
+    fn slot_count_matches_slot_names_len() {
+        let p = cp("BEGIN { a = 1; b = 2; c = 3 }");
+        assert_eq!(p.slot_count as usize, p.slot_names.len());
+        assert!(p.slot_count >= 3, "expected ≥3 slots, got {}", p.slot_count);
+    }
+
+    #[test]
+    fn slot_indices_are_unique() {
+        let p = cp("BEGIN { x = 1; y = 2; z = 3 }");
+        let mut indices: Vec<u16> = p.slot_map.values().copied().collect();
+        indices.sort();
+        let unique: std::collections::HashSet<u16> = indices.iter().copied().collect();
+        assert_eq!(indices.len(), unique.len(), "duplicate slot indices");
+    }
+
+    #[test]
+    fn reused_variable_keeps_same_slot() {
+        let p = cp("BEGIN { x = 1; x = 2; x = 3; print x }");
+        // x must have exactly one slot, not three.
+        assert!(p.slot_map.contains_key("x"));
+        let x_slot = p.slot_map["x"];
+        assert_eq!(p.slot_names[x_slot as usize], "x");
+    }
+}
+
+// ── Peephole fusion: pin which patterns get fused into single opcodes ────────
+//
+// Peephole optimizer recognizes common idioms and emits fused opcodes that
+// skip stack traffic. Each fusion has a specific input pattern; a regression
+// either (a) emits the slow unfused sequence (silent perf loss) or (b) emits
+// the fused op for the wrong input shape (correctness bug). Pin each rule.
+
+#[cfg(test)]
+mod peephole_pinning {
+    use super::Compiler;
+    use crate::bytecode::{Chunk, Op};
+    use crate::parser::parse_program;
+
+    fn compile_begin_ops(src: &str) -> Vec<Op> {
+        let prog = parse_program(src).unwrap();
+        let cp = Compiler::compile_program(&prog).unwrap();
+        cp.begin_chunks.into_iter().next().map(|c: Chunk| c.ops).unwrap_or_default()
+    }
+
+    fn contains_op(ops: &[Op], pred: impl Fn(&Op) -> bool) -> bool {
+        ops.iter().any(pred)
+    }
+
+    #[test]
+    fn print_dollar_n_peephole_currently_dormant() {
+        // FIXME: the PrintFieldStdout peephole at compiler.rs:1425 matches
+        // PushNum(N) + GetField + Print{...}. But integer literals like `$1`
+        // compile to PushNumDecimalStr(idx), not PushNum(N) — so this fusion
+        // NEVER fires for any normal awk program. The opcode exists but is
+        // unreachable code. Either:
+        //   (a) parser should emit PushNum for integer field indices, or
+        //   (b) peephole should match PushNumDecimalStr too.
+        // Pin the current (broken) state so a fix surfaces as a named test
+        // update naming the dormant peephole.
+        let ops = compile_begin_ops("BEGIN { print $1 }");
+        assert!(
+            !contains_op(&ops, |op| matches!(op, Op::PrintFieldStdout(_))),
+            "FIXME: PrintFieldStdout fusion fires now? peephole rule activated? ops={ops:?}"
+        );
+        // The actual unfused sequence:
+        assert!(
+            contains_op(&ops, |op| matches!(op, Op::GetField))
+                && contains_op(&ops, |op| matches!(op, Op::Print { argc: 1, .. })),
+            "unfused sequence expected, got: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn increment_slot_fuses_to_incr_slot() {
+        // `i++` (statement context) → single IncrSlot opcode.
+        let ops = compile_begin_ops("BEGIN { i = 0; i++ }");
+        assert!(
+            contains_op(&ops, |op| matches!(op, Op::IncrSlot(_))),
+            "expected IncrSlot fusion for i++, got: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn decrement_slot_fuses_to_decr_slot() {
+        let ops = compile_begin_ops("BEGIN { i = 0; i-- }");
+        assert!(
+            contains_op(&ops, |op| matches!(op, Op::DecrSlot(_))),
+            "expected DecrSlot fusion for i--, got: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn add_field_to_slot_peephole_currently_dormant() {
+        // FIXME: same root cause as PrintFieldStdout — AddFieldToSlot peephole
+        // at compiler.rs:1447 matches PushNum(N), but integer field indices
+        // compile to PushNumDecimalStr. So `s += $1` never fuses to
+        // AddFieldToSlot in normal programs. Pin current state.
+        let ops = compile_begin_ops("BEGIN { s = 0; s += $1 }");
+        assert!(
+            !contains_op(&ops, |op| matches!(op, Op::AddFieldToSlot { .. })),
+            "FIXME: AddFieldToSlot fusion fires now? ops={ops:?}"
+        );
+        // Unfused sequence: GetField + CompoundAssignSlot + Pop
+        assert!(
+            contains_op(&ops, |op| matches!(op, Op::CompoundAssignSlot(_, _))),
+            "expected unfused CompoundAssignSlot: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn concat_with_pool_string_fuses() {
+        // `s = x "lit"` → ConcatPoolStr eliminates a PushStr + Concat pair.
+        let ops = compile_begin_ops(r#"BEGIN { x = "a"; s = x "lit" }"#);
+        assert!(
+            contains_op(&ops, |op| matches!(op, Op::ConcatPoolStr(_))),
+            "expected ConcatPoolStr fusion, got: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn no_fusion_when_pattern_doesnt_match() {
+        // `print $1 + 1` is NOT `print $1` — must NOT use PrintFieldStdout.
+        let ops = compile_begin_ops("BEGIN { print $1 + 1 }");
+        assert!(
+            !contains_op(&ops, |op| matches!(op, Op::PrintFieldStdout(_))),
+            "must not fuse `print $1 + 1` to PrintFieldStdout: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn increment_used_as_expression_does_not_fuse_to_incr_slot() {
+        // `print i++` uses the post-increment VALUE — IncrSlot is statement-only
+        // and would discard the result. Must NOT fuse.
+        let ops = compile_begin_ops("BEGIN { i = 0; print i++ }");
+        // The post-inc form should keep IncDecSlot (which pushes a result),
+        // not the statement-discard IncrSlot.
+        assert!(
+            !contains_op(&ops, |op| matches!(op, Op::IncrSlot(_))),
+            "expression-context i++ must not fuse to statement-only IncrSlot: {ops:?}"
+        );
+    }
+}
