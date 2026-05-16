@@ -6606,6 +6606,175 @@ mod tests {
         assert_eq!(out, "a[b]c\n");
     }
 
+    // ── Math builtin coverage ────────────────────────────────────────────────
+
+    #[test]
+    fn math_log_one_is_zero() {
+        let out = run_begin_capture(r#"BEGIN { print log(1) }"#);
+        assert_eq!(out, "0\n");
+    }
+
+    #[test]
+    fn math_log_e_is_one() {
+        let out = run_begin_capture(r#"BEGIN { printf "%.6f\n", log(exp(1)) }"#);
+        assert_eq!(out, "1.000000\n");
+    }
+
+    #[test]
+    fn math_exp_zero_is_one() {
+        let out = run_begin_capture(r#"BEGIN { print exp(0) }"#);
+        assert_eq!(out, "1\n");
+    }
+
+    #[test]
+    fn math_int_truncates_negative_toward_zero() {
+        // POSIX: int(-3.7) = -3, not -4. (Truncation, not floor.)
+        let out = run_begin_capture(r#"BEGIN { print int(-3.7) }"#);
+        assert_eq!(out, "-3\n");
+    }
+
+    #[test]
+    fn math_int_truncates_positive_toward_zero() {
+        let out = run_begin_capture(r#"BEGIN { print int(3.7) }"#);
+        assert_eq!(out, "3\n");
+    }
+
+    #[test]
+    fn math_atan2_y_over_x_quadrant() {
+        // atan2(1,1) = π/4 ≈ 0.7853981633974483
+        let out = run_begin_capture(r#"BEGIN { printf "%.4f\n", atan2(1, 1) }"#);
+        assert_eq!(out, "0.7854\n");
+    }
+
+    #[test]
+    fn math_atan2_zero_zero_is_zero() {
+        let out = run_begin_capture(r#"BEGIN { print atan2(0, 0) }"#);
+        assert_eq!(out, "0\n");
+    }
+
+    #[test]
+    fn math_sqrt_of_zero() {
+        let out = run_begin_capture(r#"BEGIN { print sqrt(0) }"#);
+        assert_eq!(out, "0\n");
+    }
+
+    // ── tolower / toupper ────────────────────────────────────────────────────
+
+    #[test]
+    fn tolower_mixed_case() {
+        let out = run_begin_capture(r#"BEGIN { print tolower("AbCdEf") }"#);
+        assert_eq!(out, "abcdef\n");
+    }
+
+    #[test]
+    fn toupper_mixed_case() {
+        let out = run_begin_capture(r#"BEGIN { print toupper("aBcDeF") }"#);
+        assert_eq!(out, "ABCDEF\n");
+    }
+
+    #[test]
+    fn tolower_passes_through_non_letters() {
+        let out = run_begin_capture(r#"BEGIN { print tolower("ABC 123!") }"#);
+        assert_eq!(out, "abc 123!\n");
+    }
+
+    #[test]
+    fn toupper_passes_through_non_letters() {
+        let out = run_begin_capture(r#"BEGIN { print toupper("abc 123!") }"#);
+        assert_eq!(out, "ABC 123!\n");
+    }
+
+    // ── strftime format specifiers ───────────────────────────────────────────
+    //
+    // strftime delegates to chrono's `format`. We pin a stable UTC epoch and
+    // verify each major POSIX format specifier produces the expected output.
+    // 3rd arg = 1 forces UTC so tests are tz-stable in CI.
+    //
+    // Test epoch: 2024-01-15 03:45:06 UTC = 1705290306
+    const TEST_EPOCH: &str = "1705290306";
+
+    #[test]
+    fn strftime_year_four_digit() {
+        let out = run_begin_capture(&format!(
+            r#"BEGIN {{ print strftime("%Y", {TEST_EPOCH}, 1) }}"#
+        ));
+        assert_eq!(out, "2024\n");
+    }
+
+    #[test]
+    fn strftime_month_two_digit() {
+        let out = run_begin_capture(&format!(
+            r#"BEGIN {{ print strftime("%m", {TEST_EPOCH}, 1) }}"#
+        ));
+        assert_eq!(out, "01\n");
+    }
+
+    #[test]
+    fn strftime_day_of_month() {
+        let out = run_begin_capture(&format!(
+            r#"BEGIN {{ print strftime("%d", {TEST_EPOCH}, 1) }}"#
+        ));
+        assert_eq!(out, "15\n");
+    }
+
+    #[test]
+    fn strftime_hour_24_minute_second() {
+        let out = run_begin_capture(&format!(
+            r#"BEGIN {{ print strftime("%H:%M:%S", {TEST_EPOCH}, 1) }}"#
+        ));
+        assert_eq!(out, "03:45:06\n");
+    }
+
+    #[test]
+    fn strftime_combined_iso_date() {
+        let out = run_begin_capture(&format!(
+            r#"BEGIN {{ print strftime("%Y-%m-%d", {TEST_EPOCH}, 1) }}"#
+        ));
+        assert_eq!(out, "2024-01-15\n");
+    }
+
+    #[test]
+    fn strftime_percent_percent_emits_literal_percent() {
+        let out = run_begin_capture(&format!(
+            r#"BEGIN {{ print strftime("100%%", {TEST_EPOCH}, 1) }}"#
+        ));
+        assert_eq!(out, "100%\n");
+    }
+
+    #[test]
+    fn strftime_day_of_year() {
+        // 2024-01-15 = day 15 (Jan 15)
+        let out = run_begin_capture(&format!(
+            r#"BEGIN {{ print strftime("%j", {TEST_EPOCH}, 1) }}"#
+        ));
+        assert_eq!(out, "015\n");
+    }
+
+    // ── mktime ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn mktime_returns_minus_one_on_invalid_month() {
+        let out = run_begin_capture(r#"BEGIN { print mktime("2024 13 01 00 00 00") }"#);
+        // gawk returns -1 for invalid date components; chrono's strict
+        // construction does the same.
+        assert_eq!(out, "-1\n");
+    }
+
+    #[test]
+    fn mktime_year_2000_january_one_positive_epoch() {
+        // 2000-01-01 in any timezone is well after 1970, so epoch > 0.
+        // `> 0` must be inside the print's expression — bare `print x > 0`
+        // parses as a redirect to file "0". Always parenthesize.
+        let out = run_begin_capture(r#"BEGIN { print (mktime("2000 1 1 0 0 0") > 0) }"#);
+        assert_eq!(out, "1\n");
+    }
+
+    #[test]
+    fn mktime_too_few_fields_returns_minus_one() {
+        let out = run_begin_capture(r#"BEGIN { print mktime("2024 1 1") }"#);
+        assert_eq!(out, "-1\n");
+    }
+
     #[test]
     fn sub_does_not_modify_on_no_match() {
         // sub returns 0 and leaves the target unchanged.
