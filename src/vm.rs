@@ -7300,4 +7300,226 @@ mod tests {
         let out = run_begin_capture(r#"BEGIN { printf "%s\n", "ignored" > "/dev/null" }"#);
         assert_eq!(out, "");
     }
+
+    // ── sprintf flag interactions ────────────────────────────────────────────
+
+    #[test]
+    fn sprintf_left_align_overrides_zero_pad() {
+        let out = run_begin_capture(r#"BEGIN { print sprintf("[%-05d]", 42) }"#);
+        assert_eq!(out, "[42   ]\n");
+    }
+
+    #[test]
+    fn sprintf_plus_with_space_takes_plus() {
+        let out = run_begin_capture(r#"BEGIN { print sprintf("% +d", 42) }"#);
+        assert_eq!(out, "+42\n");
+    }
+
+    #[test]
+    fn sprintf_hash_flag_on_hex_emits_0x_prefix() {
+        let out = run_begin_capture(r#"BEGIN { print sprintf("%#x", 255) }"#);
+        assert_eq!(out, "0xff\n");
+    }
+
+    #[test]
+    fn sprintf_hash_flag_on_upper_hex_uses_upper_0x() {
+        let out = run_begin_capture(r#"BEGIN { print sprintf("%#X", 255) }"#);
+        assert_eq!(out, "0XFF\n");
+    }
+
+    #[test]
+    fn sprintf_negative_octal_via_unsigned_wrap() {
+        // `print x > 0` parses as redirect-to-file "0" — must parenthesize
+        // the comparison inside print. (See mktime_year_2000_january_one_…
+        // comment for the same gotcha.)
+        let out = run_begin_capture(r#"BEGIN { print (length(sprintf("%o", -1)) > 0) }"#);
+        assert_eq!(out, "1\n");
+    }
+
+    // ── substr boundary conditions ───────────────────────────────────────────
+
+    #[test]
+    fn substr_start_at_one_takes_from_beginning() {
+        let out = run_begin_capture(r#"BEGIN { print substr("hello", 1) }"#);
+        assert_eq!(out, "hello\n");
+    }
+
+    #[test]
+    fn substr_start_beyond_string_returns_empty() {
+        let out = run_begin_capture(r#"BEGIN { print "[" substr("hello", 10) "]" }"#);
+        assert_eq!(out, "[]\n");
+    }
+
+    #[test]
+    fn substr_single_character_at_position() {
+        let out = run_begin_capture(r#"BEGIN { print substr("hello", 3, 1) }"#);
+        assert_eq!(out, "l\n");
+    }
+
+    // ── Regex behaviors ──────────────────────────────────────────────────────
+
+    #[test]
+    fn regex_character_class_matches() {
+        let out = run_begin_capture(r#"BEGIN { print ("hello" ~ /[a-z]+/) }"#);
+        assert_eq!(out, "1\n");
+    }
+
+    #[test]
+    fn regex_negated_character_class() {
+        let out = run_begin_capture(r#"BEGIN { print ("hello" ~ /[^a-z]/) }"#);
+        assert_eq!(out, "0\n");
+    }
+
+    #[test]
+    fn regex_quantifier_plus_at_least_one() {
+        let out = run_begin_capture(r#"BEGIN { print ("" ~ /a+/); print ("a" ~ /a+/) }"#);
+        assert_eq!(out, "0\n1\n");
+    }
+
+    #[test]
+    fn regex_quantifier_star_zero_or_more() {
+        let out = run_begin_capture(r#"BEGIN { print ("" ~ /a*/); print ("aaa" ~ /a*/) }"#);
+        assert_eq!(out, "1\n1\n");
+    }
+
+    #[test]
+    fn regex_anchor_caret_only_at_start() {
+        let out = run_begin_capture(r#"BEGIN { print ("foo" ~ /^foo/); print ("xfoo" ~ /^foo/) }"#);
+        assert_eq!(out, "1\n0\n");
+    }
+
+    #[test]
+    fn regex_anchor_dollar_only_at_end() {
+        let out = run_begin_capture(r#"BEGIN { print ("bar" ~ /bar$/); print ("barx" ~ /bar$/) }"#);
+        assert_eq!(out, "1\n0\n");
+    }
+
+    #[test]
+    fn regex_alternation_picks_either() {
+        let out = run_begin_capture(
+            r#"BEGIN { print ("cat" ~ /cat|dog/); print ("dog" ~ /cat|dog/); print ("fish" ~ /cat|dog/) }"#,
+        );
+        assert_eq!(out, "1\n1\n0\n");
+    }
+
+    // ── match() builtin sets RSTART/RLENGTH ──────────────────────────────────
+
+    #[test]
+    fn match_builtin_sets_rstart_and_rlength() {
+        let out = run_begin_capture(
+            r#"BEGIN { r = match("hello world", /world/); print r, RSTART, RLENGTH }"#,
+        );
+        assert_eq!(out, "7 7 5\n");
+    }
+
+    #[test]
+    fn match_builtin_sets_rstart_zero_on_miss() {
+        let out =
+            run_begin_capture(r#"BEGIN { r = match("hello", /xyz/); print r, RSTART, RLENGTH }"#);
+        assert_eq!(out, "0 0 -1\n");
+    }
+
+    // ── Special variables ────────────────────────────────────────────────────
+
+    #[test]
+    fn nf_initial_value_zero_in_begin() {
+        let out = run_begin_capture(r#"BEGIN { print NF }"#);
+        assert_eq!(out, "0\n");
+    }
+
+    #[test]
+    fn nr_initial_value_zero_in_begin() {
+        let out = run_begin_capture(r#"BEGIN { print NR }"#);
+        assert_eq!(out, "0\n");
+    }
+
+    #[test]
+    fn environ_array_present_in_begin() {
+        let out = run_begin_capture(r#"BEGIN { n=0; for (k in ENVIRON) n++; print (n > 0) }"#);
+        assert_eq!(out, "1\n");
+    }
+
+    #[test]
+    fn subsep_default_length_one() {
+        let out = run_begin_capture(r#"BEGIN { print length(SUBSEP) }"#);
+        assert_eq!(out, "1\n");
+    }
+
+    #[test]
+    fn subsep_used_for_multidim_array_keys() {
+        let out = run_begin_capture(r#"BEGIN { a[1,2] = "x"; for (k in a) print length(k) }"#);
+        // Key is "1" + SUBSEP + "2" = 3 chars
+        assert_eq!(out, "3\n");
+    }
+
+    // ── Power operator edge cases ────────────────────────────────────────────
+
+    #[test]
+    fn pow_zero_to_zero_is_one() {
+        let out = run_begin_capture(r#"BEGIN { print 0^0 }"#);
+        assert_eq!(out, "1\n");
+    }
+
+    #[test]
+    fn pow_negative_base_integer_exponent() {
+        let out = run_begin_capture(r#"BEGIN { print (-2)^3 }"#);
+        assert_eq!(out, "-8\n");
+    }
+
+    #[test]
+    fn pow_fractional_exponent() {
+        let out = run_begin_capture(r#"BEGIN { print 4^0.5 }"#);
+        assert_eq!(out, "2\n");
+    }
+
+    // ── Parser / statement corners ───────────────────────────────────────────
+
+    #[test]
+    fn semicolons_separate_statements_on_one_line() {
+        let out = run_begin_capture("BEGIN { x = 1; if (x) print x; print x+1 }");
+        assert_eq!(out, "1\n2\n");
+    }
+
+    #[test]
+    fn empty_begin_block_compiles() {
+        let cp = compile(r#"BEGIN { }"#);
+        assert_eq!(cp.begin_chunks.len(), 1);
+    }
+
+    // ── Concatenation chain ──────────────────────────────────────────────────
+
+    #[test]
+    fn concat_chain_preserves_order() {
+        let out = run_begin_capture(r#"BEGIN { print "a" "b" "c" "d" "e" }"#);
+        assert_eq!(out, "abcde\n");
+    }
+
+    // ── Regression guards for recent fixes ───────────────────────────────────
+
+    #[test]
+    fn pow_assign_star_star_form_works() {
+        let out = run_begin_capture(r#"BEGIN { x = 3; x **= 4; print x }"#);
+        assert_eq!(out, "81\n");
+    }
+
+    #[test]
+    fn pow_assign_caret_form_works() {
+        let out = run_begin_capture(r#"BEGIN { x = 3; x ^= 4; print x }"#);
+        assert_eq!(out, "81\n");
+    }
+
+    #[test]
+    fn empty_string_literal_falsy_regression() {
+        let out = run_begin_capture(r#"BEGIN { print ("" ? "T" : "F") }"#);
+        assert_eq!(out, "F\n");
+    }
+
+    #[test]
+    fn non_empty_string_literals_always_truthy() {
+        // "0", "false", " ", "\t" — all non-empty StrLit are truthy.
+        let out = run_begin_capture(
+            r#"BEGIN { print ("0" ? "T":"F"), ("false" ? "T":"F"), (" " ? "T":"F"), ("\t" ? "T":"F") }"#,
+        );
+        assert_eq!(out, "T T T T\n");
+    }
 }
