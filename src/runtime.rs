@@ -3323,3 +3323,224 @@ mod init_argv_tests {
         assert!(argv.get("0").is_some());
     }
 }
+
+// ── awk_binop_values: pin POSIX arithmetic-coercion semantics ────────────────
+//
+// Every `+= -= *= /= %= ^=` flows through here. These tests pin the contracts:
+//   - string ↔ number coercion follows longest-numeric-prefix rule
+//   - uninitialized values arithmetic to 0
+//   - division by zero returns Err
+//   - array-as-scalar is a fatal runtime error
+//   - compound-only ops (Pow / Mod) return Num in non-MPFR mode
+// Any of these getting "fixed" silently breaks awk programs in user-invisible
+// ways, so each is a named test that has to be acknowledged.
+
+#[cfg(test)]
+mod awk_binop_values_pinning {
+    use super::{awk_binop_values, AwkMap, Runtime, Value};
+    use crate::ast::BinOp;
+
+    fn rt() -> Runtime {
+        Runtime::new()
+    }
+
+    fn binop_num(op: BinOp, a: Value, b: Value) -> f64 {
+        let rt = rt();
+        match awk_binop_values(op, &a, &b, false, &rt).unwrap() {
+            Value::Num(n) => n,
+            v => panic!("expected Num, got {v:?}"),
+        }
+    }
+
+    #[test]
+    fn binop_add_numbers() {
+        assert_eq!(binop_num(BinOp::Add, Value::Num(2.0), Value::Num(3.0)), 5.0);
+    }
+
+    #[test]
+    fn binop_sub_string_to_number_coercion() {
+        // "10" - "4" coerces both via longest-numeric-prefix.
+        assert_eq!(
+            binop_num(BinOp::Sub, Value::Str("10".into()), Value::Str("4".into())),
+            6.0
+        );
+    }
+
+    #[test]
+    fn binop_mul_with_alpha_suffix_coerces_to_prefix() {
+        // POSIX: "3.14abc" + 0 → 3.14. Multiplication should see 3.14 on the LHS.
+        let n = binop_num(
+            BinOp::Mul,
+            Value::Str("3.14abc".into()),
+            Value::Num(2.0),
+        );
+        assert!((n - 6.28).abs() < 1e-9, "expected ~6.28, got {n}");
+    }
+
+    #[test]
+    fn binop_div_by_zero_returns_error() {
+        let rt = rt();
+        let err = awk_binop_values(
+            BinOp::Div,
+            &Value::Num(1.0),
+            &Value::Num(0.0),
+            false,
+            &rt,
+        )
+        .unwrap_err();
+        assert!(
+            format!("{err}").contains("division by zero"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn binop_mod_returns_remainder() {
+        assert_eq!(binop_num(BinOp::Mod, Value::Num(10.0), Value::Num(3.0)), 1.0);
+    }
+
+    #[test]
+    fn binop_pow_returns_exponent() {
+        assert_eq!(binop_num(BinOp::Pow, Value::Num(2.0), Value::Num(10.0)), 1024.0);
+    }
+
+    #[test]
+    fn binop_uninit_treated_as_zero() {
+        // POSIX: uninitialized variable in arithmetic context is 0.
+        assert_eq!(
+            binop_num(BinOp::Add, Value::Uninit, Value::Num(7.0)),
+            7.0
+        );
+        assert_eq!(
+            binop_num(BinOp::Mul, Value::Uninit, Value::Num(99.0)),
+            0.0
+        );
+    }
+
+    #[test]
+    fn binop_array_as_scalar_is_fatal() {
+        // gawk-style: using an array name in scalar context is a fatal error,
+        // not a silent empty-string coercion.
+        let rt = rt();
+        let arr = Value::Array(AwkMap::default());
+        let err =
+            awk_binop_values(BinOp::Add, &arr, &Value::Num(1.0), false, &rt).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("array") || msg.contains("scalar"),
+            "expected array-as-scalar error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn binop_non_arithmetic_op_returns_error() {
+        // Comparison / logical ops aren't valid compound-assignment ops; the
+        // dispatch must reject them with a clear error message instead of
+        // silently doing the wrong thing.
+        let rt = rt();
+        let err = awk_binop_values(
+            BinOp::Eq,
+            &Value::Num(1.0),
+            &Value::Num(1.0),
+            false,
+            &rt,
+        )
+        .unwrap_err();
+        assert!(
+            format!("{err}").contains("invalid compound assignment"),
+            "expected reject message, got: {err}"
+        );
+    }
+}
+
+// ── parse_inet_tcp / parse_inet_udp: pin gawk /inet path grammar ─────────────
+#[cfg(test)]
+mod parse_inet_pinning {
+    use super::{parse_inet_tcp, parse_inet_udp};
+
+    #[test]
+    fn inet_tcp_valid_three_components() {
+        assert_eq!(
+            parse_inet_tcp("/inet/tcp/0/example.com/443"),
+            Some((0, "example.com".to_string(), 443))
+        );
+    }
+
+    #[test]
+    fn inet_tcp_with_explicit_local_port() {
+        assert_eq!(
+            parse_inet_tcp("/inet/tcp/8080/localhost/9000"),
+            Some((8080, "localhost".to_string(), 9000))
+        );
+    }
+
+    #[test]
+    fn inet_udp_valid() {
+        assert_eq!(
+            parse_inet_udp("/inet/udp/0/dns.example/53"),
+            Some((0, "dns.example".to_string(), 53))
+        );
+    }
+
+    #[test]
+    fn inet_wrong_prefix_returns_none() {
+        // tcp parser must reject udp paths and vice versa.
+        assert!(parse_inet_tcp("/inet/udp/0/h/53").is_none());
+        assert!(parse_inet_udp("/inet/tcp/0/h/443").is_none());
+        assert!(parse_inet_tcp("/inet/raw/0/h/1").is_none());
+    }
+
+    #[test]
+    fn inet_missing_rport_returns_none() {
+        assert!(parse_inet_tcp("/inet/tcp/0/host").is_none());
+    }
+
+    #[test]
+    fn inet_extra_trailing_component_returns_none() {
+        // Trailing slash + extra component must reject (no silent acceptance).
+        assert!(parse_inet_tcp("/inet/tcp/0/host/443/extra").is_none());
+    }
+
+    #[test]
+    fn inet_non_numeric_port_returns_none() {
+        assert!(parse_inet_tcp("/inet/tcp/abc/host/443").is_none());
+        assert!(parse_inet_tcp("/inet/tcp/0/host/xyz").is_none());
+    }
+
+    #[test]
+    fn inet_port_out_of_u16_range_returns_none() {
+        // 70000 doesn't fit in u16 — must reject, not silently truncate.
+        assert!(parse_inet_tcp("/inet/tcp/0/host/70000").is_none());
+    }
+}
+
+// ── awk_locale_str_cmp: pin string ordering contract ─────────────────────────
+#[cfg(test)]
+mod awk_locale_str_cmp_pinning {
+    use super::awk_locale_str_cmp;
+    use std::cmp::Ordering;
+
+    #[test]
+    fn equal_strings_compare_equal() {
+        assert_eq!(awk_locale_str_cmp("abc", "abc"), Ordering::Equal);
+    }
+
+    #[test]
+    fn empty_string_orders_first() {
+        assert_eq!(awk_locale_str_cmp("", "a"), Ordering::Less);
+        assert_eq!(awk_locale_str_cmp("a", ""), Ordering::Greater);
+        assert_eq!(awk_locale_str_cmp("", ""), Ordering::Equal);
+    }
+
+    #[test]
+    fn null_byte_falls_back_to_byte_compare() {
+        // CString::new fails on embedded NUL — the function must fall back to
+        // a.cmp(b) instead of panicking or returning Equal incorrectly.
+        let with_nul = "a\0b";
+        let without = "ab";
+        let o = awk_locale_str_cmp(with_nul, without);
+        // Should not panic; the relative ordering is implementation-defined but
+        // must be one of Less/Greater (not erroneously Equal).
+        assert_ne!(o, Ordering::Equal, "NUL-containing strings shouldn't compare equal to clean strings");
+    }
+}

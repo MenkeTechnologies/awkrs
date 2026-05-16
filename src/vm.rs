@@ -5752,4 +5752,163 @@ mod tests {
         rt.set_record_from_line("x");
         assert!(!vm_pattern_matches(rule, &cp, &mut rt).unwrap());
     }
+
+    // ── vm_range_step / vm_match_range_endpoint pinning ──────────────────────
+    //
+    // Range pattern state machine: `state` is false until `start` matches on a
+    // record, then true until `end` matches on a record (inclusive of the
+    // end-matching record). Critical that:
+    //   - Same-record start-and-end stays true for that one record then resets
+    //   - state survives across records
+    //   - Always/Never/NestedRangeError endpoints behave per spec
+    // Any regression in this state machine silently breaks /pat1/,/pat2/
+    // programs without changing any exit code — exactly the bug class hardest
+    // to catch in integration tests. Pin it.
+
+    fn endpoint_from_range_pattern(cp: &CompiledProgram, want_start: bool) -> &CompiledRangeEndpoint {
+        match &cp.record_rules[0].pattern {
+            CompiledPattern::Range { start, end } => {
+                if want_start { start } else { end }
+            }
+            _ => panic!("expected range pattern in compiled rule[0]"),
+        }
+    }
+
+    #[test]
+    fn range_step_start_match_activates_state() {
+        let cp = compile("/A/,/Z/ { print }");
+        let start = endpoint_from_range_pattern(&cp, true).clone();
+        let end = endpoint_from_range_pattern(&cp, false).clone();
+        let mut rt = runtime_with_slots(&cp);
+        let mut state = false;
+
+        rt.set_record_from_line("contains A here");
+        assert!(vm_range_step(&mut state, &start, &end, &cp, &mut rt).unwrap());
+        assert!(state, "state must flip true on start match");
+    }
+
+    #[test]
+    fn range_step_stays_active_between_endpoints() {
+        let cp = compile("/A/,/Z/ { print }");
+        let start = endpoint_from_range_pattern(&cp, true).clone();
+        let end = endpoint_from_range_pattern(&cp, false).clone();
+        let mut rt = runtime_with_slots(&cp);
+        let mut state = true; // pre-activated (e.g. previous record matched start)
+
+        rt.set_record_from_line("middle line no match");
+        assert!(vm_range_step(&mut state, &start, &end, &cp, &mut rt).unwrap());
+        assert!(state, "state must stay true between endpoints");
+    }
+
+    #[test]
+    fn range_step_end_match_resets_state_inclusive() {
+        // POSIX: the record that matches `end` is itself part of the range
+        // (the rule runs for it), but state resets to false afterward.
+        let cp = compile("/A/,/Z/ { print }");
+        let start = endpoint_from_range_pattern(&cp, true).clone();
+        let end = endpoint_from_range_pattern(&cp, false).clone();
+        let mut rt = runtime_with_slots(&cp);
+        let mut state = true;
+
+        rt.set_record_from_line("contains Z end");
+        let ran = vm_range_step(&mut state, &start, &end, &cp, &mut rt).unwrap();
+        assert!(ran, "end-matching record must still run");
+        assert!(!state, "state must reset after end match");
+    }
+
+    #[test]
+    fn range_step_inactive_no_start_match_skips() {
+        let cp = compile("/A/,/Z/ { print }");
+        let start = endpoint_from_range_pattern(&cp, true).clone();
+        let end = endpoint_from_range_pattern(&cp, false).clone();
+        let mut rt = runtime_with_slots(&cp);
+        let mut state = false;
+
+        rt.set_record_from_line("none of the keys");
+        assert!(!vm_range_step(&mut state, &start, &end, &cp, &mut rt).unwrap());
+        assert!(!state, "no start match means state stays false");
+    }
+
+    #[test]
+    fn range_step_same_record_starts_and_ends() {
+        // Record contains BOTH endpoints — start activates, end resets, and the
+        // record itself runs. This is the trickiest case: state transitions
+        // false → true → false within one step, but the return is true.
+        let cp = compile("/A/,/Z/ { print }");
+        let start = endpoint_from_range_pattern(&cp, true).clone();
+        let end = endpoint_from_range_pattern(&cp, false).clone();
+        let mut rt = runtime_with_slots(&cp);
+        let mut state = false;
+
+        rt.set_record_from_line("A and Z together");
+        assert!(vm_range_step(&mut state, &start, &end, &cp, &mut rt).unwrap());
+        assert!(!state, "state must reset after end match in same record");
+    }
+
+    #[test]
+    fn match_endpoint_always_returns_true() {
+        let cp = compile("{ print }"); // anything; we don't need a range here
+        let mut rt = runtime_with_slots(&cp);
+        rt.set_record_from_line("doesn't matter");
+        assert!(vm_match_range_endpoint(&CompiledRangeEndpoint::Always, &cp, &mut rt).unwrap());
+    }
+
+    #[test]
+    fn match_endpoint_never_returns_false() {
+        let cp = compile("{ print }");
+        let mut rt = runtime_with_slots(&cp);
+        rt.set_record_from_line("doesn't matter");
+        assert!(!vm_match_range_endpoint(&CompiledRangeEndpoint::Never, &cp, &mut rt).unwrap());
+    }
+
+    #[test]
+    fn match_endpoint_nested_range_is_runtime_error() {
+        // Nested range patterns (`(a,b),c`) are rejected at runtime — must not
+        // silently match or no-match.
+        let cp = compile("{ print }");
+        let mut rt = runtime_with_slots(&cp);
+        rt.set_record_from_line("x");
+        let err = vm_match_range_endpoint(
+            &CompiledRangeEndpoint::NestedRangeError,
+            &cp,
+            &mut rt,
+        )
+        .unwrap_err();
+        assert!(
+            format!("{err}").contains("nested range"),
+            "expected nested range error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn match_endpoint_literal_regexp_substring_match() {
+        // LiteralRegexp uses str::contains, not the regex engine — must be a
+        // pure substring scan (no anchoring, no metacharacter interpretation).
+        let cp = compile("/foo/,/bar/ { print }");
+        let mut rt = runtime_with_slots(&cp);
+
+        rt.set_record_from_line("xxx foo yyy");
+        let start = endpoint_from_range_pattern(&cp, true).clone();
+        assert!(vm_match_range_endpoint(&start, &cp, &mut rt).unwrap());
+
+        rt.set_record_from_line("no needle");
+        assert!(!vm_match_range_endpoint(&start, &cp, &mut rt).unwrap());
+    }
+
+    #[test]
+    fn match_endpoint_expr_truthy_falsy() {
+        // Expr endpoint runs a chunk and applies truthy() to the TOS.
+        // Use NR==2 as the start: must match on the 2nd record, not the 1st.
+        let cp = compile("NR==2,NR==4 { print }");
+        let start = endpoint_from_range_pattern(&cp, true).clone();
+        let mut rt = runtime_with_slots(&cp);
+
+        rt.nr = 1.0;
+        rt.set_record_from_line("first");
+        assert!(!vm_match_range_endpoint(&start, &cp, &mut rt).unwrap());
+
+        rt.nr = 2.0;
+        rt.set_record_from_line("second");
+        assert!(vm_match_range_endpoint(&start, &cp, &mut rt).unwrap());
+    }
 }
