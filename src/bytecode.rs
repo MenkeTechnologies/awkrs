@@ -7,6 +7,7 @@
 
 use crate::ast::{BinOp, IncDecOp};
 use crate::runtime::{AwkMap, Value};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -15,7 +16,7 @@ use std::sync::{Arc, Mutex};
 // ── Instruction set ──────────────────────────────────────────────────────────
 
 /// Print/printf output target.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RedirKind {
     Stdout,
     Overwrite,
@@ -25,7 +26,7 @@ pub enum RedirKind {
 }
 
 /// Source for `getline`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GetlineSource {
     Primary,
     File,
@@ -35,7 +36,7 @@ pub enum GetlineSource {
 }
 
 /// Lvalue target for `sub`/`gsub`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SubTarget {
     /// Operate on `$0` (no third argument).
     Record,
@@ -54,7 +55,7 @@ pub enum SubTarget {
 ///
 /// All jump targets are **absolute** instruction indices within the chunk.
 /// Each variant is `Copy` so the VM can read instructions without cloning.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum Op {
     // ── Constants ────────────────────────────────────────────────────────
     PushNum(f64),
@@ -343,19 +344,29 @@ type JitChunkCache = Mutex<Option<Result<Arc<crate::jit::JitChunk>, ()>>>;
 /// [`Self::jit_invocation_count`] supports tiered JIT: the VM runs the interpreter until this
 /// chunk has been entered enough times (see [`crate::jit::jit_min_invocations_before_compile`]),
 /// avoiding compile cost on cold paths (e.g. one-shot `BEGIN` blocks).
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Chunk {
     pub ops: Vec<Op>,
+    #[serde(skip, default = "default_jit_lock")]
     pub(crate) jit_lock: Arc<JitChunkCache>,
+    #[serde(skip, default = "default_jit_invocation_count")]
     pub(crate) jit_invocation_count: Arc<AtomicU32>,
+}
+
+fn default_jit_lock() -> Arc<JitChunkCache> {
+    Arc::new(Mutex::new(None))
+}
+
+fn default_jit_invocation_count() -> Arc<AtomicU32> {
+    Arc::new(AtomicU32::new(0))
 }
 
 impl Default for Chunk {
     fn default() -> Self {
         Self {
             ops: Vec::new(),
-            jit_lock: Arc::new(Mutex::new(None)),
-            jit_invocation_count: Arc::new(AtomicU32::new(0)),
+            jit_lock: default_jit_lock(),
+            jit_invocation_count: default_jit_invocation_count(),
         }
     }
 }
@@ -384,7 +395,7 @@ impl Chunk {
 }
 
 /// Interned string pool shared across the entire compiled program.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct StringPool {
     strings: Vec<String>,
     index: HashMap<String, u32>,
@@ -407,7 +418,7 @@ impl StringPool {
 }
 
 /// A fully compiled awk program, ready for VM execution.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompiledProgram {
     pub begin_chunks: Vec<Chunk>,
     pub end_chunks: Vec<Chunk>,
@@ -424,6 +435,14 @@ pub struct CompiledProgram {
     pub slot_map: HashMap<String, u16>,
     /// Names used as arrays anywhere in the program (for **`PROCINFO["identifiers"]`**).
     pub array_var_names: Vec<String>,
+    /// `parallel::record_rules_parallel_safe(prog)` cached — set by `compile_program`
+    /// so cache hits don't need to re-walk the AST.
+    #[serde(default)]
+    pub parallel_safe: bool,
+    /// `prog.rules.len()` cached — set by `compile_program` so `range_state` can be
+    /// sized from a cached `CompiledProgram` without re-parsing.
+    #[serde(default)]
+    pub prog_rules_len: usize,
 }
 
 impl CompiledProgram {
@@ -440,7 +459,7 @@ impl CompiledProgram {
 }
 
 /// One compiled record-processing rule (pattern + action body).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompiledRule {
     pub pattern: CompiledPattern,
     pub body: Chunk,
@@ -449,7 +468,7 @@ pub struct CompiledRule {
 }
 
 /// One endpoint of a range pattern (`pat1, pat2 { … }`).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CompiledRangeEndpoint {
     /// `Pattern::Empty` — always matches.
     Always,
@@ -466,7 +485,7 @@ pub enum CompiledRangeEndpoint {
 }
 
 /// Compiled form of a rule pattern.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CompiledPattern {
     /// Matches every record.
     Always,
@@ -484,7 +503,7 @@ pub enum CompiledPattern {
 }
 
 /// A compiled user-defined function.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompiledFunc {
     pub params: Vec<String>,
     pub body: Chunk,
@@ -523,6 +542,8 @@ mod tests {
             slot_names: vec!["x".into()],
             slot_map: HashMap::from([("x".into(), 0u16)]),
             array_var_names: vec![],
+            parallel_safe: false,
+            prog_rules_len: 0,
         };
         let slots = cp.init_slots(&vars);
         assert_eq!(slots.len(), 1);
@@ -567,6 +588,8 @@ mod tests {
             slot_names: vec!["x".into(), "y".into()],
             slot_map: HashMap::from([("x".into(), 0u16), ("y".into(), 1u16)]),
             array_var_names: vec![],
+            parallel_safe: false,
+            prog_rules_len: 0,
         };
         let mut vars = AwkMap::default();
         vars.insert("x".into(), Value::Num(1.0));
@@ -598,6 +621,8 @@ mod tests {
             slot_names: vec!["z".into()],
             slot_map: HashMap::from([("z".into(), 0u16)]),
             array_var_names: vec![],
+            parallel_safe: false,
+            prog_rules_len: 0,
         };
         let mut vars = AwkMap::default();
         vars.insert("z".into(), Value::Str(String::new()));

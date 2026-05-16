@@ -30,6 +30,7 @@ mod parser;
 mod procinfo;
 mod record_io;
 mod runtime;
+mod script_cache;
 mod source_expand;
 mod vm;
 
@@ -105,33 +106,63 @@ pub fn run(bin_name: &str) -> Result<()> {
     crate::runtime::set_numeric_parse_mode(args.non_decimal_data);
 
     let (program_text, files) = resolve_program_and_files(&args)?;
-    let prog = parse_program(&program_text)?;
-    let parallel_ok = parallel::record_rules_parallel_safe(&prog);
 
-    if let Some(ref p) = args.pretty_print {
-        let s = cli_effects::pretty_print_ast(bin_name, &prog);
-        if p.is_empty() || p == "-" {
-            print!("{s}");
-        } else {
-            std::fs::write(p, s).map_err(Error::Io)?;
+    // ── Bytecode cache fast path ──────────────────────────────────────────
+    // Skip lex/parse/compile when the program comes from a single `-f script.awk`
+    // (no -e/-E/--include/--load mixing) and no AST-dependent flags are set.
+    // Cache hits return the previously compiled `CompiledProgram` from
+    // `~/.awkrs/scripts.bin`, invalidated by source mtime or a newer awkrs binary.
+    let cacheable_script = cacheable_script_path(&args);
+
+    // `prog` (AST) is only kept when we need it post-compile: --debug, --lint,
+    // --lint-old, or the cache-miss path that hasn't been able to skip parsing.
+    let mut prog_for_ast: Option<Program> = None;
+    let parallel_ok: bool;
+    let prog_rules_len: usize;
+    let cp: Arc<CompiledProgram>;
+
+    let cache_hit = cacheable_script
+        .as_ref()
+        .and_then(|p| script_cache::try_load(p));
+    if let Some(cached_cp) = cache_hit {
+        parallel_ok = cached_cp.parallel_safe;
+        prog_rules_len = cached_cp.prog_rules_len;
+        cp = Arc::new(cached_cp);
+    } else {
+        let prog = parse_program(&program_text)?;
+        parallel_ok = parallel::record_rules_parallel_safe(&prog);
+        prog_rules_len = prog.rules.len();
+
+        if let Some(ref p) = args.pretty_print {
+            let s = cli_effects::pretty_print_ast(bin_name, &prog);
+            if p.is_empty() || p == "-" {
+                print!("{s}");
+            } else {
+                std::fs::write(p, s).map_err(Error::Io)?;
+            }
+            return Ok(());
         }
-        return Ok(());
-    }
-    if args.gen_pot {
-        print!("{}", cli_effects::gen_pot(&prog));
-        return Ok(());
-    }
+        if args.gen_pot {
+            print!("{}", cli_effects::gen_pot(&prog));
+            return Ok(());
+        }
 
-    // Compile once; `Arc` is shared with parallel workers (cheap refcount) instead of cloning [`CompiledProgram`].
-    let cp: Arc<CompiledProgram> = Arc::new(Compiler::compile_program(&prog)?);
+        // Compile once; `Arc` is shared with parallel workers (cheap refcount) instead of cloning [`CompiledProgram`].
+        let compiled = Compiler::compile_program(&prog)?;
+        if let Some(ref path) = cacheable_script {
+            script_cache::try_save(path, &compiled);
+        }
+        cp = Arc::new(compiled);
 
-    if let Some(ref p) = args.debug {
-        let mut w: Box<dyn Write> = if p.is_empty() || p == "-" {
-            Box::new(std::io::stderr())
-        } else {
-            Box::new(std::fs::File::create(p).map_err(Error::Io)?)
-        };
-        cli_effects::write_debug_listing(&prog, &mut *w, bin_name)?;
+        if let Some(ref p) = args.debug {
+            let mut w: Box<dyn Write> = if p.is_empty() || p == "-" {
+                Box::new(std::io::stderr())
+            } else {
+                Box::new(std::fs::File::create(p).map_err(Error::Io)?)
+            };
+            cli_effects::write_debug_listing(&prog, &mut *w, bin_name)?;
+        }
+        prog_for_ast = Some(prog);
     }
 
     let mut rt = Runtime::new();
@@ -180,13 +211,15 @@ pub fn run(bin_name: &str) -> Result<()> {
     rt.refresh_special_arrays(cp.as_ref(), bin_name);
     vm_run_begin(cp.as_ref(), &mut rt)?;
     rt.refresh_special_arrays(cp.as_ref(), bin_name);
-    cli_effects::emit_lint_warnings(
-        bin_name,
-        &prog,
-        args.lint.as_deref(),
-        args.lint_old,
-        rt.lint_runtime_active(),
-    );
+    if let Some(ref prog) = prog_for_ast {
+        cli_effects::emit_lint_warnings(
+            bin_name,
+            prog,
+            args.lint.as_deref(),
+            args.lint_old,
+            rt.lint_runtime_active(),
+        );
+    }
     flush_print_buf(&mut rt.print_buf)?;
     if rt.exit_pending {
         rt.detach_input_reader();
@@ -196,7 +229,7 @@ pub fn run(bin_name: &str) -> Result<()> {
         std::process::exit(rt.exit_code);
     }
 
-    let mut range_state: Vec<bool> = vec![false; prog.rules.len()];
+    let mut range_state: Vec<bool> = vec![false; prog_rules_len];
 
     // Parallel record mode: mmap whole files with RS-aware splitting (`record_io::split_input_into_records`).
     // Stdin parallel still chunks on newlines only (see `process_stdin_parallel`).
@@ -261,7 +294,6 @@ pub fn run(bin_name: &str) -> Result<()> {
             let n = if use_parallel_files {
                 process_file_parallel(
                     Some(p.as_path()),
-                    &prog,
                     &cp,
                     &mut rt,
                     threads,
@@ -627,7 +659,6 @@ fn read_all_lines<R: Read>(mut r: R) -> Result<Vec<String>> {
 #[allow(clippy::too_many_arguments)]
 fn process_file_parallel(
     path: Option<&Path>,
-    _prog: &Program,
     cp: &Arc<CompiledProgram>,
     rt: &mut Runtime,
     threads: usize,
@@ -1593,6 +1624,29 @@ fn dispatch_rules(
         }
     }
     Ok(rt.exit_pending)
+}
+
+/// Return the canonical-ready path of the single `-f script.awk` source if the
+/// invocation is cacheable. The cache only stores bytecode for the simple case
+/// (one `-f` file, no `-e`/`-E`/`--include`/`--load`/inline, no `--debug` /
+/// `--lint*` / `--pretty-print` / `--gen-pot` since those need the AST).
+fn cacheable_script_path(args: &Args) -> Option<PathBuf> {
+    if args.progfiles.len() != 1 {
+        return None;
+    }
+    if !args.include.is_empty() || !args.load.is_empty() || !args.source.is_empty() {
+        return None;
+    }
+    if args.exec_file.is_some() {
+        return None;
+    }
+    if args.debug.is_some() || args.lint.is_some() || args.lint_old {
+        return None;
+    }
+    if args.pretty_print.is_some() || args.gen_pot {
+        return None;
+    }
+    Some(args.progfiles[0].clone())
 }
 
 fn resolve_program_and_files(args: &Args) -> Result<(String, Vec<PathBuf>)> {

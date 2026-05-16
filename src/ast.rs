@@ -1,5 +1,6 @@
 //! Abstract syntax tree for awk programs (rules + optional user functions).
 
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -219,7 +220,7 @@ pub enum Expr {
 }
 
 /// Prefix or postfix `++` / `--`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum IncDecOp {
     PreInc,
     PostInc,
@@ -235,7 +236,7 @@ pub enum IncDecTarget {
     Index { name: String, indices: Vec<Expr> },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BinOp {
     Add,
     Sub,

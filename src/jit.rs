@@ -860,6 +860,8 @@ fn empty_compiled_program() -> CompiledProgram {
         slot_names: vec![],
         slot_map: HashMap::new(),
         array_var_names: vec![],
+        parallel_safe: false,
+        prog_rules_len: 0,
     }
 }
 

@@ -46,6 +46,8 @@
 
 **Positioning:** POSIX awk + the gawk extensions that show up in real scripts (`BEGINFILE`/`ENDFILE`, coprocess `|&`, CSV mode, `PROCINFO`/`SYMTAB`/`FUNCTAB`, `@include`/`@load`/`@namespace`, `/inet/tcp|udp`, MPFR via `-M`). Performance goal: beat `awk`/`mawk`/`gawk` on supported workloads — see [§0x06](#0x06-benchmarks--combat-metrics-vs-awk--gawk--mawk).
 
+**Bytecode cache:** `-f script.awk` runs memoize compiled bytecode to `~/.awkrs/scripts.bin` — repeat runs skip lex/parse/compile entirely. Source-file mtime and the awkrs-binary mtime invalidate entries silently. `AWKRS_CACHE=0` disables it. Details in [§0x05](#0x05-bytecode-vm--execution-core).
+
 **Implemented gawk-style CLI flags** (where they differ from gawk, the gap is documented):
 
 | Flag | Behavior |
@@ -175,6 +177,8 @@ awkrs compiles AWK programs into a flat bytecode instruction stream and runs the
 - `NR++` HashMap-path → `IncrVar`
 
 **Inline fast paths** bypass `VmCtx` entirely for single-rule programs with one fused opcode (`{ print $1 }`, `{ s += $1 }`). Memory-mapped files also recognize `{ gsub("lit", "repl"); print }` with literal pattern: when the needle is absent, the loop writes each line from the mapped buffer with `ORS` and skips the VM.
+
+**Bytecode cache:** `-f script.awk` invocations memoize the compiled `CompiledProgram` to `~/.awkrs/scripts.bin` (single bincode shard, `flock`-serialized writes, atomic rename). Repeat runs skip lex/parse/compile entirely — load is bincode-deserialize plus mtime check. Entries are invalidated on source-file mtime change or when the running `awkrs` binary is newer than the cached entry (any rebuild silently rebuilds the cache). Disable with `AWKRS_CACHE=0`. The cache only engages for the simple `-f script.awk` form — inline `-e`/`--source`, `-E`, `-i`/`--include`, `-l`/`--load`, `--debug`, `--lint`, `--pretty-print`, and `--gen-pot` skip the cache because they need the AST.
 
 **Raw byte field extraction:** `print $N` with default `FS` scans raw bytes in the mapped file buffer to find the Nth whitespace field, writes it to the output buffer, and appends `Runtime::ors_bytes` — no record copy, no UTF-8 validation.
 

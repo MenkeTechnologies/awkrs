@@ -133,6 +133,9 @@ impl Compiler {
         let mut array_var_names: Vec<String> = c.array_names.iter().cloned().collect();
         array_var_names.sort();
 
+        let parallel_safe = crate::ast::parallel::record_rules_parallel_safe(prog);
+        let prog_rules_len = prog.rules.len();
+
         Ok(CompiledProgram {
             begin_chunks,
             end_chunks,
@@ -145,6 +148,8 @@ impl Compiler {
             slot_names,
             slot_map,
             array_var_names,
+            parallel_safe,
+            prog_rules_len,
         })
     }
 
@@ -2165,6 +2170,8 @@ mod tests {
             slot_names: vec![],
             slot_map: HashMap::new(),
             array_var_names: vec![],
+            parallel_safe: false,
+            prog_rules_len: 1,
         }
     }
 
