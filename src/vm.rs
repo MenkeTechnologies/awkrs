@@ -5781,10 +5781,17 @@ mod tests {
     // programs without changing any exit code — exactly the bug class hardest
     // to catch in integration tests. Pin it.
 
-    fn endpoint_from_range_pattern(cp: &CompiledProgram, want_start: bool) -> &CompiledRangeEndpoint {
+    fn endpoint_from_range_pattern(
+        cp: &CompiledProgram,
+        want_start: bool,
+    ) -> &CompiledRangeEndpoint {
         match &cp.record_rules[0].pattern {
             CompiledPattern::Range { start, end } => {
-                if want_start { start } else { end }
+                if want_start {
+                    start
+                } else {
+                    end
+                }
             }
             _ => panic!("expected range pattern in compiled rule[0]"),
         }
@@ -5884,12 +5891,8 @@ mod tests {
         let cp = compile("{ print }");
         let mut rt = runtime_with_slots(&cp);
         rt.set_record_from_line("x");
-        let err = vm_match_range_endpoint(
-            &CompiledRangeEndpoint::NestedRangeError,
-            &cp,
-            &mut rt,
-        )
-        .unwrap_err();
+        let err = vm_match_range_endpoint(&CompiledRangeEndpoint::NestedRangeError, &cp, &mut rt)
+            .unwrap_err();
         assert!(
             format!("{err}").contains("nested range"),
             "expected nested range error, got: {err}"
@@ -5953,26 +5956,20 @@ mod tests {
     #[test]
     fn field_set_rebuilds_dollar_zero_with_ofs() {
         // OFS = "|" must separate fields when $0 is rebuilt after $N=.
-        let out = run_begin_capture(
-            r#"BEGIN { OFS="|"; $1="a"; $2="b"; $3="c"; print $0 }"#,
-        );
+        let out = run_begin_capture(r#"BEGIN { OFS="|"; $1="a"; $2="b"; $3="c"; print $0 }"#);
         assert_eq!(out, "a|b|c\n", "{out:?}");
     }
 
     #[test]
     fn nf_truncate_shortens_record() {
         // NF=2 on a 4-field $0 must drop fields 3-4 and rebuild $0.
-        let out = run_begin_capture(
-            r#"BEGIN { $0="a b c d"; NF=2; print NF; print $0 }"#,
-        );
+        let out = run_begin_capture(r#"BEGIN { $0="a b c d"; NF=2; print NF; print $0 }"#);
         assert_eq!(out, "2\na b\n", "{out:?}");
     }
 
     #[test]
     fn nf_extend_pads_with_empty_fields() {
-        let out = run_begin_capture(
-            r#"BEGIN { $0="a b"; NF=4; print NF; print $0 }"#,
-        );
+        let out = run_begin_capture(r#"BEGIN { $0="a b"; NF=4; print NF; print $0 }"#);
         // NF was 2, now 4; new fields are empty. Default OFS=" ".
         assert_eq!(out, "4\na b  \n", "{out:?}");
     }
@@ -5995,9 +5992,7 @@ mod tests {
     #[test]
     fn array_in_returns_zero_for_missing_key_without_creating() {
         // POSIX: `k in a` MUST NOT auto-create the key (unlike a[k] read).
-        let out = run_begin_capture(
-            r#"BEGIN { print ("nope" in a); for (k in a) print k }"#,
-        );
+        let out = run_begin_capture(r#"BEGIN { print ("nope" in a); for (k in a) print k }"#);
         // First print: 0; for-in finds zero keys, prints nothing more.
         assert_eq!(out, "0\n", "in-test must not auto-create: {out:?}");
     }
@@ -6008,9 +6003,7 @@ mod tests {
         // `k in a` must be true. Implemented in the GetArrayElem dispatch:
         // if name != "SYMTAB" and the key is missing, insert Value::Uninit
         // before returning.
-        let out = run_begin_capture(
-            r#"BEGIN { x = a["k"]; print ("k" in a) }"#,
-        );
+        let out = run_begin_capture(r#"BEGIN { x = a["k"]; print ("k" in a) }"#);
         assert_eq!(out, "1\n");
     }
 
@@ -6024,18 +6017,14 @@ mod tests {
 
     #[test]
     fn delete_entire_array_removes_all_entries() {
-        let out = run_begin_capture(
-            r#"BEGIN { a["x"]=1; a["y"]=2; delete a; print length(a) }"#,
-        );
+        let out = run_begin_capture(r#"BEGIN { a["x"]=1; a["y"]=2; delete a; print length(a) }"#);
         assert_eq!(out, "0\n");
     }
 
     #[test]
     fn multidim_array_uses_subsep_join() {
         // Default SUBSEP is \x1c. a[1,2] indexes by "1\x1c2".
-        let out = run_begin_capture(
-            r#"BEGIN { a[1,2]=42; print a[1,2]; print ((1,2) in a) }"#,
-        );
+        let out = run_begin_capture(r#"BEGIN { a[1,2]=42; print a[1,2]; print ((1,2) in a) }"#);
         assert_eq!(out, "42\n1\n");
     }
 
@@ -6073,9 +6062,8 @@ mod tests {
 
     #[test]
     fn continue_skips_to_next_iteration() {
-        let out = run_begin_capture(
-            r#"BEGIN { for (i=0; i<5; i++) { if (i==2) continue; print i } }"#,
-        );
+        let out =
+            run_begin_capture(r#"BEGIN { for (i=0; i<5; i++) { if (i==2) continue; print i } }"#);
         assert_eq!(out, "0\n1\n3\n4\n");
     }
 
@@ -6116,34 +6104,28 @@ mod tests {
 
     #[test]
     fn sub_returns_one_on_match() {
-        let out = run_begin_capture(
-            r#"BEGIN { s="hello"; n=sub("ell","ELL",s); print n; print s }"#,
-        );
+        let out =
+            run_begin_capture(r#"BEGIN { s="hello"; n=sub("ell","ELL",s); print n; print s }"#);
         assert_eq!(out, "1\nhELLo\n");
     }
 
     #[test]
     fn sub_returns_zero_on_no_match() {
-        let out = run_begin_capture(
-            r#"BEGIN { s="hello"; n=sub("xyz","X",s); print n; print s }"#,
-        );
+        let out = run_begin_capture(r#"BEGIN { s="hello"; n=sub("xyz","X",s); print n; print s }"#);
         assert_eq!(out, "0\nhello\n");
     }
 
     #[test]
     fn gsub_returns_count_of_replacements() {
-        let out = run_begin_capture(
-            r#"BEGIN { s="abababab"; n=gsub("ab","X",s); print n; print s }"#,
-        );
+        let out =
+            run_begin_capture(r#"BEGIN { s="abababab"; n=gsub("ab","X",s); print n; print s }"#);
         assert_eq!(out, "4\nXXXX\n");
     }
 
     #[test]
     fn gsub_on_dollar_zero_rebuilds_fields() {
         // Modifying $0 via gsub must update the field array.
-        let out = run_begin_capture(
-            r#"BEGIN { $0="a b c d"; gsub("b","BBB"); print $2 }"#,
-        );
+        let out = run_begin_capture(r#"BEGIN { $0="a b c d"; gsub("b","BBB"); print $2 }"#);
         assert_eq!(out, "BBB\n");
     }
 
@@ -6217,9 +6199,7 @@ mod tests {
 
     #[test]
     fn convfmt_custom_two_decimals() {
-        let out = run_begin_capture(
-            r#"BEGIN { CONVFMT="%.2f"; x=3.141592653; print x "" }"#,
-        );
+        let out = run_begin_capture(r#"BEGIN { CONVFMT="%.2f"; x=3.141592653; print x "" }"#);
         assert_eq!(out, "3.14\n");
     }
 
@@ -6380,9 +6360,8 @@ mod tests {
 
     #[test]
     fn length_of_array_is_element_count() {
-        let out = run_begin_capture(
-            r#"BEGIN { a[1]=1; a["x"]=2; a["multidim",1]=3; print length(a) }"#,
-        );
+        let out =
+            run_begin_capture(r#"BEGIN { a[1]=1; a["x"]=2; a["multidim",1]=3; print length(a) }"#);
         assert_eq!(out, "3\n");
     }
 
@@ -6390,9 +6369,7 @@ mod tests {
 
     #[test]
     fn split_empty_record_returns_zero() {
-        let out = run_begin_capture(
-            r#"BEGIN { n = split("", a); print n; print length(a) }"#,
-        );
+        let out = run_begin_capture(r#"BEGIN { n = split("", a); print n; print length(a) }"#);
         assert_eq!(out, "0\n0\n");
     }
 
@@ -6444,9 +6421,7 @@ mod tests {
         // POSIX: array-subscript numeric coercion uses CONVFMT.
         // Implemented in vm.rs via `rt.value_to_array_key()` which dispatches
         // through num_to_string_convfmt for non-integer Num/Mpfr values.
-        let out = run_begin_capture(
-            r#"BEGIN { CONVFMT="%.0f"; a[3.14]=1; for (k in a) print k }"#,
-        );
+        let out = run_begin_capture(r#"BEGIN { CONVFMT="%.0f"; a[3.14]=1; for (k in a) print k }"#);
         assert_eq!(out, "3\n");
 
         // Integer-valued keys still bypass CONVFMT (a[1] stays "1", not "1.0").
@@ -6489,10 +6464,9 @@ mod tests {
         let cp = compile("{ s += $2 } END { print s }");
         let body_ops = &cp.record_rules[0].body.ops;
         assert!(
-            body_ops.iter().any(|op| matches!(
-                op,
-                Op::AddFieldToSlot { field: 2, .. }
-            )),
+            body_ops
+                .iter()
+                .any(|op| matches!(op, Op::AddFieldToSlot { field: 2, .. })),
             "record-rule body should have AddFieldToSlot{{field:2,..}}, got: {body_ops:?}"
         );
     }
@@ -6536,7 +6510,8 @@ mod tests {
         // run when both could match. Implemented via top-level alternation
         // splitting + per-position longest-match selection in
         // runtime.rs::split_fields_fpat.
-        let prog = r#"BEGIN { FPAT="[^,]*|\"[^\"]*\"" } { print NF; print $1; print $2; print $3 }"#;
+        let prog =
+            r#"BEGIN { FPAT="[^,]*|\"[^\"]*\"" } { print NF; print $1; print $2; print $3 }"#;
         let out = run_record_capture(prog, r#"abc,"def, ghi",xyz"#);
         assert!(out.contains("3\n"), "expected NF=3 in: {out:?}");
         assert!(out.contains("abc\n"), "{out:?}");
@@ -6575,36 +6550,30 @@ mod tests {
     #[test]
     fn gsub_with_ampersand_in_replacement_uses_match() {
         // `&` in replacement is replaced with the matched text.
-        let out = run_begin_capture(
-            r#"BEGIN { s="abc"; gsub(/b/, "[&]", s); print s }"#,
-        );
+        let out = run_begin_capture(r#"BEGIN { s="abc"; gsub(/b/, "[&]", s); print s }"#);
         assert_eq!(out, "a[b]c\n");
     }
 
     #[test]
     fn gsub_with_escaped_ampersand_is_literal() {
         // `\&` in replacement is a literal `&`.
-        let out = run_begin_capture(
-            r#"BEGIN { s="abc"; gsub(/b/, "\\&", s); print s }"#,
-        );
+        let out = run_begin_capture(r#"BEGIN { s="abc"; gsub(/b/, "\\&", s); print s }"#);
         assert_eq!(out, "a&c\n");
     }
 
     #[test]
     fn gsub_anchored_pattern_caret() {
         // `^` matches start of string only.
-        let out = run_begin_capture(
-            r#"BEGIN { s="aaa"; n = gsub(/^a/, "X", s); print n; print s }"#,
-        );
+        let out =
+            run_begin_capture(r#"BEGIN { s="aaa"; n = gsub(/^a/, "X", s); print n; print s }"#);
         assert_eq!(out, "1\nXaa\n");
     }
 
     #[test]
     fn gsub_anchored_pattern_dollar() {
         // `$` matches end.
-        let out = run_begin_capture(
-            r#"BEGIN { s="aaa"; n = gsub(/a$/, "X", s); print n; print s }"#,
-        );
+        let out =
+            run_begin_capture(r#"BEGIN { s="aaa"; n = gsub(/a$/, "X", s); print n; print s }"#);
         assert_eq!(out, "1\naaX\n");
     }
 
@@ -6633,26 +6602,22 @@ mod tests {
     fn gensub_ampersand_replacement_still_works_alongside_backref() {
         // `&` and `\N` are independent — both must work after the backref
         // refactor (replace_all_gensub uses expand_repl_with_caps for both).
-        let out = run_begin_capture(
-            r#"BEGIN { s="abc"; r=gensub(/b/, "[&]", "g", s); print r }"#,
-        );
+        let out = run_begin_capture(r#"BEGIN { s="abc"; r=gensub(/b/, "[&]", "g", s); print r }"#);
         assert_eq!(out, "a[b]c\n");
     }
 
     #[test]
     fn sub_does_not_modify_on_no_match() {
         // sub returns 0 and leaves the target unchanged.
-        let out = run_begin_capture(
-            r#"BEGIN { s="hello"; n = sub(/xyz/, "X", s); print n; print s }"#,
-        );
+        let out =
+            run_begin_capture(r#"BEGIN { s="hello"; n = sub(/xyz/, "X", s); print n; print s }"#);
         assert_eq!(out, "0\nhello\n");
     }
 
     #[test]
     fn gsub_count_zero_returned_on_no_match() {
-        let out = run_begin_capture(
-            r#"BEGIN { s="hello"; n = gsub(/xyz/, "X", s); print n; print s }"#,
-        );
+        let out =
+            run_begin_capture(r#"BEGIN { s="hello"; n = gsub(/xyz/, "X", s); print n; print s }"#);
         assert_eq!(out, "0\nhello\n");
     }
 

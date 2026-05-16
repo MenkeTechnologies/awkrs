@@ -1580,16 +1580,16 @@ mod lint_tests {
     fn lint_silent_on_clean_program() {
         // Sanity: a fully-initialized program with matching printf args must not
         // generate any lint warnings. Catches false-positive regressions.
-        let msgs = lint_msgs(
-            r#"BEGIN { x = 1; y = "hi"; printf "%d %s\n", x, y }"#,
-        );
+        let msgs = lint_msgs(r#"BEGIN { x = 1; y = "hi"; printf "%d %s\n", x, y }"#);
         // Allow header-style messages but no "uninitialized" / "printf" warnings.
         assert!(
             !msgs.iter().any(|m| m.contains("uninitialized")),
             "false-positive uninit: {msgs:?}"
         );
         assert!(
-            !msgs.iter().any(|m| m.contains("printf") && m.contains("format")),
+            !msgs
+                .iter()
+                .any(|m| m.contains("printf") && m.contains("format")),
             "false-positive printf: {msgs:?}"
         );
     }
@@ -1909,8 +1909,14 @@ mod write_profile_summary_tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("p.out");
         let path_str = path.to_string_lossy().into_owned();
-        write_profile_summary(&path_str, Duration::from_millis(1500), Some(10), &[0; 0], false)
-            .unwrap();
+        write_profile_summary(
+            &path_str,
+            Duration::from_millis(1500),
+            Some(10),
+            &[0; 0],
+            false,
+        )
+        .unwrap();
         let s = read(&path_str);
         assert!(
             s.contains("wall_seconds: 1.500000"),
@@ -1941,8 +1947,14 @@ mod write_profile_summary_tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("p.out");
         let p = path.to_string_lossy().into_owned();
-        write_profile_summary(&p, Duration::from_secs(1), Some(5), &[3u64, 7u64, 0u64], false)
-            .unwrap();
+        write_profile_summary(
+            &p,
+            Duration::from_secs(1),
+            Some(5),
+            &[3u64, 7u64, 0u64],
+            false,
+        )
+        .unwrap();
         let s = read(&p);
         assert!(s.contains("rule[0]: 3"), "{s}");
         assert!(s.contains("rule[1]: 7"), "{s}");
@@ -1962,6 +1974,9 @@ mod write_profile_summary_tests {
             s.contains("skipped: parallel mode"),
             "parallel mode must announce skip: {s}"
         );
-        assert!(!s.contains("rule[0]: 99"), "parallel must not print hits: {s}");
+        assert!(
+            !s.contains("rule[0]: 99"),
+            "parallel must not print hits: {s}"
+        );
     }
 }

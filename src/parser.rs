@@ -2472,7 +2472,11 @@ mod parser_pinning {
         let e = first_begin_expr_stmt("BEGIN { x = a + b * c }");
         if let Expr::Assign { rhs, .. } = e {
             match *rhs {
-                Expr::Binary { op: BinOp::Add, left, right } => {
+                Expr::Binary {
+                    op: BinOp::Add,
+                    left,
+                    right,
+                } => {
                     assert!(matches!(*left, Expr::Var(_)), "left should be plain a");
                     assert!(
                         matches!(*right, Expr::Binary { op: BinOp::Mul, .. }),
@@ -2492,7 +2496,11 @@ mod parser_pinning {
         let e = first_begin_expr_stmt("BEGIN { x = 2 ^ 3 ^ 2 }");
         if let Expr::Assign { rhs, .. } = e {
             match *rhs {
-                Expr::Binary { op: BinOp::Pow, right, .. } => {
+                Expr::Binary {
+                    op: BinOp::Pow,
+                    right,
+                    ..
+                } => {
                     // Right side must itself be a Pow expression.
                     assert!(
                         matches!(*right, Expr::Binary { op: BinOp::Pow, .. }),
@@ -2523,7 +2531,11 @@ mod parser_pinning {
         let e = first_begin_expr_stmt("BEGIN { x = a < b + c }");
         if let Expr::Assign { rhs, .. } = e {
             match *rhs {
-                Expr::Binary { op: BinOp::Lt, right, .. } => {
+                Expr::Binary {
+                    op: BinOp::Lt,
+                    right,
+                    ..
+                } => {
                     assert!(
                         matches!(*right, Expr::Binary { op: BinOp::Add, .. }),
                         "comparison should embed the add, got {right:?}"
@@ -2541,7 +2553,11 @@ mod parser_pinning {
         if let Expr::Assign { rhs, .. } = e {
             // The top operator should be And.
             match *rhs {
-                Expr::Binary { op: BinOp::And, left, right } => {
+                Expr::Binary {
+                    op: BinOp::And,
+                    left,
+                    right,
+                } => {
                     assert!(matches!(*left, Expr::Binary { op: BinOp::Lt, .. }));
                     assert!(matches!(*right, Expr::Binary { op: BinOp::Gt, .. }));
                 }
@@ -2556,7 +2572,11 @@ mod parser_pinning {
         let e = first_begin_expr_stmt("BEGIN { x = a || b && c }");
         if let Expr::Assign { rhs, .. } = e {
             match *rhs {
-                Expr::Binary { op: BinOp::Or, right, .. } => {
+                Expr::Binary {
+                    op: BinOp::Or,
+                    right,
+                    ..
+                } => {
                     assert!(
                         matches!(*right, Expr::Binary { op: BinOp::And, .. }),
                         "Or-right should be And, got {right:?}"
@@ -2592,7 +2612,11 @@ mod parser_pinning {
         let e = first_begin_expr_stmt("BEGIN { x = \"a\" b + c }");
         if let Expr::Assign { rhs, .. } = e {
             match *rhs {
-                Expr::Binary { op: BinOp::Concat, right, .. } => {
+                Expr::Binary {
+                    op: BinOp::Concat,
+                    right,
+                    ..
+                } => {
                     assert!(
                         matches!(*right, Expr::Binary { op: BinOp::Add, .. }),
                         "concat right should be the add, got {right:?}"

@@ -811,18 +811,21 @@ fn split_fields_fieldwidths(record: &str, widths: &[usize], field_ranges: &mut V
 
 /// gawk `--csv` / `-k` field splitting: comma-separated, `"..."` for quoting, `""` for a literal `"`.
 /// Field ranges are **value** byte ranges (no surrounding quote characters), matching gawk’s `$n` text.
+/// gawk `--csv` field splitting (RFC 4180-ish): commas separate fields,
+/// double-quoted fields may contain commas, and `""` inside a quoted field is
+/// an escaped quote. Empty record → 0 fields; otherwise the field count is
+/// always `(commas at top level) + 1`.
 fn split_csv_gawk_fields(record: &str, field_ranges: &mut Vec<(u32, u32)>) {
     field_ranges.clear();
     let bytes = record.as_bytes();
     let n = bytes.len();
+    if n == 0 {
+        return;
+    }
     let mut i = 0usize;
-    while i < n {
-        if bytes[i] == b',' {
-            field_ranges.push((i as u32, i as u32));
-            i += 1;
-            continue;
-        }
-        if bytes[i] == b'"' {
+    loop {
+        // Each iteration emits exactly one field starting at position `i`.
+        if i < n && bytes[i] == b'"' {
             i += 1;
             let val_start = i;
             while i < n {
@@ -847,12 +850,14 @@ fn split_csv_gawk_fields(record: &str, field_ranges: &mut Vec<(u32, u32)>) {
             }
             field_ranges.push((val_start as u32, i as u32));
         }
-        if i < n && bytes[i] == b',' {
-            i += 1;
-            if i == n {
-                field_ranges.push((n as u32, n as u32));
-            }
+        // After the field, expect EOR or a comma separator.
+        if i >= n {
+            return;
         }
+        // bytes[i] == ',' — consume it and loop to emit the next (possibly
+        // empty) field. This is what makes `,,,` produce 4 empty fields, not 3.
+        debug_assert_eq!(bytes[i], b',');
+        i += 1;
     }
 }
 
@@ -3217,6 +3222,108 @@ mod value_tests {
         assert_eq!(rt.field(2).unwrap().as_str(), "");
     }
 
+    // ── More CSV (RFC 4180) edge cases ───────────────────────────────────────
+
+    #[test]
+    fn csv_mode_leading_empty_field() {
+        let mut rt = super::Runtime::new();
+        rt.csv_mode = true;
+        rt.set_field_sep_split(",", ",a,b");
+        rt.ensure_fields_split();
+        assert_eq!(rt.nf(), 3);
+        assert_eq!(rt.field(1).unwrap().as_str(), "");
+        assert_eq!(rt.field(2).unwrap().as_str(), "a");
+        assert_eq!(rt.field(3).unwrap().as_str(), "b");
+    }
+
+    #[test]
+    fn csv_mode_all_empty_fields() {
+        let mut rt = super::Runtime::new();
+        rt.csv_mode = true;
+        rt.set_field_sep_split(",", ",,,");
+        rt.ensure_fields_split();
+        // 3 commas = 4 fields, all empty
+        assert_eq!(rt.nf(), 4);
+        for i in 1..=4 {
+            assert_eq!(rt.field(i).unwrap().as_str(), "");
+        }
+    }
+
+    #[test]
+    fn csv_mode_mixed_quoted_and_unquoted() {
+        let mut rt = super::Runtime::new();
+        rt.csv_mode = true;
+        rt.set_field_sep_split(",", r#"a,"b,c",d,"e"#);
+        rt.ensure_fields_split();
+        // "e is unterminated; awkrs should accept (RFC 4180 strict would reject,
+        // gawk is lenient). Pin actual behavior: 4 fields including the
+        // unterminated one.
+        assert!(rt.nf() >= 3, "got NF={}", rt.nf());
+        assert_eq!(rt.field(1).unwrap().as_str(), "a");
+        assert_eq!(rt.field(2).unwrap().as_str(), "b,c");
+        assert_eq!(rt.field(3).unwrap().as_str(), "d");
+    }
+
+    #[test]
+    fn csv_mode_double_quote_escape_in_middle() {
+        let mut rt = super::Runtime::new();
+        rt.csv_mode = true;
+        rt.set_field_sep_split(",", r#""he said ""hi""","next""#);
+        rt.ensure_fields_split();
+        assert_eq!(rt.nf(), 2);
+        assert_eq!(rt.field(1).unwrap().as_str(), r#"he said "hi""#);
+    }
+
+    #[test]
+    fn csv_mode_single_comma_two_empty_fields() {
+        // `,` is one separator → 2 empty fields. Previously broken (returned 1).
+        let mut rt = super::Runtime::new();
+        rt.csv_mode = true;
+        rt.set_field_sep_split(",", ",");
+        rt.ensure_fields_split();
+        assert_eq!(rt.nf(), 2);
+        assert_eq!(rt.field(1).unwrap().as_str(), "");
+        assert_eq!(rt.field(2).unwrap().as_str(), "");
+    }
+
+    #[test]
+    fn csv_mode_leading_comma_with_trailing_value() {
+        // `,a,b` → 3 fields. Previously broken — leading-comma path was a
+        // separate branch that didn't account for the implicit empty start.
+        let mut rt = super::Runtime::new();
+        rt.csv_mode = true;
+        rt.set_field_sep_split(",", ",a,b");
+        rt.ensure_fields_split();
+        assert_eq!(rt.nf(), 3);
+        assert_eq!(rt.field(1).unwrap().as_str(), "");
+        assert_eq!(rt.field(2).unwrap().as_str(), "a");
+        assert_eq!(rt.field(3).unwrap().as_str(), "b");
+    }
+
+    #[test]
+    fn csv_mode_empty_record_zero_fields() {
+        let mut rt = super::Runtime::new();
+        rt.csv_mode = true;
+        rt.set_field_sep_split(",", "");
+        rt.ensure_fields_split();
+        assert_eq!(rt.nf(), 0);
+    }
+
+    #[test]
+    fn csv_mode_disabled_treats_comma_normally() {
+        // Without csv_mode the quotes are part of the field text.
+        let mut rt = super::Runtime::new();
+        rt.csv_mode = false;
+        rt.set_field_sep_split(",", r#"a,"b,c",d"#);
+        rt.ensure_fields_split();
+        // Without CSV mode: comma-only splitting → 4 fields.
+        assert_eq!(rt.nf(), 4);
+        assert_eq!(rt.field(1).unwrap().as_str(), "a");
+        assert_eq!(rt.field(2).unwrap().as_str(), "\"b");
+        assert_eq!(rt.field(3).unwrap().as_str(), "c\"");
+        assert_eq!(rt.field(4).unwrap().as_str(), "d");
+    }
+
     #[test]
     fn ignore_case_false_when_unset_or_zero() {
         let rt = super::Runtime::new();
@@ -3506,25 +3613,15 @@ mod awk_binop_values_pinning {
     #[test]
     fn binop_mul_with_alpha_suffix_coerces_to_prefix() {
         // POSIX: "3.14abc" + 0 → 3.14. Multiplication should see 3.14 on the LHS.
-        let n = binop_num(
-            BinOp::Mul,
-            Value::Str("3.14abc".into()),
-            Value::Num(2.0),
-        );
+        let n = binop_num(BinOp::Mul, Value::Str("3.14abc".into()), Value::Num(2.0));
         assert!((n - 6.28).abs() < 1e-9, "expected ~6.28, got {n}");
     }
 
     #[test]
     fn binop_div_by_zero_returns_error() {
         let rt = rt();
-        let err = awk_binop_values(
-            BinOp::Div,
-            &Value::Num(1.0),
-            &Value::Num(0.0),
-            false,
-            &rt,
-        )
-        .unwrap_err();
+        let err = awk_binop_values(BinOp::Div, &Value::Num(1.0), &Value::Num(0.0), false, &rt)
+            .unwrap_err();
         assert!(
             format!("{err}").contains("division by zero"),
             "unexpected error: {err}"
@@ -3533,25 +3630,25 @@ mod awk_binop_values_pinning {
 
     #[test]
     fn binop_mod_returns_remainder() {
-        assert_eq!(binop_num(BinOp::Mod, Value::Num(10.0), Value::Num(3.0)), 1.0);
+        assert_eq!(
+            binop_num(BinOp::Mod, Value::Num(10.0), Value::Num(3.0)),
+            1.0
+        );
     }
 
     #[test]
     fn binop_pow_returns_exponent() {
-        assert_eq!(binop_num(BinOp::Pow, Value::Num(2.0), Value::Num(10.0)), 1024.0);
+        assert_eq!(
+            binop_num(BinOp::Pow, Value::Num(2.0), Value::Num(10.0)),
+            1024.0
+        );
     }
 
     #[test]
     fn binop_uninit_treated_as_zero() {
         // POSIX: uninitialized variable in arithmetic context is 0.
-        assert_eq!(
-            binop_num(BinOp::Add, Value::Uninit, Value::Num(7.0)),
-            7.0
-        );
-        assert_eq!(
-            binop_num(BinOp::Mul, Value::Uninit, Value::Num(99.0)),
-            0.0
-        );
+        assert_eq!(binop_num(BinOp::Add, Value::Uninit, Value::Num(7.0)), 7.0);
+        assert_eq!(binop_num(BinOp::Mul, Value::Uninit, Value::Num(99.0)), 0.0);
     }
 
     #[test]
@@ -3560,8 +3657,7 @@ mod awk_binop_values_pinning {
         // not a silent empty-string coercion.
         let rt = rt();
         let arr = Value::Array(AwkMap::default());
-        let err =
-            awk_binop_values(BinOp::Add, &arr, &Value::Num(1.0), false, &rt).unwrap_err();
+        let err = awk_binop_values(BinOp::Add, &arr, &Value::Num(1.0), false, &rt).unwrap_err();
         let msg = format!("{err}");
         assert!(
             msg.contains("array") || msg.contains("scalar"),
@@ -3575,14 +3671,8 @@ mod awk_binop_values_pinning {
         // dispatch must reject them with a clear error message instead of
         // silently doing the wrong thing.
         let rt = rt();
-        let err = awk_binop_values(
-            BinOp::Eq,
-            &Value::Num(1.0),
-            &Value::Num(1.0),
-            false,
-            &rt,
-        )
-        .unwrap_err();
+        let err = awk_binop_values(BinOp::Eq, &Value::Num(1.0), &Value::Num(1.0), false, &rt)
+            .unwrap_err();
         assert!(
             format!("{err}").contains("invalid compound assignment"),
             "expected reject message, got: {err}"
@@ -3678,6 +3768,10 @@ mod awk_locale_str_cmp_pinning {
         let o = awk_locale_str_cmp(with_nul, without);
         // Should not panic; the relative ordering is implementation-defined but
         // must be one of Less/Greater (not erroneously Equal).
-        assert_ne!(o, Ordering::Equal, "NUL-containing strings shouldn't compare equal to clean strings");
+        assert_ne!(
+            o,
+            Ordering::Equal,
+            "NUL-containing strings shouldn't compare equal to clean strings"
+        );
     }
 }

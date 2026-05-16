@@ -2688,7 +2688,11 @@ mod peephole_pinning {
     fn compile_begin_ops(src: &str) -> Vec<Op> {
         let prog = parse_program(src).unwrap();
         let cp = Compiler::compile_program(&prog).unwrap();
-        cp.begin_chunks.into_iter().next().map(|c: Chunk| c.ops).unwrap_or_default()
+        cp.begin_chunks
+            .into_iter()
+            .next()
+            .map(|c: Chunk| c.ops)
+            .unwrap_or_default()
     }
 
     fn contains_op(ops: &[Op], pred: impl Fn(&Op) -> bool) -> bool {

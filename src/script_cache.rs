@@ -637,7 +637,11 @@ mod tests {
         std::fs::write(&script_path, "BEGIN { 1 }").unwrap();
         let (s, ns) = file_mtime(&script_path).unwrap();
 
-        let wrong_width = if std::mem::size_of::<usize>() == 8 { 4 } else { 8 };
+        let wrong_width = if std::mem::size_of::<usize>() == 8 {
+            4
+        } else {
+            8
+        };
         let header = ShardHeader {
             magic: SHARD_MAGIC,
             format_version: SHARD_FORMAT_VERSION,
@@ -773,14 +777,20 @@ mod tests {
         let cache = ScriptCache::open(&cache_path).unwrap();
 
         // Three distinct scripts so the entries are independent.
-        for (i, src) in ["BEGIN { 1 }", "BEGIN { print 2 }", "BEGIN { x = 3; print x }"]
-            .iter()
-            .enumerate()
+        for (i, src) in [
+            "BEGIN { 1 }",
+            "BEGIN { print 2 }",
+            "BEGIN { x = 3; print x }",
+        ]
+        .iter()
+        .enumerate()
         {
             let p = dir.path().join(format!("s{i}.awk"));
             std::fs::write(&p, src).unwrap();
             let (s, ns) = file_mtime(&p).unwrap();
-            cache.put(&p.to_string_lossy(), s, ns, &compile(src)).unwrap();
+            cache
+                .put(&p.to_string_lossy(), s, ns, &compile(src))
+                .unwrap();
         }
 
         let (count, bytes) = cache.stats();
@@ -804,7 +814,10 @@ mod tests {
         std::fs::write(&p, "{ print $1 }").unwrap();
         let (s, ns) = file_mtime(&p).unwrap();
         let cp = compile("{ print $1 }");
-        assert!(cp.parallel_safe, "control: simple field-print is parallel-safe");
+        assert!(
+            cp.parallel_safe,
+            "control: simple field-print is parallel-safe"
+        );
         cache.put(&p.to_string_lossy(), s, ns, &cp).unwrap();
         let loaded = cache.get(&p.to_string_lossy(), s, ns).unwrap();
         assert!(

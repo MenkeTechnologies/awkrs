@@ -826,10 +826,7 @@ mod tests {
         rt.array_set("t", "k".into(), Value::Str("v".into()));
         assert_eq!(awk_typeof_array_elem(&rt, "t", "k"), "string");
         assert_eq!(awk_typeof_array_elem(&rt, "t", "missing"), "unassigned");
-        assert_eq!(
-            awk_typeof_array_elem(&rt, "not_array", "k"),
-            "unassigned"
-        );
+        assert_eq!(awk_typeof_array_elem(&rt, "not_array", "k"), "unassigned");
     }
 
     #[test]
@@ -991,6 +988,60 @@ mod tests {
         )
         .unwrap_err();
         assert!(e.to_string().contains("gensub"), "{e}");
+    }
+
+    // ── Bitwise builtins: pin gawk bitop semantics ───────────────────────────
+    //
+    // gawk truncates operands to u64 before applying. Negative numbers wrap
+    // (twos complement). Shifts mask the count to 6 bits (mod 64).
+
+    #[test]
+    fn awk_and_clears_complementary_bits() {
+        assert_eq!(super::awk_and(0xFF as f64, 0x0F as f64), 0x0F as f64);
+        assert_eq!(super::awk_and(0xFF as f64, 0x00 as f64), 0.0);
+    }
+
+    #[test]
+    fn awk_or_sets_all_bits() {
+        assert_eq!(super::awk_or(0xF0 as f64, 0x0F as f64), 0xFF as f64);
+    }
+
+    #[test]
+    fn awk_xor_toggles_bits() {
+        assert_eq!(super::awk_xor(0xFF as f64, 0x0F as f64), 0xF0 as f64);
+        assert_eq!(super::awk_xor(0xAA as f64, 0xAA as f64), 0.0);
+    }
+
+    #[test]
+    fn awk_lshift_shifts_left() {
+        assert_eq!(super::awk_lshift(1.0, 4.0), 16.0);
+        assert_eq!(super::awk_lshift(1.0, 0.0), 1.0);
+    }
+
+    #[test]
+    fn awk_rshift_shifts_right() {
+        assert_eq!(super::awk_rshift(16.0, 4.0), 1.0);
+        assert_eq!(super::awk_rshift(255.0, 1.0), 127.0);
+    }
+
+    #[test]
+    fn awk_shift_count_masked_to_six_bits() {
+        // Shift count 64 should mask to 0 (no shift), not panic/overflow.
+        assert_eq!(super::awk_lshift(1.0, 64.0), 1.0);
+        assert_eq!(super::awk_rshift(4.0, 64.0), 4.0);
+    }
+
+    #[test]
+    fn awk_compl_flips_all_bits() {
+        // !0 as u64 = u64::MAX, but as i64 = -1, displayed as f64 = -1.0
+        assert_eq!(super::awk_compl(0.0), -1.0);
+        // !1 = u64::MAX - 1, as i64 = -2
+        assert_eq!(super::awk_compl(1.0), -2.0);
+    }
+
+    #[test]
+    fn awk_and_zero_with_anything_is_zero() {
+        assert_eq!(super::awk_and(0.0, 0xFFFF_FFFF_FFFF_FFFF_u64 as f64), 0.0);
     }
 
     #[test]

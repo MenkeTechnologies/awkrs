@@ -250,8 +250,8 @@ impl<'a> Lexer<'a> {
                                 // (matches gawk's "stray backslash" behavior).
                                 s.push('x');
                             } else {
-                                let v = u8::from_str_radix(&hex, 16)
-                                    .expect("validated hex digits") as u32;
+                                let v = u8::from_str_radix(&hex, 16).expect("validated hex digits")
+                                    as u32;
                                 if let Some(ch) = char::from_u32(v) {
                                     s.push(ch);
                                 } else {
@@ -271,8 +271,7 @@ impl<'a> Lexer<'a> {
                                     _ => break,
                                 }
                             }
-                            let v = u32::from_str_radix(&oct, 8)
-                                .expect("validated octal digits");
+                            let v = u32::from_str_radix(&oct, 8).expect("validated octal digits");
                             if let Some(ch) = char::from_u32(v.min(0xFF)) {
                                 s.push(ch);
                             } else {
