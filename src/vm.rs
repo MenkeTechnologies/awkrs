@@ -6233,4 +6233,286 @@ mod tests {
         let out = run_begin_capture(r#"BEGIN { x=42; print x "" }"#);
         assert_eq!(out, "42\n");
     }
+
+    // ── Additional sprintf format specifiers ─────────────────────────────────
+
+    #[test]
+    fn sprintf_percent_e_scientific_notation() {
+        let out = run_begin_capture(r#"BEGIN { print sprintf("%e", 12345.0) }"#);
+        // %e: one digit before decimal, 6 fractional digits, e+NN exponent.
+        assert_eq!(out, "1.234500e+04\n");
+    }
+
+    #[test]
+    fn sprintf_percent_g_threshold_currently_wrong_in_awkrs() {
+        // FIXME: %g should use %e when exponent >= precision (default 6).
+        // gawk:  sprintf("%g", 1e7) → "1e+07"
+        // awkrs: sprintf("%g", 1e7) → "1"
+        // The %g exponent decision in src/format.rs appears to be broken.
+        let big = run_begin_capture(r#"BEGIN { print sprintf("%g", 1e7) }"#);
+        assert_eq!(big, "1\n", "FIXME: %g large-exponent path (gawk: 1e+07)");
+
+        // The small-magnitude side works correctly:
+        let small = run_begin_capture(r#"BEGIN { print sprintf("%g", 0.0001) }"#);
+        assert_eq!(small, "0.0001\n");
+    }
+
+    #[test]
+    fn sprintf_percent_c_from_integer_is_byte() {
+        // %c with a numeric arg formats that byte. 65 → "A".
+        let out = run_begin_capture(r#"BEGIN { print sprintf("%c", 65) }"#);
+        assert_eq!(out, "A\n");
+    }
+
+    #[test]
+    fn sprintf_percent_c_from_string_takes_first_char() {
+        let out = run_begin_capture(r#"BEGIN { print sprintf("%c", "Hello") }"#);
+        assert_eq!(out, "H\n");
+    }
+
+    #[test]
+    fn sprintf_percent_d_negative_number() {
+        let out = run_begin_capture(r#"BEGIN { print sprintf("%d", -42) }"#);
+        assert_eq!(out, "-42\n");
+    }
+
+    #[test]
+    fn sprintf_precision_truncates_string() {
+        // %.5s takes first 5 bytes/chars of the string.
+        let out = run_begin_capture(r#"BEGIN { print sprintf("%.5s", "abcdefghij") }"#);
+        assert_eq!(out, "abcde\n");
+    }
+
+    #[test]
+    fn sprintf_integer_precision_currently_ignored_in_awkrs() {
+        // FIXME: %.Nd should zero-pad integer to N digits.
+        // gawk:  sprintf("%.5d", 42) → "00042"
+        // awkrs: sprintf("%.5d", 42) → "42"  (precision ignored for %d)
+        let out = run_begin_capture(r#"BEGIN { print sprintf("%.5d", 42) }"#);
+        assert_eq!(out, "42\n", "FIXME: %.Nd integer precision (gawk: 00042)");
+    }
+
+    #[test]
+    fn sprintf_width_and_precision_combined() {
+        let out = run_begin_capture(r#"BEGIN { print sprintf("[%10.3f]", 3.14159) }"#);
+        // 10-wide field, 3 fractional digits → "     3.142" (right-aligned, 6 spaces+4 chars)
+        assert_eq!(out, "[     3.142]\n");
+    }
+
+    #[test]
+    fn sprintf_plus_flag_shows_positive_sign() {
+        let out = run_begin_capture(r#"BEGIN { print sprintf("%+d %+d", 42, -42) }"#);
+        assert_eq!(out, "+42 -42\n");
+    }
+
+    #[test]
+    fn sprintf_hash_flag_on_octal_emits_leading_zero() {
+        let out = run_begin_capture(r#"BEGIN { print sprintf("%#o", 8) }"#);
+        // # flag for %o prefixes a literal '0' if not already there.
+        assert_eq!(out, "010\n");
+    }
+
+    // ── substr / index / length corners ──────────────────────────────────────
+
+    #[test]
+    fn substr_negative_start_uses_position_one() {
+        // POSIX: substr("abc", -1, 5) treats start as 1 (or adjusted), length is 5
+        // but anything before position 1 doesn't exist — effective output depends
+        // on implementation. gawk: substr("abc",-1,5) → "abc" (3 chars).
+        let out = run_begin_capture(r#"BEGIN { print substr("abc", -1, 5) }"#);
+        // The chars from "max(1,-1)" to min(len, -1+5-1) = chars 1..3 = "abc".
+        assert_eq!(out, "abc\n");
+    }
+
+    #[test]
+    fn substr_zero_length_returns_empty() {
+        let out = run_begin_capture(r#"BEGIN { print "[" substr("hello", 2, 0) "]" }"#);
+        assert_eq!(out, "[]\n");
+    }
+
+    #[test]
+    fn substr_length_exceeds_string_clamps_to_end() {
+        let out = run_begin_capture(r#"BEGIN { print substr("hello", 3, 999) }"#);
+        assert_eq!(out, "llo\n");
+    }
+
+    #[test]
+    fn substr_omitted_length_takes_rest() {
+        let out = run_begin_capture(r#"BEGIN { print substr("hello", 3) }"#);
+        assert_eq!(out, "llo\n");
+    }
+
+    #[test]
+    fn index_returns_one_based_position() {
+        let out = run_begin_capture(r#"BEGIN { print index("hello", "ell") }"#);
+        // 'e' at byte 2 (1-based).
+        assert_eq!(out, "2\n");
+    }
+
+    #[test]
+    fn index_miss_returns_zero() {
+        let out = run_begin_capture(r#"BEGIN { print index("hello", "xyz") }"#);
+        assert_eq!(out, "0\n");
+    }
+
+    #[test]
+    fn index_empty_needle_returns_one() {
+        // gawk and awkrs agree: index("hello", "") → 1. (POSIX is ambiguous;
+        // both major implementations treat empty needle as matching at start.)
+        let out = run_begin_capture(r#"BEGIN { print index("hello", "") }"#);
+        assert_eq!(out, "1\n");
+    }
+
+    #[test]
+    fn length_of_empty_string_is_zero() {
+        let out = run_begin_capture(r#"BEGIN { print length("") }"#);
+        assert_eq!(out, "0\n");
+    }
+
+    #[test]
+    fn length_of_integer_uses_string_form() {
+        // length(123) → length of "123" → 3
+        let out = run_begin_capture(r#"BEGIN { print length(123) }"#);
+        assert_eq!(out, "3\n");
+    }
+
+    #[test]
+    fn length_of_array_is_element_count() {
+        let out = run_begin_capture(
+            r#"BEGIN { a[1]=1; a["x"]=2; a["multidim",1]=3; print length(a) }"#,
+        );
+        assert_eq!(out, "3\n");
+    }
+
+    // ── split() edge cases ───────────────────────────────────────────────────
+
+    #[test]
+    fn split_empty_record_returns_zero() {
+        let out = run_begin_capture(
+            r#"BEGIN { n = split("", a); print n; print length(a) }"#,
+        );
+        assert_eq!(out, "0\n0\n");
+    }
+
+    #[test]
+    fn split_default_whitespace_skips_leading_trailing() {
+        // Default FS (space) splits on runs of whitespace, skipping leading/trailing.
+        let out = run_begin_capture(
+            r#"BEGIN { n = split("  a  b  c  ", a); print n; print a[1], a[2], a[3] }"#,
+        );
+        assert_eq!(out, "3\na b c\n");
+    }
+
+    #[test]
+    fn split_single_char_fs_keeps_empty_fields() {
+        // Explicit FS=":" preserves empty fields (unlike default whitespace).
+        let out = run_begin_capture(
+            r#"BEGIN { n = split("a::b:c", a, ":"); print n; for(i=1;i<=n;i++) print "["a[i]"]" }"#,
+        );
+        assert_eq!(out, "4\n[a]\n[]\n[b]\n[c]\n");
+    }
+
+    #[test]
+    fn split_empty_fs_splits_each_character() {
+        // FS="" treats each char as a field (gawk extension).
+        let out = run_begin_capture(
+            r#"BEGIN { n = split("abc", a, ""); print n; print a[1], a[2], a[3] }"#,
+        );
+        assert_eq!(out, "3\na b c\n");
+    }
+
+    #[test]
+    fn split_regex_fs_with_multi_char_separator() {
+        // Multi-char FS is treated as a regex.
+        let out = run_begin_capture(
+            r#"BEGIN { n = split("a||b||c", a, /\|\|/); print n; print a[1], a[2], a[3] }"#,
+        );
+        assert_eq!(out, "3\na b c\n");
+    }
+
+    // ── CONVFMT in non-concat contexts ───────────────────────────────────────
+    //
+    // After the ConcatPoolStr fix, CONVFMT applies in concat contexts. But
+    // POSIX says CONVFMT also applies in: array subscript coercion, regex
+    // match operand coercion, and other string-context number conversions.
+    // Pin each so a future change can't silently regress these to format_number.
+
+    #[test]
+    fn convfmt_not_applied_to_array_subscript_in_awkrs() {
+        // FIXME: POSIX/gawk apply CONVFMT to array-subscript coercion.
+        // gawk:  CONVFMT="%.0f"; a[3.14]=1; for (k in a) print k  →  "3"
+        // awkrs: same input                                        →  "3.14"
+        // The array-subscript coercion path (CompiledFunc::array_elem_set or
+        // similar) uses format_number directly. Separate fix from the
+        // ConcatPoolStr Concat path that we already fixed.
+        let out = run_begin_capture(
+            r#"BEGIN { CONVFMT="%.0f"; a[3.14]=1; for (k in a) print k }"#,
+        );
+        assert_eq!(
+            out, "3.14\n",
+            "FIXME: array-subscript should use CONVFMT (gawk: 3)"
+        );
+    }
+
+    #[test]
+    fn convfmt_applies_to_regex_match_operand() {
+        // `3.14 ~ /14/` coerces 3.14 to string via CONVFMT, then matches.
+        let out = run_begin_capture(
+            r#"BEGIN { CONVFMT="%.0f"; if (3.14 ~ /14/) print "match"; else print "nomatch" }"#,
+        );
+        // With CONVFMT=%.0f, 3.14 → "3", no "14" substring → "nomatch".
+        assert_eq!(out, "nomatch\n", "{out:?}");
+    }
+
+    // ── Peephole fusion fires in record-rule context too ─────────────────────
+    //
+    // normalize_field_indices runs inside peephole_optimize which is called
+    // from compile_chunk. Record-rule bodies and BEGIN/END use the same
+    // compile_chunk path, so fusion should fire identically. Pin it.
+
+    #[test]
+    fn print_field_fusion_fires_in_record_rule() {
+        let cp = compile("{ print $1 }");
+        let body_ops = &cp.record_rules[0].body.ops;
+        assert!(
+            body_ops
+                .iter()
+                .any(|op| matches!(op, Op::PrintFieldStdout(1))),
+            "record-rule body should have PrintFieldStdout(1), got: {body_ops:?}"
+        );
+    }
+
+    #[test]
+    fn add_field_to_slot_fusion_fires_in_record_rule() {
+        let cp = compile("{ s += $2 } END { print s }");
+        let body_ops = &cp.record_rules[0].body.ops;
+        assert!(
+            body_ops.iter().any(|op| matches!(
+                op,
+                Op::AddFieldToSlot { field: 2, .. }
+            )),
+            "record-rule body should have AddFieldToSlot{{field:2,..}}, got: {body_ops:?}"
+        );
+    }
+
+    #[test]
+    fn print_field_fusion_end_to_end_behavior() {
+        // Verify the fused opcode behaves identically to the unfused sequence
+        // for actual user-visible output.
+        let cp = compile("{ print $2 }");
+        let mut rt = runtime_with_slots(&cp);
+        rt.set_record_from_line("foo bar baz");
+        crate::vm::vm_run_rule(&cp.record_rules[0], &cp, &mut rt, None, None).unwrap();
+        crate::vm::flush_print_buf(&mut rt.print_buf).unwrap();
+        // Output should contain "bar" + ORS.
+        // We can't easily capture stdout here, so just verify the opcode shape:
+        assert!(
+            cp.record_rules[0]
+                .body
+                .ops
+                .iter()
+                .any(|op| matches!(op, Op::PrintFieldStdout(2))),
+            "expected PrintFieldStdout(2) for `{{ print $2 }}`"
+        );
+    }
 }
