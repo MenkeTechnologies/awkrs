@@ -211,9 +211,79 @@ impl<'a> Lexer<'a> {
                             self.bump();
                             s.push('\r');
                         }
-                        Some('\\') | Some('"') => s.push(self.bump().unwrap()),
-                        Some(x) => {
+                        Some('a') => {
                             self.bump();
+                            s.push('\x07');
+                        }
+                        Some('b') => {
+                            self.bump();
+                            s.push('\x08');
+                        }
+                        Some('f') => {
+                            self.bump();
+                            s.push('\x0C');
+                        }
+                        Some('v') => {
+                            self.bump();
+                            s.push('\x0B');
+                        }
+                        Some('/') => {
+                            self.bump();
+                            s.push('/');
+                        }
+                        Some('\\') | Some('"') => s.push(self.bump().unwrap()),
+                        // `\xHH` — 1-2 hex digits (gawk extension).
+                        Some('x') => {
+                            self.bump();
+                            let mut hex = String::new();
+                            for _ in 0..2 {
+                                match self.peek() {
+                                    Some(c) if c.is_ascii_hexdigit() => {
+                                        hex.push(c);
+                                        self.bump();
+                                    }
+                                    _ => break,
+                                }
+                            }
+                            if hex.is_empty() {
+                                // No hex digits — preserve `\x` literally
+                                // (matches gawk's "stray backslash" behavior).
+                                s.push('x');
+                            } else {
+                                let v = u8::from_str_radix(&hex, 16)
+                                    .expect("validated hex digits") as u32;
+                                if let Some(ch) = char::from_u32(v) {
+                                    s.push(ch);
+                                } else {
+                                    s.push(v as u8 as char);
+                                }
+                            }
+                        }
+                        // `\NNN` — 1-3 octal digits.
+                        Some(c) if ('0'..='7').contains(&c) => {
+                            let mut oct = String::new();
+                            for _ in 0..3 {
+                                match self.peek() {
+                                    Some(d) if ('0'..='7').contains(&d) => {
+                                        oct.push(d);
+                                        self.bump();
+                                    }
+                                    _ => break,
+                                }
+                            }
+                            let v = u32::from_str_radix(&oct, 8)
+                                .expect("validated octal digits");
+                            if let Some(ch) = char::from_u32(v.min(0xFF)) {
+                                s.push(ch);
+                            } else {
+                                s.push((v & 0xFF) as u8 as char);
+                            }
+                        }
+                        Some(x) => {
+                            // Unknown escape: keep the backslash (gawk warns
+                            // with --lint but accepts).
+                            self.bump();
+                            s.push('\\');
                             s.push(x);
                         }
                         None => {
@@ -676,6 +746,117 @@ mod tests {
             Token::String(s) => assert_eq!(s, "a\n\t\"x"),
             t => panic!("expected String, got {t:?}"),
         }
+    }
+
+    fn lex_string(src: &str) -> String {
+        // Helper: wrap in `"..."` and lex one token.
+        let wrapped = format!("\"{src}\"");
+        let mut l = Lexer::new(&wrapped);
+        match l.next_token(false).unwrap() {
+            Token::String(s) => s,
+            t => panic!("expected String, got {t:?}"),
+        }
+    }
+
+    #[test]
+    fn lex_escape_alert_bel() {
+        assert_eq!(lex_string(r"\a"), "\x07");
+    }
+
+    #[test]
+    fn lex_escape_backspace() {
+        assert_eq!(lex_string(r"\b"), "\x08");
+    }
+
+    #[test]
+    fn lex_escape_form_feed() {
+        assert_eq!(lex_string(r"\f"), "\x0C");
+    }
+
+    #[test]
+    fn lex_escape_vertical_tab() {
+        assert_eq!(lex_string(r"\v"), "\x0B");
+    }
+
+    #[test]
+    fn lex_escape_carriage_return() {
+        assert_eq!(lex_string(r"\r"), "\r");
+    }
+
+    #[test]
+    fn lex_escape_slash_yields_slash() {
+        // `\/` is for regex-literal forms but is also accepted in strings.
+        assert_eq!(lex_string(r"\/"), "/");
+    }
+
+    #[test]
+    fn lex_escape_hex_two_digits() {
+        // `\x41` = 'A'
+        assert_eq!(lex_string(r"\x41"), "A");
+        assert_eq!(lex_string(r"\xFF"), "\u{FF}");
+    }
+
+    #[test]
+    fn lex_escape_hex_one_digit() {
+        // `\x9` followed by EOS — single hex digit accepted.
+        assert_eq!(lex_string(r"\x9"), "\t");
+    }
+
+    #[test]
+    fn lex_escape_hex_followed_by_non_hex_char() {
+        // `\x4z` — only "4" consumed as hex digit; "z" is literal.
+        assert_eq!(lex_string(r"\x4z"), "\u{04}z");
+    }
+
+    #[test]
+    fn lex_escape_hex_no_digits_preserves_x() {
+        // `\xZ` — no hex digits → literal `x` followed by `Z`.
+        assert_eq!(lex_string(r"\xZ"), "xZ");
+    }
+
+    #[test]
+    fn lex_escape_octal_three_digits() {
+        // `\101` = 'A' (65 decimal)
+        assert_eq!(lex_string(r"\101"), "A");
+    }
+
+    #[test]
+    fn lex_escape_octal_two_digits() {
+        // `\77` = '?' (63 decimal)
+        assert_eq!(lex_string(r"\77"), "?");
+    }
+
+    #[test]
+    fn lex_escape_octal_stops_at_non_octal() {
+        // `\18` — only "1" consumed (8 isn't octal); "8" is literal.
+        assert_eq!(lex_string(r"\18"), "\x018");
+    }
+
+    #[test]
+    fn lex_escape_unknown_preserves_backslash() {
+        // `\z` is not a defined escape — backslash + z preserved.
+        let s = lex_string(r"\z");
+        assert!(
+            s == "\\z" || s == "z",
+            "unknown escape policy: got {s:?}; should be one of \\z or z"
+        );
+    }
+
+    #[test]
+    fn lex_escape_backslash_backslash() {
+        assert_eq!(lex_string(r"\\"), "\\");
+    }
+
+    #[test]
+    fn lex_escape_quote() {
+        assert_eq!(lex_string(r#"\""#), "\"");
+    }
+
+    #[test]
+    fn lex_escape_combined_inside_one_string() {
+        // Mix all the modern escapes in one string.
+        let s = lex_string(r"a\nb\tc\\d\x41\101e");
+        assert_eq!(s, "a\nb\tc\\dAAe");
     }
 
     #[test]

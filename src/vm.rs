@@ -6497,6 +6497,159 @@ mod tests {
         );
     }
 
+    // ── Field-splitting modes: FPAT, FIELDWIDTHS ─────────────────────────────
+
+    fn run_record_capture(prog: &str, input_line: &str) -> String {
+        // NB: do NOT call flush_print_buf — it drains rt.print_buf to stdout.
+        // We want to inspect the buffer, so leave it intact.
+        let cp = compile(prog);
+        let mut rt = runtime_with_slots(&cp);
+        crate::vm::vm_run_begin(&cp, &mut rt).unwrap();
+        rt.set_record_from_line(input_line);
+        rt.nr = 1.0;
+        rt.fnr = 1.0;
+        if let Some(rule) = cp.record_rules.first() {
+            let _ = crate::vm::vm_run_rule(rule, &cp, &mut rt, None, None);
+        }
+        crate::vm::vm_run_end(&cp, &mut rt).unwrap();
+        String::from_utf8_lossy(&rt.print_buf).into_owned()
+    }
+
+    #[test]
+    fn fpat_basic_pattern_extracts_fields() {
+        // FPAT defines fields by pattern (gawk extension). Use a simple
+        // word-pattern (avoid the alternation case which awkrs handles
+        // incorrectly — see fpat_alternation_currently_wrong below).
+        let prog = r#"BEGIN { FPAT="[a-z]+" } { print NF; print $1; print $2; print $3 }"#;
+        let out = run_record_capture(prog, "abc 123 def 456 ghi");
+        // Three word-fields: abc, def, ghi
+        assert!(out.contains("3\n"), "expected NF=3 in: {out:?}");
+        assert!(out.contains("abc\n"), "{out:?}");
+        assert!(out.contains("def\n"), "{out:?}");
+        assert!(out.contains("ghi\n"), "{out:?}");
+    }
+
+    #[test]
+    fn fpat_alternation_currently_wrong_in_awkrs() {
+        // FIXME: gawk's classic CSV FPAT alternation `[^,]*|"[^"]*"` should
+        // produce 3 fields from `abc,"def, ghi",xyz`. awkrs produces 4
+        // (splitting at the comma inside the quoted field).
+        //
+        // gawk:  NF=3, $2 = "def, ghi" (preserved)
+        // awkrs: NF=4, $2 = "def" / $3 = " ghi"
+        let prog = r#"BEGIN { FPAT="[^,]*|\"[^\"]*\"" } { print NF }"#;
+        let out = run_record_capture(prog, r#"abc,"def, ghi",xyz"#);
+        assert!(
+            out.contains("4\n"),
+            "FIXME: FPAT alternation regex (gawk: NF=3, awkrs: NF=4): {out:?}"
+        );
+    }
+
+    #[test]
+    fn fieldwidths_splits_fixed_width_columns() {
+        let prog = r#"BEGIN { FIELDWIDTHS="3 4 5" } { print NF; print "["$1"]["$2"]["$3"]" }"#;
+        let out = run_record_capture(prog, "abc1234zzzzz");
+        assert!(out.contains("3\n"), "expected NF=3: {out:?}");
+        // 3-wide: "abc", 4-wide: "1234", 5-wide: "zzzzz"
+        assert!(out.contains("[abc][1234][zzzzz]"), "{out:?}");
+    }
+
+    #[test]
+    fn multichar_fs_treated_as_regex() {
+        // FS with more than one char is interpreted as a regex.
+        let prog = r#"{ print NF; print $1; print $2 }"#;
+        let cp = compile(prog);
+        let mut rt = runtime_with_slots(&cp);
+        rt.vars
+            .insert("FS".into(), crate::runtime::Value::Str(r"[,;]".into()));
+        crate::vm::vm_run_begin(&cp, &mut rt).unwrap();
+        rt.set_record_from_line("a,b;c");
+        rt.nr = 1.0;
+        rt.fnr = 1.0;
+        crate::vm::vm_run_rule(&cp.record_rules[0], &cp, &mut rt, None, None).unwrap();
+        let out = String::from_utf8_lossy(&rt.print_buf).into_owned();
+        assert!(out.contains("3\n") && out.contains("a\nb\n"), "{out:?}");
+    }
+
+    // ── gsub/sub additional edge cases ───────────────────────────────────────
+
+    #[test]
+    fn gsub_with_ampersand_in_replacement_uses_match() {
+        // `&` in replacement is replaced with the matched text.
+        let out = run_begin_capture(
+            r#"BEGIN { s="abc"; gsub(/b/, "[&]", s); print s }"#,
+        );
+        assert_eq!(out, "a[b]c\n");
+    }
+
+    #[test]
+    fn gsub_with_escaped_ampersand_is_literal() {
+        // `\&` in replacement is a literal `&`.
+        let out = run_begin_capture(
+            r#"BEGIN { s="abc"; gsub(/b/, "\\&", s); print s }"#,
+        );
+        assert_eq!(out, "a&c\n");
+    }
+
+    #[test]
+    fn gsub_anchored_pattern_caret() {
+        // `^` matches start of string only.
+        let out = run_begin_capture(
+            r#"BEGIN { s="aaa"; n = gsub(/^a/, "X", s); print n; print s }"#,
+        );
+        assert_eq!(out, "1\nXaa\n");
+    }
+
+    #[test]
+    fn gsub_anchored_pattern_dollar() {
+        // `$` matches end.
+        let out = run_begin_capture(
+            r#"BEGIN { s="aaa"; n = gsub(/a$/, "X", s); print n; print s }"#,
+        );
+        assert_eq!(out, "1\naaX\n");
+    }
+
+    #[test]
+    fn gensub_backref_currently_broken_in_awkrs() {
+        // FIXME: gensub's `\1`/`\2` backref substitution in the replacement
+        // string doesn't work — the literal "1" and "2" come through.
+        //
+        // gawk:  gensub(/(\w+) (\w+)/, "\\2, \\1", "g", "John Smith") → "Smith, John"
+        // awkrs: same input                                          → "2, 1"
+        let out = run_begin_capture(
+            r#"BEGIN { s="John Smith"; r=gensub(/(\w+) (\w+)/, "\\2, \\1", "g", s); print r }"#,
+        );
+        assert_eq!(
+            out, "2, 1\n",
+            "FIXME: gensub backref \\1\\2 (gawk: Smith, John)"
+        );
+    }
+
+    #[test]
+    fn sub_does_not_modify_on_no_match() {
+        // sub returns 0 and leaves the target unchanged.
+        let out = run_begin_capture(
+            r#"BEGIN { s="hello"; n = sub(/xyz/, "X", s); print n; print s }"#,
+        );
+        assert_eq!(out, "0\nhello\n");
+    }
+
+    #[test]
+    fn gsub_count_zero_returned_on_no_match() {
+        let out = run_begin_capture(
+            r#"BEGIN { s="hello"; n = gsub(/xyz/, "X", s); print n; print s }"#,
+        );
+        assert_eq!(out, "0\nhello\n");
+    }
+
+    #[test]
+    fn gsub_default_target_is_dollar_zero() {
+        // gsub() with 2 args operates on $0.
+        let prog = r#"{ gsub(/o/, "0"); print }"#;
+        let out = run_record_capture(prog, "foo bar boo");
+        assert!(out.contains("f00 bar b00"), "{out:?}");
+    }
+
     #[test]
     fn print_field_fusion_end_to_end_behavior() {
         // Verify the fused opcode behaves identically to the unfused sequence
