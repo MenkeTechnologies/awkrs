@@ -237,28 +237,82 @@ fn replace_all_awk(re: &Regex, s: &str, repl: &str, repl_has_special: bool) -> (
     (out, count)
 }
 
-fn replace_nth_awk(re: &Regex, s: &str, repl: &str, repl_has_special: bool, n: usize) -> String {
+/// gensub-specific: replace all matches, expanding `\N` backrefs (gawk extension).
+fn replace_all_gensub(re: &Regex, s: &str, repl: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut last = 0;
+    for caps in re.captures_iter(s) {
+        let whole = caps.get(0).expect("group 0 always present");
+        out.push_str(&s[last..whole.start()]);
+        out.push_str(&expand_repl_with_caps(repl, &caps));
+        last = whole.end();
+    }
+    out.push_str(&s[last..]);
+    out
+}
+
+/// gensub-specific: replace the Nth occurrence (1-based) with `\N` backref support.
+fn replace_nth_gensub(re: &Regex, s: &str, repl: &str, n: usize) -> String {
     if n == 0 {
-        let (out, _) = replace_all_awk(re, s, repl, repl_has_special);
-        return out;
+        return replace_all_gensub(re, s, repl);
     }
     let mut i = 0usize;
-    for m in re.find_iter(s) {
+    for caps in re.captures_iter(s) {
         i += 1;
         if i == n {
-            let piece = if repl_has_special {
-                expand_repl(repl, m.as_str())
-            } else {
-                repl.to_string()
-            };
+            let whole = caps.get(0).expect("group 0 always present");
+            let piece = expand_repl_with_caps(repl, &caps);
             let mut out = String::with_capacity(s.len());
-            out.push_str(&s[..m.start()]);
+            out.push_str(&s[..whole.start()]);
             out.push_str(&piece);
-            out.push_str(&s[m.end()..]);
+            out.push_str(&s[whole.end()..]);
             return out;
         }
     }
     s.to_string()
+}
+
+/// Expand `&` (whole match) and `\N` (capture group N, 1..=9) backrefs in a
+/// gensub replacement. `\\` is a literal backslash; `\&` is a literal ampersand.
+fn expand_repl_with_caps(repl: &str, caps: &regex::Captures<'_>) -> String {
+    let matched = caps.get(0).map(|m| m.as_str()).unwrap_or("");
+    let mut out = String::new();
+    let mut chars = repl.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '&' {
+            out.push_str(matched);
+        } else if c == '\\' {
+            match chars.peek() {
+                Some('&') => {
+                    chars.next();
+                    out.push('&');
+                }
+                Some('\\') => {
+                    chars.next();
+                    out.push('\\');
+                }
+                Some(d) if d.is_ascii_digit() && *d != '0' => {
+                    // \1 .. \9 — capture group reference. (\0 is undefined; gawk
+                    // treats it as a literal "0".)
+                    let n = d.to_digit(10).unwrap() as usize;
+                    chars.next();
+                    if let Some(g) = caps.get(n) {
+                        out.push_str(g.as_str());
+                    }
+                    // Group missing → empty substitution (gawk-compatible).
+                }
+                Some(x) => {
+                    let x = *x;
+                    chars.next();
+                    out.push(x);
+                }
+                None => out.push('\\'),
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// gawk `gensub(ere, repl, how [, target])` — returns modified string.
@@ -278,7 +332,6 @@ pub fn awk_gensub(
     rt.ensure_regex(ere).map_err(Error::Runtime)?;
     let re = rt.regex_ref(ere).clone();
     let s_ref = s.as_str();
-    let repl_has_special = repl.contains('&') || repl.contains('\\');
     match how {
         Value::Str(h) | Value::StrLit(h) => {
             let h = h.trim();
@@ -288,8 +341,10 @@ pub fn awk_gensub(
                 ));
             }
             if h.starts_with('g') || h.starts_with('G') {
-                let (out, _) = replace_all_awk(&re, s_ref, repl, repl_has_special);
-                Ok(out)
+                // gensub uses gawk's backref-aware replacement (`\1`..`\9` +
+                // `&` for whole match) — distinct from gsub/sub which don't
+                // support backrefs.
+                Ok(replace_all_gensub(&re, s_ref, repl))
             } else {
                 Err(Error::Runtime(format!(
                     "gensub: string third argument must begin with `g` or `G`, got `{h}`"
@@ -303,13 +358,8 @@ pub fn awk_gensub(
                     "gensub: numeric third argument must be >= 0".into(),
                 ));
             }
-            Ok(replace_nth_awk(
-                &re,
-                s_ref,
-                repl,
-                repl_has_special,
-                which as usize,
-            ))
+            // Use backref-aware replacement (gawk gensub semantics).
+            Ok(replace_nth_gensub(&re, s_ref, repl, which as usize))
         }
         _ => Err(Error::Runtime(
             "gensub: third argument must be string or number".into(),

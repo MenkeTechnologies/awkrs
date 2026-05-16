@@ -661,6 +661,65 @@ fn parse_ascii_integer(s: &str) -> Option<i64> {
 
 /// Split `record` using gawk-style **FPAT** (each regex match is one field).
 /// Returns `false` if `fpat` is not a valid regex (caller may fall back to FS).
+/// Split a top-level alternation regex into its alternatives (split on `|`
+/// outside of `[]` and `()`). Backslash-escaped chars are passed through
+/// without splitting. Returns the original pattern as a single element when
+/// no top-level `|` is present.
+fn split_toplevel_alternatives(pat: &str) -> Vec<String> {
+    let mut alts = Vec::new();
+    let mut cur = String::new();
+    let mut brackets = 0i32;
+    let mut parens = 0i32;
+    let mut chars = pat.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => {
+                cur.push(c);
+                if let Some(&next) = chars.peek() {
+                    cur.push(next);
+                    chars.next();
+                }
+            }
+            '[' => {
+                brackets += 1;
+                cur.push(c);
+            }
+            ']' if brackets > 0 => {
+                brackets -= 1;
+                cur.push(c);
+            }
+            '(' => {
+                parens += 1;
+                cur.push(c);
+            }
+            ')' if parens > 0 => {
+                parens -= 1;
+                cur.push(c);
+            }
+            '|' if brackets == 0 && parens == 0 => {
+                alts.push(std::mem::take(&mut cur));
+            }
+            _ => cur.push(c),
+        }
+    }
+    alts.push(cur);
+    alts
+}
+
+/// FPAT splitting follows gawk's **leftmost-longest** semantic (POSIX-style),
+/// NOT Rust's regex crate default of leftmost-first. With a pattern like
+/// `[^,]*|"[^"]*"` against `abc,"def, ghi",xyz`, leftmost-first would pick the
+/// first alternative at every position (splitting on commas inside quoted
+/// regions); leftmost-longest correctly preserves quoted fields.
+///
+/// We approximate POSIX semantics by:
+///   1. Splitting the FPAT into top-level alternatives on `|`.
+///   2. At each position, trying every alternative anchored at that position
+///      and picking the longest non-empty match.
+///   3. Skipping positions with no non-empty match.
+///
+/// For a single-alternative pattern this collapses to the original behavior
+/// (with empty-match skipping for safety).
 fn split_fields_fpat(
     record: &str,
     fpat: &str,
@@ -668,16 +727,66 @@ fn split_fields_fpat(
     ignore_case: bool,
 ) -> bool {
     field_ranges.clear();
-    let mut b = RegexBuilder::new(fpat);
-    b.case_insensitive(ignore_case);
-    match b.build() {
-        Ok(re) => {
-            for m in re.find_iter(record) {
-                field_ranges.push((m.start() as u32, m.end() as u32));
-            }
-            true
+    if record.is_empty() {
+        return true;
+    }
+    let alts = split_toplevel_alternatives(fpat);
+    // Compile each alternative anchored to the current position via Rust's
+    // anchored-find API. We compile them once.
+    let mut compiled: Vec<Regex> = Vec::with_capacity(alts.len());
+    for alt in &alts {
+        // Anchor at the start of the candidate substring.
+        let anchored = format!("^(?:{})", alt);
+        let mut b = RegexBuilder::new(&anchored);
+        b.case_insensitive(ignore_case);
+        match b.build() {
+            Ok(re) => compiled.push(re),
+            Err(_) => return false,
         }
-        Err(_) => false,
+    }
+    let n = record.len();
+    let bytes = record.as_bytes();
+    let mut pos = 0usize;
+    while pos < n {
+        let tail = &record[pos..];
+        let mut best_end: Option<usize> = None;
+        for re in &compiled {
+            if let Some(m) = re.find(tail) {
+                // `^(?:…)` ensures m.start() == 0.
+                let end = m.end();
+                if end > 0 && best_end.map_or(true, |b| end > b) {
+                    best_end = Some(end);
+                }
+            }
+        }
+        if let Some(end) = best_end {
+            let abs_end = pos + end;
+            field_ranges.push((pos as u32, abs_end as u32));
+            pos = abs_end;
+        } else {
+            // Advance one char (UTF-8 safe).
+            pos += utf8_char_len_at(bytes, pos);
+        }
+    }
+    true
+}
+
+#[inline]
+fn utf8_char_len_at(bytes: &[u8], pos: usize) -> usize {
+    if pos >= bytes.len() {
+        return 1;
+    }
+    let b = bytes[pos];
+    if b < 0x80 {
+        1
+    } else if b < 0xC0 {
+        1
+    } else if b < 0xE0 {
+        2
+    } else if b < 0xF0 {
+        3
+    } else {
+        4
     }
 }
 

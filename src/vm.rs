@@ -6530,19 +6530,18 @@ mod tests {
     }
 
     #[test]
-    fn fpat_alternation_currently_wrong_in_awkrs() {
-        // FIXME: gawk's classic CSV FPAT alternation `[^,]*|"[^"]*"` should
-        // produce 3 fields from `abc,"def, ghi",xyz`. awkrs produces 4
-        // (splitting at the comma inside the quoted field).
-        //
-        // gawk:  NF=3, $2 = "def, ghi" (preserved)
-        // awkrs: NF=4, $2 = "def" / $3 = " ghi"
-        let prog = r#"BEGIN { FPAT="[^,]*|\"[^\"]*\"" } { print NF }"#;
+    fn fpat_alternation_preserves_quoted_fields() {
+        // gawk's classic CSV FPAT: `[^,]*|"[^"]*"`. Leftmost-longest semantic
+        // is required so the quoted-string alternative wins over the comma-free
+        // run when both could match. Implemented via top-level alternation
+        // splitting + per-position longest-match selection in
+        // runtime.rs::split_fields_fpat.
+        let prog = r#"BEGIN { FPAT="[^,]*|\"[^\"]*\"" } { print NF; print $1; print $2; print $3 }"#;
         let out = run_record_capture(prog, r#"abc,"def, ghi",xyz"#);
-        assert!(
-            out.contains("4\n"),
-            "FIXME: FPAT alternation regex (gawk: NF=3, awkrs: NF=4): {out:?}"
-        );
+        assert!(out.contains("3\n"), "expected NF=3 in: {out:?}");
+        assert!(out.contains("abc\n"), "{out:?}");
+        assert!(out.contains(r#""def, ghi""#), "{out:?}");
+        assert!(out.contains("xyz\n"), "{out:?}");
     }
 
     #[test]
@@ -6610,19 +6609,34 @@ mod tests {
     }
 
     #[test]
-    fn gensub_backref_currently_broken_in_awkrs() {
-        // FIXME: gensub's `\1`/`\2` backref substitution in the replacement
-        // string doesn't work — the literal "1" and "2" come through.
-        //
-        // gawk:  gensub(/(\w+) (\w+)/, "\\2, \\1", "g", "John Smith") → "Smith, John"
-        // awkrs: same input                                          → "2, 1"
+    fn gensub_backref_substitution() {
+        // gensub's `\1` / `\2` etc. refer to capture groups in the regex.
+        // Implemented via expand_repl_with_caps in builtins.rs which uses
+        // captures_iter() to retain group info (find_iter() doesn't).
         let out = run_begin_capture(
             r#"BEGIN { s="John Smith"; r=gensub(/(\w+) (\w+)/, "\\2, \\1", "g", s); print r }"#,
         );
-        assert_eq!(
-            out, "2, 1\n",
-            "FIXME: gensub backref \\1\\2 (gawk: Smith, John)"
+        assert_eq!(out, "Smith, John\n");
+    }
+
+    #[test]
+    fn gensub_backref_with_numeric_occurrence() {
+        // Numeric `how` arg (e.g. 2) replaces only the Nth occurrence — must
+        // still expand backrefs in that one replacement.
+        let out = run_begin_capture(
+            r#"BEGIN { s="aa bb cc"; r=gensub(/(\w+)/, "[\\1]", 2, s); print r }"#,
         );
+        assert_eq!(out, "aa [bb] cc\n");
+    }
+
+    #[test]
+    fn gensub_ampersand_replacement_still_works_alongside_backref() {
+        // `&` and `\N` are independent — both must work after the backref
+        // refactor (replace_all_gensub uses expand_repl_with_caps for both).
+        let out = run_begin_capture(
+            r#"BEGIN { s="abc"; r=gensub(/b/, "[&]", "g", s); print r }"#,
+        );
+        assert_eq!(out, "a[b]c\n");
     }
 
     #[test]
