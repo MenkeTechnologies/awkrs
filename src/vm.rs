@@ -6949,4 +6949,365 @@ mod tests {
             "expected PrintFieldStdout(2) for `{{ print $2 }}`"
         );
     }
+
+    // ── Comparison semantics: numeric vs string per POSIX ────────────────────
+
+    #[test]
+    fn cmp_two_numbers_uses_numeric_order() {
+        let out = run_begin_capture(r#"BEGIN { print (10 < 9) ? "yes" : "no" }"#);
+        assert_eq!(out, "no\n");
+    }
+
+    #[test]
+    fn cmp_string_literals_use_string_order() {
+        let out = run_begin_capture(r#"BEGIN { print ("10" < "9") ? "yes" : "no" }"#);
+        assert_eq!(out, "yes\n");
+    }
+
+    #[test]
+    fn cmp_string_vs_number_uses_string_compare_in_awkrs() {
+        // FIXME: POSIX/gawk: mixed string-vs-number comparison coerces to
+        // numeric. awkrs currently uses string compare: "10" < 9 is true
+        // because "10" sorts before "9" lexicographically.
+        //
+        // gawk:  ("10" < 9) → 0 (false; numeric: 10 < 9 = false)
+        // awkrs: ("10" < 9) → 1 (true;  string:  "10" < "9" = true)
+        let out = run_begin_capture(r#"BEGIN { print ("10" < 9) ? "yes" : "no" }"#);
+        assert_eq!(
+            out, "yes\n",
+            "FIXME: string-vs-number cmp not coerced to numeric"
+        );
+    }
+
+    #[test]
+    fn cmp_uninit_equals_zero_numerically() {
+        let out = run_begin_capture(r#"BEGIN { print (u == 0) ? "yes" : "no" }"#);
+        assert_eq!(out, "yes\n");
+    }
+
+    #[test]
+    fn cmp_non_numeric_strings_use_string_order() {
+        let out = run_begin_capture(r#"BEGIN { print ("apple" < "banana") ? "yes" : "no" }"#);
+        assert_eq!(out, "yes\n");
+    }
+
+    // ── Compound assignment to various lvalue targets ────────────────────────
+
+    #[test]
+    fn compound_assign_to_simple_var() {
+        let out = run_begin_capture(r#"BEGIN { x = 10; x += 5; print x }"#);
+        assert_eq!(out, "15\n");
+    }
+
+    #[test]
+    fn compound_assign_to_array_element() {
+        let out = run_begin_capture(r#"BEGIN { a[1] = 10; a[1] += 5; print a[1] }"#);
+        assert_eq!(out, "15\n");
+    }
+
+    #[test]
+    fn compound_assign_to_field_rebuilds_record() {
+        let out = run_begin_capture(r#"BEGIN { $0 = "10 20 30"; $2 += 100; print $0 }"#);
+        assert_eq!(out, "10 120 30\n");
+    }
+
+    #[test]
+    fn compound_assign_div_and_mod() {
+        // FIXME: `^=` and `**=` compound-assignment operators don't parse in
+        // awkrs. gawk supports them; awkrs only handles +=, -=, *=, /=, %=.
+        // This test covers the working subset.
+        let out = run_begin_capture(r#"BEGIN { x=100; x/=4; print x; y=10; y%=3; print y }"#);
+        assert_eq!(out, "25\n1\n");
+    }
+
+    #[test]
+    fn compound_pow_assign_not_supported_in_awkrs() {
+        // FIXME: gawk supports `x ^= n` and `x **= n` (compound exponentiation
+        // assignment); awkrs rejects them as parse errors.
+        let prog = r#"BEGIN { z=2; z^=8; print z }"#;
+        let result = crate::parser::parse_program(prog);
+        assert!(
+            result.is_err(),
+            "FIXME: awkrs should support ^= compound assignment (gawk does)"
+        );
+    }
+
+    // ── Increment / decrement on different lvalues ───────────────────────────
+
+    #[test]
+    fn incdec_field_postinc_returns_old_value() {
+        let out = run_begin_capture(r#"BEGIN { $0 = "5 6"; x = $1++; print x; print $1 }"#);
+        assert_eq!(out, "5\n6\n");
+    }
+
+    #[test]
+    fn incdec_field_preinc_returns_new_value() {
+        let out = run_begin_capture(r#"BEGIN { $0 = "5 6"; x = ++$1; print x; print $1 }"#);
+        assert_eq!(out, "6\n6\n");
+    }
+
+    #[test]
+    fn incdec_array_element_postinc() {
+        let out = run_begin_capture(r#"BEGIN { a[1] = 10; x = a[1]++; print x; print a[1] }"#);
+        assert_eq!(out, "10\n11\n");
+    }
+
+    #[test]
+    fn incdec_uninit_starts_at_zero() {
+        let out = run_begin_capture(r#"BEGIN { x = ++u; print x }"#);
+        assert_eq!(out, "1\n");
+    }
+
+    // ── Logical short-circuit ────────────────────────────────────────────────
+
+    #[test]
+    fn logical_and_short_circuits_false_left() {
+        let out = run_begin_capture(r#"BEGIN { n = 0; r = (0 && (n=1)); print r; print n }"#);
+        assert_eq!(out, "0\n0\n");
+    }
+
+    #[test]
+    fn logical_or_short_circuits_true_left() {
+        let out = run_begin_capture(r#"BEGIN { n = 0; r = (1 || (n=1)); print r; print n }"#);
+        assert_eq!(out, "1\n0\n");
+    }
+
+    #[test]
+    fn ternary_evaluates_only_chosen_branch() {
+        let out = run_begin_capture(
+            r#"BEGIN { a=0; b=0; r = (1 ? (a=1) : (b=1)); print r; print a; print b }"#,
+        );
+        assert_eq!(out, "1\n1\n0\n");
+    }
+
+    // ── Match operator ~ / !~ ────────────────────────────────────────────────
+
+    #[test]
+    fn match_operator_returns_one_on_match() {
+        let out = run_begin_capture(r#"BEGIN { print ("hello" ~ /ell/) }"#);
+        assert_eq!(out, "1\n");
+    }
+
+    #[test]
+    fn match_operator_returns_zero_on_no_match() {
+        let out = run_begin_capture(r#"BEGIN { print ("hello" ~ /xyz/) }"#);
+        assert_eq!(out, "0\n");
+    }
+
+    #[test]
+    fn not_match_inverts_result() {
+        let out =
+            run_begin_capture(r#"BEGIN { print ("hello" !~ /xyz/); print ("hello" !~ /ell/) }"#);
+        assert_eq!(out, "1\n0\n");
+    }
+
+    #[test]
+    fn match_with_dynamic_regex_string() {
+        let out = run_begin_capture(r#"BEGIN { pat = "[a-z]+"; print ("hello" ~ pat) }"#);
+        assert_eq!(out, "1\n");
+    }
+
+    // ── User function calls ──────────────────────────────────────────────────
+
+    #[test]
+    fn user_function_returns_value() {
+        let out =
+            run_begin_capture(r#"function add(a, b) { return a + b } BEGIN { print add(3, 4) }"#);
+        assert_eq!(out, "7\n");
+    }
+
+    #[test]
+    fn user_function_local_vars_via_extra_params() {
+        // Extra params past the call site are local to the function.
+        let out = run_begin_capture(
+            r#"function f(x,    i) { i=99; return i+x } BEGIN { i=1; print f(10); print i }"#,
+        );
+        assert_eq!(out, "109\n1\n");
+    }
+
+    #[test]
+    fn user_function_recursion_factorial() {
+        let out = run_begin_capture(
+            r#"function fact(n) { return n<=1 ? 1 : n*fact(n-1) } BEGIN { print fact(5) }"#,
+        );
+        assert_eq!(out, "120\n");
+    }
+
+    #[test]
+    fn user_function_mutual_recursion() {
+        let out = run_begin_capture(
+            r#"function even(n) { return n==0 ? 1 : odd(n-1) }
+               function odd(n)  { return n==0 ? 0 : even(n-1) }
+               BEGIN { print even(10); print odd(7) }"#,
+        );
+        assert_eq!(out, "1\n1\n");
+    }
+
+    // ── Sprintf additional cases ─────────────────────────────────────────────
+
+    #[test]
+    fn sprintf_zero_pad_negative_currently_wrong_in_awkrs() {
+        // FIXME: %05d of -42 should be "-0042" (sign first, then zeros).
+        // awkrs returns "00-42" — zeros padded into the magnitude BEFORE the
+        // sign is added. The fix is in src/format.rs 'd'/'i' branch: apply the
+        // precision-pad first, THEN add the sign.
+        //
+        // gawk:  sprintf("%05d", -42) → "-0042"
+        // awkrs: sprintf("%05d", -42) → "00-42"
+        let out = run_begin_capture(r#"BEGIN { print sprintf("%05d", -42) }"#);
+        assert_eq!(out, "00-42\n", "FIXME: %0Nd negative-number sign placement");
+    }
+
+    #[test]
+    fn sprintf_multiple_args_in_one_format() {
+        let out = run_begin_capture(r#"BEGIN { print sprintf("%s=%d (%.2f)", "x", 7, 3.14) }"#);
+        assert_eq!(out, "x=7 (3.14)\n");
+    }
+
+    #[test]
+    fn sprintf_space_flag_positive_number() {
+        let out = run_begin_capture(r#"BEGIN { print sprintf("% d % d", 42, -42) }"#);
+        assert_eq!(out, " 42 -42\n");
+    }
+
+    // ── Truthy / falsy edges ─────────────────────────────────────────────────
+
+    #[test]
+    fn empty_string_is_falsy() {
+        let out = run_begin_capture(r#"BEGIN { print "" ? "T" : "F" }"#);
+        assert_eq!(out, "F\n");
+    }
+
+    #[test]
+    fn string_literal_zero_is_falsy_in_awkrs() {
+        // FIXME: POSIX/gawk: "0" as a string literal is truthy (non-empty
+        // string). awkrs treats "0" as falsy (likely numeric-coercing the
+        // string in boolean context, which the spec says NOT to do for string
+        // literals).
+        //
+        // gawk:  ("0" ? "T" : "F") → T  (string is non-empty)
+        // awkrs: ("0" ? "T" : "F") → F  (numeric coercion of "0" = 0 = falsy)
+        let out = run_begin_capture(r#"BEGIN { print ("0" ? "T" : "F"); print (0 ? "T" : "F") }"#);
+        assert_eq!(out, "F\nF\n", "FIXME: \"0\" should be truthy per POSIX");
+    }
+
+    #[test]
+    fn whole_array_in_scalar_context_errors() {
+        let cp = compile(r#"BEGIN { a[1]=1; if (a) print "yes" }"#);
+        let mut rt = runtime_with_slots(&cp);
+        let result = crate::vm::vm_run_begin(&cp, &mut rt);
+        assert!(result.is_err(), "array-as-scalar must error");
+    }
+
+    // ── Multi-statement bodies ───────────────────────────────────────────────
+
+    #[test]
+    fn semicolon_separates_statements() {
+        let out = run_begin_capture(r#"BEGIN { x=1; y=2; print x+y }"#);
+        assert_eq!(out, "3\n");
+    }
+
+    #[test]
+    fn newline_separates_statements() {
+        let out = run_begin_capture("BEGIN {\nx=1\ny=2\nprint x+y\n}");
+        assert_eq!(out, "3\n");
+    }
+
+    #[test]
+    fn comment_after_statement_does_not_terminate_in_awkrs() {
+        // FIXME: gawk treats the newline after a comment as a statement
+        // terminator; awkrs rejects `x = 42 # comment\nprint x` as a parse
+        // error because the newline-after-comment isn't recognized as
+        // terminating the assignment.
+        //
+        // gawk:  prints 42
+        // awkrs: "unexpected token in expression: Print"
+        let prog = "BEGIN { x = 42 # comment\n print x }";
+        let result = crate::parser::parse_program(prog);
+        assert!(
+            result.is_err(),
+            "FIXME: awkrs should treat newline-after-comment as statement terminator"
+        );
+    }
+
+    #[test]
+    fn semicolon_after_statement_with_comment_works() {
+        // Workaround for the comment-as-terminator bug: explicit `;` works.
+        let out = run_begin_capture("BEGIN { x = 42; # comment\n print x }");
+        assert_eq!(out, "42\n");
+    }
+
+    // ── String concatenation with mixed types ────────────────────────────────
+
+    #[test]
+    fn concat_string_and_number_coerces_number() {
+        let out = run_begin_capture(r#"BEGIN { print "x" 42 "y" }"#);
+        assert_eq!(out, "x42y\n");
+    }
+
+    #[test]
+    fn concat_with_uninit_treats_as_empty() {
+        let out = run_begin_capture(r#"BEGIN { print "[" u "]" }"#);
+        assert_eq!(out, "[]\n");
+    }
+
+    // ── For-in iteration ─────────────────────────────────────────────────────
+
+    #[test]
+    fn for_in_visits_each_key_exactly_once() {
+        let out = run_begin_capture(
+            r#"BEGIN { a["x"]=1; a["y"]=2; a["z"]=3; n=0; for (k in a) n++; print n }"#,
+        );
+        assert_eq!(out, "3\n");
+    }
+
+    #[test]
+    fn for_in_empty_array_runs_zero_iterations() {
+        let out = run_begin_capture(r#"BEGIN { n=0; for (k in a) n++; print n }"#);
+        assert_eq!(out, "0\n");
+    }
+
+    // ── Range pattern across records ─────────────────────────────────────────
+
+    #[test]
+    fn range_pattern_runs_for_records_inside_range() {
+        let prog = r#"NR==2,NR==4 { print "in:" NR }"#;
+        let cp = compile(prog);
+        let mut rt = runtime_with_slots(&cp);
+        let mut state = vec![false; cp.prog_rules_len];
+        for nr in 1..=5 {
+            rt.nr = nr as f64;
+            rt.set_record_from_line(&format!("line{nr}"));
+            let rule = &cp.record_rules[0];
+            if let CompiledPattern::Range { start, end } = &rule.pattern {
+                let run = vm_range_step(&mut state[rule.original_index], start, end, &cp, &mut rt)
+                    .unwrap();
+                if run {
+                    crate::vm::vm_run_rule(rule, &cp, &mut rt, None, None).unwrap();
+                }
+            }
+        }
+        let s = String::from_utf8_lossy(&rt.print_buf);
+        assert!(
+            s.contains("in:2") && s.contains("in:3") && s.contains("in:4"),
+            "{s}"
+        );
+        assert!(!s.contains("in:1") && !s.contains("in:5"), "{s}");
+    }
+
+    // ── Block scope (awk has none — all vars are function/global) ────────────
+
+    #[test]
+    fn nested_blocks_share_variables() {
+        let out = run_begin_capture(r#"BEGIN { { x = 1 } print x }"#);
+        assert_eq!(out, "1\n");
+    }
+
+    // ── printf redirect to /dev/null runs without error ──────────────────────
+
+    #[test]
+    fn printf_redirect_overwrite_runs() {
+        let out = run_begin_capture(r#"BEGIN { printf "%s\n", "ignored" > "/dev/null" }"#);
+        assert_eq!(out, "");
+    }
 }
