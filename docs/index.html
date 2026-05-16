@@ -227,7 +227,7 @@ aw '/error/i { print FILENAME ":" NR ":" $0 }' *.log</pre>
           <li><strong>Values</strong> — AWK values (string/number/uninitialized) with automatic coercion. Arrays are associative (hash maps).</li>
           <li><strong>Regex</strong> — three-tier engine: Rust <code>regex</code> → <code>fancy-regex</code> (backrefs) → <code>pcre2</code> (advanced).</li>
           <li><strong>Parallelism</strong> — <code>-P</code> flag enables parallel record processing via rayon work-stealing.</li>
-          <li><strong>Bytecode cache</strong> — <code>-f script.awk</code> runs memoize compiled bytecode to <code>~/.awkrs/scripts.bin</code>; repeat invocations skip lex/parse/compile.</li>
+          <li><strong>Bytecode cache</strong> — <code>-f script.awk</code> runs memoize compiled bytecode to <code>~/.awkrs/scripts.rkyv</code>; repeat invocations skip lex/parse/compile.</li>
           <li><strong>Binary size</strong> — ~8MB stripped with LTO.</li>
         </ul>
       </section>
@@ -358,8 +358,8 @@ aw -P '{ sum += $1 } END { print sum }' data.txt</pre>
             <tr style="background:rgba(0,255,0,0.05);"><td><strong>awkrs</strong></td><td style="color:#0f0;">&#10003;</td><td style="color:#0f0;">&#10003; (Cranelift)</td><td style="color:#0f0;">&#10003;</td></tr>
           </tbody>
         </table>
-        <p>Invocations of the form <code>awkrs -f script.awk ...</code> memoize the compiled <code>CompiledProgram</code> to a single bincode shard at <code>~/.awkrs/scripts.bin</code>. On the 2nd+ run of the same script, awkrs skips lex/parse/compile entirely — load is bincode-deserialize plus an mtime check.</p>
-<pre># 1st run: parse + compile + populate ~/.awkrs/scripts.bin
+        <p>Invocations of the form <code>awkrs -f script.awk ...</code> memoize the compiled <code>CompiledProgram</code> to an rkyv-archived shard at <code>~/.awkrs/scripts.rkyv</code>. The cache hit path is <code>mmap</code> + zero-copy <code>ArchivedHashMap</code> lookup + bincode-decode of the matched entry's inner blob. Same outer-rkyv / inner-bincode pattern used by zshrs and stryke.</p>
+<pre># 1st run: parse + compile + populate ~/.awkrs/scripts.rkyv
 awkrs -f script.awk input.txt
 
 # 2nd run: cache hit, skips parse/compile
@@ -369,7 +369,7 @@ awkrs -f script.awk input.txt
 AWKRS_CACHE=0 awkrs -f script.awk input.txt
 
 # wipe the cache
-rm ~/.awkrs/scripts.bin</pre>
+rm ~/.awkrs/scripts.rkyv</pre>
         <p><strong>Invalidation</strong> is automatic and silent:</p>
         <ul>
           <li><strong>Source mtime change</strong> — editing <code>script.awk</code> causes the next run to miss and recompile.</li>
@@ -382,7 +382,7 @@ rm ~/.awkrs/scripts.bin</pre>
           <li>multi-source assembly (<code>-i</code>/<code>--include</code>, <code>-l</code>/<code>--load</code>, or multiple <code>-f</code>)</li>
           <li>AST-only flags: <code>--debug</code>, <code>--lint</code>, <code>--lint-old</code>, <code>--pretty-print</code>, <code>--gen-pot</code></li>
         </ul>
-        <p><strong>Storage</strong> — single file, atomic-rename writes, <code>flock(LOCK_EX)</code> on a sibling lockfile so concurrent <code>awkrs</code> processes serialize their writes. Reads are unlocked and rely on the validated header.</p>
+        <p><strong>Storage</strong> — single rkyv archive, atomic-rename writes, <code>flock(LOCK_EX)</code> on a sibling lockfile so concurrent <code>awkrs</code> processes serialize their writes. Reads are unlocked, <code>mmap</code>'d, and rely on rkyv's <code>check_archived_root</code> byte-validation plus the magic/version header.</p>
       </section>
 
       <section class="tutorial-section">

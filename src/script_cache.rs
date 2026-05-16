@@ -1,25 +1,36 @@
-//! Bytecode cache for awk scripts.
+//! rkyv-backed bytecode cache for awk scripts.
 //!
-//! Single-file shard at `~/.awkrs/scripts.bin`. On the 2nd+ run of a given
-//! script, lex/parse/compile is skipped — the cache hit deserializes a
-//! `CompiledProgram` from bincode, ready for VM execution.
+//! Single-file shard at `~/.awkrs/scripts.rkyv`. On the 2nd+ run of a given
+//! script, lex/parse/compile is skipped — the cache hit is `mmap` + zero-copy
+//! `ArchivedHashMap` lookup + bincode-decode of the inner `CompiledProgram`
+//! blob. Same architecture as `strykelang/script_cache.rs`.
 //!
-//! Storage layout (bincode):
-//!   `ScriptShard { header, entries: HashMap<canonical_path, ScriptEntry> }`
+//! Storage layout (rkyv archived):
+//!   `ScriptShard { header: { magic, format_version, awkrs_version,
+//!                            pointer_width, built_at_secs },
+//!                  entries: HashMap<canonical_path, ScriptEntry> }`
 //!   `ScriptEntry { mtime_secs, mtime_nsecs, binary_mtime_at_cache,
 //!                  cached_at_secs, cp_blob: Vec<u8> }`
 //!
+//! Inner `cp_blob` stays bincode for now — `CompiledProgram` has no
+//! Arc-shared graph that defeats rkyv's `Archive` derive, so a phase-2 pass
+//! could derive `Archive` directly on `CompiledProgram` for true zero-copy
+//! load. Phase 1 matches strykelang's outer-rkyv / inner-bincode split.
+//!
 //! Read path:
-//!   - Lazy load of the shard, kept alive for the process lifetime so repeat
-//!     lookups pay deserialization once.
+//!   - Lazy `mmap` of the shard, kept alive for the process lifetime so repeat
+//!     lookups (e.g. a script that calls into the cache N times across forks)
+//!     pay validation once.
+//!   - `rkyv::check_archived_root::<ScriptShard>` validates the byte image.
 //!   - Header validated for magic / format_version / awkrs_version / pointer_width.
 //!   - Per-entry: source mtime must match, and `binary_mtime_at_cache` ≥ running
-//!     awkrs binary's mtime (any rebuild of awkrs invalidates entries silently).
+//!     awkrs binary's mtime (any rebuild invalidates entries silently).
 //!
 //! Write path:
-//!   - `flock(LOCK_EX)` on `scripts.bin.lock` so concurrent writers serialize.
-//!   - Read existing shard, mutate, bincode-encode,
-//!     write to `scripts.bin.tmp.<pid>.<nanos>`, fsync, atomic-rename.
+//!   - `flock(LOCK_EX)` on `scripts.rkyv.lock` so concurrent writers serialize.
+//!   - Read existing shard into owned form, mutate, `rkyv::to_bytes`,
+//!     write to `scripts.rkyv.tmp.<pid>.<nanos>`, fsync, atomic-rename.
+//!   - Drop the in-process `mmap` so the next read picks up the new shard.
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -28,17 +39,21 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use memmap2::Mmap;
 use parking_lot::Mutex;
-use serde::{Deserialize, Serialize};
+use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 
 use crate::bytecode::CompiledProgram;
 
-/// Magic header bytes — fail-fast if a wrong-format file is read.
+/// Magic header bytes — fail-fast if a wrong-format file is mmap'd.
 pub const SHARD_MAGIC: u32 = 0x41574B52; // "AWKR"
-/// Bumped on incompatible bytecode/serialization schema changes.
-pub const SHARD_FORMAT_VERSION: u32 = 1;
+/// Bumped on incompatible rkyv schema changes.
+pub const SHARD_FORMAT_VERSION: u32 = 2;
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+// ── rkyv archived types ──────────────────────────────────────────────────────
+
+#[derive(Archive, RkyvDeserialize, RkyvSerialize, Debug, Clone)]
+#[archive(check_bytes)]
 pub struct ShardHeader {
     pub magic: u32,
     pub format_version: u32,
@@ -47,7 +62,8 @@ pub struct ShardHeader {
     pub built_at_secs: u64,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Archive, RkyvDeserialize, RkyvSerialize, Debug, Clone)]
+#[archive(check_bytes)]
 pub struct ScriptEntry {
     pub mtime_secs: i64,
     pub mtime_nsecs: i64,
@@ -56,7 +72,8 @@ pub struct ScriptEntry {
     pub cp_blob: Vec<u8>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Archive, RkyvDeserialize, RkyvSerialize, Debug, Clone)]
+#[archive(check_bytes)]
 pub struct ScriptShard {
     pub header: ShardHeader,
     pub entries: HashMap<String, ScriptEntry>,
@@ -68,11 +85,63 @@ pub struct CachedScript {
     pub cp: CompiledProgram,
 }
 
-/// Shard cache keyed by canonical script path. One per shard file.
+// ── mmap'd validated shard view ──────────────────────────────────────────────
+
+/// mmap + validated `*const ArchivedScriptShard`. Self-referential — the
+/// pointer is valid for the lifetime of the wrapping struct.
+pub struct MmappedShard {
+    _mmap: Mmap,
+    archived: *const ArchivedScriptShard,
+}
+
+// SAFETY: the pointer aliases an immutable mmap that lives as long as Self.
+// rkyv-validated reads are immutable.
+unsafe impl Send for MmappedShard {}
+unsafe impl Sync for MmappedShard {}
+
+impl MmappedShard {
+    pub fn open(path: &Path) -> Option<Self> {
+        let file = File::open(path).ok()?;
+        let mmap = unsafe { Mmap::map(&file).ok()? };
+        let archived = rkyv::check_archived_root::<ScriptShard>(&mmap[..]).ok()?;
+        let archived_ptr = archived as *const ArchivedScriptShard;
+        Some(Self {
+            _mmap: mmap,
+            archived: archived_ptr,
+        })
+    }
+
+    fn shard(&self) -> &ArchivedScriptShard {
+        // SAFETY: see Self impl comment.
+        unsafe { &*self.archived }
+    }
+
+    fn header_ok(&self) -> bool {
+        let h = &self.shard().header;
+        let magic: u32 = h.magic.into();
+        let fv: u32 = h.format_version.into();
+        let pw: u32 = h.pointer_width.into();
+        magic == SHARD_MAGIC
+            && fv == SHARD_FORMAT_VERSION
+            && pw as usize == std::mem::size_of::<usize>()
+            && h.awkrs_version.as_str() == env!("CARGO_PKG_VERSION")
+    }
+
+    fn lookup(&self, path: &str) -> Option<&ArchivedScriptEntry> {
+        self.shard().entries.get(path)
+    }
+
+    fn entry_count(&self) -> usize {
+        self.shard().entries.len()
+    }
+}
+
+// ── ScriptCache: per-instance handle ─────────────────────────────────────────
+
 pub struct ScriptCache {
     path: PathBuf,
     lock_path: PathBuf,
-    shard: Mutex<Option<ScriptShard>>,
+    mmap: Mutex<Option<MmappedShard>>,
 }
 
 #[allow(dead_code)]
@@ -86,46 +155,53 @@ impl ScriptCache {
             "{}.lock",
             path.file_name()
                 .and_then(|s| s.to_str())
-                .unwrap_or("scripts.bin")
+                .unwrap_or("scripts.rkyv")
         ));
         Ok(Self {
             path: path.to_path_buf(),
             lock_path,
-            shard: Mutex::new(None),
+            mmap: Mutex::new(None),
         })
     }
 
-    fn ensure_loaded(&self) {
-        let mut guard = self.shard.lock();
+    fn ensure_mmap(&self) {
+        let mut guard = self.mmap.lock();
         if guard.is_none() {
-            *guard = read_shard(&self.path).filter(|s| header_ok(&s.header));
+            *guard = MmappedShard::open(&self.path);
         }
     }
 
-    fn invalidate(&self) {
-        let mut guard = self.shard.lock();
+    fn invalidate_mmap(&self) {
+        let mut guard = self.mmap.lock();
         *guard = None;
     }
 
     /// Cache lookup. Returns `None` on miss, mtime mismatch, version drift, or
     /// awkrs-binary newer than the cached entry.
     pub fn get(&self, path: &str, mtime_secs: i64, mtime_nsecs: i64) -> Option<CachedScript> {
-        self.ensure_loaded();
-        let guard = self.shard.lock();
+        self.ensure_mmap();
+        let guard = self.mmap.lock();
         let shard = guard.as_ref()?;
-        let entry = shard.entries.get(path)?;
+        if !shard.header_ok() {
+            return None;
+        }
+        let entry = shard.lookup(path)?;
 
-        if entry.mtime_secs != mtime_secs || entry.mtime_nsecs != mtime_nsecs {
+        let entry_mtime_s: i64 = entry.mtime_secs.into();
+        let entry_mtime_ns: i64 = entry.mtime_nsecs.into();
+        if entry_mtime_s != mtime_secs || entry_mtime_ns != mtime_nsecs {
             return None;
         }
 
         if let Some(bin_mtime) = current_binary_mtime_secs() {
-            if entry.binary_mtime_at_cache < bin_mtime {
+            let cached_bin_mtime: i64 = entry.binary_mtime_at_cache.into();
+            if cached_bin_mtime < bin_mtime {
                 return None;
             }
         }
 
-        let cp: CompiledProgram = bincode::deserialize(&entry.cp_blob).ok()?;
+        let cp_bytes: &[u8] = entry.cp_blob.as_slice();
+        let cp: CompiledProgram = bincode::deserialize(cp_bytes).ok()?;
         Some(CachedScript { cp })
     }
 
@@ -144,8 +220,14 @@ impl ScriptCache {
             None => return Ok(()),
         };
 
-        let mut shard = match read_shard(&self.path) {
-            Some(s) if header_ok(&s.header) => s,
+        let mut shard = match read_owned_shard(&self.path) {
+            Some(s)
+                if s.header.awkrs_version == env!("CARGO_PKG_VERSION")
+                    && s.header.pointer_width as usize == std::mem::size_of::<usize>()
+                    && s.header.format_version == SHARD_FORMAT_VERSION =>
+            {
+                s
+            }
             _ => fresh_shard(),
         };
 
@@ -161,19 +243,24 @@ impl ScriptCache {
         shard.header.built_at_secs = now_secs() as u64;
 
         write_shard_atomic(&self.path, &shard)?;
-        self.invalidate();
+        self.invalidate_mmap();
         Ok(())
     }
 
     /// `(count, total_blob_bytes)` snapshot.
     pub fn stats(&self) -> (i64, i64) {
-        self.ensure_loaded();
-        let guard = self.shard.lock();
+        self.ensure_mmap();
+        let guard = self.mmap.lock();
         let Some(shard) = guard.as_ref() else {
             return (0, 0);
         };
-        let count = shard.entries.len() as i64;
-        let bytes: i64 = shard.entries.values().map(|e| e.cp_blob.len() as i64).sum();
+        let count = shard.entry_count() as i64;
+        let bytes: i64 = shard
+            .shard()
+            .entries
+            .values()
+            .map(|e| e.cp_blob.len() as i64)
+            .sum();
         (count, bytes)
     }
 
@@ -183,7 +270,7 @@ impl ScriptCache {
             Some(l) => l,
             None => return 0,
         };
-        let mut shard = match read_shard(&self.path) {
+        let mut shard = match read_owned_shard(&self.path) {
             Some(s) => s,
             None => return 0,
         };
@@ -195,7 +282,7 @@ impl ScriptCache {
         let evicted = before - shard.entries.len();
         if evicted > 0 {
             let _ = write_shard_atomic(&self.path, &shard);
-            self.invalidate();
+            self.invalidate_mmap();
         }
         evicted
     }
@@ -208,16 +295,22 @@ impl ScriptCache {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(e),
         };
-        self.invalidate();
+        self.invalidate_mmap();
         res
     }
 }
 
-fn header_ok(h: &ShardHeader) -> bool {
-    h.magic == SHARD_MAGIC
-        && h.format_version == SHARD_FORMAT_VERSION
-        && h.pointer_width as usize == std::mem::size_of::<usize>()
-        && h.awkrs_version == env!("CARGO_PKG_VERSION")
+// ── Locking + shard read/write helpers ───────────────────────────────────────
+
+fn acquire_lock(path: &Path) -> Option<nix::fcntl::Flock<File>> {
+    let f = File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+        .ok()?;
+    nix::fcntl::Flock::lock(f, nix::fcntl::FlockArg::LockExclusive).ok()
 }
 
 fn fresh_shard() -> ScriptShard {
@@ -233,26 +326,19 @@ fn fresh_shard() -> ScriptShard {
     }
 }
 
-fn read_shard(path: &Path) -> Option<ScriptShard> {
+fn read_owned_shard(path: &Path) -> Option<ScriptShard> {
     let bytes = std::fs::read(path).ok()?;
-    bincode::deserialize(&bytes).ok()
-}
-
-fn acquire_lock(path: &Path) -> Option<nix::fcntl::Flock<File>> {
-    let f = File::options()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(path)
-        .ok()?;
-    nix::fcntl::Flock::lock(f, nix::fcntl::FlockArg::LockExclusive).ok()
+    let archived = rkyv::check_archived_root::<ScriptShard>(&bytes[..]).ok()?;
+    archived.deserialize(&mut rkyv::Infallible).ok()
 }
 
 fn write_shard_atomic(path: &Path, shard: &ScriptShard) -> std::io::Result<()> {
-    let bytes = bincode::serialize(shard).map_err(|e| std::io::Error::other(e.to_string()))?;
+    let bytes = rkyv::to_bytes::<_, 4096>(shard)
+        .map_err(|e| std::io::Error::other(format!("rkyv serialize: {}", e)))?;
+
     let parent = path.parent().expect("cache path has parent");
     let _ = std::fs::create_dir_all(parent);
+
     let pid = std::process::id();
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -262,15 +348,17 @@ fn write_shard_atomic(path: &Path, shard: &ScriptShard) -> std::io::Result<()> {
         "{}.tmp.{}.{}",
         path.file_name()
             .and_then(|s| s.to_str())
-            .unwrap_or("scripts.bin"),
+            .unwrap_or("scripts.rkyv"),
         pid,
         nanos
     ));
+
     {
         let mut f = File::create(&tmp_path)?;
         f.write_all(&bytes)?;
         f.sync_all()?;
     }
+
     std::fs::rename(&tmp_path, path)?;
     Ok(())
 }
@@ -299,11 +387,11 @@ fn current_binary_mtime_secs() -> Option<i64> {
     })
 }
 
-/// Default shard path: `~/.awkrs/scripts.bin`.
+/// Default shard path: `~/.awkrs/scripts.rkyv`.
 pub fn default_cache_path() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join(".awkrs/scripts.bin")
+        .join(".awkrs/scripts.rkyv")
 }
 
 /// `AWKRS_CACHE=0|false|no` disables the cache entirely.
@@ -324,7 +412,6 @@ pub static CACHE: once_cell::sync::Lazy<Option<ScriptCache>> = once_cell::sync::
 });
 
 /// Try to load a cached `CompiledProgram` for the given source script path.
-/// Returns `None` on any miss.
 pub fn try_load(path: &Path) -> Option<CompiledProgram> {
     let cache = CACHE.as_ref()?;
     let canonical = path.canonicalize().ok()?;
@@ -333,8 +420,7 @@ pub fn try_load(path: &Path) -> Option<CompiledProgram> {
     cache.get(&path_str, mtime_s, mtime_ns).map(|c| c.cp)
 }
 
-/// Store a compiled script in the cache. Silently no-ops on any failure
-/// (cache disabled, path can't be canonicalized, write fails).
+/// Store a compiled script in the cache. Silently no-ops on any failure.
 pub fn try_save(path: &Path, cp: &CompiledProgram) {
     let Some(cache) = CACHE.as_ref() else {
         return;
@@ -363,7 +449,7 @@ mod tests {
     #[test]
     fn round_trip() {
         let dir = tempdir().unwrap();
-        let cache_path = dir.path().join("scripts.bin");
+        let cache_path = dir.path().join("scripts.rkyv");
         let cache = ScriptCache::open(&cache_path).unwrap();
 
         let script_path = dir.path().join("t.awk");
@@ -382,7 +468,7 @@ mod tests {
     #[test]
     fn mtime_invalidation() {
         let dir = tempdir().unwrap();
-        let cache_path = dir.path().join("scripts.bin");
+        let cache_path = dir.path().join("scripts.rkyv");
         let cache = ScriptCache::open(&cache_path).unwrap();
 
         let script_path = dir.path().join("t.awk");
@@ -400,7 +486,7 @@ mod tests {
     #[test]
     fn second_put_adds_entry() {
         let dir = tempdir().unwrap();
-        let cache_path = dir.path().join("scripts.bin");
+        let cache_path = dir.path().join("scripts.rkyv");
         let cache = ScriptCache::open(&cache_path).unwrap();
         let p1 = dir.path().join("a.awk");
         let p2 = dir.path().join("b.awk");
@@ -423,8 +509,8 @@ mod tests {
     #[test]
     fn corrupt_file_returns_none() {
         let dir = tempdir().unwrap();
-        let cache_path = dir.path().join("scripts.bin");
-        std::fs::write(&cache_path, b"garbage not a real shard").unwrap();
+        let cache_path = dir.path().join("scripts.rkyv");
+        std::fs::write(&cache_path, b"garbage not a real rkyv archive").unwrap();
         let cache = ScriptCache::open(&cache_path).unwrap();
         assert!(cache.get("/nope", 0, 0).is_none());
     }
@@ -432,7 +518,7 @@ mod tests {
     #[test]
     fn clear_removes_file() {
         let dir = tempdir().unwrap();
-        let cache_path = dir.path().join("scripts.bin");
+        let cache_path = dir.path().join("scripts.rkyv");
         let cache = ScriptCache::open(&cache_path).unwrap();
         let script_path = dir.path().join("t.awk");
         std::fs::write(&script_path, "BEGIN { 1 }").unwrap();

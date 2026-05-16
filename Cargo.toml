@@ -44,6 +44,7 @@ parking_lot = "0.12"
 rayon = "1.10"
 gmp-mpfr-sys = "1.7"
 regex = "1.10"
+rkyv = { version = "0.7", features = ["validation", "archive_le", "size_32"] }
 serde = { version = "1", features = ["derive"] }
 socket2 = "0.5"
 rug = "1.29.0"
