@@ -471,8 +471,8 @@ impl Value {
             Value::Num(n) => {
                 use std::io::Write;
                 let n = *n;
-                if n.fract() == 0.0 && n.abs() < 1e15 {
-                    let _ = write!(buf, "{}", n as i64);
+                if n.is_finite() && n.fract() == 0.0 {
+                    let _ = write!(buf, "{:.0}", n);
                 } else {
                     let _ = write!(buf, "{n}");
                 }
@@ -566,8 +566,8 @@ impl Value {
             Value::Num(n) => {
                 use std::fmt::Write;
                 let n = *n;
-                if n.fract() == 0.0 && n.abs() < 1e15 {
-                    let _ = write!(buf, "{}", n as i64);
+                if n.is_finite() && n.fract() == 0.0 {
+                    let _ = write!(buf, "{:.0}", n);
                 } else {
                     let _ = write!(buf, "{n}");
                 }
@@ -596,10 +596,12 @@ impl Value {
 }
 
 /// Format a number to string (awk rules: integer form if no fractional part).
+/// Uses `{:.0}` for integer-valued floats so values past `i64::MAX` (e.g. 1e25)
+/// still display as decimals — matches gawk's `printf("%.0f", n)` behavior.
 #[inline]
 fn format_number(n: f64) -> String {
-    if n.fract() == 0.0 && n.abs() < 1e15 {
-        format!("{}", n as i64)
+    if n.is_finite() && n.fract() == 0.0 {
+        format!("{:.0}", n)
     } else {
         format!("{n}")
     }
@@ -1931,8 +1933,8 @@ impl Runtime {
         match v {
             Value::Num(n) => {
                 // Integer-valued numbers must stay exact: a[1] keys on "1" not "1.000000".
-                if n.is_finite() && n.fract() == 0.0 && n.abs() < 1e15 {
-                    format!("{}", *n as i64)
+                if n.is_finite() && n.fract() == 0.0 {
+                    format!("{:.0}", *n)
                 } else {
                     self.num_to_string_convfmt(*n)
                 }
@@ -1952,10 +1954,10 @@ impl Runtime {
 
     /// POSIX / gawk: format a number using **`CONVFMT`** (string coercion).
     /// Integer-valued numbers bypass CONVFMT and display in integer form —
-    /// matches gawk where `n` with `n.fract()==0 && |n|<1e15` prints exact.
+    /// matches gawk where any integer-valued `n` prints exact via `%.0f`.
     pub fn num_to_string_convfmt(&self, n: f64) -> String {
-        if n.is_finite() && n.fract() == 0.0 && n.abs() < 1e15 {
-            return format!("{}", n as i64);
+        if n.is_finite() && n.fract() == 0.0 {
+            return format!("{:.0}", n);
         }
         let fmt = self
             .get_global_var("CONVFMT")
@@ -1973,10 +1975,11 @@ impl Runtime {
 
     /// POSIX: `print` formats numbers with **`OFMT`** (distinct from [`Self::num_to_string_convfmt`]).
     /// Integer-valued numbers bypass OFMT and display in integer form so e.g.
-    /// `print 999999999999` produces `"999999999999"` not `"1e+12"`.
+    /// `print 999999999999` produces `"999999999999"` not `"1e+12"`. Large
+    /// integers past `i64::MAX` still print via `%.0f`.
     pub fn num_to_string_ofmt(&self, n: f64) -> String {
-        if n.is_finite() && n.fract() == 0.0 && n.abs() < 1e15 {
-            return format!("{}", n as i64);
+        if n.is_finite() && n.fract() == 0.0 {
+            return format!("{:.0}", n);
         }
         let fmt = self
             .get_global_var("OFMT")
@@ -2552,8 +2555,8 @@ impl Runtime {
     /// allocating a temporary `Value::Num` and round-tripping through `as_str()`.
     pub fn set_field_num(&mut self, i: i32, n: f64) -> crate::error::Result<()> {
         if i == 0 {
-            let s = if n.fract() == 0.0 && n.abs() < 1e15 {
-                format!("{}", n as i64)
+            let s = if n.is_finite() && n.fract() == 0.0 {
+                format!("{:.0}", n)
             } else {
                 format!("{n}")
             };
@@ -2579,9 +2582,9 @@ impl Runtime {
         }
         // Format number into the existing String, reusing its allocation.
         self.fields[idx].clear();
-        if n.fract() == 0.0 && n.abs() < 1e15 {
+        if n.is_finite() && n.fract() == 0.0 {
             use std::fmt::Write;
-            let _ = write!(self.fields[idx], "{}", n as i64);
+            let _ = write!(self.fields[idx], "{:.0}", n);
         } else {
             use std::fmt::Write;
             let _ = write!(self.fields[idx], "{n}");

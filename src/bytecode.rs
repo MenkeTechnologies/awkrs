@@ -185,15 +185,15 @@ pub enum Op {
     /// `name_idx` is the function name's string-pool index; `argc` is the arg count.
     CallUserBindArrays(u32, u16),
 
-    /// `typeof(var)` — interned name; push `"string"` / `"number"` / `"array"` / `"unassigned"`.
+    /// `typeof(var)` — interned name; push `"string"` / `"number"` / `"array"` / `"untyped"`.
     TypeofVar(u32),
     /// `typeof` for a scalar in a slot (same semantics as [`TypeofVar`]).
     TypeofSlot(u16),
-    /// Pop key, `typeof(arr[key])` for existing array or `"unassigned"`.
+    /// Pop key, `typeof(arr[key])` for existing array or `"untyped"`.
     TypeofArrayElem(u32),
-    /// Pop field index, `typeof($n)` — fields beyond `NF` are `"unassigned"`.
+    /// Pop field index, `typeof($n)` — fields beyond `NF` are `"untyped"`.
     TypeofField,
-    /// Pop any value; `typeof` never reports `"unassigned"` (only from lvalue forms above).
+    /// Pop any value; `typeof` never reports `"untyped"` (only from lvalue forms above).
     TypeofValue,
 
     // ── Array operations ────────────────────────────────────────────────

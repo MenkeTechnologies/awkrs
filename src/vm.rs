@@ -340,7 +340,7 @@ impl<'a> VmCtx<'a> {
         if let Some(v) = self.rt.get_global_var(name) {
             return Value::Str(builtins::awk_typeof_value(v).into());
         }
-        Value::Str("unassigned".into())
+        Value::Str("untyped".into())
     }
 }
 
@@ -630,7 +630,7 @@ fn typeof_scalar_name_for_jit(ctx: &mut VmCtx<'_>, name: &str) -> Value {
     if let Some(v) = ctx.rt.get_global_var(name) {
         return Value::Str(builtins::awk_typeof_value(v).into());
     }
-    Value::Str("unassigned".into())
+    Value::Str("untyped".into())
 }
 
 fn value_to_jit_f64(_ctx: &mut VmCtx<'_>, v: Value) -> f64 {
@@ -1314,7 +1314,7 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
         MIXED_TYPEOF_FIELD => {
             let i = a2 as i32;
             let t = if ctx.rt.field_is_unassigned(i) {
-                "unassigned"
+                "untyped"
             } else {
                 "string"
             };
@@ -3016,7 +3016,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 let name = ctx.str_ref(arr).to_string();
                 // POSIX: reading `a[k]` auto-creates the entry as `Uninit` if
                 // missing. Subsequent `k in a` returns 1, `typeof(a[k])` is
-                // "unassigned" (rather than "string" from a coerced "").
+                // "untyped" (rather than "string" from a coerced "").
                 if name != "SYMTAB" && !ctx.rt.array_has(&name, &k) {
                     ctx.rt.array_set(&name, k.clone(), Value::Uninit);
                 }
@@ -3071,7 +3071,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                     return Err(Error::Runtime("attempt to access field number -1".into()));
                 }
                 let t = if ctx.rt.field_is_unassigned(i) {
-                    "unassigned"
+                    "untyped"
                 } else {
                     "string"
                 };
@@ -3664,7 +3664,19 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             }
             Op::DeleteArray(arr) => {
                 let name = ctx.str_ref(arr).to_string();
-                ctx.rt.array_delete(&name, None);
+                // POSIX array call-by-reference: `delete a` inside a function
+                // must clear the caller's array via the frame param.
+                let mut handled = false;
+                for frame in ctx.locals.iter_mut().rev() {
+                    if let Some(Value::Array(a)) = frame.get_mut(name.as_str()) {
+                        a.clear();
+                        handled = true;
+                        break;
+                    }
+                }
+                if !handled {
+                    ctx.rt.array_delete(&name, None);
+                }
             }
             Op::DeleteElem(arr) => {
                 let key_val = ctx.pop();
@@ -3673,7 +3685,20 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 if name == "SYMTAB" {
                     ctx.symtab_delete(k.as_ref());
                 } else {
-                    ctx.rt.array_delete(name, Some(k.as_ref()));
+                    // Frame-aware delete: `delete a[k]` inside a function with
+                    // `a` as a by-reference array param routes through the
+                    // frame, not global vars.
+                    let mut handled = false;
+                    for frame in ctx.locals.iter_mut().rev() {
+                        if let Some(Value::Array(map)) = frame.get_mut(name) {
+                            map.remove(k.as_ref());
+                            handled = true;
+                            break;
+                        }
+                    }
+                    if !handled {
+                        ctx.rt.array_delete(name, Some(k.as_ref()));
+                    }
                 }
             }
 
@@ -6252,10 +6277,10 @@ mod tests {
     // ── typeof variants ──────────────────────────────────────────────────────
 
     #[test]
-    fn typeof_unassigned_var() {
-        // typeof(unset scalar) returns "unassigned" — matches gawk vocabulary.
+    fn typeof_untyped_for_unset_scalar() {
+        // typeof(unset scalar) returns "untyped" — matches gawk 5.x vocab.
         let out = run_begin_capture(r#"BEGIN { print typeof(u) }"#);
-        assert_eq!(out, "unassigned\n");
+        assert_eq!(out, "untyped\n");
     }
 
     #[test]
@@ -7189,9 +7214,8 @@ mod tests {
 
     #[test]
     fn compound_assign_div_and_mod() {
-        // FIXME: `^=` and `**=` compound-assignment operators don't parse in
-        // awkrs. gawk supports them; awkrs only handles +=, -=, *=, /=, %=.
-        // This test covers the working subset.
+        // `+=`, `-=`, `*=`, `/=`, `%=` all parse and apply correctly. The
+        // `^=` and `**=` exponentiation variants are covered separately.
         let out = run_begin_capture(r#"BEGIN { x=100; x/=4; print x; y=10; y%=3; print y }"#);
         assert_eq!(out, "25\n1\n");
     }
