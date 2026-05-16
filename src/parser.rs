@@ -2429,3 +2429,266 @@ mod tests {
         }
     }
 }
+
+// ── Parser pinning: operator precedence, error messages, edge syntax ─────────
+//
+// Operator precedence regressions are notoriously easy to introduce when
+// extending the grammar — `a + b * c` flipping to `(a+b)*c` would silently
+// break user math. These tests pin the precedence ordering by inspecting the
+// AST shape, not just the parse-doesn't-error outcome. Same for syntax errors:
+// pin that they happen, so a regression that silently accepts invalid syntax
+// surfaces as a named test failure.
+
+#[cfg(test)]
+mod parser_pinning {
+    use super::parse_program;
+    use crate::ast::{BinOp, Expr, Pattern, Stmt};
+
+    fn first_begin_expr_stmt(src: &str) -> Expr {
+        let prog = parse_program(src).expect("parse");
+        let stmt = prog
+            .rules
+            .iter()
+            .find_map(|r| {
+                if matches!(r.pattern, Pattern::Begin) {
+                    r.stmts.first()
+                } else {
+                    None
+                }
+            })
+            .expect("BEGIN body");
+        match stmt {
+            Stmt::Expr(e) => e.clone(),
+            Stmt::Print { args, .. } => args[0].clone(),
+            other => panic!("first BEGIN stmt is not expr/print: {other:?}"),
+        }
+    }
+
+    // ── Precedence: arithmetic ───────────────────────────────────────────────
+
+    #[test]
+    fn mul_binds_tighter_than_add() {
+        // `a + b * c` must parse as `a + (b * c)`, not `(a + b) * c`.
+        let e = first_begin_expr_stmt("BEGIN { x = a + b * c }");
+        if let Expr::Assign { rhs, .. } = e {
+            match *rhs {
+                Expr::Binary { op: BinOp::Add, left, right } => {
+                    assert!(matches!(*left, Expr::Var(_)), "left should be plain a");
+                    assert!(
+                        matches!(*right, Expr::Binary { op: BinOp::Mul, .. }),
+                        "right should be (b * c), got {right:?}"
+                    );
+                }
+                other => panic!("expected Add root, got {other:?}"),
+            }
+        } else {
+            panic!("not an assign expr: {e:?}");
+        }
+    }
+
+    #[test]
+    fn pow_is_right_associative() {
+        // POSIX awk: `2 ^ 3 ^ 2` = `2 ^ (3 ^ 2)` = 512, not `(2^3)^2` = 64.
+        let e = first_begin_expr_stmt("BEGIN { x = 2 ^ 3 ^ 2 }");
+        if let Expr::Assign { rhs, .. } = e {
+            match *rhs {
+                Expr::Binary { op: BinOp::Pow, right, .. } => {
+                    // Right side must itself be a Pow expression.
+                    assert!(
+                        matches!(*right, Expr::Binary { op: BinOp::Pow, .. }),
+                        "pow must be right-assoc, got {right:?}"
+                    );
+                }
+                other => panic!("expected Pow root, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn unary_minus_binds_outside_pow() {
+        // POSIX: `-2 ^ 2` = `-(2^2)` = -4, not `(-2)^2` = 4.
+        let e = first_begin_expr_stmt("BEGIN { x = -2 ^ 2 }");
+        if let Expr::Assign { rhs, .. } = e {
+            // Should be Unary(Neg, Binary(Pow, 2, 2))
+            assert!(
+                matches!(*rhs, Expr::Unary { .. }),
+                "unary should wrap pow, got {rhs:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn comparison_lower_than_arithmetic() {
+        // `a < b + c` parses as `a < (b + c)`.
+        let e = first_begin_expr_stmt("BEGIN { x = a < b + c }");
+        if let Expr::Assign { rhs, .. } = e {
+            match *rhs {
+                Expr::Binary { op: BinOp::Lt, right, .. } => {
+                    assert!(
+                        matches!(*right, Expr::Binary { op: BinOp::Add, .. }),
+                        "comparison should embed the add, got {right:?}"
+                    );
+                }
+                other => panic!("expected Lt root, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn logical_and_lower_than_comparison() {
+        // `a < b && c > d` → `(a<b) && (c>d)`
+        let e = first_begin_expr_stmt("BEGIN { x = (a < b && c > d) }");
+        if let Expr::Assign { rhs, .. } = e {
+            // The top operator should be And.
+            match *rhs {
+                Expr::Binary { op: BinOp::And, left, right } => {
+                    assert!(matches!(*left, Expr::Binary { op: BinOp::Lt, .. }));
+                    assert!(matches!(*right, Expr::Binary { op: BinOp::Gt, .. }));
+                }
+                other => panic!("expected And root, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn logical_or_lower_than_and() {
+        // `a || b && c` → `a || (b && c)`
+        let e = first_begin_expr_stmt("BEGIN { x = a || b && c }");
+        if let Expr::Assign { rhs, .. } = e {
+            match *rhs {
+                Expr::Binary { op: BinOp::Or, right, .. } => {
+                    assert!(
+                        matches!(*right, Expr::Binary { op: BinOp::And, .. }),
+                        "Or-right should be And, got {right:?}"
+                    );
+                }
+                other => panic!("expected Or root, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn ternary_below_logical_or() {
+        // `a || b ? c : d` parses as `(a || b) ? c : d`
+        let e = first_begin_expr_stmt("BEGIN { x = a || b ? c : d }");
+        if let Expr::Assign { rhs, .. } = e {
+            match *rhs {
+                Expr::Ternary { cond, .. } => {
+                    assert!(
+                        matches!(*cond, Expr::Binary { op: BinOp::Or, .. }),
+                        "ternary cond should be Or expr, got {cond:?}"
+                    );
+                }
+                other => panic!("expected Ternary, got {other:?}"),
+            }
+        }
+    }
+
+    // ── Concat: implicit, just below comparison ──────────────────────────────
+
+    #[test]
+    fn concat_lower_than_arithmetic_higher_than_comparison() {
+        // `"a" b + c` → `"a" (b + c)` (concat of "a" with the sum)
+        let e = first_begin_expr_stmt("BEGIN { x = \"a\" b + c }");
+        if let Expr::Assign { rhs, .. } = e {
+            match *rhs {
+                Expr::Binary { op: BinOp::Concat, right, .. } => {
+                    assert!(
+                        matches!(*right, Expr::Binary { op: BinOp::Add, .. }),
+                        "concat right should be the add, got {right:?}"
+                    );
+                }
+                other => panic!("expected Concat root, got {other:?}"),
+            }
+        }
+    }
+
+    // ── Syntax errors ────────────────────────────────────────────────────────
+
+    #[test]
+    fn unclosed_brace_is_parse_error() {
+        assert!(parse_program("BEGIN { ").is_err());
+    }
+
+    #[test]
+    fn unclosed_paren_in_expression_is_parse_error() {
+        assert!(parse_program("BEGIN { x = (1 + 2 }").is_err());
+    }
+
+    #[test]
+    fn unclosed_string_is_parse_error() {
+        assert!(parse_program("BEGIN { x = \"abc }").is_err());
+    }
+
+    #[test]
+    fn invalid_assignment_target_rejected() {
+        // `1 = 2` is not valid — LHS must be lvalue.
+        assert!(parse_program("BEGIN { 1 = 2 }").is_err());
+    }
+
+    #[test]
+    fn duplicate_function_name_rejected() {
+        let r = parse_program("function f() { } function f() { } BEGIN { }");
+        assert!(r.is_err(), "duplicate function defs must error");
+    }
+
+    #[test]
+    fn return_outside_function_parses_but_run_errors() {
+        // `return` in rule body parses (some awks allow); awkrs's VM rejects it
+        // at runtime. Pin the parse-OK side here.
+        let r = parse_program("BEGIN { return 1 }");
+        assert!(r.is_ok(), "return parses; runtime rejects");
+    }
+
+    #[test]
+    fn parenthesized_comma_list_alone_rejected_as_statement() {
+        // `(1, 2)` as a bare statement (no print/printf context) is invalid.
+        assert!(parse_program("BEGIN { (1, 2) }").is_err());
+    }
+
+    // ── Edge syntax: regexp constants ────────────────────────────────────────
+
+    #[test]
+    fn slash_after_keyword_is_regex_not_division() {
+        // After `if`/`while`/`for`/`{`, `/foo/` is a regex literal.
+        let prog = parse_program("BEGIN { if (1) /foo/ }").expect("parse");
+        // Just verify it doesn't error — the AST shape is in other tests.
+        assert!(!prog.rules.is_empty());
+    }
+
+    #[test]
+    fn typed_regex_at_slash_parses() {
+        let prog = parse_program(r#"BEGIN { x = @/abc/ }"#).expect("parse");
+        let e = match &prog.rules[0].stmts[0] {
+            Stmt::Expr(Expr::Assign { rhs, .. }) => rhs,
+            _ => panic!("expected assign"),
+        };
+        assert!(matches!(**e, Expr::RegexpLiteral(_)));
+    }
+
+    // ── Scientific notation literal in source (lexer + parser integration) ───
+
+    #[test]
+    fn scientific_literal_parses_as_single_number() {
+        // After lexer fix: `1e7`, `2.5e+3`, `1E-2` are single Number tokens
+        // and parse as Expr::Number(value), not concat of int and ident.
+        for (src, expected) in &[
+            ("BEGIN { x = 1e7 }", 1e7),
+            ("BEGIN { x = 2.5e+3 }", 2.5e3),
+            ("BEGIN { x = 1E-2 }", 1e-2),
+        ] {
+            let prog = parse_program(src).expect("parse");
+            let e = match &prog.rules[0].stmts[0] {
+                Stmt::Expr(Expr::Assign { rhs, .. }) => rhs.as_ref().clone(),
+                _ => panic!("expected assign"),
+            };
+            match e {
+                Expr::Number(n) => assert!(
+                    (n - expected).abs() / expected.abs().max(1.0) < 1e-12,
+                    "{src}: got {n}, expected {expected}"
+                ),
+                other => panic!("{src}: expected Number, got {other:?}"),
+            }
+        }
+    }
+}

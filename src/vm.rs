@@ -2961,7 +2961,8 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             }
             Op::GetArrayElem(arr) => {
                 let key_val = ctx.pop();
-                let k = key_val.as_str_cow().into_owned();
+                // POSIX: numeric subscripts are stringified via CONVFMT.
+                let k = ctx.rt.value_to_array_key(&key_val);
                 let name = ctx.str_ref(arr).to_string();
                 // POSIX: reading `a[k]` auto-creates the entry as `Uninit` if
                 // missing. Subsequent `k in a` returns 1, `typeof(a[k])` is
@@ -3039,7 +3040,9 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             }
             Op::SetArrayElem(arr) => {
                 let val = ctx.pop();
-                let key = ctx.pop().into_string();
+                // POSIX: numeric subscripts are stringified via CONVFMT.
+                let key_val = ctx.pop();
+                let key = ctx.rt.value_to_array_key(&key_val);
                 let name = ctx.cp.strings.get(arr);
                 ctx.array_elem_set(name, key, val.clone());
                 ctx.push(val);
@@ -6244,15 +6247,13 @@ mod tests {
     }
 
     #[test]
-    fn sprintf_percent_g_threshold_currently_wrong_in_awkrs() {
-        // FIXME: %g should use %e when exponent >= precision (default 6).
-        // gawk:  sprintf("%g", 1e7) → "1e+07"
-        // awkrs: sprintf("%g", 1e7) → "1"
-        // The %g exponent decision in src/format.rs appears to be broken.
+    fn sprintf_percent_g_uses_scientific_for_large_exponent() {
+        // %g switches to %e form when exponent >= precision (default 6).
+        // Previously failed because the lexer wasn't parsing `1e7` as a single
+        // number token (was `1` concat ident `e7`); fixed in lexer.rs.
         let big = run_begin_capture(r#"BEGIN { print sprintf("%g", 1e7) }"#);
-        assert_eq!(big, "1\n", "FIXME: %g large-exponent path (gawk: 1e+07)");
+        assert_eq!(big, "1e+07\n");
 
-        // The small-magnitude side works correctly:
         let small = run_begin_capture(r#"BEGIN { print sprintf("%g", 0.0001) }"#);
         assert_eq!(small, "0.0001\n");
     }
@@ -6284,12 +6285,13 @@ mod tests {
     }
 
     #[test]
-    fn sprintf_integer_precision_currently_ignored_in_awkrs() {
-        // FIXME: %.Nd should zero-pad integer to N digits.
-        // gawk:  sprintf("%.5d", 42) → "00042"
-        // awkrs: sprintf("%.5d", 42) → "42"  (precision ignored for %d)
+    fn sprintf_integer_precision_pads_with_zeros() {
+        // POSIX: %.Nd zero-pads the integer magnitude to at least N digits.
+        // The sign is added separately and doesn't count toward N.
         let out = run_begin_capture(r#"BEGIN { print sprintf("%.5d", 42) }"#);
-        assert_eq!(out, "42\n", "FIXME: %.Nd integer precision (gawk: 00042)");
+        assert_eq!(out, "00042\n");
+        let neg = run_begin_capture(r#"BEGIN { print sprintf("%.5d", -42) }"#);
+        assert_eq!(neg, "-00042\n");
     }
 
     #[test]
@@ -6438,20 +6440,20 @@ mod tests {
     // Pin each so a future change can't silently regress these to format_number.
 
     #[test]
-    fn convfmt_not_applied_to_array_subscript_in_awkrs() {
-        // FIXME: POSIX/gawk apply CONVFMT to array-subscript coercion.
-        // gawk:  CONVFMT="%.0f"; a[3.14]=1; for (k in a) print k  →  "3"
-        // awkrs: same input                                        →  "3.14"
-        // The array-subscript coercion path (CompiledFunc::array_elem_set or
-        // similar) uses format_number directly. Separate fix from the
-        // ConcatPoolStr Concat path that we already fixed.
+    fn convfmt_applied_to_array_subscript() {
+        // POSIX: array-subscript numeric coercion uses CONVFMT.
+        // Implemented in vm.rs via `rt.value_to_array_key()` which dispatches
+        // through num_to_string_convfmt for non-integer Num/Mpfr values.
         let out = run_begin_capture(
             r#"BEGIN { CONVFMT="%.0f"; a[3.14]=1; for (k in a) print k }"#,
         );
-        assert_eq!(
-            out, "3.14\n",
-            "FIXME: array-subscript should use CONVFMT (gawk: 3)"
+        assert_eq!(out, "3\n");
+
+        // Integer-valued keys still bypass CONVFMT (a[1] stays "1", not "1.0").
+        let int_out = run_begin_capture(
+            r#"BEGIN { CONVFMT="%.0f"; a[1]=1; a[42]=2; n=0; for(k in a){n++} print n }"#,
         );
+        assert_eq!(int_out, "2\n");
     }
 
     #[test]

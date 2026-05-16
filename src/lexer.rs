@@ -292,8 +292,33 @@ impl<'a> Lexer<'a> {
                     }
                 }
             }
+            // POSIX scientific notation: optional `e`/`E` + optional sign + digits.
+            // Only consume the exponent if it's well-formed (digits after the sign);
+            // otherwise leave it for the next token (e.g. `1e_foo` → "1" then "e_foo").
+            let mut had_exp = false;
+            if matches!(self.peek(), Some('e' | 'E')) {
+                let save_pos = self.pos;
+                self.bump(); // consume `e`/`E`
+                if matches!(self.peek(), Some('+' | '-')) {
+                    self.bump();
+                }
+                let digit_start = self.pos;
+                while let Some(d) = self.peek() {
+                    if d.is_ascii_digit() {
+                        self.bump();
+                    } else {
+                        break;
+                    }
+                }
+                if self.pos > digit_start {
+                    had_exp = true;
+                } else {
+                    // Roll back — not a valid exponent.
+                    self.pos = save_pos;
+                }
+            }
             let slice = &self.input[start..self.pos];
-            if !had_dot {
+            if !had_dot && !had_exp {
                 if slice.len() > 1
                     && slice.starts_with('0')
                     && slice.bytes().all(|b| (b'0'..=b'7').contains(&b))
@@ -917,11 +942,44 @@ mod tests {
     }
 
     #[test]
-    fn lex_scientific_notation_splits_integer_and_ident() {
-        // Lexer does not fold `e` exponents into one float token; callers rely on parse layer.
-        assert_eq!(
-            tokens_no_regex("1e3"),
-            vec![Token::IntegerLiteral("1".into()), Token::Ident("e3".into())]
+    fn lex_scientific_notation_no_sign() {
+        // POSIX: `1e3` is a single Number token (1000.0).
+        match tokens_no_regex("1e3").into_iter().next().unwrap() {
+            Token::Number(n) => assert!((n - 1000.0).abs() < 1e-12, "got {n}"),
+            t => panic!("expected Number(1000.0), got {t:?}"),
+        }
+    }
+
+    #[test]
+    fn lex_scientific_notation_with_signs_and_uppercase_e() {
+        // 1.5e+10, 2E-3, 1E5 all single Number tokens.
+        let pos = match tokens_no_regex("1.5e+10").into_iter().next().unwrap() {
+            Token::Number(n) => n,
+            t => panic!("got {t:?}"),
+        };
+        assert!((pos - 1.5e10).abs() < 1.0, "got {pos}");
+
+        let neg = match tokens_no_regex("2E-3").into_iter().next().unwrap() {
+            Token::Number(n) => n,
+            t => panic!("got {t:?}"),
+        };
+        assert!((neg - 2e-3).abs() < 1e-15, "got {neg}");
+
+        let upper = match tokens_no_regex("1E5").into_iter().next().unwrap() {
+            Token::Number(n) => n,
+            t => panic!("got {t:?}"),
+        };
+        assert!((upper - 1e5).abs() < 1.0, "got {upper}");
+    }
+
+    #[test]
+    fn lex_non_exponent_e_still_splits() {
+        // `1e_foo` is not a valid exponent (no digits after `e`); must split.
+        let toks = tokens_no_regex("1e_foo");
+        // Either Integer("1") + Ident("e_foo"), or any sensible non-merged tokenization.
+        assert!(
+            toks.len() >= 2,
+            "non-exponent `e` should not be consumed as part of the number: {toks:?}"
         );
     }
 

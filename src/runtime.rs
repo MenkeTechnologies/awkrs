@@ -1787,6 +1787,34 @@ impl Runtime {
         }
     }
 
+    /// Convert a [`Value`] to a string suitable for use as an array key.
+    /// Numeric values pass through `CONVFMT` (POSIX-required for subscripts);
+    /// all other values use their default string form. Integer-valued numbers
+    /// bypass `CONVFMT` via the same heuristic as `as_str()` (e.g. `a[1]`
+    /// stays as `"1"` regardless of CONVFMT).
+    pub fn value_to_array_key(&self, v: &Value) -> String {
+        match v {
+            Value::Num(n) => {
+                // Integer-valued numbers must stay exact: a[1] keys on "1" not "1.000000".
+                if n.is_finite() && n.fract() == 0.0 && n.abs() < 1e15 {
+                    format!("{}", *n as i64)
+                } else {
+                    self.num_to_string_convfmt(*n)
+                }
+            }
+            Value::Mpfr(f) => {
+                if f.is_finite() && f.is_integer() {
+                    format!("{}", crate::bignum::float_trunc_integer(f))
+                } else {
+                    self.mpfr_to_string_convfmt(f)
+                }
+            }
+            Value::Uninit => String::new(),
+            Value::Str(s) | Value::StrLit(s) | Value::Regexp(s) => s.clone(),
+            Value::Array(_) => String::new(),
+        }
+    }
+
     /// POSIX / gawk: format a number using **`CONVFMT`** (string coercion).
     pub fn num_to_string_convfmt(&self, n: f64) -> String {
         let fmt = self

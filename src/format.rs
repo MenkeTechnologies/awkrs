@@ -552,6 +552,16 @@ fn format_one(
                 let n = v.as_number() as i64;
                 format!("{n}")
             };
+            // POSIX: `%.Nd` zero-pads the integer magnitude to at least N digits
+            // (the sign is added separately and doesn't count toward N).
+            if let Some(p) = prec {
+                let neg = s.starts_with('-');
+                let mag = if neg { &s[1..] } else { &s[..] };
+                if mag.len() < p {
+                    let padded = format!("{:0>width$}", mag, width = p);
+                    s = if neg { format!("-{padded}") } else { padded };
+                }
+            }
             let pos = !s.starts_with('-');
             apply_sign(&mut s, pos, sign, space);
             if group && sep != '\0' {
