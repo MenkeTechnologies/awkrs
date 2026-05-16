@@ -52,6 +52,8 @@ pub enum Token {
     MulAssign,
     DivAssign,
     ModAssign,
+    /// `^=` / `**=` — compound exponentiation assignment.
+    PowAssign,
     Eq,
     Ne,
     Lt,
@@ -135,11 +137,16 @@ impl<'a> Lexer<'a> {
             if c == ' ' || c == '\t' || c == '\r' {
                 self.bump();
             } else if c == '#' {
+                // Consume the `#` plus the rest of the line UP TO (but not
+                // including) the newline. Leaving the `\n` lets the lexer
+                // emit `Token::Newline` from it, so a comment after a
+                // statement acts as a terminator just like the newline alone.
+                self.bump(); // the '#'
                 while let Some(d) = self.peek() {
-                    self.bump();
                     if d == '\n' {
                         break;
                     }
+                    self.bump();
                 }
             } else {
                 break;
@@ -520,7 +527,12 @@ impl<'a> Lexer<'a> {
             '*' => {
                 if self.peek() == Some('*') {
                     self.bump();
-                    Token::StarStar
+                    if self.peek() == Some('=') {
+                        self.bump();
+                        Token::PowAssign
+                    } else {
+                        Token::StarStar
+                    }
                 } else if self.peek() == Some('=') {
                     self.bump();
                     Token::MulAssign
@@ -528,7 +540,14 @@ impl<'a> Lexer<'a> {
                     Token::Star
                 }
             }
-            '^' => Token::Caret,
+            '^' => {
+                if self.peek() == Some('=') {
+                    self.bump();
+                    Token::PowAssign
+                } else {
+                    Token::Caret
+                }
+            }
             '%' => {
                 if self.peek() == Some('=') {
                     self.bump();
@@ -928,9 +947,12 @@ mod tests {
 
     #[test]
     fn lex_comment_skipped() {
+        // Comments end at (but don't consume) the newline. The newline emits
+        // a `Newline` token so it can terminate the preceding statement, then
+        // the next-line token follows.
         assert_eq!(
             tokens_no_regex("# whole line comment\nx"),
-            vec![Token::Ident("x".into())]
+            vec![Token::Newline, Token::Ident("x".into())]
         );
     }
 
@@ -1174,8 +1196,15 @@ mod tests {
     }
 
     #[test]
-    fn lex_caret_followed_by_assign_is_two_tokens() {
-        assert_eq!(tokens_no_regex("^="), vec![Token::Caret, Token::Assign]);
+    fn lex_caret_assign_single_token() {
+        // `^=` is a single PowAssign token (gawk compound exponentiation).
+        assert_eq!(tokens_no_regex("^="), vec![Token::PowAssign]);
+    }
+
+    #[test]
+    fn lex_star_star_assign_single_token() {
+        // `**=` (alternate gawk spelling for `^=`) is a single PowAssign too.
+        assert_eq!(tokens_no_regex("**="), vec![Token::PowAssign]);
     }
 
     #[test]

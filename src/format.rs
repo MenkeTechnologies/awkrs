@@ -773,6 +773,29 @@ fn apply_sign(s: &mut String, pos: bool, sign: bool, space: bool) {
 }
 
 fn pad_numeric(s: &str, width: usize, left: bool, pad: char) -> Result<String, String> {
+    // POSIX: when zero-padding a signed integer, zeros go BETWEEN the sign
+    // and the magnitude — "%05d" of -42 should be "-0042" not "00-42".
+    // Same applies to `+` / leading-space sign prefixes.
+    if pad == '0' && !left {
+        if let Some(stripped) = s.strip_prefix('-') {
+            return Ok(format!(
+                "-{}",
+                pad_string(stripped, width.saturating_sub(1), false, '0')?
+            ));
+        }
+        if let Some(stripped) = s.strip_prefix('+') {
+            return Ok(format!(
+                "+{}",
+                pad_string(stripped, width.saturating_sub(1), false, '0')?
+            ));
+        }
+        if let Some(stripped) = s.strip_prefix(' ') {
+            return Ok(format!(
+                " {}",
+                pad_string(stripped, width.saturating_sub(1), false, '0')?
+            ));
+        }
+    }
     pad_string(s, width, left, pad)
 }
 

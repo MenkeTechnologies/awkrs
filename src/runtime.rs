@@ -497,8 +497,20 @@ impl Value {
         match self {
             Value::Uninit => false,
             Value::Num(n) => *n != 0.0,
-            Value::Str(s) | Value::StrLit(s) => {
-                !s.is_empty() && s.parse::<f64>().map(|n| n != 0.0).unwrap_or(true)
+            // POSIX: string LITERALS (Value::StrLit, from source) are truthy
+            // iff non-empty — "0", "false", " " are all truthy strings.
+            Value::StrLit(s) => !s.is_empty(),
+            // `Value::Str` comes from input (fields, -v, getline) and may be a
+            // "numeric string": if it parses cleanly as a number, use numeric
+            // truthiness; otherwise non-empty.
+            Value::Str(s) => {
+                if s.is_empty() {
+                    false
+                } else if let Ok(n) = s.parse::<f64>() {
+                    n != 0.0
+                } else {
+                    true
+                }
             }
             Value::Regexp(s) => !s.is_empty(),
             Value::Mpfr(f) => !f.is_zero(),
@@ -512,8 +524,16 @@ impl Value {
         Ok(match self {
             Value::Uninit => false,
             Value::Num(n) => *n != 0.0,
-            Value::Str(s) | Value::StrLit(s) => {
-                !s.is_empty() && s.parse::<f64>().map(|n| n != 0.0).unwrap_or(true)
+            // Same rule as `truthy()` — see comments there.
+            Value::StrLit(s) => !s.is_empty(),
+            Value::Str(s) => {
+                if s.is_empty() {
+                    false
+                } else if let Ok(n) = s.parse::<f64>() {
+                    n != 0.0
+                } else {
+                    true
+                }
             }
             Value::Regexp(s) => !s.is_empty(),
             Value::Mpfr(f) => !f.is_zero(),

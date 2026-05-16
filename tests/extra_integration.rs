@@ -300,7 +300,10 @@ fn awk_style_truthiness_zero_and_empty() {
         "",
     );
     assert_eq!(c, 0);
-    assert_eq!(o, "0 0 0\n");
+    // POSIX/gawk: number 0 → falsy; empty string → falsy; string literal "0"
+    // → TRUTHY (non-empty string literals are truthy regardless of numeric
+    // value).
+    assert_eq!(o, "0 0 1\n");
 }
 
 #[test]

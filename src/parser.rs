@@ -994,13 +994,15 @@ impl<'a> Parser<'a> {
             | Token::SubAssign
             | Token::MulAssign
             | Token::DivAssign
-            | Token::ModAssign => {
+            | Token::ModAssign
+            | Token::PowAssign => {
                 let op = match op_tok {
                     Token::AddAssign => BinOp::Add,
                     Token::SubAssign => BinOp::Sub,
                     Token::MulAssign => BinOp::Mul,
                     Token::DivAssign => BinOp::Div,
                     Token::ModAssign => BinOp::Mod,
+                    Token::PowAssign => BinOp::Pow,
                     _ => unreachable!(),
                 };
                 self.bump(false)?;
@@ -1182,6 +1184,7 @@ impl<'a> Parser<'a> {
                     | Token::MulAssign
                     | Token::DivAssign
                     | Token::ModAssign
+                    | Token::PowAssign
                     | Token::Question
                     | Token::In
                     | Token::Caret

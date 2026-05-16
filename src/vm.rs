@@ -6965,18 +6965,18 @@ mod tests {
     }
 
     #[test]
-    fn cmp_string_vs_number_uses_string_compare_in_awkrs() {
-        // FIXME: POSIX/gawk: mixed string-vs-number comparison coerces to
-        // numeric. awkrs currently uses string compare: "10" < 9 is true
-        // because "10" sorts before "9" lexicographically.
+    fn cmp_string_literal_vs_number_uses_string_compare() {
+        // POSIX/gawk: a string LITERAL is NOT a "numeric string". When mixed
+        // with a number, the number is coerced to a string and the comparison
+        // is STRING-wise.
         //
-        // gawk:  ("10" < 9) → 0 (false; numeric: 10 < 9 = false)
-        // awkrs: ("10" < 9) → 1 (true;  string:  "10" < "9" = true)
+        // Numeric compare applies only when both operands are either numbers
+        // or "numeric strings" — values from input/$N/-v that look numeric.
+        // Bare `"10"` source-level literals stay as Value::StrLit and miss
+        // the numeric-string predicate. Verified with `gawk 'BEGIN { print
+        // ("10" < 9) ? "yes" : "no" }'` → "yes".
         let out = run_begin_capture(r#"BEGIN { print ("10" < 9) ? "yes" : "no" }"#);
-        assert_eq!(
-            out, "yes\n",
-            "FIXME: string-vs-number cmp not coerced to numeric"
-        );
+        assert_eq!(out, "yes\n");
     }
 
     #[test]
@@ -7021,15 +7021,14 @@ mod tests {
     }
 
     #[test]
-    fn compound_pow_assign_not_supported_in_awkrs() {
-        // FIXME: gawk supports `x ^= n` and `x **= n` (compound exponentiation
-        // assignment); awkrs rejects them as parse errors.
-        let prog = r#"BEGIN { z=2; z^=8; print z }"#;
-        let result = crate::parser::parse_program(prog);
-        assert!(
-            result.is_err(),
-            "FIXME: awkrs should support ^= compound assignment (gawk does)"
-        );
+    fn compound_pow_assign_supported() {
+        // `x ^= n` and `x **= n` (gawk-style compound exponentiation) parse
+        // and evaluate as `x = x ^ n`. Lexer emits `PowAssign` token; parser
+        // maps it to `BinOp::Pow`.
+        let out = run_begin_capture(r#"BEGIN { z=2; z^=8; print z }"#);
+        assert_eq!(out, "256\n");
+        let out2 = run_begin_capture(r#"BEGIN { z=2; z**=8; print z }"#);
+        assert_eq!(out2, "256\n");
     }
 
     // ── Increment / decrement on different lvalues ───────────────────────────
@@ -7146,16 +7145,19 @@ mod tests {
     // ── Sprintf additional cases ─────────────────────────────────────────────
 
     #[test]
-    fn sprintf_zero_pad_negative_currently_wrong_in_awkrs() {
-        // FIXME: %05d of -42 should be "-0042" (sign first, then zeros).
-        // awkrs returns "00-42" — zeros padded into the magnitude BEFORE the
-        // sign is added. The fix is in src/format.rs 'd'/'i' branch: apply the
-        // precision-pad first, THEN add the sign.
-        //
-        // gawk:  sprintf("%05d", -42) → "-0042"
-        // awkrs: sprintf("%05d", -42) → "00-42"
+    fn sprintf_zero_pad_negative_sign_first() {
+        // POSIX: when zero-padding a signed integer, zeros go BETWEEN the
+        // sign and the magnitude. Fixed in format.rs::pad_numeric to detect
+        // a leading sign and insert padding after it.
         let out = run_begin_capture(r#"BEGIN { print sprintf("%05d", -42) }"#);
-        assert_eq!(out, "00-42\n", "FIXME: %0Nd negative-number sign placement");
+        assert_eq!(out, "-0042\n");
+    }
+
+    #[test]
+    fn sprintf_zero_pad_positive_with_plus_flag() {
+        // Same rule applies to `+` sign flag.
+        let out = run_begin_capture(r#"BEGIN { print sprintf("%+05d", 42) }"#);
+        assert_eq!(out, "+0042\n");
     }
 
     #[test]
@@ -7179,16 +7181,13 @@ mod tests {
     }
 
     #[test]
-    fn string_literal_zero_is_falsy_in_awkrs() {
-        // FIXME: POSIX/gawk: "0" as a string literal is truthy (non-empty
-        // string). awkrs treats "0" as falsy (likely numeric-coercing the
-        // string in boolean context, which the spec says NOT to do for string
-        // literals).
-        //
-        // gawk:  ("0" ? "T" : "F") → T  (string is non-empty)
-        // awkrs: ("0" ? "T" : "F") → F  (numeric coercion of "0" = 0 = falsy)
+    fn string_literal_zero_is_truthy_unlike_number_zero() {
+        // POSIX/gawk: a string LITERAL is truthy iff non-empty. The numeric
+        // value of `"0"` is irrelevant for string literals in boolean context.
+        // Only Value::Str (from input/fields/-v) gets numeric coercion.
+        // Fixed in runtime.rs::truthy / truthy_cond by splitting StrLit/Str.
         let out = run_begin_capture(r#"BEGIN { print ("0" ? "T" : "F"); print (0 ? "T" : "F") }"#);
-        assert_eq!(out, "F\nF\n", "FIXME: \"0\" should be truthy per POSIX");
+        assert_eq!(out, "T\nF\n");
     }
 
     #[test]
@@ -7214,20 +7213,11 @@ mod tests {
     }
 
     #[test]
-    fn comment_after_statement_does_not_terminate_in_awkrs() {
-        // FIXME: gawk treats the newline after a comment as a statement
-        // terminator; awkrs rejects `x = 42 # comment\nprint x` as a parse
-        // error because the newline-after-comment isn't recognized as
-        // terminating the assignment.
-        //
-        // gawk:  prints 42
-        // awkrs: "unexpected token in expression: Print"
-        let prog = "BEGIN { x = 42 # comment\n print x }";
-        let result = crate::parser::parse_program(prog);
-        assert!(
-            result.is_err(),
-            "FIXME: awkrs should treat newline-after-comment as statement terminator"
-        );
+    fn comment_after_statement_terminates_via_newline() {
+        // After fix: `skip_ws` leaves the `\n` after a comment in place so the
+        // lexer emits `Newline`, which terminates the assignment statement.
+        let out = run_begin_capture("BEGIN { x = 42 # comment\n print x }");
+        assert_eq!(out, "42\n");
     }
 
     #[test]
