@@ -6775,6 +6775,137 @@ mod tests {
         assert_eq!(out, "-1\n");
     }
 
+    // ── srand / rand: deterministic sequence with fixed seed ─────────────────
+    //
+    // POSIX: srand(seed) seeds the RNG and returns the PREVIOUS seed. Two runs
+    // with the same seed must produce the same sequence — a regression here
+    // would break every random-sampling awk program silently.
+
+    #[test]
+    fn srand_returns_previous_seed() {
+        // First srand returns whatever the initial seed was (impl-defined).
+        // Second srand returns the seed passed to the first.
+        let out = run_begin_capture(r#"BEGIN { srand(42); prev=srand(99); print prev }"#);
+        assert_eq!(out, "42\n");
+    }
+
+    #[test]
+    fn rand_sequence_stable_with_same_seed() {
+        // Two srand(N) calls with the same N must reset to the same sequence.
+        let out = run_begin_capture(
+            r#"BEGIN { srand(7); a=rand(); b=rand(); srand(7); c=rand(); d=rand(); print (a==c) (b==d) }"#,
+        );
+        // "11" means both pairs matched.
+        assert_eq!(out, "11\n");
+    }
+
+    #[test]
+    fn rand_values_in_half_open_unit_interval() {
+        // rand() returns x ∈ [0, 1). Draw a few and verify each is in range.
+        let out = run_begin_capture(
+            r#"BEGIN { srand(1); ok=1; for(i=0;i<10;i++){ x=rand(); if (x<0||x>=1) ok=0 } print ok }"#,
+        );
+        assert_eq!(out, "1\n");
+    }
+
+    #[test]
+    fn rand_different_draws_with_same_seed_differ() {
+        // Sanity: two consecutive rand() with the same seed should NOT be equal
+        // (catastrophic regression: rand always returns the same value).
+        let out = run_begin_capture(r#"BEGIN { srand(123); a=rand(); b=rand(); print (a==b) }"#);
+        assert_eq!(out, "0\n");
+    }
+
+    // ── intdiv / intdiv0: integer division ──────────────────────────────────
+    //
+    // awkrs uses a 2-arg signature: `intdiv(a, b)` returns the integer
+    // quotient (truncated toward zero). `intdiv0(a, b)` returns 0 on division
+    // by zero instead of erroring.
+
+    #[test]
+    fn intdiv_positive_quotient() {
+        let out = run_begin_capture(r#"BEGIN { print intdiv(17, 5) }"#);
+        assert_eq!(out, "3\n");
+    }
+
+    #[test]
+    fn intdiv_exact_division() {
+        let out = run_begin_capture(r#"BEGIN { print intdiv(20, 5) }"#);
+        assert_eq!(out, "4\n");
+    }
+
+    #[test]
+    fn intdiv_truncates_negative_toward_zero() {
+        // -17 / 5 → -3 (truncate toward zero), not -4 (floor).
+        let out = run_begin_capture(r#"BEGIN { print intdiv(-17, 5) }"#);
+        assert_eq!(out, "-3\n");
+    }
+
+    #[test]
+    fn intdiv_zero_divisor_errors() {
+        let cp = compile(r#"BEGIN { intdiv(10, 0) }"#);
+        let mut rt = runtime_with_slots(&cp);
+        let result = crate::vm::vm_run_begin(&cp, &mut rt);
+        assert!(result.is_err(), "intdiv(10, 0) must error, got Ok");
+    }
+
+    #[test]
+    fn intdiv0_zero_divisor_returns_zero_without_error() {
+        // intdiv0(a, 0) returns 0 (the "safe" variant — no runtime error).
+        let out = run_begin_capture(r#"BEGIN { print intdiv0(10, 0) }"#);
+        assert_eq!(out, "0\n");
+    }
+
+    // ── Record / field rebuild edge cases ────────────────────────────────────
+
+    #[test]
+    fn set_dollar_zero_resplits_with_current_fs() {
+        // `$0 = "..."` must re-split with the active FS.
+        let out = run_begin_capture(r#"BEGIN { FS=":"; $0="a:b:c"; print NF; print $2 }"#);
+        assert_eq!(out, "3\nb\n");
+    }
+
+    #[test]
+    fn nf_zero_clears_record_and_fields() {
+        // POSIX: NF=0 makes $0 empty and removes all fields.
+        let out = run_begin_capture(r#"BEGIN { $0="a b c"; NF=0; print NF; print "[" $0 "]" }"#);
+        assert_eq!(out, "0\n[]\n");
+    }
+
+    #[test]
+    fn dollar_zero_assigns_through_nf_changes() {
+        // After resetting $0, NF reflects the new field count.
+        let out = run_begin_capture(r#"BEGIN { $0="x y"; print NF; $0="p q r s"; print NF }"#);
+        assert_eq!(out, "2\n4\n");
+    }
+
+    #[test]
+    fn set_field_beyond_nf_extends_with_empties() {
+        // $5 = "x" when NF was 2 → NF becomes 5, $3 and $4 are empty.
+        let out = run_begin_capture(
+            r#"BEGIN { $0="a b"; $5="z"; print NF; print "[" $3 "][" $4 "][" $5 "]" }"#,
+        );
+        assert_eq!(out, "5\n[][][z]\n");
+    }
+
+    #[test]
+    fn reassigning_field_one_rebuilds_dollar_zero() {
+        let out = run_begin_capture(r#"BEGIN { $0="a b c"; $1="X"; print $0 }"#);
+        assert_eq!(out, "X b c\n");
+    }
+
+    #[test]
+    fn fs_change_after_record_does_not_resplit() {
+        // POSIX: changing FS doesn't re-split the current $0 retroactively;
+        // it affects the NEXT record. (Within BEGIN we can verify by setting
+        // $0 explicitly then changing FS and reading fields — fields stay
+        // split per the FS that was active at the time of the assignment.)
+        let out = run_begin_capture(r#"BEGIN { FS=":"; $0="a:b:c"; FS=" "; print NF; print $2 }"#);
+        // Still 3 fields with FS=":" split (changing FS to " " after $0=
+        // doesn't re-split the existing record).
+        assert_eq!(out, "3\nb\n");
+    }
+
     #[test]
     fn sub_does_not_modify_on_no_match() {
         // sub returns 0 and leaves the target unchanged.
