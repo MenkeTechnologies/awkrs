@@ -122,17 +122,17 @@
       <!-- SECTION 1: EXECUTIVE SUMMARY           -->
       <!-- ═══════════════════════════════════════ -->
       <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>EXECUTIVE SUMMARY</h2>
-      <p class="tutorial-subtitle">awkrs is a single-binary AWK implementation written in Rust. The interpreter compiles AWK source to a 102-opcode bytecode, runs it on a stack VM with peephole-fused instructions, and JITs hot chunks via Cranelift to native code with tiered compilation. Parallel record processing rides on rayon work-stealing. <strong>First AWK implementation to combine bytecode VM + Cranelift JIT + persistent on-disk bytecode cache</strong> (rkyv-backed at <code>~/.awkrs/scripts.rkyv</code>) &mdash; repeat <code>-f script.awk</code> runs skip lex/parse/compile entirely.</p>
+      <p class="tutorial-subtitle">awkrs is a single-binary AWK implementation written in Rust. The interpreter compiles AWK source to a 95-opcode bytecode, runs it on a stack VM with peephole-fused instructions, and JITs hot chunks via Cranelift to native code with tiered compilation. Parallel record processing rides on rayon work-stealing. <strong>First AWK implementation to combine bytecode VM + Cranelift JIT + persistent on-disk bytecode cache</strong> (rkyv-backed at <code>~/.awkrs/scripts.rkyv</code>) &mdash; repeat <code>-f script.awk</code> runs skip lex/parse/compile entirely. 2,053 parity files cross-check byte-for-byte against gawk, mawk, and BSD awk; CI runs full corpus against all three references on every push.</p>
 
       <div class="stat-grid">
-        <div class="stat-card"><div class="stat-val">37,302</div><div class="stat-label">Rust Lines</div></div>
-        <div class="stat-card"><div class="stat-val accent">1,557</div><div class="stat-label">Tests (Total)</div></div>
-        <div class="stat-card"><div class="stat-val green">1,036</div><div class="stat-label">Unit Tests (Lib)</div></div>
-        <div class="stat-card"><div class="stat-val">102</div><div class="stat-label">VM Opcodes</div></div>
+        <div class="stat-card"><div class="stat-val">37,814</div><div class="stat-label">Rust Lines</div></div>
+        <div class="stat-card"><div class="stat-val accent">1,588</div><div class="stat-label">Tests (Total)</div></div>
+        <div class="stat-card"><div class="stat-val green">1,067</div><div class="stat-label">Unit Tests (Lib)</div></div>
+        <div class="stat-card"><div class="stat-val">95</div><div class="stat-label">VM Opcodes</div></div>
         <div class="stat-card"><div class="stat-val">54</div><div class="stat-label">Builtin Functions</div></div>
         <div class="stat-card"><div class="stat-val accent">0</div><div class="stat-label">Test Failures</div></div>
-        <div class="stat-card"><div class="stat-val green">2,036</div><div class="stat-label">Parity Files (vs gawk)</div></div>
-        <div class="stat-card"><div class="stat-val">v0.4.1</div><div class="stat-label">crates.io Release</div></div>
+        <div class="stat-card"><div class="stat-val green">2,053</div><div class="stat-label">Parity Files (vs gawk + mawk + BSD)</div></div>
+        <div class="stat-card"><div class="stat-val">v0.4.2</div><div class="stat-label">crates.io Release</div></div>
       </div>
 
       <hr class="section-rule">
@@ -149,22 +149,22 @@
           <tr><th>Module</th><th class="num">LOC</th><th class="num">Tests</th><th>Role</th></tr>
         </thead>
         <tbody>
-          <tr><td>vm.rs</td><td class="num">7,525</td><td class="num">263</td><td>Stack VM main loop, opcode dispatch, fused fast paths</td></tr>
-          <tr><td>jit.rs</td><td class="num">5,598</td><td class="num">104</td><td>Cranelift JIT, tiered compilation, mixed-mode NaN-boxing</td></tr>
-          <tr><td>runtime.rs</td><td class="num">3,800</td><td class="num">80</td><td>Field/record state, FS handling, MPFR (-M) integration</td></tr>
-          <tr><td>compiler.rs</td><td class="num">2,776</td><td class="num">55</td><td>AST &rarr; bytecode, slot allocation, peephole fusion</td></tr>
-          <tr><td>parser.rs</td><td class="num">2,721</td><td class="num">75</td><td>Recursive-descent parser, gawk extensions</td></tr>
+          <tr><td>vm.rs</td><td class="num">7,973</td><td class="num">294</td><td>Stack VM main loop, opcode dispatch, fused fast paths, array call-by-reference</td></tr>
+          <tr><td>jit.rs</td><td class="num">5,599</td><td class="num">104</td><td>Cranelift JIT, tiered compilation, mixed-mode NaN-boxing</td></tr>
+          <tr><td>runtime.rs</td><td class="num">3,813</td><td class="num">80</td><td>Field/record state, FS handling, MPFR (-M) integration</td></tr>
+          <tr><td>compiler.rs</td><td class="num">2,823</td><td class="num">55</td><td>AST &rarr; bytecode, slot allocation, peephole fusion, user-function tracking</td></tr>
+          <tr><td>parser.rs</td><td class="num">2,721</td><td class="num">75</td><td>Recursive-descent parser, gawk extensions, ^= / **= compound</td></tr>
           <tr><td>lib.rs</td><td class="num">2,236</td><td class="num">54</td><td>CLI entry, parallel record driver, file plumbing</td></tr>
           <tr><td>cli_effects.rs</td><td class="num">1,982</td><td class="num">34</td><td>--debug / --lint / --pretty-print / --gen-pot output</td></tr>
-          <tr><td>lexer.rs</td><td class="num">1,219</td><td class="num">61</td><td>POSIX + gawk tokens, string escapes, regex mode</td></tr>
-          <tr><td>format.rs</td><td class="num">1,159</td><td class="num">52</td><td>sprintf / printf formatting (all POSIX specifiers)</td></tr>
+          <tr><td>lexer.rs</td><td class="num">1,219</td><td class="num">61</td><td>POSIX + gawk tokens, string escapes (\a \b \f \v \xHH \NNN), scientific notation</td></tr>
+          <tr><td>format.rs</td><td class="num">1,159</td><td class="num">52</td><td>sprintf / printf formatting (all POSIX specifiers, sign-after-zero pad)</td></tr>
           <tr><td>namespace.rs</td><td class="num">1,054</td><td class="num">29</td><td>gawk-style @namespace + qualified identifiers</td></tr>
-          <tr><td>builtins.rs</td><td class="num">1,053</td><td class="num">41</td><td>gsub/sub/match/split/asort/strftime/strtonum/&hellip;</td></tr>
+          <tr><td>builtins.rs</td><td class="num">1,050</td><td class="num">41</td><td>gsub/sub/match/split/asort/strftime/strtonum/gensub (with \N backrefs)</td></tr>
           <tr><td>script_cache.rs</td><td class="num">872</td><td class="num">16</td><td>rkyv shard at ~/.awkrs/scripts.rkyv, flock-serialized writes</td></tr>
-          <tr><td>bytecode.rs</td><td class="num">670</td><td class="num">11</td><td>Op enum (102 variants), Chunk, CompiledProgram</td></tr>
+          <tr><td>bytecode.rs</td><td class="num">676</td><td class="num">11</td><td>Op enum (95 variants), Chunk, CompiledProgram</td></tr>
           <tr><td>gawk_extensions.rs</td><td class="num">605</td><td class="num">15</td><td>ord/chr/intdiv/readdir/stat/readfile/writea/reada</td></tr>
-          <tr><td>(other modules)</td><td class="num">~3,300</td><td class="num">~120</td><td>ast, ast_fmt, error, flow, format, locale, procinfo, &hellip;</td></tr>
-          <tr class="total-row"><td>TOTAL</td><td class="num">37,302</td><td class="num">1,036</td><td>+521 integration tests = 1,557 total</td></tr>
+          <tr><td>(other modules)</td><td class="num">~3,940</td><td class="num">~140</td><td>ast, ast_fmt, error, flow, format, locale, procinfo, source_expand, &hellip;</td></tr>
+          <tr class="total-row"><td>TOTAL</td><td class="num">37,814</td><td class="num">1,067</td><td>+521 integration tests = 1,588 total</td></tr>
         </tbody>
       </table>
 
@@ -219,22 +219,24 @@
       <!-- SECTION 4: TESTING                     -->
       <!-- ═══════════════════════════════════════ -->
       <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>TESTING</h2>
-      <p class="tutorial-subtitle">1,557 tests, 0 failures. The unit suite is the catcher for behavioral regressions; the parity suite (2,036 files) cross-checks against gawk. The recent test-driven push exposed 15 POSIX/gawk divergences &mdash; each was first surfaced by a pinning test, then fixed, then the FIXME marker removed.</p>
+      <p class="tutorial-subtitle">1,588 tests, 0 failures. The unit suite is the catcher for behavioral regressions; the parity suite (2,053 files) cross-checks against gawk + mawk + BSD awk. The recent test-driven push exposed 20 POSIX/gawk divergences &mdash; each was first surfaced by a pinning test, then fixed, then the FIXME marker removed.</p>
 
       <table class="file-table">
         <thead>
           <tr><th>Layer</th><th class="num">Count</th><th>Style</th><th>Catches</th></tr>
         </thead>
         <tbody>
-          <tr><td>Lib unit tests</td><td class="num">1,036</td><td>Per-function pinning</td><td>Function-level contracts, POSIX semantics, opcode dispatch shapes</td></tr>
+          <tr><td>Lib unit tests</td><td class="num">1,067</td><td>Per-function pinning</td><td>Function-level contracts, POSIX semantics, opcode dispatch shapes</td></tr>
           <tr><td>Integration tests</td><td class="num">521</td><td>Subprocess via <code>run_awkrs_stdin</code></td><td>End-to-end CLI behavior, exit codes, stdin/stdout/stderr</td></tr>
-          <tr><td>Parity files</td><td class="num">2,036</td><td>Diff vs gawk output</td><td>gawk compatibility across the awk language surface</td></tr>
+          <tr><td>Parity files (cases/ + cases_portable/)</td><td class="num">2,025</td><td>Diff vs gawk, mawk, BSD awk</td><td>Cross-reference compatibility across the awk language surface</td></tr>
+          <tr><td>Parity files (cases_gawk/)</td><td class="num">28</td><td>Diff vs gawk only</td><td>gawk-only extensions (FPAT, typeof, gensub, **=, namespaces)</td></tr>
           <tr><td>cargo fmt</td><td class="num">&mdash;</td><td>rustfmt --check</td><td>Style drift</td></tr>
-          <tr><td>cargo clippy</td><td class="num">&mdash;</td><td>--all-targets</td><td>Lint regressions: ptr_arg, approx_constant, etc.</td></tr>
+          <tr><td>cargo clippy</td><td class="num">&mdash;</td><td>--all-targets -D warnings</td><td>Lint regressions: ptr_arg, approx_constant, etc.</td></tr>
+          <tr><td>cargo doc</td><td class="num">&mdash;</td><td>--no-deps with RUSTDOCFLAGS=-D warnings</td><td>Stale doc references</td></tr>
         </tbody>
       </table>
 
-      <h3 style="font-family:'Orbitron',sans-serif;font-size:14px;color:var(--cyan);letter-spacing:1.5px;margin-top:1.2rem;">Divergences fixed via the test-then-fix loop</h3>
+      <h3 style="font-family:'Orbitron',sans-serif;font-size:14px;color:var(--cyan);letter-spacing:1.5px;margin-top:1.2rem;">Divergences fixed via the test-then-fix loop (20 total)</h3>
       <div class="feature-grid">
         <div class="feature-card">
           <h4>POSIX semantics (8 fixes)</h4>
@@ -242,7 +244,7 @@
             <li>Array auto-create on <code>x = a[k]</code> read</li>
             <li>CONVFMT honored in concat (was bypassed by ConcatPoolStr peephole)</li>
             <li>CONVFMT honored in array subscripts</li>
-            <li><code>typeof</code> returns "unassigned" (was "uninitialized")</li>
+            <li><code>typeof</code> returns "untyped" for unset (gawk 5.x vocab)</li>
             <li><code>"0"</code> string literal is truthy (gawk parity)</li>
             <li><code>^=</code> / <code>**=</code> compound assignment</li>
             <li>Comment-as-statement-terminator (newline preserved after #)</li>
@@ -250,20 +252,25 @@
           </ul>
         </div>
         <div class="feature-card">
-          <h4>gawk parity (4 fixes)</h4>
+          <h4>gawk parity (6 fixes)</h4>
           <ul>
             <li>FPAT leftmost-longest semantic (alternation regex)</li>
             <li>gensub <code>\N</code> capture-group backref expansion</li>
             <li>CSV mode leading-comma field count (<code>,,,</code> = NF=4)</li>
             <li>Lexer scientific notation (<code>1e7</code> single token)</li>
+            <li>Array call-by-reference for user functions (incl. delete)</li>
+            <li><code>print</code> of large integers bypasses OFMT past i64::MAX</li>
           </ul>
         </div>
         <div class="feature-card">
-          <h4>Lexer / runtime (3 fixes)</h4>
+          <h4>Lexer / runtime / peephole (6 fixes)</h4>
           <ul>
             <li>Escape sequences <code>\a \b \f \v \/ \xHH \NNN</code> all decode</li>
             <li><code>sprintf("%.5d", 42)</code> &rarr; "00042" (precision honored)</li>
             <li>7 dormant peephole fusions activated via <code>normalize_field_indices()</code> (PushNumDecimalStr-to-PushNum for small integers preceding GetField)</li>
+            <li>String-vs-number compare: literals stay as STRING (gawk parity, reverted earlier mis-fix)</li>
+            <li>Integer-valued floats print exact via <code>%.0f</code> regardless of magnitude (up to f64::MAX)</li>
+            <li>Frame-aware <code>array_elem_get</code> / <code>array_elem_set</code> / <code>for_in_keys</code> / <code>delete</code> for by-ref array params</li>
           </ul>
         </div>
       </div>
@@ -345,12 +352,12 @@
         <li><strong>API docs</strong> &mdash; <a href="https://docs.rs/awkrs">docs.rs/awkrs</a></li>
         <li><strong>User docs</strong> &mdash; <a href="index.html">awkrs documentation</a></li>
         <li><strong>Bytecode cache section</strong> &mdash; <a href="index.html#bytecode-cache">~/.awkrs/scripts.rkyv layout + invalidation rules</a></li>
-        <li><strong>Parity tests</strong> &mdash; <code>parity/</code> directory cross-checks output against gawk for 2,036 cases</li>
+        <li><strong>Parity tests</strong> &mdash; <code>parity/</code> directory cross-checks output against gawk + mawk + BSD awk for 2,053 cases (2,025 portable in <code>cases/</code> + <code>cases_portable/</code>, 28 gawk-only in <code>cases_gawk/</code>)</li>
         <li><strong>License</strong> &mdash; MIT</li>
       </ul>
 
       <p style="font-family:'Share Tech Mono',monospace;font-size:10px;color:var(--text-muted);margin-top:2rem;opacity:0.65;">
-        Stats snapshot: 2026-05-16 &middot; awkrs v0.4.1 &middot; built with <code>cargo build</code> (no <code>--release</code>; dev profile)
+        Stats snapshot: 2026-05-17 &middot; awkrs v0.4.2 &middot; HEAD <code>7ff1531b</code> &middot; full parity green vs gawk + mawk + BSD awk
       </p>
     </main>
   </div>
