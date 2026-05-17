@@ -1953,13 +1953,247 @@ mod tests {
     }
 
     #[test]
-    fn parses_match_expr_with_slash_regex() {
-        parse_program("BEGIN { x = $0 ~ /z/ }").unwrap();
+    fn parses_nested_ternary_precedence() {
+        let p = parse_program("BEGIN { x = 1 ? 2 : 3 ? 4 : 5 }").unwrap();
+        // Ternary is right-associative in most languages, AWK too.
+        // 1 ? 2 : (3 ? 4 : 5)
+        match first_begin_stmt(&p) {
+            Stmt::Expr(Expr::Assign { rhs, .. }) => match rhs.as_ref() {
+                Expr::Ternary { cond, then_, else_ } => {
+                    assert!(expr_is_int(cond, 1));
+                    assert!(expr_is_int(then_, 2));
+                    match else_.as_ref() {
+                        Expr::Ternary { .. } => {}
+                        _ => panic!("expected nested ternary on else branch"),
+                    }
+                }
+                _ => panic!("expected ternary"),
+            },
+            _ => panic!("expected assign"),
+        }
+    }
+
+    #[test]
+    fn parses_for_c_missing_components() {
+        // for (;;)
+        parse_program("BEGIN { for (;;) break }").unwrap();
+        // for (i=0; ; i++)
+        parse_program("BEGIN { for (i=0; ; i++) break }").unwrap();
+        // for (; i<10; )
+        parse_program("BEGIN { for (; i<10; ) break }").unwrap();
+    }
+
+    #[test]
+    fn parses_multiple_begin_end_blocks() {
+        let p =
+            parse_program("BEGIN { x=1 } BEGIN { y=2 } END { print x } END { print y }").unwrap();
+        assert_eq!(
+            p.rules
+                .iter()
+                .filter(|r| matches!(r.pattern, Pattern::Begin))
+                .count(),
+            2
+        );
+        assert_eq!(
+            p.rules
+                .iter()
+                .filter(|r| matches!(r.pattern, Pattern::End))
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn parses_beginfile_endfile_rules() {
+        let p = parse_program("BEGINFILE { print FILENAME } ENDFILE { print NR }").unwrap();
+        assert_eq!(
+            p.rules
+                .iter()
+                .filter(|r| matches!(r.pattern, Pattern::BeginFile))
+                .count(),
+            1
+        );
+        assert_eq!(
+            p.rules
+                .iter()
+                .filter(|r| matches!(r.pattern, Pattern::EndFile))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn parses_switch_nested() {
+        let src = r#"BEGIN {
+            switch(x) {
+                case 1:
+                    switch(y) {
+                        case 2: print 3; break
+                        default: print 4
+                    }
+                    break
+                default:
+                    print 5
+            }
+        }"#;
+        parse_program(src).unwrap();
+    }
+
+    #[test]
+    fn parses_deeply_nested_ternary() {
+        let src = "BEGIN { x = a?b:c?d:e?f:g?h:i?j:k }";
+        parse_program(src).unwrap();
+    }
+
+    #[test]
+    fn parses_switch_multiple_labels_per_arm() {
+        // gawk allows: case 1: case 2: case 3: print "hit"; break
+        let src = "BEGIN { switch(x) { case 1: case 2: case 3: print \"hit\"; break } }";
+        parse_program(src).unwrap();
+    }
+
+    #[test]
+    fn parses_array_delete_multiple_indices() {
+        let src = "BEGIN { delete a[1,2,3] }";
+        parse_program(src).unwrap();
+    }
+
+    #[test]
+    fn parses_regexp_constant_gawk() {
+        let p = parse_program("BEGIN { x = @/foo/ }").unwrap();
+        match first_begin_stmt(&p) {
+            Stmt::Expr(Expr::Assign { rhs, .. }) => {
+                assert!(matches!(rhs.as_ref(), Expr::RegexpLiteral(s) if s == "foo"));
+            }
+            _ => panic!("expected assign of regexp literal"),
+        }
+    }
+
+    #[test]
+    fn parses_field_increment_precedence() {
+        // $1++ should be ($1)++
+        let p = parse_program("BEGIN { $1++ }").unwrap();
+        match first_begin_stmt(&p) {
+            Stmt::Expr(Expr::IncDec { op, target }) => {
+                assert_eq!(*op, IncDecOp::PostInc);
+                assert!(matches!(target, IncDecTarget::Field(_)));
+            }
+            _ => panic!("expected increment"),
+        }
+    }
+
+    #[test]
+    fn parses_dollar_neg_one() {
+        // $-1 should be $(-1)
+        let p = parse_program("BEGIN { print $-1 }").unwrap();
+        match first_begin_stmt(&p) {
+            Stmt::Print { args, .. } => match &args[0] {
+                Expr::Field(e) => match e.as_ref() {
+                    Expr::Unary {
+                        op: UnaryOp::Neg, ..
+                    } => {}
+                    _ => panic!("expected negative field index"),
+                },
+                _ => panic!("expected field"),
+            },
+            _ => panic!("expected print"),
+        }
+    }
+
+    #[test]
+    fn parses_getline_from_pipe() {
+        let p = parse_program("BEGIN { \"cat\" | getline x }").unwrap();
+        match first_begin_stmt(&p) {
+            Stmt::Expr(Expr::GetLine {
+                pipe_cmd,
+                var,
+                redir,
+            }) => {
+                assert!(pipe_cmd.is_some());
+                assert_eq!(var.as_deref(), Some("x"));
+                assert!(matches!(redir, GetlineRedir::Primary));
+            }
+            _ => panic!("expected getline"),
+        }
+    }
+
+    #[test]
+    fn parses_delete_whole_array() {
+        let p = parse_program("BEGIN { delete a }").unwrap();
+        match first_begin_stmt(&p) {
+            Stmt::Delete { name, indices } => {
+                assert_eq!(name, "a");
+                assert!(indices.is_none());
+            }
+            _ => panic!("expected delete"),
+        }
+    }
+
+    #[test]
+    fn parses_delete_array_element() {
+        let p = parse_program("BEGIN { delete a[1,2] }").unwrap();
+        match first_begin_stmt(&p) {
+            Stmt::Delete { name, indices } => {
+                assert_eq!(name, "a");
+                assert_eq!(indices.as_ref().unwrap().len(), 2);
+            }
+            _ => panic!("expected delete element"),
+        }
+    }
+
+    #[test]
+    fn parses_range_pattern_with_expressions() {
+        let p = parse_program("NR==1, NR==10 { print }").unwrap();
+        let rule = &p.rules[0];
+        match &rule.pattern {
+            Pattern::Range(l, r) => match (l.as_ref(), r.as_ref()) {
+                (Pattern::Expr(_), Pattern::Expr(_)) => {}
+                _ => panic!("expected expr patterns in range"),
+            },
+            _ => panic!("expected range pattern"),
+        }
+    }
+
+    #[test]
+    fn parses_empty_action_record_rule() {
+        let p = parse_program("1").unwrap();
+        assert_eq!(p.rules.len(), 1);
+        assert!(matches!(p.rules[0].stmts[0], Stmt::Print { .. }));
+    }
+
+    #[test]
+    fn parses_function_with_no_params() {
+        let p = parse_program("function f() { return 1 }").unwrap();
+        assert!(p.funcs.contains_key("f"));
+        assert_eq!(p.funcs["f"].params.len(), 0);
+    }
+
+    #[test]
+    fn parses_function_with_multiple_params() {
+        let p = parse_program("function f(a, b, c) { return a+b+c }").unwrap();
+        assert_eq!(p.funcs["f"].params.len(), 3);
     }
 
     #[test]
     fn parses_in_operator_compared() {
         parse_program("BEGIN { x = (\"a\" in a) == 0 }").unwrap();
+    }
+
+    #[test]
+    fn parses_multidimensional_in() {
+        parse_program("BEGIN { if ((1,2,3) in a) print }").unwrap();
+    }
+
+    #[test]
+    fn parses_multidimensional_assign() {
+        let src = "BEGIN { a[1,2,3] = 42 }";
+        let p = parse_program(src).unwrap();
+        match first_begin_stmt(&p) {
+            Stmt::Expr(Expr::AssignIndex { ref name, .. }) => {
+                assert_eq!(name, "a");
+            }
+            _ => panic!("expected assign index"),
+        }
     }
 
     #[test]

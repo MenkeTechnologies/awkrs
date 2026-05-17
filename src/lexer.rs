@@ -1214,41 +1214,69 @@ mod tests {
 
     #[test]
     fn lex_compound_assignments() {
-        assert_eq!(tokens_no_regex("+= -= *= /= %= ^= **="), vec![
-            Token::AddAssign, Token::SubAssign, Token::MulAssign, Token::DivAssign,
-            Token::ModAssign, Token::PowAssign, Token::PowAssign
-        ]);
+        assert_eq!(
+            tokens_no_regex("+= -= *= /= %= ^= **="),
+            vec![
+                Token::AddAssign,
+                Token::SubAssign,
+                Token::MulAssign,
+                Token::DivAssign,
+                Token::ModAssign,
+                Token::PowAssign,
+                Token::PowAssign
+            ]
+        );
     }
 
     #[test]
     fn lex_comparison_operators() {
-        assert_eq!(tokens_no_regex("== != < > <= >="), vec![
-            Token::Eq, Token::Ne, Token::Lt, Token::Gt, Token::Le, Token::Ge
-        ]);
+        assert_eq!(
+            tokens_no_regex("== != < > <= >="),
+            vec![
+                Token::Eq,
+                Token::Ne,
+                Token::Lt,
+                Token::Gt,
+                Token::Le,
+                Token::Ge
+            ]
+        );
     }
 
     #[test]
     fn lex_inc_dec() {
-        assert_eq!(tokens_no_regex("++ --"), vec![Token::PlusPlus, Token::MinusMinus]);
+        assert_eq!(
+            tokens_no_regex("++ --"),
+            vec![Token::PlusPlus, Token::MinusMinus]
+        );
     }
 
     #[test]
     fn lex_logical_ops() {
-        assert_eq!(tokens_no_regex("&& || !"), vec![Token::And, Token::Or, Token::Bang]);
+        assert_eq!(
+            tokens_no_regex("&& || !"),
+            vec![Token::And, Token::Or, Token::Bang]
+        );
     }
 
     #[test]
     fn lex_comments_ignored() {
-        assert_eq!(tokens_no_regex("x # comment\ny"), vec![
-            Token::Ident("x".into()), Token::Newline, Token::Ident("y".into())
-        ]);
+        assert_eq!(
+            tokens_no_regex("x # comment\ny"),
+            vec![
+                Token::Ident("x".into()),
+                Token::Newline,
+                Token::Ident("y".into())
+            ]
+        );
     }
 
     #[test]
     fn lex_scientific_numbers() {
-        assert_eq!(tokens_no_regex("1.2e2 1.2E-1"), vec![
-            Token::Number(120.0), Token::Number(0.12)
-        ]);
+        assert_eq!(
+            tokens_no_regex("1.2e2 1.2E-1"),
+            vec![Token::Number(120.0), Token::Number(0.12)]
+        );
     }
 
     #[test]
@@ -1270,10 +1298,228 @@ mod tests {
 
     #[test]
     fn lex_at_load_directives() {
-        assert_eq!(tokens_no_regex("@load @include @namespace"), vec![
-            Token::At, Token::Ident("load".into()),
-            Token::At, Token::Ident("include".into()),
-            Token::At, Token::Ident("namespace".into()),
-        ]);
+        assert_eq!(
+            tokens_no_regex("@load @include @namespace"),
+            vec![
+                Token::At,
+                Token::Ident("load".into()),
+                Token::At,
+                Token::Ident("include".into()),
+                Token::At,
+                Token::Ident("namespace".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn lex_nested_namespaces() {
+        assert_eq!(
+            tokens_no_regex("a::b::c"),
+            vec![Token::Ident("a::b::c".into())]
+        );
+    }
+
+    #[test]
+    fn lex_consecutive_operators_no_ws() {
+        assert_eq!(
+            tokens_no_regex("x++-y*2/z"),
+            vec![
+                Token::Ident("x".into()),
+                Token::PlusPlus,
+                Token::Minus,
+                Token::Ident("y".into()),
+                Token::Star,
+                Token::IntegerLiteral("2".into()),
+                Token::Slash,
+                Token::Ident("z".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn lex_complex_escapes_in_string() {
+        // \x with 1 vs 2 digits, \octal with 1, 2, 3 digits
+        let s = lex_string(r"A\x09B\1\11\111C");
+        assert_eq!(s, "A\tB\x01\x09IC");
+    }
+
+    #[test]
+    fn lex_stray_backslash_in_string() {
+        // gawk-style: \z -> \z
+        assert_eq!(lex_string(r"\z"), r"\z");
+    }
+
+    #[test]
+    fn lex_scientific_notation_edge_cases() {
+        assert_eq!(tokens_no_regex(".5e2"), vec![Token::Number(50.0)]);
+        assert_eq!(tokens_no_regex("1.e-1"), vec![Token::Number(0.1)]);
+        assert_eq!(tokens_no_regex("1.2E+2"), vec![Token::Number(120.0)]);
+    }
+
+    #[test]
+    fn lex_hex_mixed_case() {
+        assert_eq!(
+            tokens_no_regex("0xAbCd"),
+            vec![Token::IntegerLiteral("43981".into())]
+        );
+    }
+
+    #[test]
+    fn lex_multiple_newlines_and_comments() {
+        let src = "x\n\n# comment 1\n  # comment 2\ny";
+        assert_eq!(
+            tokens_no_regex(src),
+            vec![
+                Token::Ident("x".into()),
+                Token::Newline,
+                Token::Newline,
+                Token::Newline,
+                Token::Newline,
+                Token::Ident("y".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn lex_unterminated_regex_error() {
+        let mut l = Lexer::new("/abc");
+        assert!(l.next_token(true).is_err());
+    }
+
+    #[test]
+    fn lex_regex_with_escaped_slash() {
+        let mut l = Lexer::new(r"/\/abc\//");
+        match l.next_token(true).unwrap() {
+            Token::Regexp(s) => assert_eq!(s, r"\/abc\/"),
+            _ => panic!("Expected regex literal"),
+        }
+    }
+
+    #[test]
+    fn lex_pow_and_starstar() {
+        assert_eq!(tokens_no_regex("^ **"), vec![Token::Caret, Token::StarStar]);
+        assert_eq!(
+            tokens_no_regex("^= **="),
+            vec![Token::PowAssign, Token::PowAssign]
+        );
+    }
+
+    #[test]
+    fn lex_all_keywords() {
+        let keywords = "BEGIN END BEGINFILE ENDFILE if else while for do break continue next nextfile exit in function return delete getline switch case default";
+        let expected = vec![
+            Token::Begin,
+            Token::End,
+            Token::BeginFile,
+            Token::EndFile,
+            Token::If,
+            Token::Else,
+            Token::While,
+            Token::For,
+            Token::Do,
+            Token::Break,
+            Token::Continue,
+            Token::Next,
+            Token::NextFile,
+            Token::Exit,
+            Token::In,
+            Token::Function,
+            Token::Return,
+            Token::Delete,
+            Token::Getline,
+            Token::Switch,
+            Token::Case,
+            Token::Default,
+        ];
+        assert_eq!(tokens_no_regex(keywords), expected);
+    }
+
+    #[test]
+    fn lex_ident_with_digits() {
+        assert_eq!(
+            tokens_no_regex("var123 _456"),
+            vec![Token::Ident("var123".into()), Token::Ident("_456".into())]
+        );
+    }
+
+    #[test]
+    fn lex_dollar_nf() {
+        assert_eq!(
+            tokens_no_regex("$NF"),
+            vec![Token::Dollar, Token::Ident("NF".into())]
+        );
+    }
+
+    #[test]
+    fn lex_hex_escape_edge_cases() {
+        // \x followed by non-hex
+        assert_eq!(lex_string(r"\x"), "x");
+        assert_eq!(lex_string(r"\xg"), "xg");
+        // \x followed by one hex digit
+        assert_eq!(lex_string(r"\xa"), "\n");
+    }
+
+    #[test]
+    fn lex_octal_escapes() {
+        // \0 to \377
+        assert_eq!(lex_string(r"\0"), "\x00");
+        assert_eq!(lex_string(r"\123"), "S");
+        assert_eq!(lex_string(r"\377"), "\u{00ff}");
+        // more than 3 digits -> first 3 only
+        assert_eq!(lex_string(r"\1234"), "S4");
+    }
+
+    #[test]
+    fn lex_hex_escapes() {
+        assert_eq!(lex_string(r"\x41"), "A");
+        assert_eq!(lex_string(r"\x0a"), "\n");
+        assert_eq!(lex_string(r"\xff"), "\u{00ff}");
+        // more than 2 digits? awkrs seems to consume as many as possible or just 2?
+        // Let's check implementation. It consumes as many as possible.
+        // assert_eq!(lex_string(r"\x4142"), "AB"); // if it consumes all
+    }
+
+    #[test]
+    fn lex_standard_escapes() {
+        assert_eq!(lex_string(r"\a"), "\x07");
+        assert_eq!(lex_string(r"\b"), "\x08");
+        assert_eq!(lex_string(r"\f"), "\x0c");
+        assert_eq!(lex_string(r"\v"), "\x0b");
+        assert_eq!(lex_string(r"\r"), "\r");
+        // gawk: \? is \? in some implementations or ? in others.
+        // awkrs seems to preserve it as \?
+        assert_eq!(lex_string(r"\?"), r"\?");
+        // \' is \' in awkrs
+        assert_eq!(lex_string(r"\'"), r"\'");
+        // unknown escape preserves backslash
+        assert_eq!(lex_string(r"\z"), r"\z");
+    }
+
+    #[test]
+    fn lex_long_identifier() {
+        let long_id = "a".repeat(1024);
+        assert_eq!(tokens_no_regex(&long_id), vec![Token::Ident(long_id)]);
+    }
+
+    #[test]
+    fn lex_long_string_literal() {
+        let long_str = "s".repeat(4096);
+        let src = format!("\"{}\"", long_str);
+        assert_eq!(tokens_no_regex(&src), vec![Token::String(long_str)]);
+    }
+
+    #[test]
+    fn lex_comment_with_weird_chars() {
+        let src = "# !@#$%^&*()_+ \n x";
+        assert_eq!(
+            tokens_no_regex(src),
+            vec![Token::Newline, Token::Ident("x".into())]
+        );
+    }
+
+    #[test]
+    fn lex_unterminated_string_at_newline() {
+        let mut l = Lexer::new("\"abc\ndef\"");
+        assert!(l.next_token(false).is_err());
     }
 }

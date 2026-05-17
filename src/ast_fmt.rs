@@ -577,4 +577,84 @@ mod tests {
             "expected @/re/ in output:\n{out}"
         );
     }
+
+    #[test]
+    fn pretty_print_for_c_empty_components() {
+        let src = "BEGIN { for (;;) break }";
+        let prog = parse_program(src).unwrap();
+        let out = format_program(&prog);
+        assert!(
+            out.contains("for (;;)") || out.contains("for (; ; )"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn pretty_print_ternary_nested() {
+        let src = "BEGIN { x = (1 ? 2 : (3 ? 4 : 5)) }";
+        let prog = parse_program(src).unwrap();
+        let out = format_program(&prog);
+        // format_expr for ternary uses (cond ? then : else)
+        assert!(out.contains(" ? ") && out.contains(" : "));
+    }
+
+    #[test]
+    fn pretty_print_string_escapes() {
+        let prog = Program {
+            rules: vec![Rule {
+                pattern: Pattern::Begin,
+                stmts: vec![Stmt::Expr(Expr::Assign {
+                    name: "s".into(),
+                    op: None,
+                    rhs: Box::new(Expr::Str("a\nb\tc\"d\\e".into())),
+                })],
+            }],
+            funcs: std::collections::HashMap::new(),
+        };
+        let out = format_program(&prog);
+        assert!(out.contains(r#""a\nb\tc\"d\\e""#));
+    }
+
+    #[test]
+    fn pretty_print_compound_assignment() {
+        let src = "BEGIN { x += 1; y *= 2 }";
+        let prog = parse_program(src).unwrap();
+        let out = format_program(&prog);
+        // binop_str for Add is "+", format_expr for Assign uses "{name} {binop_str} {rhs}"
+        assert!(out.contains("x + 1") && out.contains("y * 2"));
+    }
+
+    #[test]
+    fn pretty_print_inc_dec() {
+        let src = "BEGIN { ++x; y--; $1++ }";
+        let prog = parse_program(src).unwrap();
+        let out = format_program(&prog);
+        assert!(out.contains("++x") || out.contains("++ x"));
+        assert!(out.contains("y--") || out.contains("y --"));
+        // $1++ -> format_incdec_field uses $(format_expr(inner))++
+        assert!(out.contains("$1++") || out.contains("$1 ++") || out.contains("$(1)++"));
+    }
+
+    #[test]
+    fn pretty_print_redirections() {
+        let src = "BEGIN { print \"a\" > \"f1\"; print \"b\" >> \"f2\"; print \"c\" | \"cmd\" }";
+        let prog = parse_program(src).unwrap();
+        let out = format_program(&prog);
+        assert!(out.contains("> \"f1\""));
+        assert!(out.contains(">> \"f2\""));
+        assert!(out.contains("| \"cmd\""));
+    }
+
+    #[test]
+    fn pretty_print_field_expressions() {
+        let src = "BEGIN { print $0, $1, $(NF-1) }";
+        let prog = parse_program(src).unwrap();
+        let out = format_program(&prog);
+        assert!(out.contains("$0"));
+        assert!(out.contains("$1"));
+        // $(NF-1) -> format_field_expr uses $(format_expr(inner))
+        // format_expr(NF-1) -> (NF - 1)
+        // result: $((NF - 1))
+        assert!(out.contains("$((NF - 1))"), "output was: {out}");
+    }
 }

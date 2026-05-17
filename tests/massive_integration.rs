@@ -36,14 +36,18 @@ fn bignum_factorial() {
 
 #[test]
 fn assign_before_and_after_program() {
-    let (c, o, _e) = run_awkrs_stdin_args(["-v", "x=10", "-v", "y=20"], "BEGIN { print x + y }", "");
+    let (c, o, _e) =
+        run_awkrs_stdin_args(["-v", "x=10", "-v", "y=20"], "BEGIN { print x + y }", "");
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "30\n");
 }
 
 #[test]
 fn delete_whole_array() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { a[1]=1; a[2]=2; delete a; for (i in a) print i; print \"done\" }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { a[1]=1; a[2]=2; delete a; for (i in a) print i; print \"done\" }",
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "done\n");
 }
@@ -58,14 +62,20 @@ fn array_of_arrays_emulation() {
 
 #[test]
 fn multidimensional_subscript_with_subsep() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { SUBSEP=\"|\"; a[1,2]=5; for (i in a) print i, a[i] }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { SUBSEP=\"|\"; a[1,2]=5; for (i in a) print i, a[i] }",
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "1|2 5\n");
 }
 
 #[test]
 fn gensub_backreferences() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { print gensub(/([a-z]+) ([0-9]+)/, \"\\\\2 \\\\1\", \"g\", \"hello 123\") }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { print gensub(/([a-z]+) ([0-9]+)/, \"\\\\2 \\\\1\", \"g\", \"hello 123\") }",
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "123 hello\n");
 }
@@ -79,7 +89,11 @@ fn typeof_various_values() {
 
 #[test]
 fn parallel_j4_sum() {
-    let (c, o, _e) = run_awkrs_stdin_args(["-j", "4"], "{ s += $1 } END { print s }", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n");
+    let (c, o, _e) = run_awkrs_stdin_args(
+        ["-j", "4"],
+        "{ s += $1 } END { print s }",
+        "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "55\n");
 }
@@ -100,14 +114,20 @@ fn split_returns_count() {
 
 #[test]
 fn split_with_regex_fs() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { split(\"a:b;c\", arr, /[:;]/); print arr[1], arr[2], arr[3] }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { split(\"a:b;c\", arr, /[:;]/); print arr[1], arr[2], arr[3] }",
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "a b c\n");
 }
 
 #[test]
 fn match_with_third_argument_array() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { match(\"foo123bar\", /([a-z]+)([0-9]+)/, a); print a[1], a[2] }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { match(\"foo123bar\", /([a-z]+)([0-9]+)/, a); print a[1], a[2] }",
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "foo 123\n");
 }
@@ -121,7 +141,10 @@ fn for_loop_with_break_and_continue() {
 
 #[test]
 fn nested_loops_and_labels_emulation() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { for(i=1; i<=2; i++) { for(j=1; j<=2; j++) { print i, j } } }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { for(i=1; i<=2; i++) { for(j=1; j<=2; j++) { print i, j } } }",
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "1 1\n1 2\n2 1\n2 2\n");
 }
@@ -158,14 +181,20 @@ fn string_concatenation_precedence() {
 
 #[test]
 fn bitwise_functions_gawk() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { print and(3, 5), or(3, 5), xor(3, 5), lshift(1, 4), rshift(16, 2) }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { print and(3, 5), or(3, 5), xor(3, 5), lshift(1, 4), rshift(16, 2) }",
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "1 7 6 16 4\n");
 }
 
 #[test]
 fn format_specifiers_printf() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { printf \"|%10s|%-10s|%05d|%.2f|\\n\", \"hi\", \"there\", 42, 3.14159 }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { printf \"|%10s|%-10s|%05d|%.2f|\\n\", \"hi\", \"there\", 42, 3.14159 }",
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "|        hi|there     |00042|3.14|\n");
 }
@@ -175,7 +204,7 @@ fn record_splitting_with_rs_regex() {
     // Testing single match to avoid known buffering bug with multiple RS regex matches
     let (c, o, _e) = run_awkrs_stdin("BEGIN { RS=\"[0-9]+\" } { print $0 }", "abc1def");
     assert_eq!(c, 0, "stderr: {}", _e);
-    assert!(o == "abc\ndef\n" || o == "abc\n"); 
+    assert!(o == "abc\ndef\n" || o == "abc\n");
 }
 
 #[test]
@@ -236,21 +265,32 @@ fn system_function_exit_code() {
 
 #[test]
 fn environmental_variables_via_environ() {
-    let (c, o, _e) = run_awkrs_stdin_args_env(Vec::<String>::new(), "BEGIN { print ENVIRON[\"MYVAR\"] }", "", [("MYVAR".into(), "VAL".into())]);
+    let (c, o, _e) = run_awkrs_stdin_args_env(
+        Vec::<String>::new(),
+        "BEGIN { print ENVIRON[\"MYVAR\"] }",
+        "",
+        [("MYVAR".into(), "VAL".into())],
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "VAL\n");
 }
 
 #[test]
 fn exit_statement_in_begin() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { print \"hi\"; exit 5; print \"bye\" } END { print \"at end\" }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { print \"hi\"; exit 5; print \"bye\" } END { print \"at end\" }",
+        "",
+    );
     assert_eq!(c, 5);
     assert_eq!(o, "hi\nat end\n");
 }
 
 #[test]
 fn next_statement_skips_remaining_rules() {
-    let (c, o, _e) = run_awkrs_stdin("{ print \"a\"; next; print \"b\" } { print \"c\" }", "line\n");
+    let (c, o, _e) = run_awkrs_stdin(
+        "{ print \"a\"; next; print \"b\" } { print \"c\" }",
+        "line\n",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "a\n");
 }
@@ -264,7 +304,10 @@ fn close_function_for_pipes() {
 
 #[test]
 fn index_returns_one_based_position() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { print index(\"foobar\", \"bar\"), index(\"foobar\", \"baz\") }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { print index(\"foobar\", \"bar\"), index(\"foobar\", \"baz\") }",
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "4 0\n");
 }
@@ -292,7 +335,10 @@ fn atan2_pi() {
 
 #[test]
 fn rand_and_srand() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { srand(1); r1 = rand(); srand(1); r2 = rand(); print (r1 == r2) }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { srand(1); r1 = rand(); srand(1); r2 = rand(); print (r1 == r2) }",
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "1\n");
 }
@@ -306,42 +352,60 @@ fn sub_with_ampersand_replacement() {
 
 #[test]
 fn gsub_with_large_number_of_replacements() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { s=\"aaaaaaaaaa\"; gsub(/a/, \"b\", s); print s }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { s=\"aaaaaaaaaa\"; gsub(/a/, \"b\", s); print s }",
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "bbbbbbbbbb\n");
 }
 
 #[test]
 fn asort_inplace_sorting() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { a[1]=30; a[2]=10; a[3]=20; n=asort(a); for(i=1;i<=n;i++) print a[i] }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { a[1]=30; a[2]=10; a[3]=20; n=asort(a); for(i=1;i<=n;i++) print a[i] }",
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "10\n20\n30\n");
 }
 
 #[test]
 fn asorti_sorting_keys() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { a[\"z\"]=1; a[\"a\"]=2; n=asorti(a, b); for(i=1;i<=n;i++) print b[i] }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { a[\"z\"]=1; a[\"a\"]=2; n=asorti(a, b); for(i=1;i<=n;i++) print b[i] }",
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "a\nz\n");
 }
 
 #[test]
 fn strtonum_hex_and_octal() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { print strtonum(\"0x10\"), strtonum(\"010\"), strtonum(\"42\") }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { print strtonum(\"0x10\"), strtonum(\"010\"), strtonum(\"42\") }",
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "16 8 42\n");
 }
 
 #[test]
 fn mktime_and_strftime() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { t = mktime(\"2023 01 01 12 00 00\"); print strftime(\"%Y-%m-%d\", t) }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { t = mktime(\"2023 01 01 12 00 00\"); print strftime(\"%Y-%m-%d\", t) }",
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "2023-01-01\n");
 }
 
 #[test]
 fn delete_array_element_during_iteration() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { a[1]=1; a[2]=2; for (i in a) { delete a[i]; count++; } print count, length(a); }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { a[1]=1; a[2]=2; for (i in a) { delete a[i]; count++; } print count, length(a); }",
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "2 0\n");
 }
@@ -362,21 +426,30 @@ fn multidimensional_array_keys() {
 
 #[test]
 fn split_with_empty_sep_gawk_extension() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { n=split(\"abc\", a, \"\"); for(i=1;i<=n;i++) print a[i] }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { n=split(\"abc\", a, \"\"); for(i=1;i<=n;i++) print a[i] }",
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "a\nb\nc\n");
 }
 
 #[test]
 fn match_returns_start_and_sets_rstart_rlength() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { m=match(\"foobar\", /ba/); print m, RSTART, RLENGTH }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { m=match(\"foobar\", /ba/); print m, RSTART, RLENGTH }",
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "4 4 2\n");
 }
 
 #[test]
 fn match_with_array_captures() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { match(\"2023-05-17\", /([0-9]+)-([0-9]+)-([0-9]+)/, a); print a[1], a[2], a[3] }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { match(\"2023-05-17\", /([0-9]+)-([0-9]+)-([0-9]+)/, a); print a[1], a[2], a[3] }",
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "2023 05 17\n");
 }
@@ -411,7 +484,10 @@ fn arithmetic_with_strings_unary_plus() {
 
 #[test]
 fn short_circuit_evaluation_complex() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { x=0; (1 || x++); print x; (0 && x++); print x; }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { x=0; (1 || x++); print x; (0 && x++); print x; }",
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "0\n0\n");
 }
@@ -447,7 +523,8 @@ fn getline_from_stdin_in_begin() {
 
 #[test]
 fn pipe_getline_multiple_times() {
-    let program = "BEGIN { \"echo 1; echo 2\" | getline a; \"echo 1; echo 2\" | getline b; print a, b; }";
+    let program =
+        "BEGIN { \"echo 1; echo 2\" | getline a; \"echo 1; echo 2\" | getline b; print a, b; }";
     let (c, o, _e) = run_awkrs_stdin(program, "");
     assert_eq!(c, 0, "stderr: {}", _e);
     assert!(o == "1 2\n" || o == "1 1\n");
@@ -463,14 +540,20 @@ fn recursion_limit_test() {
 
 #[test]
 fn large_array_test() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { for(i=1;i<=1000;i++) a[i]=i; print a[1000], length(a); }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { for(i=1;i<=1000;i++) a[i]=i; print a[1000], length(a); }",
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "1000 1000\n");
 }
 
 #[test]
 fn typeof_array_elements() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { a[1]=1; a[2]=\"hi\"; print typeof(a[1]), typeof(a[2]); }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { a[1]=1; a[2]=\"hi\"; print typeof(a[1]), typeof(a[2]); }",
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "number string\n");
 }
@@ -484,7 +567,10 @@ fn delete_non_existent_element() {
 
 #[test]
 fn sprintf_with_many_args() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { print sprintf(\"%d %d %d %d %d\", 1, 2, 3, 4, 5); }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { print sprintf(\"%d %d %d %d %d\", 1, 2, 3, 4, 5); }",
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "1 2 3 4 5\n");
 }
@@ -505,7 +591,10 @@ fn logical_not_precedence() {
 
 #[test]
 fn multiple_getline_in_one_expression() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { print (getline a) + (getline b); print a; print b; }", "line1\nline2\n");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { print (getline a) + (getline b); print a; print b; }",
+        "line1\nline2\n",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "2\nline1\nline2\n");
 }
@@ -522,70 +611,100 @@ fn next_in_function_errors() {
 
 #[test]
 fn patsplit_basic_usage() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { n=patsplit(\"abc 123 def\", a, /[a-z]+/); print n, a[1], a[2] }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { n=patsplit(\"abc 123 def\", a, /[a-z]+/); print n, a[1], a[2] }",
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "2 abc def\n");
 }
 
 #[test]
 fn patsplit_with_seps() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { n=patsplit(\"abc 123 def\", a, /[a-z]+/, s); print n, a[1], s[1], a[2] }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { n=patsplit(\"abc 123 def\", a, /[a-z]+/, s); print n, a[1], s[1], a[2] }",
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "2 abc  123  def\n");
 }
 
 #[test]
 fn asort_with_destination() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { a[1]=30; a[2]=10; n=asort(a, b); print a[1], a[2], b[1], b[2] }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { a[1]=30; a[2]=10; n=asort(a, b); print a[1], a[2], b[1], b[2] }",
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "30 10 10 30\n");
 }
 
 #[test]
 fn asorti_with_destination() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { a[\"z\"]=1; a[\"a\"]=2; n=asorti(a, b); print b[1], b[2] }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { a[\"z\"]=1; a[\"a\"]=2; n=asorti(a, b); print b[1], b[2] }",
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "a z\n");
 }
 
 #[test]
 fn procinfo_version_and_platform() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { print (\"version\" in PROCINFO), (\"platform\" in PROCINFO) }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { print (\"version\" in PROCINFO), (\"platform\" in PROCINFO) }",
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "1 1\n");
 }
 
 #[test]
 fn ignorecase_builtins() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { IGNORECASE=1; print (\"abc\" ~ /ABC/), match(\"ABC\", \"b\") }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { IGNORECASE=1; print (\"abc\" ~ /ABC/), match(\"ABC\", \"b\") }",
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "1 2\n");
 }
 
 #[test]
 fn fpat_field_splitting() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { FPAT=\"[0-9]+\" } { print $1, $2 }", "abc 123 def 456");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { FPAT=\"[0-9]+\" } { print $1, $2 }",
+        "abc 123 def 456",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "123 456\n");
 }
 
 #[test]
 fn fieldwidths_splitting() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { FIELDWIDTHS=\"2 3 2\" } { print $1, $2, $3 }", "1122233");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { FIELDWIDTHS=\"2 3 2\" } { print $1, $2, $3 }",
+        "1122233",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "11 222 33\n");
 }
 
 #[test]
 fn isarray_function() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { a[1]=1; x=1; print isarray(a), isarray(x), isarray(y) }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { a[1]=1; x=1; print isarray(a), isarray(x), isarray(y) }",
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "1 0 0\n");
 }
 
 #[test]
 fn delete_entire_array_param_by_ref() {
-    let (c, o, _e) = run_awkrs_stdin("function f(arr) { delete arr; } BEGIN { a[1]=1; f(a); print length(a); }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "function f(arr) { delete arr; } BEGIN { a[1]=1; f(a); print length(a); }",
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "0\n");
 }
@@ -606,7 +725,10 @@ fn ofmt_affects_print_number() {
 
 #[test]
 fn large_number_of_args_to_function() {
-    let (c, o, _e) = run_awkrs_stdin("function f(a,b,c,d,e,f,g) { print a,g; } BEGIN { f(1,2,3,4,5,6,7); }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "function f(a,b,c,d,e,f,g) { print a,g; } BEGIN { f(1,2,3,4,5,6,7); }",
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "1 7\n");
 }
@@ -649,14 +771,20 @@ fn sub_with_capture_groups_gawk() {
 
 #[test]
 fn syment_test_symtab() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { x=42; print SYMTAB[\"x\"]; SYMTAB[\"x\"]=100; print x; }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { x=42; print SYMTAB[\"x\"]; SYMTAB[\"x\"]=100; print x; }",
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "42\n100\n");
 }
 
 #[test]
 fn symtab_iteration() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { myvar=123; for (i in SYMTAB) if (i == \"myvar\") print i, SYMTAB[i]; }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { myvar=123; for (i in SYMTAB) if (i == \"myvar\") print i, SYMTAB[i]; }",
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "myvar 123\n");
 }
@@ -686,14 +814,20 @@ fn switch_statement_basic() {
 
 #[test]
 fn split_to_different_array_each_time() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { split(\"a b\", a); split(\"c d\", b); print a[1], b[1]; }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { split(\"a b\", a); split(\"c d\", b); print a[1], b[1]; }",
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "a c\n");
 }
 
 #[test]
 fn multi_dim_array_delete_one_level() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { a[1][2]=3; a[1][4]=5; delete a[1][2]; for(i in a[1]) print i, a[1][i]; }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { a[1][2]=3; a[1][4]=5; delete a[1][2]; for(i in a[1]) print i, a[1][i]; }",
+        "",
+    );
     if c == 0 {
         assert_eq!(o, "4 5\n");
     }
@@ -799,7 +933,10 @@ fn sub_empty_match_infinite_loop_protection() {
 
 #[test]
 fn split_with_multichar_fs_literal() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { n=split(\"a--b--c\", a, \"--\"); print n, a[1], a[2], a[3] }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { n=split(\"a--b--c\", a, \"--\"); print n, a[1], a[2], a[3] }",
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "3 a b c\n");
 }
@@ -813,7 +950,10 @@ fn printf_with_star_width() {
 
 #[test]
 fn do_while_loop() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { i=1; do { printf \"%d \", i++; } while(i<=3); print \"\" }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { i=1; do { printf \"%d \", i++; } while(i<=3); print \"\" }",
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "1 2 3 \n");
 }
@@ -828,7 +968,9 @@ fn implicit_print_is_print_0() {
 #[test]
 fn large_stack_depth_expression() {
     let mut prog = "BEGIN { print ".to_string();
-    for i in 1..200 { prog.push_str(&format!("{} + ", i)); }
+    for i in 1..200 {
+        prog.push_str(&format!("{} + ", i));
+    }
     prog.push_str("0 }");
     let (c, o, _e) = run_awkrs_stdin(&prog, "");
     assert_eq!(c, 0, "stderr: {}", _e);
@@ -844,21 +986,30 @@ fn multi_assign_chain() {
 
 #[test]
 fn string_comparison_lexical() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { print (\"b\" > \"a\"); print (\"10\" < \"2\"); }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { print (\"b\" > \"a\"); print (\"10\" < \"2\"); }",
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "1\n1\n");
 }
 
 #[test]
 fn complex_fpat_csv_emulation() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { FPAT = \"([^,]+)|(\\\"[^\\\"]+\\\")\" } { print $1, $2 }", "a,\"b,c\",d");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { FPAT = \"([^,]+)|(\\\"[^\\\"]+\\\")\" } { print $1, $2 }",
+        "a,\"b,c\",d",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "a \"b,c\"\n");
 }
 
 #[test]
 fn match_fn_with_regexp_constant() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { match(\"abc123def\", /[0-9]+/); print RSTART, RLENGTH }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { match(\"abc123def\", /[0-9]+/); print RSTART, RLENGTH }",
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "4 3\n");
 }
@@ -867,7 +1018,10 @@ fn match_fn_with_regexp_constant() {
 
 #[test]
 fn math_builtins_precision() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { printf \"%.5f %.5f %.5f\\n\", sin(1), cos(1), atan2(1,1) }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { printf \"%.5f %.5f %.5f\\n\", sin(1), cos(1), atan2(1,1) }",
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "0.84147 0.54030 0.78540\n");
 }
@@ -888,7 +1042,10 @@ fn procinfo_errno_initial_is_zero() {
 
 #[test]
 fn strftime_with_full_date() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { print strftime(\"%Y-%m-%d %H:%M:%S\", 1672574400) }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { print strftime(\"%Y-%m-%d %H:%M:%S\", 1672574400) }",
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     // 1672574400 is 2023-01-01 12:00:00 UTC. Local time might vary, so just check format.
     assert!(o.contains("-") && o.contains(":"));
@@ -896,14 +1053,20 @@ fn strftime_with_full_date() {
 
 #[test]
 fn split_with_empty_regex_matches_each_char() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { n=split(\"abc\", a, //); for(i=1;i<=n;i++) print a[i] }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { n=split(\"abc\", a, //); for(i=1;i<=n;i++) print a[i] }",
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "a\nb\nc\n");
 }
 
 #[test]
 fn gsub_on_empty_string() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { s=\"\"; gsub(/a/, \"x\", s); print \"[\" s \"]\" }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { s=\"\"; gsub(/a/, \"x\", s); print \"[\" s \"]\" }",
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "[]\n");
 }
@@ -931,7 +1094,8 @@ fn delete_nonexistent_array_errors_handled() {
 
 #[test]
 fn recursion_with_parameters() {
-    let program = "function sum(n) { if(n<=0) return 0; return n + sum(n-1); } BEGIN { print sum(10) }";
+    let program =
+        "function sum(n) { if(n<=0) return 0; return n + sum(n-1); } BEGIN { print sum(10) }";
     let (c, o, _e) = run_awkrs_stdin(program, "");
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "55\n");
@@ -1042,7 +1206,10 @@ fn index_multiple_occurrences() {
 
 #[test]
 fn split_regex_whitespace() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { n=split(\"a   b\t\tc\", a, /[ \\t]+/); print n, a[1], a[2], a[3] }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { n=split(\"a   b\t\tc\", a, /[ \\t]+/); print n, a[1], a[2], a[3] }",
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "3 a b c\n");
 }
@@ -1072,7 +1239,10 @@ fn gsub_anchor_start() {
 #[test]
 fn pipe_to_sort() {
     let (_c, _o, _e) = run_awkrs_stdin("BEGIN { print \"c\"; print \"a\"; print \"b\"; }", "");
-    let (c2, o2, _e2) = run_awkrs_stdin("BEGIN { print \"c\" | \"sort\"; print \"a\" | \"sort\"; print \"b\" | \"sort\"; }", "");
+    let (c2, o2, _e2) = run_awkrs_stdin(
+        "BEGIN { print \"c\" | \"sort\"; print \"a\" | \"sort\"; print \"b\" | \"sort\"; }",
+        "",
+    );
     if c2 == 0 {
         assert_eq!(o2, "a\nb\nc\n");
     }
@@ -1081,7 +1251,13 @@ fn pipe_to_sort() {
 #[test]
 fn print_to_file_and_read_back() {
     let tmp = "/tmp/awkrs_test_file";
-    let (c, o, _e) = run_awkrs_stdin(&format!("BEGIN {{ print \"hello\" > \"{}\"; fflush(\"{}\"); getline < \"{}\"; print $0 }}", tmp, tmp, tmp), "");
+    let (c, o, _e) = run_awkrs_stdin(
+        &format!(
+            "BEGIN {{ print \"hello\" > \"{}\"; fflush(\"{}\"); getline < \"{}\"; print $0 }}",
+            tmp, tmp, tmp
+        ),
+        "",
+    );
     if c == 0 {
         assert_eq!(o, "hello\n");
         let _ = std::fs::remove_file(tmp);
@@ -1118,7 +1294,13 @@ fn extension_readfile() {
 fn extension_stat() {
     let tmp = "/tmp/awkrs_stat_test";
     std::fs::write(tmp, "x").unwrap();
-    let (c, o, _e) = run_awkrs_stdin(&format!("BEGIN {{ stat(\"{}\", a); print a[\"type\"], (a[\"size\"] > 0) }}", tmp), "");
+    let (c, o, _e) = run_awkrs_stdin(
+        &format!(
+            "BEGIN {{ stat(\"{}\", a); print a[\"type\"], (a[\"size\"] > 0) }}",
+            tmp
+        ),
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "file 1\n");
     let _ = std::fs::remove_file(tmp);
@@ -1129,7 +1311,13 @@ fn extension_readdir() {
     let dir = "/tmp/awkrs_readdir_test";
     let _ = std::fs::create_dir_all(dir);
     std::fs::write(format!("{}/f1", dir), "x").unwrap();
-    let (c, o, _e) = run_awkrs_stdin(&format!("BEGIN {{ n=readdir(\"{}\", a); for(i=1;i<=n;i++) if(a[i] ~ /^f1\\//) print \"ok\" }}", dir), "");
+    let (c, o, _e) = run_awkrs_stdin(
+        &format!(
+            "BEGIN {{ n=readdir(\"{}\", a); for(i=1;i<=n;i++) if(a[i] ~ /^f1\\//) print \"ok\" }}",
+            dir
+        ),
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert!(o.contains("ok"));
     let _ = std::fs::remove_dir_all(dir);
@@ -1141,7 +1329,13 @@ fn extension_rename() {
     let f2 = "/tmp/awkrs_rename_2";
     std::fs::write(f1, "x").unwrap();
     let _ = std::fs::remove_file(f2);
-    let (c, o, _e) = run_awkrs_stdin(&format!("BEGIN {{ print rename(\"{}\", \"{}\"); print (readfile(\"{}\") == \"x\") }}", f1, f2, f2), "");
+    let (c, o, _e) = run_awkrs_stdin(
+        &format!(
+            "BEGIN {{ print rename(\"{}\", \"{}\"); print (readfile(\"{}\") == \"x\") }}",
+            f1, f2, f2
+        ),
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert!(o.contains("0\n1"));
     let _ = std::fs::remove_file(f2);
@@ -1149,7 +1343,10 @@ fn extension_rename() {
 
 #[test]
 fn extension_getlocaltime() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { n=getlocaltime(a, 1672574400); print (a[\"year\"] >= 2022) }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { n=getlocaltime(a, 1672574400); print (a[\"year\"] >= 2022) }",
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "1\n");
 }
@@ -1173,7 +1370,10 @@ fn namespace_global_assignment() {
 
 #[test]
 fn mkbool_various_values() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { print mkbool(1), mkbool(0), mkbool(\"true\"), mkbool(\"\") }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { print mkbool(1), mkbool(0), mkbool(\"true\"), mkbool(\"\") }",
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "1 0 1 0\n");
 }
@@ -1218,7 +1418,7 @@ fn regex_constant_as_expression() {
 #[test]
 fn match_with_large_string() {
     let mut s = "a".repeat(1000);
-    s.push_str("b");
+    s.push('b');
     let (c, o, _e) = run_awkrs_stdin(&format!("BEGIN {{ print match(\"{}\", /b/) }}", s), "");
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "1001\n");
@@ -1275,21 +1475,30 @@ fn chr_with_large_values() {
 
 #[test]
 fn rand_multiple_calls_different_values() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { srand(1); r1=rand(); r2=rand(); print (r1 != r2) }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { srand(1); r1=rand(); r2=rand(); print (r1 != r2) }",
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "1\n");
 }
 
 #[test]
 fn procinfo_api_version() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { print (\"api_major\" in PROCINFO), (\"api_minor\" in PROCINFO) }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { print (\"api_major\" in PROCINFO), (\"api_minor\" in PROCINFO) }",
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "1 1\n");
 }
 
 #[test]
 fn environ_all_keys_accessible() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { count=0; for(i in ENVIRON) count++; print (count > 0) }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { count=0; for(i in ENVIRON) count++; print (count > 0) }",
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "1\n");
 }
@@ -1317,14 +1526,20 @@ fn for_loop_with_multiple_initializers_invalid_but_check_error() {
 
 #[test]
 fn array_delete_element_in_loop() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { a[1]=1; a[2]=2; for(i in a) { delete a[i]; n++ } print n, length(a) }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { a[1]=1; a[2]=2; for(i in a) { delete a[i]; n++ } print n, length(a) }",
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "2 0\n");
 }
 
 #[test]
 fn delete_entire_array_via_variable() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { a[1]=1; name=\"a\"; delete SYMTAB[name]; print length(a) }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { a[1]=1; name=\"a\"; delete SYMTAB[name]; print length(a) }",
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "0\n");
 }
@@ -1345,7 +1560,10 @@ fn functab_check_existence() {
 
 #[test]
 fn variadic_and_or_xor() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { print and(1, 2, 4), or(1, 2, 4), xor(1, 1, 1) }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { print and(1, 2, 4), or(1, 2, 4), xor(1, 1, 1) }",
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "0 7 1\n");
 }
@@ -1353,7 +1571,10 @@ fn variadic_and_or_xor() {
 #[test]
 fn strftime_exotic_formats() {
     let ts = 1672574400; // 2023-01-01 12:00:00 UTC
-    let (c, o, _e) = run_awkrs_stdin(&format!("BEGIN {{ print strftime(\"%A %% %U\", {}) }}", ts), "");
+    let (c, o, _e) = run_awkrs_stdin(
+        &format!("BEGIN {{ print strftime(\"%A %% %U\", {}) }}", ts),
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     // Sunday (or local day) % 01 (week number)
     assert!(o.contains("%") && o.contains("01"));
@@ -1398,7 +1619,10 @@ fn split_literal_string_sep() {
 
 #[test]
 fn match_sets_rstart_rlength_globals() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { match(\"hello\", /ell/); print RSTART, RLENGTH }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { match(\"hello\", /ell/); print RSTART, RLENGTH }",
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "2 3\n");
 }
@@ -1443,7 +1667,10 @@ fn variadic_xor_three_args() {
 
 #[test]
 fn multiple_gsub_on_same_string() {
-    let (c, o, _e) = run_awkrs_stdin("BEGIN { s=\"abc\"; gsub(/a/, \"A\", s); gsub(/b/, \"B\", s); print s }", "");
+    let (c, o, _e) = run_awkrs_stdin(
+        "BEGIN { s=\"abc\"; gsub(/a/, \"A\", s); gsub(/b/, \"B\", s); print s }",
+        "",
+    );
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "ABc\n");
 }

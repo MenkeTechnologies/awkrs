@@ -4561,6 +4561,18 @@ mod tests {
     fn jit_not_zero_is_one() {
         let r = exec(&[Op::PushNum(0.0), Op::Not]);
         assert!((r - 1.0).abs() < 1e-15);
+
+        let r = exec(&[Op::PushNum(-0.0), Op::Not]);
+        assert!((r - 1.0).abs() < 1e-15);
+    }
+
+    #[test]
+    fn jit_not_nan_inf() {
+        let r = exec(&[Op::PushNum(f64::NAN), Op::Not]);
+        assert_eq!(r, 0.0);
+
+        let r = exec(&[Op::PushNum(f64::INFINITY), Op::Not]);
+        assert_eq!(r, 0.0);
     }
 
     #[test]
@@ -5595,5 +5607,113 @@ mod tests {
             dest: Some(1),
         }]);
         assert!(r.abs() < 1e-15);
+    }
+
+    #[test]
+    fn jit_eligible_basic_arithmetic() {
+        assert!(is_jit_eligible(&[
+            Op::PushNum(1.0),
+            Op::PushNum(2.0),
+            Op::Add
+        ]));
+    }
+
+    #[test]
+    fn jit_eligible_compound_assign() {
+        use crate::ast::BinOp;
+        assert!(is_jit_eligible(&[
+            Op::PushNum(10.0),
+            Op::CompoundAssignSlot(0, BinOp::Add)
+        ]));
+    }
+
+    #[test]
+    fn jit_eligible_jump_control_flow() {
+        assert!(is_jit_eligible(&[
+            Op::PushNum(1.0),
+            Op::JumpIfFalsePop(3),
+            Op::PushNum(2.0),
+            Op::Jump(4),
+            Op::PushNum(3.0),
+            Op::Pop,
+        ]));
+    }
+
+    #[test]
+    fn jit_eligible_fused_opcodes() {
+        assert!(is_jit_eligible(&[Op::PrintFieldStdout(1)]));
+        assert!(is_jit_eligible(&[Op::IncrSlot(0)]));
+        assert!(is_jit_eligible(&[Op::JumpIfSlotGeNum {
+            slot: 0,
+            limit: 10.0,
+            target: 0,
+        }]));
+    }
+
+    #[test]
+    fn jit_eligible_mixed_mode_array() {
+        assert!(is_jit_eligible(&[Op::PushNum(1.0), Op::GetArrayElem(0)]));
+        assert!(is_jit_eligible(&[
+            Op::PushNum(2.0),
+            Op::PushNum(1.0),
+            Op::SetArrayElem(0)
+        ]));
+    }
+
+    #[test]
+    fn jit_eligible_field_access() {
+        assert!(is_jit_eligible(&[Op::PushNum(1.0), Op::GetField]));
+        assert!(is_jit_eligible(&[
+            Op::PushNum(2.0),
+            Op::PushNum(1.0),
+            Op::SetField
+        ]));
+    }
+
+    #[test]
+    fn jit_eligible_bignum_ops_mixed() {
+        // JIT does NOT yet support PushNumDecimalStr (it falls back to interpreter).
+        assert!(!is_jit_eligible(&[Op::PushNumDecimalStr(0)]));
+    }
+
+    #[test]
+    fn jit_eligible_regex_match() {
+        assert!(is_jit_eligible(&[
+            Op::PushNum(1.0),
+            Op::PushNum(0.0),
+            Op::RegexMatch
+        ]));
+        assert!(is_jit_eligible(&[
+            Op::PushNum(1.0),
+            Op::PushNum(0.0),
+            Op::RegexNotMatch
+        ]));
+    }
+
+    #[test]
+    fn jit_arithmetic_mod() {
+        // 10 % 3 = 1
+        assert_eq!(exec(&[Op::PushNum(10.0), Op::PushNum(3.0), Op::Mod]), 1.0);
+    }
+
+    #[test]
+    fn jit_multi_field_access() {
+        extern "C" fn test_field(_: *mut c_void, i: i32) -> f64 {
+            match i {
+                1 => 10.0,
+                2 => 20.0,
+                _ => 0.0,
+            }
+        }
+        let ops = [Op::PushFieldNum(1), Op::PushFieldNum(2), Op::Add];
+        let mut slots = [0.0f64; 0];
+        assert_eq!(exec_with_fields(&ops, &mut slots, test_field), 30.0);
+    }
+
+    #[test]
+    fn jit_eligible_unary_ops() {
+        assert!(is_jit_eligible(&[Op::PushNum(1.0), Op::Neg]));
+        assert!(is_jit_eligible(&[Op::PushNum(1.0), Op::Not]));
+        assert!(is_jit_eligible(&[Op::PushNum(1.0), Op::ToBool]));
     }
 }

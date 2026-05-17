@@ -535,5 +535,67 @@ mod tests {
     #[test]
     fn mpfr_string_trim_trailing_zeros_all_fractional_zeros_becomes_int() {
         assert_eq!(mpfr_string_trim_trailing_zeros("7.000".into()), "7");
+        assert_eq!(mpfr_string_trim_trailing_zeros("0.000".into()), "0");
+        assert_eq!(
+            mpfr_string_trim_trailing_zeros("123.45000".into()),
+            "123.45"
+        );
+        assert_eq!(mpfr_string_trim_trailing_zeros("100".into()), "100");
+    }
+
+    #[test]
+    fn value_to_mpfr_handles_non_numeric_strings_as_zero() {
+        let prec = 64;
+        let round = Round::Nearest;
+        let v = value_to_mpfr(&Value::Str("not a number".into()), prec, round);
+        assert!(v.is_zero());
+    }
+
+    #[test]
+    fn awk_strtonum_value_decimal_integer_bignum_is_exact() {
+        let mut rt = Runtime::new();
+        rt.bignum = true;
+        // Large integer that would lose precision in f64
+        let v = awk_strtonum_value("1267650600228229401496703205376", &rt);
+        let s = mpfr_dec(&v, &rt);
+        assert_eq!(s, "1267650600228229401496703205376");
+    }
+
+    #[test]
+    fn awk_int_value_bignum_truncation() {
+        let mut rt = Runtime::new();
+        rt.bignum = true;
+        let v = awk_int_value(&Value::Str("-123.456".into()), &rt);
+        let s = mpfr_dec(&v, &rt);
+        assert_eq!(s, "-123");
+    }
+
+    #[test]
+    fn float_trunc_integer_large_value() {
+        let mut rt = Runtime::new();
+        rt.bignum = true;
+        let i = Integer::from_str("100000000000000000000").unwrap();
+        let f = Float::with_val(rt.mpfr_prec_bits(), i);
+        let i2 = float_trunc_integer(&f);
+        assert_eq!(format!("{i2}"), "100000000000000000000");
+    }
+
+    #[test]
+    fn mpfr_to_f64_handles_subnormal() {
+        let f = Float::with_val(64, 5e-324); // approx f64 subnormal min
+        let n = f.to_f64();
+        assert!(n > 0.0);
+    }
+
+    #[test]
+    fn mpfr_from_f64_preserves_nan() {
+        let f = Float::with_val(64, f64::NAN);
+        assert!(f.is_nan());
+    }
+
+    #[test]
+    fn mpfr_from_f64_preserves_inf() {
+        let f = Float::with_val(64, f64::INFINITY);
+        assert!(f.is_infinite() && f.is_sign_positive());
     }
 }

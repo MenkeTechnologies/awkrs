@@ -869,4 +869,23 @@ mod tests {
             "prog_rules_len must survive cache roundtrip"
         );
     }
+
+    #[test]
+    fn stats_empty_returns_zero() {
+        let dir = tempdir().unwrap();
+        let cache_path = dir.path().join("empty_cache.rkyv");
+        let cache = ScriptCache::open(&cache_path).unwrap();
+        let (count, bytes) = cache.stats();
+        assert_eq!(count, 0);
+        assert_eq!(bytes, 0);
+    }
+
+    #[test]
+    fn clear_idempotent() {
+        let dir = tempdir().unwrap();
+        let cache_path = dir.path().join("clear_test.rkyv");
+        let cache = ScriptCache::open(&cache_path).unwrap();
+        cache.clear().unwrap();
+        cache.clear().unwrap(); // second call should also succeed
+    }
 }

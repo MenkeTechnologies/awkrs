@@ -305,4 +305,20 @@ mod tests {
         assert_eq!(id.get("arr").unwrap().as_str(), "array");
         assert_eq!(id.get("uf").unwrap().as_str(), "user");
     }
+
+    #[test]
+    fn gawk_platform_string_non_empty() {
+        let s = gawk_platform_string();
+        assert!(!s.is_empty());
+        assert!(s == "posix" || s == "mingw" || s == "vms" || s == "unknown");
+    }
+
+    #[test]
+    fn supplementary_groups_format() {
+        let groups = supplementary_group_entries();
+        for (name, gid) in groups {
+            assert!(name.starts_with("group"));
+            assert!(gid >= 0.0);
+        }
+    }
 }

@@ -3838,3 +3838,258 @@ mod awk_locale_str_cmp_pinning {
         assert_eq!(rt.get_global_var("x").unwrap().as_number(), 100.0);
     }
 }
+
+#[cfg(test)]
+mod extra_runtime_tests {
+    use super::*;
+
+    #[test]
+    fn value_truthiness() {
+        assert!(!Value::Uninit.truthy());
+        assert!(Value::Num(1.0).truthy());
+        assert!(!Value::Num(0.0).truthy());
+        assert!(Value::StrLit("0".into()).truthy()); // "0" as literal is truthy
+        assert!(!Value::Str("0".into()).truthy()); // "0" as dynamic string is numeric 0 -> falsy
+        assert!(!Value::Str("00".into()).truthy()); // "00" is numeric 0 -> falsy
+                                                    // regex literals are truthy if non-empty
+        assert!(Value::Regexp(".".into()).truthy());
+        assert!(!Value::Regexp("".into()).truthy());
+    }
+
+    #[test]
+    fn value_numeric_conversions() {
+        assert_eq!(Value::Uninit.as_number(), 0.0);
+        assert_eq!(Value::Str("  123.45  ".into()).as_number(), 123.45);
+        assert_eq!(Value::Str("1e2".into()).as_number(), 100.0);
+        assert_eq!(Value::Str("inf".into()).as_number(), f64::INFINITY);
+        assert!(Value::Str("nan".into()).as_number().is_nan());
+        // large integers
+        assert_eq!(
+            Value::Str("9223372036854775807".into()).as_number(),
+            9223372036854775807.0
+        );
+    }
+
+    #[test]
+    fn value_is_numeric_str() {
+        assert!(Value::Uninit.is_numeric_str());
+        assert!(Value::Num(1.0).is_numeric_str());
+        assert!(Value::Str("123".into()).is_numeric_str());
+        assert!(Value::Str(" -12.3e-1 ".into()).is_numeric_str());
+        assert!(!Value::Str("abc".into()).is_numeric_str());
+        assert!(!Value::StrLit("123".into()).is_numeric_str());
+        // extreme scientific
+        assert!(Value::Str("1.234567e+10".into()).is_numeric_str());
+        // INF/NAN
+        assert!(Value::Str("inf".into()).is_numeric_str());
+        assert!(Value::Str("nan".into()).is_numeric_str());
+    }
+
+    #[test]
+    fn parse_ascii_integer_logic() {
+        assert_eq!(parse_ascii_integer("123"), Some(123));
+        assert_eq!(parse_ascii_integer("-456"), Some(-456));
+        assert_eq!(parse_ascii_integer("+789"), Some(789));
+        assert_eq!(parse_ascii_integer("12.3"), None);
+        assert_eq!(parse_ascii_integer("abc"), None);
+    }
+
+    #[test]
+    fn longest_f64_prefix_logic() {
+        assert_eq!(longest_f64_prefix("123abc"), Some("123"));
+        assert_eq!(longest_f64_prefix("1.2.3"), Some("1.2"));
+        assert_eq!(longest_f64_prefix("1e2e3"), Some("1e2"));
+        assert_eq!(longest_f64_prefix("abc"), None);
+        // scientific notation with + sign
+        assert_eq!(longest_f64_prefix("1.2E+10x"), Some("1.2E+10"));
+        // negative sign (handled by as_number, but prefix should include it)
+        assert_eq!(longest_f64_prefix("-42.5z"), Some("-42.5"));
+        // lowercase e
+        assert_eq!(longest_f64_prefix("3.14e-5y"), Some("3.14e-5"));
+    }
+
+    #[test]
+    fn parse_ascii_integer_edge_cases() {
+        assert_eq!(parse_ascii_integer("0"), Some(0));
+        assert_eq!(parse_ascii_integer("-0"), Some(0));
+        assert_eq!(parse_ascii_integer("+0"), Some(0));
+        assert_eq!(parse_ascii_integer("007"), Some(7));
+        // Overflows/underflows? i64::MAX is large, but let's test a large one.
+        assert_eq!(
+            parse_ascii_integer("9223372036854775807"),
+            Some(9223372036854775807)
+        );
+    }
+
+    #[test]
+    fn split_fields_whitespace() {
+        let mut ranges = Vec::new();
+        split_fields_into("  a  b   c  ", " ", &mut ranges, false, false);
+        assert_eq!(ranges.len(), 3);
+        assert_eq!(ranges[0], (2, 3)); // "a"
+        assert_eq!(ranges[1], (5, 6)); // "b"
+        assert_eq!(ranges[2], (9, 10)); // "c"
+    }
+
+    #[test]
+    fn split_fields_comma() {
+        let mut ranges = Vec::new();
+        split_fields_into("a,b,,c", ",", &mut ranges, false, false);
+        assert_eq!(ranges.len(), 4);
+        assert_eq!(ranges[0], (0, 1)); // "a"
+        assert_eq!(ranges[1], (2, 3)); // "b"
+        assert_eq!(ranges[2], (4, 4)); // ""
+        assert_eq!(ranges[3], (5, 6)); // "c"
+    }
+
+    #[test]
+    fn split_fields_regex() {
+        let mut ranges = Vec::new();
+        split_fields_into("a1b22c", "[0-9]+", &mut ranges, false, false);
+        assert_eq!(ranges.len(), 3);
+        assert_eq!(ranges[0], (0, 1)); // "a"
+        assert_eq!(ranges[1], (2, 3)); // "b"
+        assert_eq!(ranges[2], (5, 6)); // "c"
+    }
+
+    #[test]
+    fn split_csv_gawk_rfc4180() {
+        let mut ranges = Vec::new();
+        split_csv_gawk_fields("a,\"b,c\",d", &mut ranges);
+        assert_eq!(ranges.len(), 3);
+        assert_eq!(ranges[0], (0, 1)); // "a"
+        assert_eq!(ranges[1], (3, 6)); // "b,c"
+        assert_eq!(ranges[2], (8, 9)); // "d"
+
+        split_csv_gawk_fields("\"\"\"\"", &mut ranges); // escaped quote
+        assert_eq!(ranges.len(), 1);
+        assert_eq!(ranges[0], (1, 3)); // ""
+    }
+
+    #[test]
+    fn runtime_variable_overlay() {
+        let mut globals = AwkMap::default();
+        globals.insert("x".into(), Value::Num(1.0));
+        globals.insert("y".into(), Value::Num(2.0));
+
+        let shared = Arc::new(globals);
+        let mut rt = Runtime::new();
+        rt.global_readonly = Some(shared);
+
+        rt.vars.insert("x".into(), Value::Num(10.0)); // overlay
+
+        assert_eq!(rt.get_global_var("x").unwrap().as_number(), 10.0);
+        assert_eq!(rt.get_global_var("y").unwrap().as_number(), 2.0);
+        assert!(rt.get_global_var("z").is_none());
+    }
+
+    #[test]
+    fn value_as_number_hex_and_octal_strings() {
+        // as_number() on Value::Str does NOT automatically parse hex/octal.
+        // It uses standard f64 parsing.
+        assert_eq!(Value::Str("0x10".into()).as_number(), 0.0);
+        assert_eq!(Value::Str("010".into()).as_number(), 10.0);
+    }
+
+    #[test]
+    fn value_str_coercion_from_float() {
+        let rt = Runtime::new();
+        // CONVFMT is "%.6g" by default
+        let v = Value::Num(1.23456789);
+        assert_eq!(rt.value_to_array_key(&v), "1.23457");
+    }
+
+    #[test]
+    fn value_str_coercion_from_large_integer() {
+        let rt = Runtime::new();
+        // Large integers should use exact decimal form
+        let v = Value::Num(1e12);
+        assert_eq!(rt.value_to_array_key(&v), "1000000000000");
+    }
+
+    #[test]
+    fn awk_map_nested_keys() {
+        let mut m: AwkMap<String, Value> = AwkMap::default();
+        m.insert("1\x1c2".into(), Value::Num(42.0)); // SUBSEP is \x1c
+        assert_eq!(m.get("1\x1c2").unwrap().as_number(), 42.0);
+    }
+
+    #[test]
+    fn awk_map_delete_non_existent() {
+        let mut m: AwkMap<String, Value> = AwkMap::default();
+        m.remove("x"); // should not panic
+    }
+
+    #[test]
+    fn awk_map_iteration_order() {
+        let mut m: AwkMap<String, Value> = AwkMap::default();
+        m.insert("a".into(), Value::Num(1.0));
+        m.insert("b".into(), Value::Num(2.0));
+        // Order is not guaranteed, but we can verify we get both.
+        let keys: Vec<_> = m.keys().collect();
+        assert_eq!(keys.len(), 2);
+    }
+
+    #[test]
+    fn runtime_set_field_reconstructs_record() {
+        let mut rt = Runtime::new();
+        rt.set_record_str("a b c");
+        rt.set_field(2, "X").unwrap();
+        // $0 should be "a X c" (using current OFS, which is " " by default)
+        assert_eq!(rt.record, "a X c");
+    }
+
+    #[test]
+    fn runtime_set_field_beyond_nf() {
+        let mut rt = Runtime::new();
+        rt.set_record_str("a");
+        rt.set_field(3, "c").unwrap();
+        // $0 should be "a  c" (OFS is " ")
+        assert_eq!(rt.record, "a  c");
+        assert_eq!(rt.nf(), 3);
+
+        // Custom OFS
+        rt.vars.insert("OFS".into(), Value::Str(",".into()));
+        rt.set_field(2, "b").unwrap();
+        assert_eq!(rt.record, "a,b,c");
+    }
+
+    #[test]
+    fn runtime_set_record_updates_nf() {
+        let mut rt = Runtime::new();
+        rt.vars.insert("FS".into(), Value::Str(",".into()));
+        rt.set_record_str("1,2,3");
+        // NF should be 3
+        assert_eq!(rt.nf(), 3);
+    }
+
+    #[test]
+    fn split_string_by_fs_character_mode() {
+        // Empty FS -> split into individual characters
+        let res = split_string_by_field_separator("abc", "", false);
+        assert_eq!(res, vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+    }
+
+    #[test]
+    fn split_string_by_fs_whitespace_mode() {
+        // Space FS -> split by any whitespace, stripping leading/trailing
+        let res = split_string_by_field_separator("  x  y   z  ", " ", false);
+        assert_eq!(res, vec!["x".to_string(), "y".to_string(), "z".to_string()]);
+    }
+
+    #[test]
+    fn split_string_by_fs_regex_case_insensitive() {
+        let res = split_string_by_field_separator("aXbYc", "[xy]", true);
+        assert_eq!(res, vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+    }
+
+    #[test]
+    fn runtime_vars_initial_state() {
+        let rt = Runtime::new();
+        // RS and OFS are initialized in vars map.
+        assert_eq!(rt.vars.get("RS").unwrap().as_str(), "\n");
+        assert_eq!(rt.vars.get("OFS").unwrap().as_str(), " ");
+        // FS might be missing from vars map (uses cached_fs until first split/assignment).
+        assert_eq!(rt.vars.get("OFMT").unwrap().as_str(), "%.6g");
+    }
+}

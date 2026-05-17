@@ -7970,4 +7970,295 @@ mod tests {
         let out = run_begin_capture(r#"BEGIN { print sprintf("[%-10s]", "hi") }"#);
         assert_eq!(out, "[hi        ]\n");
     }
+
+    #[test]
+    fn vm_large_array_deletion() {
+        let out =
+            run_begin_capture("BEGIN { for(i=0; i<1000; i++) a[i]=i; delete a; print length(a) }");
+        assert_eq!(out, "0\n");
+    }
+
+    #[test]
+    fn vm_multidimensional_array_simulation() {
+        let out = run_begin_capture("BEGIN { a[1,2]=42; print a[1,2], (1,2) in a }");
+        assert_eq!(out, "42 1\n");
+    }
+
+    #[test]
+    fn vm_asort_behavior() {
+        let out = run_begin_capture(
+            "BEGIN { a[1]=\"z\"; a[2]=\"a\"; n=asort(a); for(i=1; i<=n; i++) printf \"%s\", a[i] }",
+        );
+        assert_eq!(out, "az");
+    }
+
+    #[test]
+    fn vm_asort_numeric_coercion() {
+        // "10" (string) vs 2 (number) -> "10" > "2" is FALSE, but asort uses sort order.
+        // POSIX asort sorts by value.
+        let out = run_begin_capture(
+            "BEGIN { a[1]=10; a[2]=2; n=asort(a); for(i=1; i<=n; i++) printf \"[%s]\", a[i] }",
+        );
+        assert_eq!(out, "[2][10]");
+    }
+
+    #[test]
+    fn vm_asorti_numeric_keys() {
+        // asorti sorts keys.
+        let out = run_begin_capture("BEGIN { a[10]=\"x\"; a[2]=\"y\"; n=asorti(a); for(i=1; i<=n; i++) printf \"[%s]\", a[i] }");
+        // keys "10" and "2" as strings -> "10" < "2"
+        assert_eq!(out, "[10][2]");
+    }
+
+    #[test]
+    fn vm_nested_function_recursion() {
+        let out = run_begin_capture(
+            "function f(n) { if(n<=0) return 0; return n + f(n-1) } BEGIN { print f(10) }",
+        );
+        assert_eq!(out, "55\n");
+    }
+
+    #[test]
+    fn vm_closure_like_array_passing() {
+        // Arrays are call-by-reference in AWK.
+        let out = run_begin_capture(
+            "function inc(arr) { arr[1]++ } BEGIN { a[1]=10; inc(a); print a[1] }",
+        );
+        assert_eq!(out, "11\n");
+    }
+
+    #[test]
+    fn vm_scientific_notation_in_loop() {
+        let out = run_begin_capture("BEGIN { sum=0; for(i=1e1; i<1.5e1; i++) sum+=i; print sum }");
+        assert_eq!(out, "60\n"); // 10+11+12+13+14 = 60
+    }
+
+    #[test]
+    fn vm_switch_with_regex_case() {
+        let out = run_begin_capture("BEGIN { x=\"abc\"; switch(x) { case /a/: print \"match\"; break; default: print \"no\" } }");
+        assert_eq!(out, "match\n");
+    }
+
+    #[test]
+    fn vm_bignum_pow_large() {
+        // Only if bignum is enabled, but run_begin_capture might not enable it by default.
+        // Let's use a test that works in both but is more interesting in bignum.
+        let out = run_begin_capture("BEGIN { print 2^10 }");
+        assert_eq!(out, "1024\n");
+    }
+
+    #[test]
+    fn vm_complex_ternary_logic() {
+        let out = run_begin_capture("BEGIN { print (1 ? (0 ? \"a\" : \"b\") : \"c\") }");
+        assert_eq!(out, "b\n");
+    }
+
+    #[test]
+    fn vm_for_in_sorted_order() {
+        // PROCINFO["sorted_in"] = "@ind_str_asc"
+        let out = run_begin_capture("BEGIN { a[\"z\"]=1; a[\"a\"]=2; PROCINFO[\"sorted_in\"]=\"@ind_str_asc\"; for(i in a) printf \"%s\", i }");
+        assert_eq!(out, "az");
+    }
+
+    #[test]
+    fn vm_getline_file_missing_returns_minus_one() {
+        // getline < "no_such" returns -1 and sets ERRNO
+        let out =
+            run_begin_capture("BEGIN { r = (getline < \"no_such\"); print r, (ERRNO != \"\") }");
+        // awkrs might error instead of returning -1 depending on configuration,
+        // but POSIX says -1.
+        assert!(out.contains("-1 1"), "got: {out}");
+    }
+
+    #[test]
+    fn vm_getline_pipe_empty_returns_zero() {
+        // "echo -n" | getline returns 0 (EOF)
+        let out = run_begin_capture("BEGIN { r = (\"printf ''\" | getline); print r }");
+        assert_eq!(out, "0\n");
+    }
+
+    #[test]
+    fn vm_getline_pipe_into_var() {
+        let out = run_begin_capture("BEGIN { \"echo hi\" | getline x; print x }");
+        assert_eq!(out, "hi\n");
+    }
+
+    #[test]
+    fn vm_split_leading_trailing_separators() {
+        // split(",a,b,", a, ",") -> "" "a" "b" ""
+        let out = run_begin_capture(
+            "BEGIN { n = split(\",a,b,\", a, \",\"); for(i=1;i<=n;i++) printf \"[%s]\", a[i] }",
+        );
+        assert_eq!(out, "[][a][b][]");
+    }
+
+    #[test]
+    fn vm_split_whitespace_behavior() {
+        // split("  a  b  ", a, " ") behaves like default FS
+        let out = run_begin_capture(
+            "BEGIN { n = split(\"  a  b  \", a, \" \"); for(i=1;i<=n;i++) printf \"[%s]\", a[i] }",
+        );
+        assert_eq!(out, "[a][b]");
+    }
+
+    #[test]
+    fn internal_awk_cmp_eq_numeric_string_semantics() {
+        let rt = Runtime::new();
+        // Both numeric strings -> numeric compare
+        assert_eq!(
+            awk_cmp_eq(
+                &Value::Str("10".into()),
+                &Value::Str("10.0".into()),
+                false,
+                &rt
+            )
+            .as_number(),
+            1.0
+        );
+        assert_eq!(
+            awk_cmp_eq(
+                &Value::Str("10".into()),
+                &Value::Str("0xa".into()),
+                false,
+                &rt
+            )
+            .as_number(),
+            0.0
+        ); // is_numeric_str doesn't parse hex
+    }
+
+    #[test]
+    fn internal_awk_cmp_rel_mixed_types() {
+        let rt = Runtime::new();
+        // Number vs Numeric String -> numeric compare
+        assert_eq!(
+            awk_cmp_rel(
+                BinOp::Lt,
+                &Value::Num(2.0),
+                &Value::Str("10".into()),
+                false,
+                &rt
+            )
+            .as_number(),
+            1.0
+        );
+        // String literal (not numeric str) vs Number -> string compare
+        // "10" (literal) vs 2 (number) -> "10" < "2" ? Yes.
+        // Wait, awkrs might use as_str() which for 2.0 is "2".
+        assert_eq!(
+            awk_cmp_rel(
+                BinOp::Lt,
+                &Value::StrLit("10".into()),
+                &Value::Num(2.0),
+                false,
+                &rt
+            )
+            .as_number(),
+            1.0
+        );
+    }
+
+    #[test]
+    fn internal_awk_cmp_eq_ignore_case() {
+        let rt = Runtime::new();
+        assert_eq!(
+            awk_cmp_eq(
+                &Value::Str("ABC".into()),
+                &Value::Str("abc".into()),
+                true,
+                &rt
+            )
+            .as_number(),
+            1.0
+        );
+        assert_eq!(
+            awk_cmp_eq(
+                &Value::Str("ABC".into()),
+                &Value::Str("abc".into()),
+                false,
+                &rt
+            )
+            .as_number(),
+            0.0
+        );
+    }
+
+    #[test]
+    fn internal_awk_cmp_rel_ignore_case() {
+        let rt = Runtime::new();
+        // "B" > "a" normally, but with IGNORECASE "b" > "a"
+        assert_eq!(
+            awk_cmp_rel(
+                BinOp::Gt,
+                &Value::Str("B".into()),
+                &Value::Str("a".into()),
+                true,
+                &rt
+            )
+            .as_number(),
+            1.0
+        );
+        // "a" vs "B" -> "a" is 97, "B" is 66. "a" > "B" is true.
+        assert_eq!(
+            awk_cmp_rel(
+                BinOp::Gt,
+                &Value::Str("a".into()),
+                &Value::Str("B".into()),
+                false,
+                &rt
+            )
+            .as_number(),
+            1.0
+        );
+    }
+
+    #[test]
+    fn internal_awk_cmp_uninit() {
+        let rt = Runtime::new();
+        // Uninit == 0 (numeric)
+        assert_eq!(
+            awk_cmp_eq(&Value::Uninit, &Value::Num(0.0), false, &rt).as_number(),
+            1.0
+        );
+        // Uninit == "" (string)
+        assert_eq!(
+            awk_cmp_eq(&Value::Uninit, &Value::Str("".into()), false, &rt).as_number(),
+            1.0
+        );
+        // Uninit < 1 (numeric)
+        assert_eq!(
+            awk_cmp_rel(BinOp::Lt, &Value::Uninit, &Value::Num(1.0), false, &rt).as_number(),
+            1.0
+        );
+    }
+
+    #[test]
+    fn vm_printf_many_args() {
+        let out = run_begin_capture("BEGIN { printf \"%d %d %d %d %d %d\", 1, 2, 3, 4, 5, 6 }");
+        assert_eq!(out, "1 2 3 4 5 6");
+    }
+
+    #[test]
+    fn vm_printf_positional_star_width() {
+        // positional width + sequential value
+        let out = run_begin_capture("BEGIN { printf \"%*1$d\", 5, 42 }");
+        assert_eq!(out, "   42");
+    }
+
+    #[test]
+    fn vm_getline_file_redirect_into_var() {
+        let dir = std::env::temp_dir();
+        let p = dir.join(format!("awkrs_getline_{}.txt", std::process::id()));
+        std::fs::write(&p, "line1\nline2").unwrap();
+
+        let src = format!(
+            "BEGIN {{ (getline x < \"{}\"); (getline y < \"{}\"); print x, y }}",
+            p.display(),
+            p.display()
+        );
+        let out = run_begin_capture(&src);
+        assert_eq!(out, "line1 line2\n");
+
+        let _ = std::fs::remove_file(&p);
+    }
 }

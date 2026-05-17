@@ -86,4 +86,20 @@ mod tests {
         let s = e.to_string();
         assert!(s.contains(&i32::MAX.to_string()), "{s}");
     }
+
+    #[test]
+    fn parse_error_no_line_number_format() {
+        // If line is 0, does it display correctly?
+        let e = Error::Parse {
+            line: 0,
+            msg: "err".into(),
+        };
+        assert!(e.to_string().contains("line 0"));
+    }
+
+    #[test]
+    fn runtime_error_empty_msg() {
+        let e = Error::Runtime("".into());
+        assert_eq!(e.to_string(), "runtime error: ");
+    }
 }

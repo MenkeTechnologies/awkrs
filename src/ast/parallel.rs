@@ -270,4 +270,121 @@ mod tests {
         };
         assert!(!record_rules_parallel_safe(&prog));
     }
+
+    #[test]
+    fn parallel_unsafe_global_variable_mutation_in_function() {
+        let p = parse_program("function f(x) { g = 1 } { f($1) }").unwrap();
+        // `g` is global.
+        assert!(!record_rules_parallel_safe(&p));
+    }
+
+    #[test]
+    fn parallel_unsafe_array_element_assignment() {
+        let p = parse_program("{ a[$1] = 1 }").unwrap();
+        assert!(!record_rules_parallel_safe(&p));
+    }
+
+    #[test]
+    fn parallel_unsafe_delete_array() {
+        let p = parse_program("{ delete a }").unwrap();
+        assert!(!record_rules_parallel_safe(&p));
+    }
+
+    #[test]
+    fn parallel_unsafe_printf_redirection() {
+        let p = parse_program("{ printf \"hi\" > \"file\" }").unwrap();
+        assert!(!record_rules_parallel_safe(&p));
+    }
+
+    #[test]
+    fn parallel_safe_complex_math_expression() {
+        let p = parse_program("{ print sqrt($1*$1 + $2*$2) }").unwrap();
+        assert!(record_rules_parallel_safe(&p));
+    }
+
+    #[test]
+    fn parallel_unsafe_exit() {
+        let p = parse_program("{ exit 1 }").unwrap();
+        assert!(!record_rules_parallel_safe(&p));
+    }
+
+    #[test]
+    fn parallel_unsafe_nextfile() {
+        let p = parse_program("{ nextfile }").unwrap();
+        assert!(!record_rules_parallel_safe(&p));
+    }
+
+    #[test]
+    fn parallel_unsafe_assignment_to_special_variable() {
+        assert!(!record_rules_parallel_safe(
+            &parse_program("{ NR = 1 }").unwrap()
+        ));
+        assert!(!record_rules_parallel_safe(
+            &parse_program("{ NF = 2 }").unwrap()
+        ));
+        assert!(!record_rules_parallel_safe(
+            &parse_program("{ FS = \",\" }").unwrap()
+        ));
+        assert!(!record_rules_parallel_safe(
+            &parse_program("{ OFS = \":\" }").unwrap()
+        ));
+    }
+
+    #[test]
+    fn parallel_unsafe_getline_variants() {
+        // getline with no args (into $0) is unsafe because it modifies global fields/record.
+        assert!(!record_rules_parallel_safe(
+            &parse_program("{ getline }").unwrap()
+        ));
+        // getline into var is unsafe because it modifies global var.
+        assert!(!record_rules_parallel_safe(
+            &parse_program("{ getline x }").unwrap()
+        ));
+        // getline from pipe is unsafe (global pipe state).
+        assert!(!record_rules_parallel_safe(
+            &parse_program("{ \"cmd\" | getline }").unwrap()
+        ));
+    }
+
+    #[test]
+    fn parallel_unsafe_print_to_file_or_pipe() {
+        // print to stdout is safe (buffered), but to file/pipe is unsafe (global state).
+        // Parser requires parens or careful expression placement for redirects in some contexts.
+        assert!(!record_rules_parallel_safe(
+            &parse_program("{ print \"hi\" > \"f\" }").unwrap()
+        ));
+        assert!(!record_rules_parallel_safe(
+            &parse_program("{ print \"hi\" | \"c\" }").unwrap()
+        ));
+    }
+
+    #[test]
+    fn parallel_unsafe_builtins_with_side_effects() {
+        // asort/asorti are explicitly blacklisted.
+        assert!(!record_rules_parallel_safe(
+            &parse_program("{ asort(a) }").unwrap()
+        ));
+    }
+
+    #[test]
+    fn parallel_unsafe_recursive_global_mutation() {
+        // Recursive call that eventually touches a global.
+        let p = parse_program("function f(x) { if(x>0) f(x-1); else g=1 } { f($1) }").unwrap();
+        assert!(!record_rules_parallel_safe(&p));
+    }
+
+    #[test]
+    fn parallel_safe_pure_functions() {
+        assert!(record_rules_parallel_safe(
+            &parse_program("{ print length($1), cos($2), exp($3) }").unwrap()
+        ));
+        // String functions like index, substr, toupper are safe if they don't modify globals
+        assert!(record_rules_parallel_safe(
+            &parse_program("{ print index($1, \"a\"), substr($2, 1, 2), toupper($3) }").unwrap()
+        ));
+        // typeof/isarray are safe
+        assert!(record_rules_parallel_safe(
+            &parse_program("{ print typeof($1), isarray(a) }").unwrap()
+        ));
+    }
 }

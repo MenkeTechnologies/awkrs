@@ -1716,6 +1716,13 @@ mod gen_pot_tests {
         let s = gen_pot(&p);
         assert!(s.contains(r#"msgid "a\tb\\c""#), "{s}");
     }
+
+    #[test]
+    fn gen_pot_escapes_backslash_r() {
+        let p = parse_program("BEGIN { print \"\r\" }").unwrap();
+        let s = gen_pot(&p);
+        assert!(s.contains("msgid \"\\r\""));
+    }
 }
 
 #[cfg(test)]

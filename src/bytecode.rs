@@ -666,7 +666,11 @@ mod tests {
         fn assert_copy<T: Copy>() {}
         assert_copy::<Op>();
         // Op size should be reasonable for VM performance (e.g. <= 32 bytes)
-        assert!(mem::size_of::<Op>() <= 32, "Op size: {}", mem::size_of::<Op>());
+        assert!(
+            mem::size_of::<Op>() <= 32,
+            "Op size: {}",
+            mem::size_of::<Op>()
+        );
     }
 
     #[test]
@@ -696,7 +700,10 @@ mod tests {
     fn compiled_rule_structure() {
         let rule = CompiledRule {
             pattern: CompiledPattern::Always,
-            body: Chunk::from_ops(vec![Op::Print { argc: 0, redir: RedirKind::Stdout }]),
+            body: Chunk::from_ops(vec![Op::Print {
+                argc: 0,
+                redir: RedirKind::Stdout,
+            }]),
             original_index: 5,
         };
         assert_eq!(rule.original_index, 5);

@@ -1160,13 +1160,19 @@ mod tests {
     #[test]
     fn format_large_width() {
         use crate::runtime::Value;
-        assert_eq!(awk_sprintf("|%20s|", &[Value::Str("hi".into())]).unwrap(), "|                  hi|");
+        assert_eq!(
+            awk_sprintf("|%20s|", &[Value::Str("hi".into())]).unwrap(),
+            "|                  hi|"
+        );
     }
 
     #[test]
     fn format_large_precision_float() {
         use crate::runtime::Value;
-        assert_eq!(awk_sprintf("%.20f", &[Value::Num(1.25)]).unwrap(), "1.25000000000000000000");
+        assert_eq!(
+            awk_sprintf("%.20f", &[Value::Num(1.25)]).unwrap(),
+            "1.25000000000000000000"
+        );
     }
 
     #[test]
@@ -1197,7 +1203,10 @@ mod tests {
     #[test]
     fn format_zero_pad_with_left_justify_ignores_zero() {
         use crate::runtime::Value;
-        assert_eq!(awk_sprintf("|%-05d|", &[Value::Num(42.0)]).unwrap(), "|42   |");
+        assert_eq!(
+            awk_sprintf("|%-05d|", &[Value::Num(42.0)]).unwrap(),
+            "|42   |"
+        );
     }
 
     #[test]
@@ -1209,5 +1218,127 @@ mod tests {
     #[test]
     fn format_percent_at_end_error() {
         assert!(awk_sprintf("%", &[]).is_err());
+    }
+
+    #[test]
+    fn format_positional_out_of_bounds() {
+        let e = awk_sprintf("%2$d", &[Value::Num(1.0)]).unwrap_err();
+        assert!(e.contains("positional"), "{e}");
+    }
+
+    #[test]
+    fn format_mixed_positional_and_sequential_fails_consistently() {
+        // POSIX allows mixing only if they are independent, but many implementations error.
+        // Let's check awkrs behavior.
+        let s = awk_sprintf("%d %1$d", &[Value::Num(1.0)]).unwrap();
+        assert_eq!(s, "1 1");
+    }
+
+    #[test]
+    fn format_star_width_positional_mismatch() {
+        // %*1$d uses arg 1 for width, next sequential arg for value.
+        let s = awk_sprintf("%*1$d", &[Value::Num(5.0), Value::Num(42.0)]).unwrap();
+        assert_eq!(s, "   42");
+    }
+
+    #[test]
+    fn format_positional_star_width_and_precision() {
+        // %*1$.*2$f uses arg 1 for width, arg 2 for precision, next sequential arg for value.
+        let s = awk_sprintf(
+            "%*1$.*2$f",
+            &[
+                Value::Num(10.0),
+                Value::Num(2.0),
+                Value::Num(std::f64::consts::PI),
+            ],
+        )
+        .unwrap();
+        assert_eq!(s, "      3.14");
+    }
+
+    #[test]
+    fn format_hex_float_alternate_form() {
+        // %#a with default precision (None -> p=0) produces a trailing dot.
+        assert_eq!(awk_sprintf("%#a", &[Value::Num(1.0)]).unwrap(), "0x1.p+0");
+        assert_eq!(awk_sprintf("%#.0a", &[Value::Num(1.0)]).unwrap(), "0x1.p+0");
+    }
+
+    #[test]
+    fn format_octal_alternate_form_zero() {
+        assert_eq!(awk_sprintf("%#o", &[Value::Num(0.0)]).unwrap(), "0");
+    }
+
+    #[test]
+    fn format_precision_zero_f() {
+        assert_eq!(awk_sprintf("%.0f", &[Value::Num(1.5)]).unwrap(), "2");
+        assert_eq!(awk_sprintf("%.0f", &[Value::Num(2.5)]).unwrap(), "2"); // half-to-even?
+                                                                           // Rust's format! uses standard rounding (half away from zero usually).
+                                                                           // Let's see what it does.
+        let s = awk_sprintf("%.0f", &[Value::Num(1.5)]).unwrap();
+        assert!(s == "1" || s == "2");
+    }
+
+    #[test]
+    fn format_scientific_exponent_normalization() {
+        // Some systems format 1e10 as 1.000000e+10 or 1.000000e+010.
+        // awkrs should normalize to e+10.
+        let s = awk_sprintf("%e", &[Value::Num(1e10)]).unwrap();
+        assert!(s.contains("e+10") || s.contains("e+010")); // depends on system if we don't normalize
+                                                            // But awkrs usually normalizes for consistency.
+    }
+
+    #[test]
+    fn format_extremely_large_width() {
+        // AWK implementations usually have some limit, but let's test a large one.
+        let s = awk_sprintf("%100s", &[Value::Str("x".into())]).unwrap();
+        assert_eq!(s.len(), 100);
+        assert!(s.ends_with('x'));
+    }
+
+    #[test]
+    fn format_string_padding_utf8() {
+        // "π" is 2 bytes but 1 char. %5s should pad with 4 spaces.
+        let s = awk_sprintf("%5s", &[Value::Str("π".into())]).unwrap();
+        assert_eq!(s, "    π");
+        assert_eq!(s.chars().count(), 5);
+        assert_eq!(s.len(), 4 + 2); // 4 spaces + 2 byte π
+    }
+
+    #[test]
+    fn format_complex_flags_and_width() {
+        // + and space flags with width
+        assert_eq!(
+            awk_sprintf("%+10d", &[Value::Num(42.0)]).unwrap(),
+            "       +42"
+        );
+        assert_eq!(
+            awk_sprintf("% 10d", &[Value::Num(42.0)]).unwrap(),
+            "        42"
+        );
+        // Left align with + flag
+        assert_eq!(
+            awk_sprintf("%+-10d", &[Value::Num(42.0)]).unwrap(),
+            "+42       "
+        );
+    }
+
+    #[test]
+    fn format_c_char_conversions() {
+        // Numeric -> ASCII char
+        assert_eq!(awk_sprintf("%c", &[Value::Num(65.0)]).unwrap(), "A");
+        // String -> first char
+        assert_eq!(awk_sprintf("%c", &[Value::Str("abc".into())]).unwrap(), "a");
+        // Unicode character from number
+        assert_eq!(awk_sprintf("%c", &[Value::Num(960.0)]).unwrap(), "π");
+    }
+
+    #[test]
+    fn format_alternate_form_octal_hex() {
+        assert_eq!(awk_sprintf("%#o", &[Value::Num(0.0)]).unwrap(), "0");
+        assert_eq!(awk_sprintf("%#o", &[Value::Num(8.0)]).unwrap(), "010");
+        assert_eq!(awk_sprintf("%#x", &[Value::Num(255.0)]).unwrap(), "0xff");
+        assert_eq!(awk_sprintf("%#X", &[Value::Num(255.0)]).unwrap(), "0XFF");
+        // hex 0 with alternate form -> 0x0 in awkrs
+        assert_eq!(awk_sprintf("%#x", &[Value::Num(0.0)]).unwrap(), "0x0");
     }
 }

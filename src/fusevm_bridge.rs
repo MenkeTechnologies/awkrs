@@ -316,3 +316,43 @@ pub fn translate_op(op: &bytecode::Op, line: u32) -> Vec<(fusevm::Op, u32)> {
         _ => vec![(F::Extended(0xFFFF, 0), line)], // unmapped — will trap at runtime
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bytecode::Op;
+
+    #[test]
+    fn translate_arithmetic_ops() {
+        let ops = translate_op(&Op::Add, 1);
+        assert_eq!(ops.len(), 1);
+        assert!(matches!(ops[0].0, fusevm::Op::Add));
+    }
+
+    #[test]
+    fn translate_push_num() {
+        let ops = translate_op(&Op::PushNum(42.0), 1);
+        assert_eq!(ops.len(), 1);
+        assert!(matches!(ops[0].0, fusevm::Op::LoadFloat(n) if n == 42.0));
+    }
+
+    #[test]
+    fn translate_compound_assign_field() {
+        let ops = translate_op(&Op::CompoundAssignField(BinOp::Add), 1);
+        assert_eq!(ops.len(), 1);
+        match ops[0].0 {
+            fusevm::Op::Extended(id, arg) => {
+                assert_eq!(id, AWK_COMPOUND_ASSIGN_FIELD);
+                assert_eq!(arg, binop_to_u8(BinOp::Add));
+            }
+            _ => panic!("Expected Extended op"),
+        }
+    }
+
+    #[test]
+    fn binop_encoding_values() {
+        assert_eq!(binop_to_u8(BinOp::Add), 0);
+        assert_eq!(binop_to_u8(BinOp::Sub), 1);
+        assert_eq!(binop_to_u8(BinOp::Or), 16);
+    }
+}

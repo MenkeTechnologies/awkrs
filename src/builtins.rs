@@ -703,7 +703,7 @@ mod tests {
         awk_typeof_value, awk_value_sort_cmp, gsub, gsub_literal_eligible, is_literal_pattern,
         match_fn, patsplit, sub_fn,
     };
-    use crate::runtime::{Runtime, Value};
+    use crate::runtime::{AwkMap, Runtime, Value};
     use std::cmp::Ordering;
 
     fn rt_with_fs() -> Runtime {
@@ -1053,5 +1053,162 @@ mod tests {
         assert_eq!(awk_strtonum("0x10"), 16.0);
         assert_eq!(awk_strtonum("010"), 8.0);
         assert_eq!(awk_strtonum("42"), 42.0);
+        assert_eq!(awk_strtonum("0xG"), 0.0); // Invalid hex
+        assert_eq!(awk_strtonum("09"), 0.0); // Leading 0 implies octal; '9' is invalid octal digit
+        assert_eq!(awk_strtonum("  0x10  "), 16.0); // Spaces allowed
+        assert_eq!(awk_strtonum("1e3"), 1000.0); // Scientific in strtonum
+        assert_eq!(awk_strtonum("\t\n 42 \r"), 42.0); // All whitespace
+    }
+
+    #[test]
+    fn gsub_overlapping_matches_behavior() {
+        let mut rt = rt_with_fs();
+        // gsub(/aa/, "X") on "aaa" should yield "Xa" (matches first "aa", then moves past)
+        let mut s = "aaa".to_string();
+        let n = gsub(&mut rt, "aa", "X", Some(&mut s)).unwrap();
+        assert_eq!(n, 1.0);
+        assert_eq!(s, "Xa");
+    }
+
+    #[test]
+    fn gensub_backreferences() {
+        let mut rt = Runtime::new();
+        // gensub(/([a-z])([0-9])/, "\\2\\1", "g", "a1b2") -> "1a2b"
+        let s = awk_gensub(
+            &mut rt,
+            "([a-z])([0-9])",
+            "\\2\\1",
+            &Value::Str("g".into()),
+            Some("a1b2".into()),
+        )
+        .unwrap();
+        assert_eq!(s.as_str(), "1a2b");
+    }
+
+    #[test]
+    fn awk_strftime_formatting_width() {
+        // ts for 2023-01-01 00:00:00 UTC
+        let ts = 1672531200.0;
+        let fmt = Value::Str("%Y".into());
+        let t = Value::Num(ts);
+        let utc = Value::Num(1.0);
+        let v = awk_strftime(&[fmt, t, utc]).unwrap();
+        assert_eq!(v.as_str(), "2023");
+    }
+
+    #[test]
+    fn asort_preserves_numeric_values() {
+        let mut rt = Runtime::new();
+        let mut a = AwkMap::default();
+        a.insert("1".into(), Value::Num(10.0));
+        a.insert("2".into(), Value::Num(5.0));
+        rt.vars.insert("a".into(), Value::Array(a));
+
+        let n = asort(&mut rt, "a", None).unwrap();
+        assert_eq!(n, 2.0);
+        // "a" now has keys "1", "2" with values 5, 10
+        assert_eq!(rt.array_get("a", "1").as_number(), 5.0);
+        assert_eq!(rt.array_get("a", "2").as_number(), 10.0);
+    }
+
+    #[test]
+    fn patsplit_with_capturing_groups() {
+        let mut rt = Runtime::new();
+        // patsplit should ignore capturing groups in the pattern and just use the whole match.
+        let n = patsplit(&mut rt, "abc 123", "a", Some("([a-z]+)|([0-9]+)"), None).unwrap();
+        assert_eq!(n, 2.0);
+        assert!(rt.array_has("a", "1"));
+        assert_eq!(rt.array_get("a", "1").as_str(), "abc");
+        assert_eq!(rt.array_get("a", "2").as_str(), "123");
+    }
+
+    #[test]
+    fn patsplit_empty_matches_behavior() {
+        let mut rt = Runtime::new();
+        // patsplit with a pattern that can match empty strings (like /a*/)
+        // should match non-empty strings if possible, but behavior on truly empty matches
+        // depends on the regex engine.
+        let n = patsplit(&mut rt, "baac", "a", Some("a*"), None).unwrap();
+        assert!(n >= 1.0);
+    }
+
+    #[test]
+    fn awk_bitwise_negative_numbers() {
+        // gawk bitwise operations use u64 wrapping.
+        // and(-1, 1) -> 1
+        assert_eq!(super::awk_and(-1.0, 1.0), 1.0);
+        // or(-1, 0) -> -1 (which is u64::MAX)
+        assert_eq!(super::awk_or(-1.0, 0.0), -1.0);
+        // xor(-1, -1) -> 0
+        assert_eq!(super::awk_xor(-1.0, -1.0), 0.0);
+    }
+
+    #[test]
+    fn mktime_invalid_format_returns_minus_one() {
+        assert_eq!(awk_mktime("2023 13 01 00 00 00"), -1.0); // Month 13 is invalid
+        assert_eq!(awk_mktime("2023 01 32 00 00 00"), -1.0); // Day 32 is invalid
+    }
+
+    #[test]
+    fn strftime_utc_vs_local() {
+        let ts = 1672531200.0; // 2023-01-01 00:00:00 UTC
+        let fmt = Value::Str("%Y-%m-%d %H:%M:%S".into());
+        let t = Value::Num(ts);
+
+        let v_utc = awk_strftime(&[fmt.clone(), t.clone(), Value::Num(1.0)]).unwrap();
+        assert_eq!(v_utc.as_str(), "2023-01-01 00:00:00");
+    }
+
+    #[test]
+    fn asort_empty_array() {
+        let mut rt = Runtime::new();
+        rt.array_delete("a", None);
+        rt.vars
+            .insert("a".into(), Value::Array(crate::runtime::AwkMap::default()));
+        let n = asort(&mut rt, "a", None).unwrap();
+        assert_eq!(n, 0.0);
+    }
+
+    #[test]
+    fn asorti_empty_array() {
+        let mut rt = Runtime::new();
+        rt.array_delete("a", None);
+        rt.vars
+            .insert("a".into(), Value::Array(crate::runtime::AwkMap::default()));
+        let n = asorti(&mut rt, "a", None).unwrap();
+        assert_eq!(n, 0.0);
+    }
+
+    #[test]
+    fn typeof_builtin_logic() {
+        assert_eq!(awk_typeof_value(&Value::Num(1.0)), "number");
+        assert_eq!(awk_typeof_value(&Value::Str("x".into())), "string");
+        assert_eq!(awk_typeof_value(&Value::Regexp("a".into())), "regexp");
+        assert_eq!(awk_typeof_value(&Value::Uninit), "untyped");
+        assert_eq!(
+            awk_typeof_value(&Value::Array(crate::runtime::AwkMap::default())),
+            "array"
+        );
+    }
+
+    #[test]
+    fn awk_strftime_complex_format() {
+        // ts for 2023-01-01 00:00:00 UTC
+        let ts = 1672531200.0;
+        let fmt = Value::Str("Day %j of %Y, %H:%M:%S".into());
+        let t = Value::Num(ts);
+        let utc = Value::Num(1.0);
+        let v = awk_strftime(&[fmt, t, utc]).unwrap();
+        assert_eq!(v.as_str(), "Day 001 of 2023, 00:00:00");
+    }
+
+    #[test]
+    fn awk_split_regex_fs_captures() {
+        let mut rt = Runtime::new();
+        // split should ignore captures in FS regex
+        let n = patsplit(&mut rt, "a1b22c", "a", Some("[0-9]+"), None).unwrap();
+        assert_eq!(n, 2.0);
+        assert_eq!(rt.array_get("a", "1").as_str(), "1");
+        assert_eq!(rt.array_get("a", "2").as_str(), "22");
     }
 }

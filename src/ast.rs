@@ -293,4 +293,34 @@ mod ast_tests {
                     && matches!(**b, Pattern::Regexp(ref s) if s == "b")
         ));
     }
+
+    #[test]
+    fn expr_clones_and_equality() {
+        let e = Expr::Binary {
+            op: BinOp::Add,
+            left: Box::new(Expr::Number(1.0)),
+            right: Box::new(Expr::Var("x".into())),
+        };
+        assert_eq!(e, e.clone());
+    }
+
+    #[test]
+    fn stmt_clones_and_equality() {
+        let s = Stmt::If {
+            cond: Expr::Number(1.0),
+            then_: vec![Stmt::Break],
+            else_: vec![Stmt::Continue],
+        };
+        assert_eq!(s, s.clone());
+    }
+
+    #[test]
+    fn tuple_preserves_multiple_expressions() {
+        let t = Expr::Tuple(vec![Expr::Number(1.0), Expr::Str("a".into())]);
+        if let Expr::Tuple(ref v) = t {
+            assert_eq!(v.len(), 2);
+        } else {
+            panic!("Expected tuple");
+        }
+    }
 }

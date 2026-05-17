@@ -2820,4 +2820,247 @@ mod peephole_pinning {
             "expression-context i++ must not fuse to statement-only IncrSlot: {ops:?}"
         );
     }
+
+    #[test]
+    fn compile_short_circuit_and() {
+        let ops = compile_begin_ops("BEGIN { if (a && b) print }");
+        // Should contain a JumpIfFalsePop for short-circuiting.
+        assert!(
+            contains_op(&ops, |op| matches!(op, Op::JumpIfFalsePop(_))),
+            "expected JumpIfFalsePop for &&, got: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn compile_short_circuit_or() {
+        let ops = compile_begin_ops("BEGIN { if (a || b) print }");
+        // Should contain a JumpIfTruePop for short-circuiting.
+        assert!(
+            contains_op(&ops, |op| matches!(op, Op::JumpIfTruePop(_))),
+            "expected JumpIfTruePop for ||, got: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn compile_nested_if_else() {
+        let ops =
+            compile_begin_ops("BEGIN { if (1) { if (2) print 2; else print 3 } else print 4 }");
+        // Verify multiple jumps are present.
+        let jump_count = ops
+            .iter()
+            .filter(|op| {
+                matches!(
+                    op,
+                    Op::Jump(_) | Op::JumpIfFalsePop(_) | Op::JumpIfTruePop(_)
+                )
+            })
+            .count();
+        assert!(
+            jump_count >= 3,
+            "expected at least 3 jumps for nested if-else, got: {jump_count}"
+        );
+    }
+
+    #[test]
+    fn compile_break_continue_loop() {
+        let ops = compile_begin_ops("BEGIN { while(1) { if(a) break; if(b) continue } }");
+        // Verify we have enough jumps for the loop, the breaks, and the continues.
+        let jump_count = ops.iter().filter(|op| matches!(op, Op::Jump(_))).count();
+        assert!(
+            jump_count >= 3,
+            "expected jumps for while, break, and continue; got: {jump_count}"
+        );
+    }
+
+    #[test]
+    fn compile_field_assignment() {
+        let ops = compile_begin_ops("BEGIN { $1 = \"foo\" }");
+        assert!(
+            contains_op(&ops, |op| matches!(op, Op::SetField)),
+            "expected SetField, got: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn compile_array_membership() {
+        let ops = compile_begin_ops("BEGIN { if (\"k\" in a) print }");
+        assert!(
+            contains_op(&ops, |op| matches!(op, Op::InArray(_))),
+            "expected InArray opcode, got: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn compile_switch_statement() {
+        let ops =
+            compile_begin_ops("BEGIN { switch(x) { case 1: print 1; break; default: print 2 } }");
+        // Switch is usually compiled to a series of jumps.
+        // We look for JumpIfFalsePop (to skip case) or similar.
+        assert!(
+            contains_op(&ops, |op| matches!(op, Op::JumpIfFalsePop(_))),
+            "expected JumpIfFalsePop for switch cases, got: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn compile_getline_var() {
+        let ops = compile_begin_ops("BEGIN { getline x }");
+        assert!(
+            contains_op(&ops, |op| matches!(op, Op::GetLine { var: Some(_), .. })),
+            "expected GetLine with var, got: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn compile_print_redirection() {
+        use crate::bytecode::RedirKind;
+        let ops = compile_begin_ops("BEGIN { print \"hi\" > \"out\" }");
+        assert!(
+            contains_op(&ops, |op| matches!(
+                op,
+                Op::Print {
+                    redir: RedirKind::Overwrite,
+                    ..
+                }
+            )),
+            "expected Print with Overwrite redir, got: {ops:?}"
+        );
+
+        let ops = compile_begin_ops("BEGIN { print \"hi\" >> \"out\" }");
+        assert!(
+            contains_op(&ops, |op| matches!(
+                op,
+                Op::Print {
+                    redir: RedirKind::Append,
+                    ..
+                }
+            )),
+            "expected Print with Append redir, got: {ops:?}"
+        );
+
+        let ops = compile_begin_ops("BEGIN { print \"hi\" | \"cmd\" }");
+        assert!(
+            contains_op(&ops, |op| matches!(
+                op,
+                Op::Print {
+                    redir: RedirKind::Pipe,
+                    ..
+                }
+            )),
+            "expected Print with Pipe redir, got: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn compile_getline_variants_bytecode() {
+        use crate::bytecode::GetlineSource;
+        // getline < "file"
+        let ops = compile_begin_ops("BEGIN { getline < \"f\" }");
+        assert!(
+            contains_op(&ops, |op| matches!(
+                op,
+                Op::GetLine {
+                    source: GetlineSource::File,
+                    var: None,
+                    ..
+                }
+            )),
+            "expected GetLine File, got: {ops:?}"
+        );
+
+        // "cmd" | getline x
+        let ops = compile_begin_ops("BEGIN { \"cmd\" | getline x }");
+        assert!(
+            contains_op(&ops, |op| matches!(
+                op,
+                Op::GetLine {
+                    source: GetlineSource::Pipe,
+                    var: Some(_),
+                    ..
+                }
+            )),
+            "expected GetLine Pipe with var, got: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn compile_function_call_with_args() {
+        let ops = compile_begin_ops("BEGIN { sin(1, 2) }"); // sin only takes 1, but compiler accepts
+        assert!(
+            contains_op(&ops, |op| matches!(op, Op::CallBuiltin(_, 2))),
+            "expected CallBuiltin with 2 args, got: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn compile_ternary_operator() {
+        let ops = compile_begin_ops("BEGIN { x = a ? b : c }");
+        assert!(
+            contains_op(&ops, |op| matches!(op, Op::JumpIfFalsePop(_))),
+            "expected JumpIfFalsePop for ternary, got: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn peephole_add_field_to_slot() {
+        // `s += $1` -> AddFieldToSlot { field: 1, slot: s_slot }
+        let ops = compile_begin_ops("BEGIN { s = 0; s += $1 }");
+        assert!(
+            contains_op(&ops, |op| matches!(op, Op::AddFieldToSlot { field: 1, .. })),
+            "expected AddFieldToSlot fusion, got: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn peephole_add_mul_fields_to_slot() {
+        // `s += $1 * $2` -> AddMulFieldsToSlot { f1: 1, f2: 2, slot: s_slot }
+        let ops = compile_begin_ops("BEGIN { s = 0; s += $1 * $2 }");
+        assert!(
+            contains_op(&ops, |op| matches!(
+                op,
+                Op::AddMulFieldsToSlot { f1: 1, f2: 2, .. }
+            )),
+            "expected AddMulFieldsToSlot fusion, got: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn peephole_print_field_sep_field() {
+        // `print $1 ":" $2` -> PrintFieldSepField { f1: 1, sep: ":", f2: 2 }
+        let ops = compile_begin_ops("BEGIN { print $1 \":\" $2 }");
+        assert!(
+            contains_op(&ops, |op| matches!(
+                op,
+                Op::PrintFieldSepField { f1: 1, f2: 2, .. }
+            )),
+            "expected PrintFieldSepField fusion, got: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn peephole_print_three_fields_stdout() {
+        // `print $1, $2, $3` -> PrintThreeFieldsStdout { f1: 1, f2: 2, f3: 3 }
+        let ops = compile_begin_ops("BEGIN { print $1, $2, $3 }");
+        assert!(
+            contains_op(&ops, |op| matches!(
+                op,
+                Op::PrintThreeFieldsStdout {
+                    f1: 1,
+                    f2: 2,
+                    f3: 3
+                }
+            )),
+            "expected PrintThreeFieldsStdout fusion, got: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn peephole_concat_pool_str() {
+        // `s = s "suffix"` -> GetSlot + PushStr + Concat -> GetSlot + ConcatPoolStr
+        let ops = compile_begin_ops("BEGIN { s = \"\"; s = s \"suffix\" }");
+        assert!(
+            contains_op(&ops, |op| matches!(op, Op::ConcatPoolStr(_))),
+            "expected ConcatPoolStr fusion, got: {ops:?}"
+        );
+    }
 }

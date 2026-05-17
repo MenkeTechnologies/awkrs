@@ -390,4 +390,49 @@ mod tests {
         let r = expand_source_directives(&main);
         assert!(r.is_err(), "expected error for missing include, got {r:?}");
     }
+
+    #[test]
+    fn include_nested_recursive() {
+        let dir = std::env::temp_dir();
+        let id = std::process::id();
+        let p1 = dir.join(format!("awkrs_inc_n1_{id}.awk"));
+        let p2 = dir.join(format!("awkrs_inc_n2_{id}.awk"));
+
+        std::fs::write(
+            &p1,
+            format!(
+                "@include \"{}\"\nfunction f1() {{}}",
+                p2.file_name().unwrap().to_str().unwrap()
+            ),
+        )
+        .unwrap();
+        std::fs::write(&p2, "function f2() {}").unwrap();
+
+        let main = format!("@include \"{}\"", p1.display());
+        let e = expand_source_directives(&main).unwrap();
+        assert!(e.text.contains("function f2"));
+        assert!(e.text.contains("function f1"));
+
+        let _ = std::fs::remove_file(&p1);
+        let _ = std::fs::remove_file(&p2);
+    }
+
+    #[test]
+    fn take_bare_ident_logic() {
+        assert_eq!(take_bare_ident("  abc_123 def").unwrap().0, "abc_123");
+        assert_eq!(take_bare_ident("_start ").unwrap().0, "_start");
+        assert!(take_bare_ident("  123abc").is_none());
+    }
+
+    #[test]
+    fn resolve_include_path_absolute() {
+        let p = if cfg!(windows) {
+            "C:\\foo.awk"
+        } else {
+            "/tmp/foo.awk"
+        };
+        let res = resolve_include_path(None, p).unwrap();
+        assert!(res.is_absolute());
+        assert_eq!(res.to_str().unwrap(), p);
+    }
 }

@@ -2012,6 +2012,15 @@ mod lib_internal_tests {
     }
 
     #[test]
+    fn process_file_add_field_to_slot_raw_skips_non_numeric() {
+        let mut rt = Runtime::new();
+        rt.slots = vec![Value::Num(0.0)];
+        process_file_add_field_to_slot_raw(b"a abc\nx 10\n", 2, 0, &mut rt).unwrap();
+        // "abc" should be 0 in AWK coercion
+        assert_eq!(rt.slots[0].as_number(), 10.0);
+    }
+
+    #[test]
     fn process_file_add_mul_fields_to_slot_raw_accumulates_products() {
         let mut rt = Runtime::new();
         rt.slots = vec![Value::Num(0.0)];

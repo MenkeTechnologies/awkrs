@@ -67,4 +67,20 @@ mod tests {
                 .is_none()
         );
     }
+
+    #[test]
+    fn try_load_with_env_vars_does_not_panic() {
+        // We can't easily test actual loading without a real .mo file,
+        // but we can test that the fallback logic handles env vars.
+        let _g = crate::test_sync::ENV_LOCK.lock().unwrap();
+        let old_lang = std::env::var("LANG").ok();
+        std::env::set_var("LANG", "en_US.UTF-8");
+        let res = try_load_gettext_catalog("domain", "/tmp");
+        assert!(res.is_none());
+        if let Some(l) = old_lang {
+            std::env::set_var("LANG", l);
+        } else {
+            std::env::remove_var("LANG");
+        }
+    }
 }

@@ -602,4 +602,59 @@ mod tests {
         let v = revoutput(&mut rt, "aπb").unwrap();
         assert_eq!(v.as_str(), "bπa");
     }
+
+    #[test]
+    fn readdir_current_dir_lists_files() {
+        let mut rt = Runtime::new();
+        let n = readdir(&mut rt, ".", "d").unwrap().as_number();
+        assert!(n > 0.0);
+        // readdir format is "name/type"
+        let e1 = rt.array_get("d", "1").as_str();
+        assert!(e1.contains('/'));
+        assert!(e1.ends_with("/f") || e1.ends_with("/d"));
+    }
+
+    #[test]
+    fn fts_current_dir_recursive() {
+        let mut rt = Runtime::new();
+        let n = fts(&mut rt, "src", "f").unwrap().as_number();
+        assert!(n > 0.0);
+        // fts should return paths sorted.
+        let p1 = rt.array_get("f", "1").as_str();
+        assert!(p1.starts_with("src"));
+    }
+
+    #[test]
+    fn rename_move_file() {
+        let mut rt = Runtime::new();
+        let dir = std::env::temp_dir();
+        let p1 = dir.join(format!("awkrs_rn1_{}", std::process::id()));
+        let p2 = dir.join(format!("awkrs_rn2_{}", std::process::id()));
+        let _ = std::fs::remove_file(&p1);
+        let _ = std::fs::remove_file(&p2);
+
+        std::fs::write(&p1, b"x").unwrap();
+        let res = rename(&mut rt, p1.to_str().unwrap(), p2.to_str().unwrap()).unwrap();
+        assert_eq!(res.as_number(), 0.0);
+        assert!(p2.exists());
+        assert!(!p1.exists());
+
+        let _ = std::fs::remove_file(&p2);
+    }
+
+    #[test]
+    fn inplace_tmpfile_creation() {
+        let mut rt = Runtime::new();
+        let dir = std::env::temp_dir();
+        let p = dir.join(format!("awkrs_inp_{}", std::process::id()));
+        std::fs::write(&p, b"original").unwrap();
+
+        let tmp = inplace_tmpfile(&mut rt, p.to_str().unwrap()).unwrap();
+        let tmp_path = tmp.as_str().to_string();
+        assert!(!tmp_path.is_empty());
+        assert!(std::path::Path::new(&tmp_path).exists());
+
+        let _ = std::fs::remove_file(tmp_path);
+        let _ = std::fs::remove_file(&p);
+    }
 }

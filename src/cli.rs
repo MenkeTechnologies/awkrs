@@ -333,4 +333,44 @@ mod tests {
         let a = Args::try_parse_from(["awkrs", "-i", "/a.awk", "-i", "/b.awk", "{ }"]).unwrap();
         assert_eq!(a.include.len(), 2);
     }
+
+    #[test]
+    fn rest_positional_args_collect_program_and_files() {
+        let a = Args::try_parse_from(["awkrs", "BEGIN{}", "file1", "file2"]).unwrap();
+        assert_eq!(
+            a.rest,
+            vec![
+                "BEGIN{}".to_string(),
+                "file1".to_string(),
+                "file2".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn trailing_var_args_after_double_dash() {
+        let a = Args::try_parse_from(["awkrs", "--", "-v", "not-an-assign", "file"]).unwrap();
+        assert!(a.assigns.is_empty());
+        assert_eq!(
+            a.rest,
+            vec![
+                "-v".to_string(),
+                "not-an-assign".to_string(),
+                "file".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn multiple_source_flags_collect() {
+        let a = Args::try_parse_from(["awkrs", "-e", "rule1", "-e", "rule2"]).unwrap();
+        assert_eq!(a.source, vec!["rule1".to_string(), "rule2".to_string()]);
+    }
+
+    #[test]
+    fn mixed_file_and_source_flags() {
+        let a = Args::try_parse_from(["awkrs", "-f", "p1.awk", "-e", "rule1"]).unwrap();
+        assert_eq!(a.progfiles.len(), 1);
+        assert_eq!(a.source, vec!["rule1".to_string()]);
+    }
 }
