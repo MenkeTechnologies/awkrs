@@ -2718,4 +2718,58 @@ mod parser_pinning {
             }
         }
     }
+
+    #[test]
+    fn parse_basic_if_else() {
+        let p = parse_program("BEGIN { if (1) print 1; else print 0 }").unwrap();
+        assert_eq!(p.rules.len(), 1);
+    }
+
+    #[test]
+    fn parse_while_loop() {
+        let p = parse_program("BEGIN { while (1) print 1 }").unwrap();
+        assert_eq!(p.rules.len(), 1);
+    }
+
+    #[test]
+    fn parse_for_c_loop() {
+        let p = parse_program("BEGIN { for (i=0; i<10; i++) print i }").unwrap();
+        assert_eq!(p.rules.len(), 1);
+    }
+
+    #[test]
+    fn parse_for_in_loop() {
+        let p = parse_program("BEGIN { for (x in a) print x }").unwrap();
+        assert_eq!(p.rules.len(), 1);
+    }
+
+    #[test]
+    fn parse_delete_statement() {
+        let p = parse_program("BEGIN { delete a[1]; delete b }").unwrap();
+        assert_eq!(p.rules.len(), 1);
+    }
+
+    #[test]
+    fn parse_error_unexpected_token() {
+        let r = parse_program("BEGIN { print + }");
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn parse_error_missing_rbracket() {
+        let r = parse_program("BEGIN { a[1 = 2 }");
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn parse_error_duplicate_function() {
+        let r = parse_program("function f(){} function f(){}");
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn parse_error_malformed_for_in() {
+        let r = parse_program("BEGIN { for (x a) print x }");
+        assert!(r.is_err());
+    }
 }

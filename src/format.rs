@@ -1156,4 +1156,58 @@ mod tests {
         let s = awk_sprintf("%.0a", &[Value::Num(2.0)]).unwrap();
         assert_eq!(s, "0x1p+1");
     }
+
+    #[test]
+    fn format_large_width() {
+        use crate::runtime::Value;
+        assert_eq!(awk_sprintf("|%20s|", &[Value::Str("hi".into())]).unwrap(), "|                  hi|");
+    }
+
+    #[test]
+    fn format_large_precision_float() {
+        use crate::runtime::Value;
+        assert_eq!(awk_sprintf("%.20f", &[Value::Num(1.25)]).unwrap(), "1.25000000000000000000");
+    }
+
+    #[test]
+    fn format_alternate_form_octal() {
+        use crate::runtime::Value;
+        assert_eq!(awk_sprintf("%#o", &[Value::Num(8.0)]).unwrap(), "010");
+    }
+
+    #[test]
+    fn format_alternate_form_hex_upper() {
+        use crate::runtime::Value;
+        assert_eq!(awk_sprintf("%#X", &[Value::Num(255.0)]).unwrap(), "0XFF");
+    }
+
+    #[test]
+    fn format_space_flag() {
+        use crate::runtime::Value;
+        assert_eq!(awk_sprintf("|% d|", &[Value::Num(42.0)]).unwrap(), "| 42|");
+        assert_eq!(awk_sprintf("|% d|", &[Value::Num(-42.0)]).unwrap(), "|-42|");
+    }
+
+    #[test]
+    fn format_plus_flag_overrides_space() {
+        use crate::runtime::Value;
+        assert_eq!(awk_sprintf("|%+ d|", &[Value::Num(42.0)]).unwrap(), "|+42|");
+    }
+
+    #[test]
+    fn format_zero_pad_with_left_justify_ignores_zero() {
+        use crate::runtime::Value;
+        assert_eq!(awk_sprintf("|%-05d|", &[Value::Num(42.0)]).unwrap(), "|42   |");
+    }
+
+    #[test]
+    fn format_char_from_string_first_char() {
+        use crate::runtime::Value;
+        assert_eq!(awk_sprintf("%c", &[Value::Str("abc".into())]).unwrap(), "a");
+    }
+
+    #[test]
+    fn format_percent_at_end_error() {
+        assert!(awk_sprintf("%", &[]).is_err());
+    }
 }

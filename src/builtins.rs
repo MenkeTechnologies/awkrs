@@ -1047,4 +1047,11 @@ mod tests {
         let e = awk_gensub(&mut rt, "a", "b", &Value::Num(-1.0), Some("x".into())).unwrap_err();
         assert!(e.to_string().contains("gensub"), "{e}");
     }
+
+    #[test]
+    fn strtonum_various_formats() {
+        assert_eq!(awk_strtonum("0x10"), 16.0);
+        assert_eq!(awk_strtonum("010"), 8.0);
+        assert_eq!(awk_strtonum("42"), 42.0);
+    }
 }

@@ -3810,4 +3810,31 @@ mod awk_locale_str_cmp_pinning {
             "NUL-containing strings shouldn't compare equal to clean strings"
         );
     }
+
+    #[test]
+    fn value_to_number_conversions() {
+        use crate::runtime::Value;
+        assert_eq!(Value::Str("123".into()).as_number(), 123.0);
+        assert_eq!(Value::Str("12.3".into()).as_number(), 12.3);
+        assert_eq!(Value::Str("abc".into()).as_number(), 0.0);
+    }
+
+    #[test]
+    fn runtime_array_operations() {
+        use crate::runtime::{Runtime, Value};
+        let mut rt = Runtime::new();
+        rt.array_set("a", "k1".to_string(), Value::Num(42.0));
+        assert!(rt.array_has("a", "k1"));
+        assert!(!rt.array_has("a", "k2"));
+        rt.array_delete("a", Some("k1"));
+        assert!(!rt.array_has("a", "k1"));
+    }
+
+    #[test]
+    fn runtime_global_var_ops() {
+        use crate::runtime::{Runtime, Value};
+        let mut rt = Runtime::new();
+        rt.vars.insert("x".into(), Value::Num(100.0));
+        assert_eq!(rt.get_global_var("x").unwrap().as_number(), 100.0);
+    }
 }

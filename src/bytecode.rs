@@ -660,17 +660,47 @@ mod tests {
     }
 
     #[test]
-    fn compiled_pattern_range_shape() {
-        let p = CompiledPattern::Range {
-            start: CompiledRangeEndpoint::Always,
-            end: CompiledRangeEndpoint::Regexp(3),
+    fn op_is_copy_and_size() {
+        use std::mem;
+        // Verify Op is Copy as promised in its docstring
+        fn assert_copy<T: Copy>() {}
+        assert_copy::<Op>();
+        // Op size should be reasonable for VM performance (e.g. <= 32 bytes)
+        assert!(mem::size_of::<Op>() <= 32, "Op size: {}", mem::size_of::<Op>());
+    }
+
+    #[test]
+    fn compiled_program_slot_mapping() {
+        let cp = CompiledProgram {
+            begin_chunks: vec![],
+            end_chunks: vec![],
+            beginfile_chunks: vec![],
+            endfile_chunks: vec![],
+            record_rules: vec![],
+            functions: HashMap::new(),
+            strings: StringPool::default(),
+            slot_count: 3,
+            slot_names: vec!["a".into(), "b".into(), "c".into()],
+            slot_map: HashMap::from([("a".into(), 0), ("b".into(), 1), ("c".into(), 2)]),
+            array_var_names: vec![],
+            parallel_safe: true,
+            prog_rules_len: 1,
         };
-        assert!(matches!(
-            p,
-            CompiledPattern::Range {
-                start: CompiledRangeEndpoint::Always,
-                end: CompiledRangeEndpoint::Regexp(3),
-            }
-        ));
+        assert_eq!(cp.slot_count, 3);
+        assert_eq!(cp.slot_names[1], "b");
+        assert_eq!(*cp.slot_map.get("c").unwrap(), 2);
+        assert!(cp.parallel_safe);
+    }
+
+    #[test]
+    fn compiled_rule_structure() {
+        let rule = CompiledRule {
+            pattern: CompiledPattern::Always,
+            body: Chunk::from_ops(vec![Op::Print { argc: 0, redir: RedirKind::Stdout }]),
+            original_index: 5,
+        };
+        assert_eq!(rule.original_index, 5);
+        assert!(matches!(rule.pattern, CompiledPattern::Always));
+        assert_eq!(rule.body.ops.len(), 1);
     }
 }
