@@ -110,8 +110,15 @@ run_one_ref() {
 }
 
 ensure_awkrs() {
-  if [[ ! -x "$AWKRS" ]]; then
-    echo "parity: building release awkrs (cargo build --release)…" >&2
+  # Always defer to cargo. If the binary is up-to-date this is a no-op
+  # (cargo's fingerprint check); if source changed it rebuilds. The old
+  # `[[ ! -x "$AWKRS" ]]` guard was wrong — CI caches restore a stale
+  # target/release/awkrs whose mere existence skipped the rebuild, so
+  # parity ran against a pre-fix binary. Skip the build only when the
+  # user overrode AWKRS to a path outside this repo (e.g. CI with a
+  # prebuilt artifact uploaded from a separate job).
+  if [[ "$AWKRS" == "$ROOT/target/release/awkrs" ]]; then
+    echo "parity: cargo build --release (cargo decides if a rebuild is needed)…" >&2
     (builtin cd "$ROOT" && cargo build --release --locked -q)
   fi
   if [[ ! -x "$AWKRS" ]]; then

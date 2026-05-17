@@ -76,10 +76,9 @@ jobs:
           command -v gawk && gawk --version | head -n1
           command -v mawk && mawk -W version 2>&1 | head -n1
           command -v original-awk && original-awk -W version 2>&1 | head -n1 || true
-      - name: Build awkrs (release)
-        # run_parity.sh defaults to `target/release/awkrs`; build it explicitly
-        # so a cache hit on `target/` can't leave a stale binary in place.
-        run: cargo build --release
+      # No explicit build step needed: run_parity.sh defers to
+      # `cargo build --release` which is a no-op when up-to-date and a
+      # full rebuild when source changed since the cache was written.
       - name: Full corpus vs gawk
         run: bash parity/run_parity.sh gawk
       - name: Full corpus vs mawk
