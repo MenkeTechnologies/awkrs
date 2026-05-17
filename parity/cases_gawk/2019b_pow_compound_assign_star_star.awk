@@ -1,0 +1,5 @@
+BEGIN {
+    y = 3
+    y **= 4
+    print y
+}
