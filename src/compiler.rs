@@ -1117,6 +1117,9 @@ impl Compiler {
     fn compile_asort(&mut self, args: &[Expr], ops: &mut Vec<Op>) {
         let src = match args.first() {
             Some(Expr::Var(n)) => self.strings.intern(n),
+            // gawk parity: `asort()` with no array name is a fatal "N is
+            // invalid as number of arguments". Intern a sentinel that the
+            // runtime detects (no real awk variable name can be empty).
             _ => self.strings.intern(""),
         };
         let dest = if args.len() >= 2 {

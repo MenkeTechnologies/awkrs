@@ -3733,18 +3733,42 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             }
             Op::DeleteArray(arr) => {
                 let name = ctx.str_ref(arr).to_string();
-                // POSIX array call-by-reference: `delete a` inside a function
-                // must clear the caller's array via the frame param.
+                // gawk parity: `delete x` on a scalar variable is a fatal
+                // "attempt to use scalar `x' as an array". Unassigned names
+                // silently no-op (POSIX). Check frames and globals for a
+                // non-array, non-uninit value before falling through.
                 let mut handled = false;
+                let mut scalar_err = false;
                 for frame in ctx.locals.iter_mut().rev() {
-                    if let Some(Value::Array(a)) = frame.get_mut(name.as_str()) {
-                        a.clear();
-                        handled = true;
-                        break;
+                    match frame.get_mut(name.as_str()) {
+                        Some(Value::Array(a)) => {
+                            a.clear();
+                            handled = true;
+                            break;
+                        }
+                        Some(Value::Uninit) | None => {}
+                        Some(_) => {
+                            scalar_err = true;
+                            break;
+                        }
                     }
                 }
+                if scalar_err {
+                    return Err(Error::Runtime(format!(
+                        "attempt to use scalar `{name}' as an array"
+                    )));
+                }
                 if !handled {
-                    ctx.rt.array_delete(&name, None);
+                    match ctx.rt.get_global_var(&name) {
+                        Some(Value::Array(_)) | None | Some(Value::Uninit) => {
+                            ctx.rt.array_delete(&name, None);
+                        }
+                        Some(_) => {
+                            return Err(Error::Runtime(format!(
+                                "attempt to use scalar `{name}' as an array"
+                            )));
+                        }
+                    }
                 }
             }
             Op::DeleteElem(arr) => {
@@ -3756,17 +3780,41 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 } else {
                     // Frame-aware delete: `delete a[k]` inside a function with
                     // `a` as a by-reference array param routes through the
-                    // frame, not global vars.
+                    // frame, not global vars. Like DeleteArray above, a scalar
+                    // value at that name is a fatal "attempt to use scalar as
+                    // an array" (gawk parity).
                     let mut handled = false;
+                    let mut scalar_err = false;
                     for frame in ctx.locals.iter_mut().rev() {
-                        if let Some(Value::Array(map)) = frame.get_mut(name) {
-                            map.remove(k.as_ref());
-                            handled = true;
-                            break;
+                        match frame.get_mut(name) {
+                            Some(Value::Array(map)) => {
+                                map.remove(k.as_ref());
+                                handled = true;
+                                break;
+                            }
+                            Some(Value::Uninit) | None => {}
+                            Some(_) => {
+                                scalar_err = true;
+                                break;
+                            }
                         }
                     }
+                    if scalar_err {
+                        return Err(Error::Runtime(format!(
+                            "attempt to use scalar `{name}' as an array"
+                        )));
+                    }
                     if !handled {
-                        ctx.rt.array_delete(name, Some(k.as_ref()));
+                        match ctx.rt.get_global_var(name) {
+                            Some(Value::Array(_)) | None | Some(Value::Uninit) => {
+                                ctx.rt.array_delete(name, Some(k.as_ref()));
+                            }
+                            Some(_) => {
+                                return Err(Error::Runtime(format!(
+                                    "attempt to use scalar `{name}' as an array"
+                                )));
+                            }
+                        }
                     }
                 }
             }
@@ -4909,8 +4957,22 @@ pub(crate) fn exec_builtin_dispatch(
             let utc = argc == 2 && args[1].as_number() != 0.0;
             Value::Num(builtins::awk_mktime_with_utc(&args[0].as_str(), utc))
         }
-        "rand" => Value::Num(ctx.rt.rand()),
+        "rand" => {
+            // gawk parity: rand takes zero arguments.
+            if argc != 0 {
+                return Err(Error::Runtime(format!(
+                    "{argc} is invalid as number of arguments for rand"
+                )));
+            }
+            Value::Num(ctx.rt.rand())
+        }
         "srand" => {
+            // gawk parity: srand takes zero or one argument.
+            if argc > 1 {
+                return Err(Error::Runtime(format!(
+                    "{argc} is invalid as number of arguments for srand"
+                )));
+            }
             let n = match args.first() {
                 None => None,
                 Some(v) => {
@@ -4954,6 +5016,11 @@ pub(crate) fn exec_builtin_dispatch(
             Value::Num(st.code().unwrap_or(-1) as f64)
         }
         "close" => {
+            if argc != 1 {
+                return Err(Error::Runtime(format!(
+                    "{argc} is invalid as number of arguments for close"
+                )));
+            }
             let path = args[0].as_str();
             Value::Num(ctx.rt.close_handle(&path))
         }

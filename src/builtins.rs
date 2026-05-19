@@ -732,6 +732,14 @@ pub fn awk_value_sort_cmp_with_case(a: &Value, b: &Value, ignore_case: bool) -> 
 
 /// gawk `asort` — sort by value; new indices `"1"`…`"n"`.
 pub fn asort(rt: &mut Runtime, src: &str, dest: Option<&str>) -> Result<f64> {
+    // gawk parity: `asort()` with no array argument is a fatal "0 is invalid
+    // as number of arguments for asort". The compiler interns the empty
+    // string for that case; detect it here.
+    if src.is_empty() {
+        return Err(Error::Runtime(
+            "0 is invalid as number of arguments for asort".into(),
+        ));
+    }
     let ic = rt.ignore_case_flag();
     let mut pairs: Vec<(String, Value)> = match rt.get_global_var(src) {
         Some(Value::Array(a)) => a.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
@@ -767,6 +775,11 @@ pub fn asort(rt: &mut Runtime, src: &str, dest: Option<&str>) -> Result<f64> {
 
 /// gawk `asorti` — sort array indices (keys); values are the sorted keys.
 pub fn asorti(rt: &mut Runtime, src: &str, dest: Option<&str>) -> Result<f64> {
+    if src.is_empty() {
+        return Err(Error::Runtime(
+            "0 is invalid as number of arguments for asorti".into(),
+        ));
+    }
     let ic = rt.ignore_case_flag();
     let mut keys: Vec<String> = match rt.get_global_var(src) {
         Some(Value::Array(a)) => a.keys().cloned().collect(),

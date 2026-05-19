@@ -890,9 +890,15 @@ fn sprintf_escaped_percent() {
 
 #[test]
 fn delete_scalar_then_use() {
-    let (c, o, _) = run_awkrs_stdin("BEGIN { x=1; delete x; print x+0 }", "");
-    assert_eq!(c, 0);
-    assert_eq!(o, "0\n");
+    // gawk parity: `delete x` on a scalar variable is a fatal "attempt to use
+    // scalar `x' as an array" error. Earlier awkrs silently no-oped and the
+    // subsequent `print x+0` worked. Now the delete itself fatals.
+    let (c, _o, e) = run_awkrs_stdin("BEGIN { x=1; delete x; print x+0 }", "");
+    assert_ne!(c, 0);
+    assert!(
+        e.contains("attempt to use scalar `x' as an array"),
+        "expected scalar-delete fatal, got: {e:?}"
+    );
 }
 
 #[test]

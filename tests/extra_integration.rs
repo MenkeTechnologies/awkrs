@@ -3279,3 +3279,70 @@ fn printf_u_above_u64_falls_back_to_g_format() {
     assert_eq!(c, 0);
     assert_eq!(o, "18446744073709551615\n3.68935e+19\n3e+19\n1e+30\n");
 }
+
+#[test]
+fn close_no_args_errors_not_panics() {
+    let (c, _o, e) = run_awkrs_stdin(r#"BEGIN { close() }"#, "");
+    assert_ne!(c, 0);
+    assert!(
+        e.contains("0 is invalid as number of arguments for close"),
+        "expected arity error, got: {e:?}"
+    );
+    assert!(!e.contains("panicked"), "expected non-panic, got: {e:?}");
+}
+
+#[test]
+fn rand_and_srand_reject_extra_args() {
+    // gawk parity: rand takes 0 args, srand takes 0 or 1. Extra args fatal.
+    let (c, _o, e) = run_awkrs_stdin(r#"BEGIN { print rand(5) }"#, "");
+    assert_ne!(c, 0);
+    assert!(
+        e.contains("1 is invalid as number of arguments for rand"),
+        "rand: {e:?}"
+    );
+    let (c2, _o2, e2) = run_awkrs_stdin(r#"BEGIN { srand(1, 2) }"#, "");
+    assert_ne!(c2, 0);
+    assert!(
+        e2.contains("2 is invalid as number of arguments for srand"),
+        "srand: {e2:?}"
+    );
+}
+
+#[test]
+fn asort_and_asorti_no_args_error() {
+    let (c, _o, e) = run_awkrs_stdin(r#"BEGIN { n=asort(); print n }"#, "");
+    assert_ne!(c, 0);
+    assert!(
+        e.contains("0 is invalid as number of arguments for asort"),
+        "asort: {e:?}"
+    );
+    let (c2, _o2, e2) = run_awkrs_stdin(r#"BEGIN { n=asorti(); print n }"#, "");
+    assert_ne!(c2, 0);
+    assert!(
+        e2.contains("0 is invalid as number of arguments for asorti"),
+        "asorti: {e2:?}"
+    );
+}
+
+#[test]
+fn delete_scalar_is_fatal() {
+    // gawk parity: `delete x` / `delete x[k]` on a scalar variable raises
+    // "attempt to use scalar `x' as an array". Unassigned vars silently no-op.
+    let (c, _o, e) = run_awkrs_stdin(r#"BEGIN { x=5; delete x }"#, "");
+    assert_ne!(c, 0);
+    assert!(
+        e.contains("attempt to use scalar `x' as an array"),
+        "delete-scalar: {e:?}"
+    );
+    let (c2, _o2, e2) = run_awkrs_stdin(r#"BEGIN { x=5; delete x[1] }"#, "");
+    assert_ne!(c2, 0);
+    assert!(
+        e2.contains("attempt to use scalar `x' as an array"),
+        "delete-scalar-subscript: {e2:?}"
+    );
+    // Unassigned: still no-op.
+    let (c3, o3, _) =
+        run_awkrs_stdin(r#"BEGIN { delete y; print "ok" }"#, "");
+    assert_eq!(c3, 0);
+    assert_eq!(o3, "ok\n");
+}
