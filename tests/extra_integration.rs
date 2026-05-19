@@ -3250,3 +3250,32 @@ fn no_arg_builtin_calls_error_instead_of_panic() {
         );
     }
 }
+
+#[test]
+fn system_with_no_args_errors_not_panics() {
+    let (c, _o, e) = run_awkrs_stdin(r#"BEGIN { system() }"#, "");
+    assert_ne!(c, 0);
+    assert!(
+        e.contains("0 is invalid as number of arguments for system"),
+        "expected arity error, got: {e:?}"
+    );
+    assert!(!e.contains("panicked"), "expected non-panic, got: {e:?}");
+}
+
+#[test]
+fn printf_u_above_u64_falls_back_to_g_format() {
+    // gawk parity: `%u` of a value > 2^64 falls back to `%g`-style formatting
+    // (e.g. 2^65 → "3.68935e+19"). Awkrs used to saturate at u64::MAX. The
+    // boundary value 2^64 itself still prints as u64::MAX digits.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN {
+            printf "%u\n", 2^64
+            printf "%u\n", 2^65
+            printf "%u\n", 3e19
+            printf "%u\n", 1e30
+        }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "18446744073709551615\n3.68935e+19\n3e+19\n1e+30\n");
+}

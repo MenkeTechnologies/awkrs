@@ -864,10 +864,24 @@ fn format_one(
                 } else if (0.0..U64_BOUND).contains(&n) {
                     let u = n as u64;
                     format!("{u}")
-                } else if n >= U64_BOUND {
-                    // Positive out-of-u64 range: gawk saturates at u64::MAX,
-                    // matching most libc printf implementations for `(uintmax_t)val`.
+                } else if n == U64_BOUND {
+                    // gawk parity: 2^64 in f64 is exactly U64_BOUND (the next
+                    // representable double above u64::MAX). gawk renders this
+                    // boundary value as u64::MAX digits (saturating-cast
+                    // behavior). For strictly larger values it falls back to
+                    // `%g`-style formatting below.
                     format!("{}", u64::MAX)
+                } else if n > U64_BOUND {
+                    // gawk parity: positive values past 2^64 fall back to
+                    // `%g`-style formatting (e.g. 2^65 → "3.68935e+19").
+                    crate::format::awk_sprintf_with_decimal(
+                        "%.6g",
+                        &[Value::Num(n)],
+                        '.',
+                        None,
+                        None,
+                    )
+                    .unwrap_or_else(|_| format!("{}", u64::MAX))
                 } else {
                     // Very negative (past -2^63): emit the truncated decimal.
                     let trunc = n.trunc();

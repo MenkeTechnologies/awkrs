@@ -172,7 +172,8 @@ Columns: **P** = POSIX / universal core, **B** = BSD awk, **M** = mawk, **G** = 
 | Paragraph-mode `RT` (`RS == ""`) | **Match** — captures the FULL run of trailing newlines from the last content line plus the blank lines separating records (`b\n\nc` → RT == "\n\n"). The last record also captures EOF-trailing newlines into RT. |
 | `PROCINFO["strftime"]` default | **Match** — `"%a %b %e %H:%M:%S %Z %Y"` (gawk's date(1)-equivalent default), not `"%c"`. |
 | `printf("fmt", a, b)` function-call form | **Match** — equivalent to `printf "fmt", a, b`. Previously rejected as "parenthesized comma list is not allowed". Mixed paren-args + bare args (`printf(a,b), c`) still rejected. |
-| Builtin called with wrong arity | **Match (no panic)** — `tolower()`, `toupper()`, `index()`, `substr()` with too few args now emit `"N is invalid as number of arguments for X"` instead of panicking on out-of-bounds. |
+| Builtin called with wrong arity | **Match (no panic)** — `tolower()`, `toupper()`, `index()`, `substr()`, `system()` with too few args emit `"N is invalid as number of arguments for X"` instead of panicking on out-of-bounds. |
+| `printf "%u"` of values past 2^64 | **Match** — falls back to `%g`-style formatting (`2^65` → `"3.68935e+19"`). The exact 2^64 boundary still prints as the u64::MAX digit string. Earlier awkrs saturated all over-u64 values at u64::MAX. |
 | MPFR (`-M`) | **Part** (precision / rounding via `PROCINFO`) |
 
 ---

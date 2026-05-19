@@ -4927,6 +4927,11 @@ pub(crate) fn exec_builtin_dispatch(
             Value::Num(ctx.rt.srand(n))
         }
         "system" => {
+            if argc != 1 {
+                return Err(Error::Runtime(format!(
+                    "{argc} is invalid as number of arguments for system"
+                )));
+            }
             if ctx.rt.sandbox {
                 return Err(Error::Runtime(
                     "sandbox: system() is disabled (-S/--sandbox)".into(),
