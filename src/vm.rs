@@ -466,7 +466,16 @@ pub fn vm_pattern_matches(
         }
         CompiledPattern::LiteralRegexp(idx) => {
             let pat = cp.strings.get(*idx);
-            Ok(rt.record.contains(pat))
+            // gawk parity: when `IGNORECASE` is set, the literal-regex fast
+            // path must still match case-insensitively. Previously awkrs's
+            // optimization bypassed regex compilation, so `IGNORECASE=1` had
+            // no effect on bare `/abc/` patterns.
+            if rt.ignore_case_flag() {
+                rt.ensure_regex(pat).map_err(Error::Runtime)?;
+                Ok(rt.regex_ref(pat).is_match(&rt.record))
+            } else {
+                Ok(rt.record.contains(pat))
+            }
         }
         CompiledPattern::Expr(chunk) => {
             let mut ctx = VmCtx::new(cp, rt);
@@ -500,7 +509,12 @@ pub fn vm_match_range_endpoint(
         }
         CompiledRangeEndpoint::LiteralRegexp(idx) => {
             let pat = cp.strings.get(*idx);
-            Ok(rt.record.contains(pat))
+            if rt.ignore_case_flag() {
+                rt.ensure_regex(pat).map_err(Error::Runtime)?;
+                Ok(rt.regex_ref(pat).is_match(&rt.record))
+            } else {
+                Ok(rt.record.contains(pat))
+            }
         }
         CompiledRangeEndpoint::Expr(chunk) => {
             let mut ctx = VmCtx::new(cp, rt);
@@ -3018,7 +3032,14 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             Op::SetField => {
                 let val = ctx.pop();
                 let idx = ctx.pop().as_number() as i32;
-                let s = val.as_str();
+                // gawk parity: assigning a number to `$n` stringifies via
+                // CONVFMT (so `CONVFMT="%.2f"; $1=3.14159` stores `"3.14"`),
+                // not via the f64 Display default which keeps full precision.
+                let s = match &val {
+                    Value::Num(n) => ctx.rt.num_to_string_convfmt(*n),
+                    Value::Mpfr(f) => ctx.rt.mpfr_to_string_convfmt(f),
+                    _ => val.as_str(),
+                };
                 ctx.rt.set_field(idx, &s)?;
                 ctx.push(val);
             }
@@ -4099,8 +4120,11 @@ fn awk_cmp_eq(a: &Value, b: &Value, ignore_case: bool, rt: &Runtime) -> Value {
             0.0
         });
     }
-    let ls = a.as_str_cow();
-    let rs = b.as_str_cow();
+    // POSIX/gawk: string compare path — Num/Mpfr stringify via CONVFMT, not the
+    // default %.6g. Without this, `BEGIN { CONVFMT="%.2f"; print 3.14159 == "3.14" }`
+    // returns 0; gawk returns 1.
+    let ls = value_to_str_convfmt(a, rt);
+    let rs = value_to_str_convfmt(b, rt);
     if ignore_case {
         return Value::Num(if ls.eq_ignore_ascii_case(rs.as_ref()) {
             1.0
@@ -4110,6 +4134,19 @@ fn awk_cmp_eq(a: &Value, b: &Value, ignore_case: bool, rt: &Runtime) -> Value {
     }
     let ord = locale_str_cmp(&ls, &rs);
     Value::Num(if ord == Ordering::Equal { 1.0 } else { 0.0 })
+}
+
+/// Stringify a value for the string-compare fallback path of `==` / `<` / etc.
+/// Num and Mpfr use the runtime's `CONVFMT`; everything else delegates to
+/// `as_str_cow`. Integer-valued numbers bypass CONVFMT inside
+/// `num_to_string_convfmt`.
+#[inline]
+fn value_to_str_convfmt<'a>(v: &'a Value, rt: &Runtime) -> Cow<'a, str> {
+    match v {
+        Value::Num(n) => Cow::Owned(rt.num_to_string_convfmt(*n)),
+        Value::Mpfr(f) => Cow::Owned(rt.mpfr_to_string_convfmt(f)),
+        _ => v.as_str_cow(),
+    }
 }
 
 fn awk_cmp_rel(op: BinOp, a: &Value, b: &Value, ignore_case: bool, rt: &Runtime) -> Value {
@@ -4151,8 +4188,9 @@ fn awk_cmp_rel(op: BinOp, a: &Value, b: &Value, ignore_case: bool, rt: &Runtime)
         };
         return Value::Num(if ok { 1.0 } else { 0.0 });
     }
-    let ls = a.as_str_cow();
-    let rs = b.as_str_cow();
+    // gawk parity: string compare path uses CONVFMT for Num/Mpfr stringification.
+    let ls = value_to_str_convfmt(a, rt);
+    let rs = value_to_str_convfmt(b, rt);
     let ord = if ignore_case {
         let la = ls.to_string().to_lowercase();
         let lb = rs.to_string().to_lowercase();
@@ -4292,7 +4330,13 @@ fn sprintf_simple(
     rt: &Runtime,
 ) -> Result<Value> {
     let mpfr = rt.bignum.then(|| (rt.mpfr_prec_bits(), rt.mpfr_round()));
-    format::awk_sprintf_with_decimal(fmt, vals, dec, thousands_sep, mpfr)
+    // gawk parity: `%s` of a numeric argument stringifies via CONVFMT
+    // (e.g. `CONVFMT="%.3f"; printf "%s", 3.14159` → `"3.142"`).
+    let convfmt = rt
+        .get_global_var("CONVFMT")
+        .map(|v| v.as_str())
+        .unwrap_or_else(|| "%.6g".to_string());
+    format::awk_sprintf_with_convfmt(fmt, vals, dec, thousands_sep, mpfr, &convfmt)
         .map(Value::Str)
         .map_err(Error::Runtime)
 }
@@ -4382,12 +4426,17 @@ fn exec_getline(
             if matches!(&e, Error::Runtime(msg) if msg.starts_with("sandbox:")) {
                 return Err(e);
             }
-            let code = ctx.rt.getline_error_code_for_key(&e, &input_key);
+            let _code = ctx.rt.getline_error_code_for_key(&e, &input_key);
             if push_result {
-                ctx.push(Value::Num(code));
+                ctx.push(Value::Num(_code));
                 Ok(())
             } else {
-                Err(e)
+                // gawk parity: statement-form `getline var < file` for a
+                // missing/unreadable file silently sets ERRNO and continues —
+                // it does NOT abort the program. The expression form already
+                // returns the -1/-2 code; this branch makes the statement form
+                // behave the same way.
+                Ok(())
             }
         }
     }
@@ -4597,15 +4646,42 @@ pub(crate) fn exec_builtin_dispatch(
             let needle = args[1].as_str();
             if needle.is_empty() {
                 Value::Num(1.0)
-            } else if let Some(b) = hay.find(needle.as_str()) {
-                let pos = if ctx.rt.characters_as_bytes {
-                    b + 1
-                } else {
-                    hay[..b].chars().count() + 1
-                };
-                Value::Num(pos as f64)
             } else {
-                Value::Num(0.0)
+                // gawk parity: `IGNORECASE` applies to `index()` as well,
+                // so `IGNORECASE=1; index("ABC", "b")` returns 2. The
+                // case-insensitive search is done via lowercased copies
+                // (cheap for short needles, which is the common case).
+                let pos = if ctx.rt.ignore_case_flag() {
+                    let hay_lc = hay.to_lowercase();
+                    let needle_lc = needle.to_lowercase();
+                    hay_lc.find(needle_lc.as_str()).map(|b| {
+                        if ctx.rt.characters_as_bytes {
+                            b + 1
+                        } else {
+                            // The byte offset in `hay_lc` matches the byte
+                            // offset in `hay` for ASCII; for non-ASCII this
+                            // can differ in length but the relative position
+                            // is preserved for common cases. Iterate `hay`'s
+                            // chars to convert byte to char position.
+                            hay.char_indices()
+                                .take_while(|&(off, _)| off < b)
+                                .count()
+                                + 1
+                        }
+                    })
+                } else {
+                    hay.find(needle.as_str()).map(|b| {
+                        if ctx.rt.characters_as_bytes {
+                            b + 1
+                        } else {
+                            hay[..b].chars().count() + 1
+                        }
+                    })
+                };
+                match pos {
+                    Some(p) => Value::Num(p as f64),
+                    None => Value::Num(0.0),
+                }
             }
         }
         "substr" => {
@@ -5229,7 +5305,7 @@ pub(crate) fn exec_call_user_inner(
     ctx.in_function = true;
 
     let result = match execute(&func.body, ctx) {
-        Ok(VmSignal::Normal) => Value::Str(String::new()),
+        Ok(VmSignal::Normal) => Value::Uninit,
         Ok(VmSignal::Return(v)) => v,
         Ok(VmSignal::Next) => {
             ctx.locals.pop();
@@ -5360,7 +5436,7 @@ fn exec_call_user_inner_with_frame(
     ctx.in_function = true;
 
     let result = match execute(&func.body, ctx) {
-        Ok(VmSignal::Normal) => Value::Str(String::new()),
+        Ok(VmSignal::Normal) => Value::Uninit,
         Ok(VmSignal::Return(v)) => v,
         Ok(VmSignal::Next) => {
             ctx.locals.pop();

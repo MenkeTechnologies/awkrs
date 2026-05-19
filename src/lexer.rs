@@ -148,6 +148,27 @@ impl<'a> Lexer<'a> {
                     }
                     self.bump();
                 }
+            } else if c == '\\' {
+                // POSIX / gawk line-continuation: a backslash *immediately*
+                // followed by a newline (allowing trailing CR for CRLF files)
+                // is whitespace — both characters are consumed and the next
+                // logical line continues the current statement. Anything else
+                // after the backslash leaves it for the lexer body to report
+                // as `unexpected character '\\'`.
+                let rest = &self.input[self.pos + 1..];
+                let next = rest.chars().next();
+                if next == Some('\n') {
+                    self.bump(); // backslash
+                    self.bump(); // newline (won't become Token::Newline)
+                    continue;
+                }
+                if next == Some('\r') && rest[1..].starts_with('\n') {
+                    self.bump(); // backslash
+                    self.bump(); // CR
+                    self.bump(); // LF
+                    continue;
+                }
+                break;
             } else {
                 break;
             }

@@ -870,6 +870,26 @@ pub fn is_jit_eligible(ops: &[Op]) -> bool {
     if ops.is_empty() {
         return false;
     }
+    // Conservative bail-out: chunks that combine a `~` / `!~` match
+    // (`RegexMatch` / `RegexNotMatch`) with a short-circuit branch
+    // (`JumpIfFalsePop` / `JumpIfTruePop`) trigger a JIT codegen bug where
+    // the regex result isn't carried across the merge block, so
+    // `($0 ~ /a/) && ($0 ~ /b/)` silently drops one half once the chunk has
+    // been JIT-compiled (typically on the 3rd invocation). Until the
+    // join-block stack handling is fixed, fall back to the interpreter
+    // whenever both ops appear in the same chunk.
+    let mut has_match = false;
+    let mut has_branch = false;
+    for op in ops {
+        match op {
+            Op::RegexMatch | Op::RegexNotMatch | Op::MatchRegexp(_) => has_match = true,
+            Op::JumpIfFalsePop(_) | Op::JumpIfTruePop(_) => has_branch = true,
+            _ => {}
+        }
+    }
+    if has_match && has_branch {
+        return false;
+    }
     let mut depth: i32 = 0;
     for op in ops {
         match op {

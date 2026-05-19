@@ -1296,7 +1296,158 @@ fn collect_array_names(prog: &Program) -> HashSet<String> {
             collect_array_names_stmt(s, &mut names);
         }
     }
+    // gawk parity for array call-by-reference: if function `f`'s parameter at
+    // position `p` is used as an array in its body, then any `f(x, ...)` call
+    // site passes `x` by reference and `x` is also an array. Propagate this
+    // until the set stabilizes — chains like `f(x)` → `g(a)` → `a[1]=…` must
+    // promote `x` to an array even though it never appears in an index
+    // expression at the call site.
+    let user_fns: std::collections::HashMap<String, Vec<String>> = prog
+        .funcs
+        .iter()
+        .map(|(n, fd)| (n.clone(), fd.params.clone()))
+        .collect();
+    loop {
+        let before = names.len();
+        for fd in prog.funcs.values() {
+            for s in &fd.body {
+                propagate_array_call_args(s, &user_fns, &mut names);
+            }
+        }
+        for rule in &prog.rules {
+            for s in &rule.stmts {
+                propagate_array_call_args(s, &user_fns, &mut names);
+            }
+        }
+        if names.len() == before {
+            break;
+        }
+    }
     names
+}
+
+fn propagate_array_call_args(
+    s: &Stmt,
+    user_fns: &std::collections::HashMap<String, Vec<String>>,
+    names: &mut HashSet<String>,
+) {
+    fn visit_expr(
+        e: &Expr,
+        user_fns: &std::collections::HashMap<String, Vec<String>>,
+        names: &mut HashSet<String>,
+    ) {
+        match e {
+            Expr::Call { name, args } => {
+                if let Some(params) = user_fns.get(name) {
+                    for (i, a) in args.iter().enumerate() {
+                        if let (Expr::Var(arg_name), Some(p)) = (a, params.get(i)) {
+                            if names.contains(p.as_str()) {
+                                names.insert(arg_name.clone());
+                            }
+                        }
+                    }
+                }
+                for a in args {
+                    visit_expr(a, user_fns, names);
+                }
+            }
+            Expr::Binary { left, right, .. } => {
+                visit_expr(left, user_fns, names);
+                visit_expr(right, user_fns, names);
+            }
+            Expr::Unary { expr, .. } => visit_expr(expr, user_fns, names),
+            Expr::Assign { rhs, .. } => visit_expr(rhs, user_fns, names),
+            Expr::AssignField { field, rhs, .. } => {
+                visit_expr(field, user_fns, names);
+                visit_expr(rhs, user_fns, names);
+            }
+            Expr::AssignIndex { indices, rhs, .. } => {
+                for ix in indices {
+                    visit_expr(ix, user_fns, names);
+                }
+                visit_expr(rhs, user_fns, names);
+            }
+            Expr::Ternary { cond, then_, else_ } => {
+                visit_expr(cond, user_fns, names);
+                visit_expr(then_, user_fns, names);
+                visit_expr(else_, user_fns, names);
+            }
+            Expr::Field(inner) => visit_expr(inner, user_fns, names),
+            Expr::Index { indices, .. } => {
+                for ix in indices {
+                    visit_expr(ix, user_fns, names);
+                }
+            }
+            Expr::IndirectCall { callee, args } => {
+                visit_expr(callee, user_fns, names);
+                for a in args {
+                    visit_expr(a, user_fns, names);
+                }
+            }
+            Expr::Tuple(parts) => {
+                for p in parts {
+                    visit_expr(p, user_fns, names);
+                }
+            }
+            _ => {}
+        }
+    }
+    fn visit_stmt(
+        s: &Stmt,
+        user_fns: &std::collections::HashMap<String, Vec<String>>,
+        names: &mut HashSet<String>,
+    ) {
+        match s {
+            Stmt::If { cond, then_, else_ } => {
+                visit_expr(cond, user_fns, names);
+                for t in then_ {
+                    visit_stmt(t, user_fns, names);
+                }
+                for t in else_ {
+                    visit_stmt(t, user_fns, names);
+                }
+            }
+            Stmt::While { cond, body }
+            | Stmt::DoWhile { cond, body } => {
+                visit_expr(cond, user_fns, names);
+                for t in body {
+                    visit_stmt(t, user_fns, names);
+                }
+            }
+            Stmt::ForC { init, cond, iter, body } => {
+                if let Some(e) = init {
+                    visit_expr(e, user_fns, names);
+                }
+                if let Some(e) = cond {
+                    visit_expr(e, user_fns, names);
+                }
+                if let Some(e) = iter {
+                    visit_expr(e, user_fns, names);
+                }
+                for t in body {
+                    visit_stmt(t, user_fns, names);
+                }
+            }
+            Stmt::ForIn { body, .. } => {
+                for t in body {
+                    visit_stmt(t, user_fns, names);
+                }
+            }
+            Stmt::Block(stmts) => {
+                for t in stmts {
+                    visit_stmt(t, user_fns, names);
+                }
+            }
+            Stmt::Expr(e) => visit_expr(e, user_fns, names),
+            Stmt::Print { args, .. } | Stmt::Printf { args, .. } => {
+                for a in args {
+                    visit_expr(a, user_fns, names);
+                }
+            }
+            _ => {}
+        }
+    }
+    visit_stmt(s, user_fns, names);
 }
 
 fn collect_array_names_stmt(s: &Stmt, names: &mut HashSet<String>) {

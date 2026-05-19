@@ -14,6 +14,190 @@ pub fn awk_sprintf(fmt: &str, vals: &[Value]) -> Result<String, String> {
     awk_sprintf_with_decimal(fmt, vals, '.', Some(','), None)
 }
 
+/// Pre-process the values so that any `Value::Num` (or `Value::Mpfr`) gets
+/// converted to a `Value::StrLit` formatted via `convfmt` — but only when the
+/// format string contains a `%s` that consumes that arg. For other
+/// conversions the original numeric value is preserved.
+///
+/// This is gawk parity for `printf "%s", 3.14159` under `CONVFMT="%.3f"`:
+/// the `%s` arm sees the CONVFMT-formatted string instead of the f64 Display.
+fn convfmt_preprocess_for_percent_s<'a>(
+    fmt: &str,
+    vals: &'a [Value],
+    convfmt: &str,
+) -> std::borrow::Cow<'a, [Value]> {
+    // Quick reject: no `%s` → nothing to do.
+    if !fmt.contains("%s") && !fmt.contains("s$") {
+        return std::borrow::Cow::Borrowed(vals);
+    }
+    // Locate each conversion specifier (%X) and identify which input index it
+    // consumes. The format syntax supports `%2$s` (positional) and `*` width/prec
+    // which also consume args. To stay simple, walk the format string mirroring
+    // `parse_conversion_rest`'s behavior just enough to know which arg goes
+    // to `%s`.
+    let bytes = fmt.as_bytes();
+    let mut percent_s_indices: Vec<usize> = Vec::new();
+    let mut i = 0;
+    let mut vi: usize = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'%' {
+            i += 1;
+            continue;
+        }
+        i += 1;
+        if i >= bytes.len() {
+            break;
+        }
+        if bytes[i] == b'%' {
+            i += 1;
+            continue;
+        }
+        // Optional positional `m$`.
+        let mut pos: Option<usize> = None;
+        let mut j = i;
+        let mut m = 0usize;
+        let mut has_digits = false;
+        while j < bytes.len() && bytes[j].is_ascii_digit() {
+            m = m * 10 + (bytes[j] - b'0') as usize;
+            has_digits = true;
+            j += 1;
+        }
+        if has_digits && j < bytes.len() && bytes[j] == b'$' {
+            pos = Some(m);
+            i = j + 1;
+        }
+        // Skip flags.
+        while i < bytes.len() && matches!(bytes[i], b'-' | b'+' | b' ' | b'#' | b'\'' | b'0') {
+            i += 1;
+        }
+        // Width: digits or `*` (which may also be positional).
+        if i < bytes.len() && bytes[i] == b'*' {
+            i += 1;
+            let mut star_pos: Option<usize> = None;
+            let mut sm = 0usize;
+            let mut sj = i;
+            let mut s_has = false;
+            while sj < bytes.len() && bytes[sj].is_ascii_digit() {
+                sm = sm * 10 + (bytes[sj] - b'0') as usize;
+                s_has = true;
+                sj += 1;
+            }
+            if s_has && sj < bytes.len() && bytes[sj] == b'$' {
+                star_pos = Some(sm);
+                i = sj + 1;
+            }
+            match star_pos {
+                Some(p) => vi = vi.max(p),
+                None => vi += 1,
+            }
+        } else {
+            while i < bytes.len() && bytes[i].is_ascii_digit() {
+                i += 1;
+            }
+        }
+        // Precision.
+        if i < bytes.len() && bytes[i] == b'.' {
+            i += 1;
+            if i < bytes.len() && bytes[i] == b'*' {
+                i += 1;
+                let mut star_pos: Option<usize> = None;
+                let mut sm = 0usize;
+                let mut sj = i;
+                let mut s_has = false;
+                while sj < bytes.len() && bytes[sj].is_ascii_digit() {
+                    sm = sm * 10 + (bytes[sj] - b'0') as usize;
+                    s_has = true;
+                    sj += 1;
+                }
+                if s_has && sj < bytes.len() && bytes[sj] == b'$' {
+                    star_pos = Some(sm);
+                    i = sj + 1;
+                }
+                match star_pos {
+                    Some(p) => vi = vi.max(p),
+                    None => vi += 1,
+                }
+            } else {
+                while i < bytes.len() && bytes[i].is_ascii_digit() {
+                    i += 1;
+                }
+            }
+        }
+        // h/l/L modifiers (ignored).
+        while i < bytes.len() && matches!(bytes[i], b'h' | b'l' | b'L') {
+            i += 1;
+        }
+        // Conversion letter.
+        if i >= bytes.len() {
+            break;
+        }
+        let conv = bytes[i];
+        i += 1;
+        // Which arg does this conversion consume?
+        let arg_idx = if let Some(p) = pos {
+            if p == 0 {
+                continue;
+            }
+            p - 1
+        } else {
+            let idx = vi;
+            vi += 1;
+            idx
+        };
+        if conv == b's' {
+            percent_s_indices.push(arg_idx);
+        }
+    }
+    if percent_s_indices.is_empty() {
+        return std::borrow::Cow::Borrowed(vals);
+    }
+    // Build the rewritten vals: only `%s` positions get the CONVFMT-formatted
+    // string; everything else stays numeric so conversions like `%d` still
+    // round-trip cleanly.
+    let mut out = vals.to_vec();
+    for &idx in &percent_s_indices {
+        if let Some(v) = out.get_mut(idx) {
+            if let Value::Num(n) = v {
+                let s = format_num_via_convfmt(*n, convfmt);
+                *v = Value::StrLit(s);
+            }
+        }
+    }
+    std::borrow::Cow::Owned(out)
+}
+
+fn format_num_via_convfmt(n: f64, convfmt: &str) -> String {
+    // Integer-valued numbers bypass CONVFMT (gawk parity).
+    if n.is_finite() && n.fract() == 0.0 {
+        if n == 0.0 {
+            return "0".to_string();
+        }
+        return format!("{:.0}", n);
+    }
+    if !n.is_finite() {
+        let sign = if n.is_sign_negative() { '-' } else { '+' };
+        let body = if n.is_nan() { "nan" } else { "inf" };
+        return format!("{sign}{body}");
+    }
+    // Apply the user-supplied CONVFMT.
+    awk_sprintf_with_decimal(convfmt, &[Value::Num(n)], '.', Some(','), None)
+        .unwrap_or_else(|_| format!("{n}"))
+}
+
+/// Variant of [`awk_sprintf_with_decimal`] that honors `CONVFMT` for numeric
+/// values that flow through `%s` conversion.
+pub fn awk_sprintf_with_convfmt(
+    fmt: &str,
+    vals: &[Value],
+    decimal: char,
+    thousands_sep: Option<char>,
+    mpfr_mode: Option<(u32, Round)>,
+    convfmt: &str,
+) -> Result<String, String> {
+    let vals = convfmt_preprocess_for_percent_s(fmt, vals, convfmt);
+    awk_sprintf_with_decimal(fmt, &vals, decimal, thousands_sep, mpfr_mode)
+}
+
 pub fn awk_sprintf_with_decimal(
     fmt: &str,
     vals: &[Value],
@@ -33,7 +217,10 @@ pub fn awk_sprintf_with_decimal(
         }
         i += c.len_utf8();
         if i >= fmt.len() {
-            return Err("truncated format".into());
+            // gawk parity: a trailing `%` with nothing after it is emitted as a
+            // literal `%` rather than raising an error.
+            out.push('%');
+            break;
         }
         // Optional `%m$` — digits must be followed by `$` or we rewind and treat as flags/width.
         let start_after_pct = i;
@@ -243,6 +430,22 @@ fn is_known_conv(c: char) -> bool {
         's' | 'd' | 'i' | 'u' | 'o' | 'x' | 'X' | 'a' | 'A' |
         'f' | 'F' | 'e' | 'E' | 'g' | 'G' | 'c'
     )
+}
+
+/// Same as [`insert_thousands_sep`] but only groups the integer portion of a
+/// floating value, leaving anything after the radix point unchanged. Used by
+/// the `%'f` / `%'e` / `%'g` flags.
+fn insert_thousands_sep_float(s: String, sep: char, decimal: char) -> String {
+    let (int_part, frac_part) = match s.find(decimal) {
+        Some(i) => (&s[..i], &s[i..]),
+        None => (s.as_str(), ""),
+    };
+    let int_grouped = insert_thousands_sep(int_part.to_string(), sep);
+    if frac_part.is_empty() {
+        int_grouped
+    } else {
+        format!("{int_grouped}{frac_part}")
+    }
 }
 
 /// Insert thousands separators (gawk **`%'`** flag) for a signed decimal digit string.
@@ -547,8 +750,12 @@ fn format_one(
 ) -> Result<String, String> {
     let pad_char = if pad_zero && !left { '0' } else { ' ' };
     let w = width.unwrap_or(0);
+    // gawk parity: when the locale defines no grouping (C locale → empty
+    // `thousands_sep` from `localeconv`), the `'` flag becomes a no-op. Don't
+    // synthesize a comma — `LC_ALL=C gawk 'BEGIN { printf "%'\''d", 1234567 }'`
+    // prints "1234567", not "1,234,567".
     let sep = if group {
-        thousands_sep.unwrap_or(',')
+        thousands_sep.unwrap_or('\0')
     } else {
         '\0'
     };
@@ -574,8 +781,31 @@ fn format_one(
                 };
                 format!("{}", float_trunc_integer(&f))
             } else {
-                let n = v.as_number() as i64;
-                format!("{n}")
+                // gawk parity: for values that don't fit `i64`, fall back to
+                // truncating-via-f64 (`%.0f`). Otherwise `printf "%d", 2^63`
+                // would saturate at `i64::MAX` (9223372036854775807) rather
+                // than printing the actual value (9223372036854775808).
+                //
+                // 2^63 is the smallest positive f64 that doesn't fit i64.
+                // i64::MIN is exactly representable as f64 (-2^63), so the
+                // lower bound is inclusive but the upper bound is strict.
+                let n = v.as_number();
+                const I64_BOUND: f64 = 9_223_372_036_854_775_808.0; // 2^63
+                if !n.is_finite() {
+                    format_non_finite(n, false).unwrap_or_default()
+                } else if (-I64_BOUND..I64_BOUND).contains(&n) {
+                    let i = n as i64;
+                    format!("{i}")
+                } else {
+                    // Out-of-i64 range: emit the truncated decimal via the
+                    // f64 "%.0f"-like path so digits past 2^63 still print.
+                    let trunc = n.trunc();
+                    if trunc.is_sign_negative() {
+                        format!("-{:.0}", trunc.abs())
+                    } else {
+                        format!("{:.0}", trunc)
+                    }
+                }
             };
             // POSIX: `%.Nd` with N==0 and value 0 produces NO digits at all
             // ("[]"), not "0". This matches gawk and most libc printf impls.
@@ -619,10 +849,34 @@ fn format_one(
                 }
             } else {
                 // gawk: `%u` of a negative number wraps via i64 → u64 (two's complement)
-                // — `printf "%u", -5` yields 18446744073709551611, not 0. Previously
-                // awkrs clamped to 0, breaking gawk parity.
-                let n = v.as_number() as i64 as u64;
-                format!("{n}")
+                // — `printf "%u", -5` yields 18446744073709551611, not 0. For
+                // positive values that exceed i64 (but still fit u64), the
+                // intermediate `i64` saturates, so we test the i64-range first
+                // and fall back to the u64 path or f64 truncation for huge values.
+                let n = v.as_number();
+                const I64_BOUND: f64 = 9_223_372_036_854_775_808.0; // 2^63
+                const U64_BOUND: f64 = 18_446_744_073_709_551_616.0; // 2^64
+                if !n.is_finite() {
+                    format_non_finite(n, false).unwrap_or_default()
+                } else if (-I64_BOUND..I64_BOUND).contains(&n) {
+                    let u = n as i64 as u64;
+                    format!("{u}")
+                } else if (0.0..U64_BOUND).contains(&n) {
+                    let u = n as u64;
+                    format!("{u}")
+                } else if n >= U64_BOUND {
+                    // Positive out-of-u64 range: gawk saturates at u64::MAX,
+                    // matching most libc printf implementations for `(uintmax_t)val`.
+                    format!("{}", u64::MAX)
+                } else {
+                    // Very negative (past -2^63): emit the truncated decimal.
+                    let trunc = n.trunc();
+                    if trunc.is_sign_negative() {
+                        format!("-{:.0}", trunc.abs())
+                    } else {
+                        format!("{:.0}", trunc)
+                    }
+                }
             };
             // POSIX %.Nu with N==0 and value 0 → empty (gawk parity).
             if matches!(prec, Some(0)) && s == "0" {
@@ -678,7 +932,9 @@ fn format_one(
             if matches!(prec, Some(0)) && s == "0" {
                 s.clear();
             }
-            if alt && !s.is_empty() {
+            // POSIX / gawk: `#` adds the `0x`/`0X` prefix only when the value
+            // is non-zero. `printf "%#x", 0` yields "0", not "0x0".
+            if alt && !s.is_empty() && s != "0" {
                 s = if conv == 'x' {
                     format!("0x{s}")
                 } else {
@@ -702,7 +958,7 @@ fn format_one(
             if let Some(spelled) = format_non_finite(n_f64, conv == 'F') {
                 return pad_numeric(&spelled, w, left, ' ');
             }
-            let s = if let Some((pr, rd)) = mpfr_mode {
+            let mut s = if let Some((pr, rd)) = mpfr_mode {
                 let fsrc = match v {
                     Value::Mpfr(f) => f.clone(),
                     _ => value_to_mpfr(v, pr, rd),
@@ -712,6 +968,13 @@ fn format_one(
                 let n = v.as_number();
                 localize_float_radix(format!("{:.*}", p, n), decimal)
             };
+            // gawk parity: the `'` group flag applies to the integer portion of
+            // a `%f` value too — `%'f` formats the whole-number digits with
+            // the locale's thousands separator and leaves the fractional part
+            // untouched.
+            if group && sep != '\0' {
+                s = insert_thousands_sep_float(s, sep, decimal);
+            }
             pad_numeric(&s, w, left, pad_char)
         }
         'e' | 'E' => {
@@ -1381,8 +1644,11 @@ mod tests {
     }
 
     #[test]
-    fn format_percent_at_end_error() {
-        assert!(awk_sprintf("%", &[]).is_err());
+    fn format_percent_at_end_emits_literal_percent() {
+        // gawk parity: a trailing `%` with nothing after it is treated as a
+        // literal `%` (POSIX leaves it undefined; gawk picks "emit the byte").
+        let s = awk_sprintf("abc%", &[]).unwrap();
+        assert_eq!(s, "abc%");
     }
 
     #[test]
@@ -1503,7 +1769,9 @@ mod tests {
         assert_eq!(awk_sprintf("%#o", &[Value::Num(8.0)]).unwrap(), "010");
         assert_eq!(awk_sprintf("%#x", &[Value::Num(255.0)]).unwrap(), "0xff");
         assert_eq!(awk_sprintf("%#X", &[Value::Num(255.0)]).unwrap(), "0XFF");
-        // hex 0 with alternate form -> 0x0 in awkrs
-        assert_eq!(awk_sprintf("%#x", &[Value::Num(0.0)]).unwrap(), "0x0");
+        // gawk parity: `#` adds the `0x`/`0X` prefix only when the value is
+        // non-zero. Previously awkrs emitted "0x0" for `printf "%#x", 0`.
+        assert_eq!(awk_sprintf("%#x", &[Value::Num(0.0)]).unwrap(), "0");
+        assert_eq!(awk_sprintf("%#X", &[Value::Num(0.0)]).unwrap(), "0");
     }
 }

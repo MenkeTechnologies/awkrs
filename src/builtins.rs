@@ -84,7 +84,11 @@ pub fn gsub(
 ) -> Result<f64> {
     let repl_has_special = repl.contains('&') || repl.contains('\\');
     // Fast path: literal pattern + literal replacement → pure string replacement, no regex.
-    let use_literal = is_literal_pattern(re_pat) && !repl_has_special;
+    // But IGNORECASE only takes effect via the regex engine, so when it's on we
+    // have to compile a regex even for a plain `"b"` pattern; otherwise
+    // `IGNORECASE=1; gsub("b", "X", "ABC")` would silently not match.
+    let use_literal =
+        is_literal_pattern(re_pat) && !repl_has_special && !rt.ignore_case_flag();
 
     let n = if let Some(t) = target {
         if use_literal {
@@ -201,8 +205,10 @@ pub fn match_fn(rt: &mut Runtime, s: &str, re_pat: &str, arr_name: Option<&str>)
         if let Some(a) = arr_name {
             rt.array_delete(a, None);
             if let Some(caps) = re.captures(s) {
-                // awk: a[1]..a[n] are parenthesized subexpressions (1-based).
-                for i in 1..caps.len() {
+                // gawk parity: a[0] is the whole match, a[1]..a[n] are
+                // parenthesized subexpressions. Previously awkrs skipped
+                // group 0, so `match(s, /(a)|(b)/, arr)` left arr[0] empty.
+                for i in 0..caps.len() {
                     let key = format!("{i}");
                     let val = caps
                         .get(i)
@@ -370,32 +376,55 @@ pub fn awk_gensub(
     }
 }
 
+/// gawk-compatible replacement-string expansion for sub/gsub.
+///
+/// Rules (matching gawk 5.x behavior, which differs from POSIX in the details
+/// of how backslashes near `&` are processed):
+///
+/// * A bare `&` is replaced by the matched text.
+/// * A run of `k` backslashes immediately preceding a `&` collapses pairs:
+///   `k/2` literal backslashes are emitted, then the `&` becomes the matched
+///   text if `k` is even, or a literal `&` if `k` is odd.
+/// * A backslash run that is NOT followed by `&` is emitted verbatim — so
+///   `\\` stays `\\`, and `\1` stays `\1` (sub/gsub never expand backrefs;
+///   that's gensub's job).
 fn expand_repl(repl: &str, matched: &str) -> String {
-    let mut out = String::new();
-    let mut chars = repl.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '&' {
+    let bytes = repl.as_bytes();
+    let mut out = String::with_capacity(repl.len() + matched.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if c == b'&' {
             out.push_str(matched);
-        } else if c == '\\' {
-            match chars.peek() {
-                Some('&') => {
-                    chars.next();
+            i += 1;
+            continue;
+        }
+        if c == b'\\' {
+            // Count the run of consecutive backslashes starting here.
+            let start = i;
+            while i < bytes.len() && bytes[i] == b'\\' {
+                i += 1;
+            }
+            let run = i - start;
+            if i < bytes.len() && bytes[i] == b'&' {
+                let pairs = run / 2;
+                out.extend(std::iter::repeat_n('\\', pairs));
+                if run % 2 == 0 {
+                    out.push_str(matched);
+                } else {
                     out.push('&');
                 }
-                Some('\\') => {
-                    chars.next();
-                    out.push('\\');
-                }
-                Some(x) => {
-                    let x = *x;
-                    chars.next();
-                    out.push(x);
-                }
-                None => out.push('\\'),
+                i += 1; // consume the `&`
+            } else {
+                out.extend(std::iter::repeat_n('\\', run));
             }
-        } else {
-            out.push(c);
+            continue;
         }
+        // Regular bytes — preserve UTF-8 by copying the whole char.
+        let rest = &repl[i..];
+        let ch = rest.chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
     }
     out
 }
@@ -422,7 +451,11 @@ pub fn patsplit(
     } else {
         fp_owned.as_str()
     };
-    let re = Regex::new(fp).map_err(|e| Error::Runtime(e.to_string()))?;
+    // gawk parity: `patsplit` honors `IGNORECASE` like the other regex builtins.
+    let mut re_b = regex::RegexBuilder::new(fp);
+    re_b.case_insensitive(rt.ignore_case_flag());
+    re_b.dot_matches_new_line(true);
+    let re = re_b.build().map_err(|e| Error::Runtime(e.to_string()))?;
     let matches: Vec<regex::Match> = re.find_iter(s).collect();
     let n = matches.len();
 
@@ -628,7 +661,14 @@ fn locale_str_cmp_sort(a: &str, b: &str) -> Ordering {
 }
 
 /// Total order for `asort` (gawk-style: numeric if both numeric strings, else `strcoll`).
+#[allow(dead_code)]
 pub fn awk_value_sort_cmp(a: &Value, b: &Value) -> Ordering {
+    awk_value_sort_cmp_with_case(a, b, false)
+}
+
+/// Same as [`awk_value_sort_cmp`] but folds case when `ignore_case` is true.
+/// gawk's `asort`/`asorti` respect `IGNORECASE` for string comparisons.
+pub fn awk_value_sort_cmp_with_case(a: &Value, b: &Value, ignore_case: bool) -> Ordering {
     if let (Value::Num(x), Value::Num(y)) = (a, b) {
         return x.partial_cmp(y).unwrap_or(Ordering::Equal);
     }
@@ -638,16 +678,22 @@ pub fn awk_value_sort_cmp(a: &Value, b: &Value) -> Ordering {
             .partial_cmp(&b.as_number())
             .unwrap_or(Ordering::Equal);
     }
+    if ignore_case {
+        let sa = a.as_str().to_lowercase();
+        let sb = b.as_str().to_lowercase();
+        return locale_str_cmp_sort(&sa, &sb);
+    }
     locale_str_cmp_sort(&a.as_str(), &b.as_str())
 }
 
 /// gawk `asort` — sort by value; new indices `"1"`…`"n"`.
 pub fn asort(rt: &mut Runtime, src: &str, dest: Option<&str>) -> Result<f64> {
+    let ic = rt.ignore_case_flag();
     let mut pairs: Vec<(String, Value)> = match rt.get_global_var(src) {
         Some(Value::Array(a)) => a.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
         _ => return Err(Error::Runtime(format!("asort: `{src}` is not an array"))),
     };
-    pairs.sort_by(|(_, va), (_, vb)| awk_value_sort_cmp(va, vb));
+    pairs.sort_by(|(_, va), (_, vb)| awk_value_sort_cmp_with_case(va, vb, ic));
     let n = pairs.len();
     match dest {
         None => {
@@ -674,11 +720,19 @@ pub fn asort(rt: &mut Runtime, src: &str, dest: Option<&str>) -> Result<f64> {
 
 /// gawk `asorti` — sort array indices (keys); values are the sorted keys.
 pub fn asorti(rt: &mut Runtime, src: &str, dest: Option<&str>) -> Result<f64> {
+    let ic = rt.ignore_case_flag();
     let mut keys: Vec<String> = match rt.get_global_var(src) {
         Some(Value::Array(a)) => a.keys().cloned().collect(),
         _ => return Err(Error::Runtime(format!("asorti: `{src}` is not an array"))),
     };
-    keys.sort_by(|a, b| locale_str_cmp_sort(a, b));
+    // gawk parity: `asorti` honors `IGNORECASE` for key comparisons.
+    keys.sort_by(|a, b| {
+        if ic {
+            locale_str_cmp_sort(&a.to_lowercase(), &b.to_lowercase())
+        } else {
+            locale_str_cmp_sort(a, b)
+        }
+    });
     let n = keys.len();
     match dest {
         None => {

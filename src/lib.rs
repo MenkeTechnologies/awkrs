@@ -989,6 +989,12 @@ fn detect_inline_program(
     if cp.record_rules.len() != 1 {
         return None;
     }
+    // The inline `LiteralContains` fast path is case-sensitive only; refuse
+    // to take it when `IGNORECASE` is set so the slower regex-backed match
+    // path (which honors the flag) is used instead.
+    if rt.ignore_case_flag() {
+        return None;
+    }
     let rule = &cp.record_rules[0];
     let pattern = match &rule.pattern {
         CompiledPattern::Always => InlinePattern::Always,

@@ -2262,6 +2262,480 @@ BEGIN {
 }
 
 #[test]
+fn array_by_ref_propagates_through_function_param_use() {
+    // Regression: when a caller's variable was only mentioned as a function
+    // argument (never indexed at the call site), awkrs's compiler allocated a
+    // slot for it instead of treating it as an array. The function's array
+    // writes were then lost because the bind-back wrote to `vars[]` while the
+    // caller read from the slot. The static analysis now propagates the
+    // array-ness from each user function's parameter back through call sites.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"function fill(a) { a[1]=10; a[2]=20 }
+           BEGIN {
+               fill(x)
+               print length(x), x[1], x[2]
+           }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "2 10 20\n");
+}
+
+#[test]
+fn recursive_array_population_through_function_propagates_to_caller() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"function fill(a, n) { if (n > 0) { a[n] = n; fill(a, n-1) } }
+           BEGIN {
+               fill(x, 5)
+               print length(x)
+               for (i = 1; i <= 5; i++) printf "%d ", x[i]
+               print ""
+           }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "5\n1 2 3 4 5 \n");
+}
+
+#[test]
+fn asort_honors_ignorecase_for_string_values() {
+    // gawk parity: `asort` uses case-insensitive string comparison when
+    // `IGNORECASE` is set. Without it, "B" and "C" sort before "a"; with it,
+    // they all sort case-insensitively.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN {
+            IGNORECASE = 1
+            a[1] = "B"; a[2] = "a"; a[3] = "C"
+            n = asort(a)
+            for (i = 1; i <= n; i++) print a[i]
+        }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "a\nB\nC\n");
+}
+
+#[test]
+fn asorti_honors_ignorecase_for_keys() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN {
+            IGNORECASE = 1
+            a["B"] = 1; a["a"] = 2; a["C"] = 3
+            n = asorti(a)
+            for (i = 1; i <= n; i++) print a[i]
+        }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "a\nB\nC\n");
+}
+
+#[test]
+fn newline_allowed_between_control_flow_head_and_body() {
+    // POSIX / gawk: `if (cond) <NL> stmt`, `while (cond) <NL> stmt`,
+    // `for (...) <NL> stmt`, and `else <NL> stmt` are all legal — a single
+    // newline before the single-statement body is whitespace. Previously
+    // awkrs's parser rejected this with "unexpected token: Newline".
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN {
+            if (1)
+                print "if-yes"
+            if (0)
+                print "if-no"
+            else
+                print "else-yes"
+            for (i = 0; i < 3; i++)
+                print "for", i
+            while (j < 2)
+                j++
+            print "after", j
+            do
+                k++
+            while (k < 2)
+            print "after-do", k
+        }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(
+        o,
+        "if-yes\nelse-yes\nfor 0\nfor 1\nfor 2\nafter 2\nafter-do 2\n"
+    );
+}
+
+#[test]
+fn unbounded_recursion_errors_cleanly_instead_of_stack_overflow() {
+    // Regression: infinite recursion used to overrun Rust's thread stack and
+    // abort with "fatal runtime error: stack overflow". The call-depth cap is
+    // now low enough to error cleanly before native overflow.
+    let (c, _o, e) = run_awkrs_stdin(
+        r#"function f(n) { return f(n + 1) } BEGIN { print f(0) }"#,
+        "",
+    );
+    assert_ne!(c, 0, "expected non-zero exit");
+    assert!(
+        e.contains("maximum user function call depth"),
+        "stderr should mention the depth cap, got: {e:?}"
+    );
+    assert!(
+        !e.contains("stack overflow"),
+        "should error cleanly, not via native stack overflow: {e:?}"
+    );
+}
+
+#[test]
+fn split_ignores_zero_width_regex_matches() {
+    // gawk parity: a regex that can match the empty string (e.g. `/x*/`)
+    // contributes no splits at positions where it matched zero-width. Without
+    // this skip, `split("abc", a, /x*/)` would split between every character.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN {
+            n = split("abc", a, /x*/)
+            print "/x*/:", n, "[" a[1] "]"
+
+            n = split("aaab", b, /a*/)
+            print "/a*/:", n
+            for (i = 1; i <= n; i++) printf "  %d=[%s]\n", i, b[i]
+        }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "/x*/: 1 [abc]\n/a*/: 2\n  1=[]\n  2=[b]\n");
+}
+
+#[test]
+fn printf_alternate_form_hex_zero_emits_just_zero() {
+    // POSIX / gawk: the `#` flag adds the `0x`/`0X` prefix only when the
+    // value is non-zero. `printf "%#x", 0` is `"0"`, not `"0x0"`.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { printf "%#x|%#X|%#x|%#o\n", 0, 0, 255, 0 }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "0|0|0xff|0\n");
+}
+
+#[test]
+fn jit_correctly_handles_short_circuit_with_regex_match() {
+    // Critical regression: after JIT compilation kicks in (typically on the
+    // 3rd invocation), `($0 ~ /a/) && ($0 ~ /b/)` patterns silently dropped
+    // matches because the JIT's merge-block stack handling lost the
+    // RegexMatch result across the short-circuit branch. The optimizer now
+    // refuses to JIT chunks that mix `~`/`!~` with `JumpIf{False,True}Pop`.
+    //
+    // Test with 4+ records so we definitely cross the JIT-compile threshold.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"/a/ && /b/"#,
+        "ab\nac\nabc\nzz\nabcd\nbb\nbab\n",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "ab\nabc\nabcd\nbab\n");
+}
+
+#[test]
+fn jit_correctly_handles_explicit_match_with_short_circuit() {
+    // Same regression with the explicit `$0 ~ /regex/` spelling.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"($0 ~ /x/) && ($0 ~ /y/)"#,
+        "xy\nxa\nay\nxay\nyx\nxyy\nyxy\n",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "xy\nxay\nyx\nxyy\nyxy\n");
+}
+
+#[test]
+fn sprintf_percent_s_of_numeric_uses_convfmt() {
+    // gawk parity: `sprintf "%s"` on a numeric value stringifies via CONVFMT,
+    // not the f64 default Display. `CONVFMT="%.3f"; printf "%s", 3.14159`
+    // should print `"3.142"`, not `"3.14159"`.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN {
+            CONVFMT = "%.3f"
+            printf "%s|", 3.14159     # via CONVFMT
+            printf "%d|", 3.14159     # %d ignores CONVFMT
+            printf "%g|", 3.14159     # %g ignores CONVFMT
+            printf "%s\n", 42         # integer-valued bypasses CONVFMT
+        }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "3.142|3|3.14159|42\n");
+}
+
+#[test]
+fn match_three_arg_populates_array_zero_with_whole_match() {
+    // gawk parity: `match(s, re, arr)` stores the whole match in `arr[0]` and
+    // the captures in `arr[1]`..`arr[n]`. awkrs previously skipped `arr[0]`,
+    // so `match(s, /(a)|(b)/, arr)` left arr[0] empty for an alternation that
+    // matched group 1.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN {
+            s = "abc"
+            if (match(s, /(a)|(b)/, arr)) {
+                printf "0=[%s] 1=[%s] 2=[%s]\n", arr[0], arr[1], arr[2]
+            }
+            t = "hello world"
+            if (match(t, /(\w+) (\w+)/, arr2)) {
+                printf "0=[%s] 1=[%s] 2=[%s]\n", arr2[0], arr2[1], arr2[2]
+            }
+        }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "0=[a] 1=[a] 2=[]\n0=[hello world] 1=[hello] 2=[world]\n");
+}
+
+#[test]
+fn deep_but_bounded_recursion_succeeds() {
+    // 100 levels deep is comfortably under the production cap.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"function f(n) { return n == 0 ? "ok" : f(n - 1) }
+           BEGIN { print f(100) }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "ok\n");
+}
+
+#[test]
+fn backslash_newline_is_line_continuation() {
+    // POSIX / gawk: a backslash immediately followed by a newline is treated
+    // as whitespace — the statement continues on the next physical line.
+    // Previously awkrs's lexer reported "unexpected character '\\'".
+    let (c, o, _) = run_awkrs_stdin(
+        "BEGIN { \\\n  x = \"line1\\n\" \\\n      \"line2\"; \\\n  print x \\\n}",
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "line1\nline2\n");
+}
+
+#[test]
+fn getline_statement_with_missing_file_does_not_abort() {
+    // gawk parity: `getline var < missing_file` as a STATEMENT silently sets
+    // ERRNO and continues; only the expression-form returns -1. Previously
+    // awkrs's statement form raised a fatal runtime error.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN {
+            line = "unchanged"
+            getline line < "/nonexistent_path_xyz_zzz"
+            print "[" line "]"
+            print "ERRNO:" ERRNO
+        }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "[unchanged]\nERRNO:No such file or directory\n");
+}
+
+#[test]
+fn printf_apostrophe_groups_float_integer_part() {
+    // gawk parity: the `'` flag groups the integer portion of `%f` values too.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { printf "%'f|%'f|%'.2f\n", 1234567.89, 1.5, 0.5 }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "1,234,567.890000|1.500000|0.50\n");
+}
+
+#[test]
+fn ignorecase_applies_to_bare_regex_pattern() {
+    // Regression: `/abc/` as a record pattern took a literal-substring fast
+    // path that bypassed IGNORECASE entirely. The inline / slurp / VM paths
+    // now defer to the regex engine when the flag is on.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { IGNORECASE = 1 } /abc/"#,
+        "ABC\nxyz\nAbCdef\nNoMatch\n",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "ABC\nAbCdef\n");
+}
+
+#[test]
+fn index_honors_ignorecase() {
+    // gawk parity: `index()` is case-insensitive when `IGNORECASE` is set.
+    // awkrs's `index()` used to bypass IGNORECASE entirely.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN {
+            IGNORECASE = 1
+            print index("ABC", "b")        # 2 (matches `B` case-insensitively)
+            print index("ABC", "B")        # 2 (still works case-sensitively)
+            print index("Hello World", "WORLD") # 7
+            print index("abc", "Z")        # 0 (not present at all)
+        }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "2\n2\n7\n0\n");
+}
+
+#[test]
+fn patsplit_honors_ignorecase() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN {
+            IGNORECASE = 1
+            n = patsplit("xBYbZBA", a, "b")
+            print n
+            for (i = 1; i <= n; i++) print i, a[i]
+        }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "3\n1 B\n2 b\n3 B\n");
+}
+
+#[test]
+fn sprintf_trailing_percent_emits_literal() {
+    // gawk parity: a format string ending in a stray `%` (no conversion letter
+    // after it) emits the literal `%` rather than raising "truncated format".
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { print sprintf("abc%") }"#, "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "abc%\n");
+}
+
+#[test]
+fn gsub_honors_ignorecase_for_literal_pattern() {
+    // Regression: gsub's literal-pattern fast path bypassed regex compilation
+    // entirely, so `IGNORECASE=1; gsub("b", "X", "ABC")` silently produced
+    // "ABC" instead of gawk's "AXC". The fast path now defers to the regex
+    // engine whenever IGNORECASE is set.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN {
+            IGNORECASE = 1
+            s = "ABC";    gsub("b",  "X", s); print "1", s
+            s = "aBcBaB"; gsub(/b/,  "X", s); print "2", s
+            s = "AbC";    gsub(/B/,  "X", s); print "3", s
+        }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "1 AXC\n2 aXcXaX\n3 AXC\n");
+}
+
+#[test]
+fn sub_replacement_preserves_backslashes_per_gawk_rules() {
+    // gawk parity for sub/gsub replacement-string semantics:
+    //   `&`     → match
+    //   `\&`    → literal `&`
+    //   `\\&`   → literal `\` + match  (each `\\` collapses to `\` only when
+    //                                    immediately followed by `&`)
+    //   `\\`    → `\\` (two backslashes kept verbatim outside the `&` context)
+    //   `\X`    → `\X` (sub/gsub do NOT expand backrefs — that's gensub)
+    //
+    // Previously awkrs collapsed any `\X` to `X`, so `sub(/(a)/, "[\\1]", s)`
+    // produced "[1]bc" instead of gawk's "[\1]bc".
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN {
+            s = "AbB"
+            t = s; gsub(/B/, "X",     t); print "1 [" t "]"
+            t = s; gsub(/B/, "&",     t); print "2 [" t "]"
+            t = s; gsub(/B/, "\\&",   t); print "3 [" t "]"
+            t = s; gsub(/B/, "\\\\",  t); print "4 [" t "]"
+            t = s; gsub(/B/, "\\\\&", t); print "5 [" t "]"
+            t = s; gsub(/B/, "\\X",   t); print "6 [" t "]"
+
+            # sub() of a captured-group pattern: \1 stays literal
+            u = "abc"
+            sub(/(a)/, "[\\1]", u)
+            print "7 [" u "]"
+        }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(
+        o,
+        "1 [AbX]\n2 [AbB]\n3 [Ab&]\n4 [Ab\\\\]\n5 [Ab\\B]\n6 [Ab\\X]\n7 [[\\1]bc]\n"
+    );
+}
+
+#[test]
+fn indirect_function_call_via_at_var() {
+    // gawk parity: `@var(args)` calls the function whose name is held in
+    // `var`. The previous parser consumed `var(args)` as a complete call
+    // before looking for the indirect `(args)` syntax, so the form always
+    // failed to parse.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"function double(x) { return x*2 }
+           function add(a,b) { return a+b }
+           BEGIN {
+               fn = "double"; print @fn(5)
+               fn = "add";    print @fn(3, 4)
+           }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "10\n7\n");
+}
+
+#[test]
+fn indirect_function_call_via_at_array_element() {
+    // gawk also accepts indirect calls through array elements: `@a[k](args)`.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"function triple(x) { return x*3 }
+           BEGIN {
+               names["t"] = "triple"
+               print @names["t"](4)
+           }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "12\n");
+}
+
+#[test]
+fn field_assignment_of_number_uses_convfmt_for_record_rebuild() {
+    // gawk parity for the common case `$1 = float_value; print`: the rebuilt
+    // record uses CONVFMT to stringify the assigned number. Previously awkrs
+    // kept the full-precision Rust Display form, so `CONVFMT="%.2f";
+    // $1=3.14159; print` emitted "3.14159" instead of gawk's "3.14".
+    //
+    // Note: gawk additionally preserves the numeric type so that later
+    // `print $1, $2` re-stringifies via OFMT (not CONVFMT). awkrs stores
+    // fields as strings only, so the OFMT-on-individual-field-read case
+    // diverges; this test exercises only the rebuild path that the fix
+    // actually addresses.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { CONVFMT="%.2f"; OFS=":"; $1=3.14159; $2=2.71828; print }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "3.14:2.72\n");
+}
+
+#[test]
+fn printf_percent_d_handles_values_past_i64_max() {
+    // Regression: `printf "%d", 2^63` saturated at i64::MAX = 9223372036854775807,
+    // instead of printing the actual value 9223372036854775808. f64 represents
+    // every power of two exactly up to 2^1023, so the printed integer should
+    // match gawk's behavior of preserving precision out to f64's limits.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { printf "%d %d %d %d\n", 2^63, -2^63, 1e20, -1e20 }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(
+        o,
+        "9223372036854775808 -9223372036854775808 100000000000000000000 -100000000000000000000\n"
+    );
+}
+
+#[test]
+fn printf_percent_u_saturates_above_u64_max() {
+    // For `printf "%u"`, gawk saturates the (uintmax_t)val cast at u64::MAX
+    // for positive values larger than 2^64.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { printf "%u %u %u\n", 2^63, 2^64, -1 }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(
+        o,
+        "9223372036854775808 18446744073709551615 18446744073709551615\n"
+    );
+}
+
+#[test]
 fn typeof_field_returns_strnum_for_numeric_field_value() {
     // gawk parity: a field whose string value parses as a number reports its
     // type as "strnum" (numeric string). Previously awkrs reported plain
@@ -2462,4 +2936,47 @@ fn split_with_seps_variable_keeps_target_array_isolated() {
     );
     assert_eq!(c, 0);
     assert_eq!(o, "a b c | MUTATED -\n");
+}
+
+#[test]
+fn cmp_num_to_string_literal_uses_convfmt() {
+    // gawk parity: when comparing a Num to a string literal (non-numeric-string),
+    // the Num is stringified via CONVFMT before string-compare. Before the fix
+    // awkrs treated literals as numeric strings and did numeric compare.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN {
+            CONVFMT = "%.2f"
+            x = 3.14159
+            print (x == "3.14")
+            print (x == "3.14159")
+            print (x != "3.14")
+            print (x < "3.2")
+            print (x > "3.0")
+            CONVFMT = "%.6f"
+            print (42 == "42")
+            print (42 == "42.000000")
+        }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "1\n0\n0\n1\n1\n1\n0\n");
+}
+
+#[test]
+fn printf_apostrophe_flag_skipped_in_c_locale() {
+    // gawk parity: the `'` flag groups via `localeconv()->thousands_sep`. In the
+    // C locale that field is empty — `printf "%'d", 1234567` must NOT insert
+    // commas. Earlier awkrs unconditionally fell back to ",".
+    let env = vec![
+        (OsString::from("LC_ALL"), OsString::from("C")),
+        (OsString::from("LANG"), OsString::from("C")),
+    ];
+    let (c, o, _) = run_awkrs_stdin_args_env(
+        Vec::<&str>::new(),
+        r#"BEGIN { printf "%'d\n%'f\n%'.2f\n", 1234567, 1234567.89, 9876543.21 }"#,
+        "",
+        env,
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "1234567\n1234567.890000\n9876543.21\n");
 }

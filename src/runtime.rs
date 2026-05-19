@@ -1111,6 +1111,13 @@ pub struct Runtime {
 
 impl Runtime {
     pub fn new() -> Self {
+        // gawk parity: `printf "%'d"` consults the locale's `thousands_sep`
+        // regardless of `-N`/`--use-lc-numeric`. Activate LC_NUMERIC from the
+        // environment unconditionally so `localeconv()` returns the user's
+        // grouping char (empty under `LC_ALL=C`, "," under `en_US.UTF-8`, etc.).
+        // The decimal point is still kept as '.' unless `-N` is passed (gawk's
+        // behavior).
+        crate::locale_numeric::set_locale_numeric_from_env();
         let mut vars = AwkMap::default();
         vars.insert("OFS".into(), Value::Str(" ".into()));
         vars.insert("ORS".into(), Value::Str("\n".into()));
@@ -1174,7 +1181,11 @@ impl Runtime {
             coproc_handles: HashMap::new(),
             rand_seed: 1,
             numeric_decimal: '.',
-            numeric_thousands_sep: crate::locale_numeric::thousands_sep_from_locale().or(Some(',')),
+            // gawk parity: in the C locale, `localeconv` returns an empty
+            // `thousands_sep` — `%'d` then prints WITHOUT grouping. Don't fall
+            // back to `,`; preserve `None` so `printf "%'d", 1234567` matches
+            // gawk under `LC_ALL=C`.
+            numeric_thousands_sep: crate::locale_numeric::thousands_sep_from_locale(),
             slots: Vec::new(),
             regex_cache_cs: AwkMap::default(),
             regex_cache_ci: AwkMap::default(),
@@ -3237,6 +3248,15 @@ pub fn split_string_with_seps(
     let mut seps: Vec<String> = Vec::new();
     let mut last = 0usize;
     for m in re.find_iter(s) {
+        // gawk parity: zero-width matches are ignored during split. Without
+        // this, `split("abc", a, /x*/)` would emit one split between every
+        // character because `/x*/` matches the empty string everywhere; gawk
+        // returns 1 field ("abc"). (Regexes that match `""` AND a real
+        // substring — e.g. `/a*/` on "aaab" — still emit splits at the
+        // non-empty matches because those have `m.start() < m.end()`.)
+        if m.start() == m.end() {
+            continue;
+        }
         parts.push(s[last..m.start()].to_string());
         seps.push(m.as_str().to_string());
         last = m.end();

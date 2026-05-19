@@ -817,6 +817,10 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_stmt_block(&mut self) -> Result<Vec<Stmt>> {
+        // POSIX / gawk: `if (cond) <NL> stmt`, `while (cond) <NL> stmt`,
+        // `else <NL> stmt`, and similar control-flow bodies allow a newline
+        // before the body. Skip leading newlines so the no-brace form parses.
+        self.skip_newlines()?;
         if self.cur == Token::LBrace {
             self.bump(false)?;
             let b = self.parse_stmt_list()?;
@@ -1468,7 +1472,7 @@ impl<'a> Parser<'a> {
                 }
             }
             Token::At => {
-                // `@/re/` regexp constant (gawk) vs `@expr(...)` indirect call.
+                // `@/re/` regexp constant (gawk) vs `@var(...)` indirect call.
                 let checkpoint = self.checkpoint();
                 self.bump(true)?;
                 if let Token::Regexp(s) = &self.cur {
@@ -1478,7 +1482,60 @@ impl<'a> Parser<'a> {
                 }
                 self.restore(checkpoint);
                 self.bump(false)?;
-                let callee = self.parse_expr_allow_gt(false, false)?;
+                // gawk parity: `@<expr>(args)`. The callee is a *string-valued*
+                // expression — usually a bare identifier (variable holding the
+                // function name) but `gawk` also accepts more general primaries.
+                // Parse just the variable / field / indexed-element form here so
+                // we don't consume the following `(args)` as if it were a call
+                // on the callee itself.
+                let callee = match &self.cur.clone() {
+                    Token::Ident(name) => {
+                        let name = name.clone();
+                        self.bump(false)?;
+                        // Accept `@a[k](...)` too — the callee can be an array element.
+                        if self.cur == Token::LBracket {
+                            self.bump(true)?;
+                            let indices = self.parse_index_list()?;
+                            if self.cur != Token::RBracket {
+                                return Err(Error::Parse {
+                                    line: self.line,
+                                    msg: "expected `]`".into(),
+                                });
+                            }
+                            self.bump(false)?;
+                            Expr::Index { name, indices }
+                        } else {
+                            Expr::Var(name)
+                        }
+                    }
+                    Token::Dollar => {
+                        // `@$1(args)` — callee read from a field.
+                        self.bump(false)?;
+                        let inner = self.parse_primary(false, false)?;
+                        Expr::Field(Box::new(inner))
+                    }
+                    Token::LParen => {
+                        // Parenthesized expression callee.
+                        self.bump(true)?;
+                        let inner = self.parse_expr_allow_gt(false, false)?;
+                        if self.cur != Token::RParen {
+                            return Err(Error::Parse {
+                                line: self.line,
+                                msg: "expected `)` around `@<expr>` callee".into(),
+                            });
+                        }
+                        self.bump(false)?;
+                        inner
+                    }
+                    _ => {
+                        return Err(Error::Parse {
+                            line: self.line,
+                            msg: "expected variable, `$<field>`, or `(expr)` after `@` for \
+                                  indirect call"
+                                .into(),
+                        });
+                    }
+                };
                 if self.cur != Token::LParen {
                     return Err(Error::Parse {
                         line: self.line,

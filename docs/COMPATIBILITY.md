@@ -158,6 +158,8 @@ Columns: **P** = POSIX / universal core, **B** = BSD awk, **M** = mawk, **G** = 
 | Non-finite floats (`±inf`, `±nan`) across `%f`/`%e`/`%g`/`%a` | **Match** (gawk-style `+inf` / `-inf` / `+nan` / `-nan`, with `INF` / `NAN` for uppercase variants — `format_non_finite` in `src/format.rs`) |
 | `print` of non-finite values | **Match** — `format_number` in `src/runtime.rs` emits the same `+inf` / `+nan` spelling so `print x` and `printf "%s", x` agree |
 | `LC_NUMERIC` (`-N`) | **Part** (documented split: format vs parse) |
+| `%'` flag thousands grouping | **Match** — consults `localeconv()->thousands_sep` regardless of `-N` (gawk parity). Empty in `LC_ALL=C` → no grouping; `","` in `en_US.UTF-8` → comma grouping. |
+| `==` / `<` / `>` of `Num` vs string literal | **Match** — string-compare fallback stringifies the number via `CONVFMT` (not the default `%.6g`). E.g. `BEGIN{CONVFMT="%.2f"; print 3.14159=="3.14"}` prints `1`. |
 | MPFR (`-M`) | **Part** (precision / rounding via `PROCINFO`) |
 
 ---
@@ -178,7 +180,7 @@ Columns: **P** = POSIX / universal core, **B** = BSD awk, **M** = mawk, **G** = 
 
 ## 9. Known intentional or unavoidable divergences
 
-- **JIT** (`src/jit.rs`): When enabled, must match interpreter; if a mismatch is found, treat as a bug in JIT, not as “gawk is wrong.”
+- **JIT** (`src/jit.rs`): When enabled, must match interpreter; if a mismatch is found, treat as a bug in JIT, not as "gawk is wrong." Known eligibility filters: chunks that combine `~`/`!~` regex match ops with short-circuit branches (`&&`/`||`) bail out to the interpreter — the JIT codegen's merge-block stack handling doesn't preserve the match result across the join, so the optimizer refuses these chunks to avoid silent miscompilation.
 - **Parallel mode** (`-j`): Record rules may run concurrently; programs with side effects or dependence on global order are unsafe.
 - **Dynamic extensions**: gawk `@load "foo.so"` has no equivalent in awkrs.
 - **Process / locale / OS**: `PROCINFO["platform"]` mapping uses `posix`/`mingw` style (`procinfo.rs`), not necessarily gawk’s host string for every OS.
