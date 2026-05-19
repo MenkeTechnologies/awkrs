@@ -735,6 +735,9 @@ pub fn asort(rt: &mut Runtime, src: &str, dest: Option<&str>) -> Result<f64> {
     let ic = rt.ignore_case_flag();
     let mut pairs: Vec<(String, Value)> = match rt.get_global_var(src) {
         Some(Value::Array(a)) => a.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+        // gawk parity: an unassigned name (`BEGIN { n=asort(a) }`) is treated
+        // as an empty array — returns 0, not a fatal "not an array" error.
+        None => Vec::new(),
         _ => return Err(Error::Runtime(format!("asort: `{src}` is not an array"))),
     };
     pairs.sort_by(|(_, va), (_, vb)| awk_value_sort_cmp_with_case(va, vb, ic));
@@ -767,6 +770,8 @@ pub fn asorti(rt: &mut Runtime, src: &str, dest: Option<&str>) -> Result<f64> {
     let ic = rt.ignore_case_flag();
     let mut keys: Vec<String> = match rt.get_global_var(src) {
         Some(Value::Array(a)) => a.keys().cloned().collect(),
+        // gawk parity: an unassigned name is an empty array → 0, not a fatal.
+        None => Vec::new(),
         _ => return Err(Error::Runtime(format!("asorti: `{src}` is not an array"))),
     };
     // gawk parity: `asorti` honors `IGNORECASE` for key comparisons.
@@ -1041,7 +1046,13 @@ mod tests {
     #[test]
     fn asorti_non_array_errors() {
         let mut rt = Runtime::new();
-        let e = asorti(&mut rt, "missing", None).unwrap_err();
+        // gawk parity: a name that's never been used is treated as an empty
+        // array and asorti returns 0 — NOT an error. Only scalar values
+        // (Str/Num) at that slot raise the "not an array" fatal.
+        let n = asorti(&mut rt, "missing", None).unwrap();
+        assert_eq!(n, 0.0);
+        rt.vars.insert("scalar".into(), crate::runtime::Value::Num(5.0));
+        let e = asorti(&mut rt, "scalar", None).unwrap_err();
         assert!(e.to_string().contains("asorti"), "{e}");
     }
 

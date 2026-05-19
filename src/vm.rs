@@ -2328,7 +2328,16 @@ extern "C" fn jit_val_dispatch(vmctx: *mut c_void, op: u32, a1: u32, a2: f64, a3
                 } else {
                     Some(ctx.cp.strings.get(a2 as u32))
                 };
-                builtins::asort(ctx.rt, s, d).unwrap_or(0.0)
+                // gawk parity: asort on a scalar is a fatal "first argument is
+                // not an array" error. Don't silently swallow it (the prior
+                // `.unwrap_or(0.0)` hid the error from the JIT dispatch).
+                match builtins::asort(ctx.rt, s, d) {
+                    Ok(n) => n,
+                    Err(e) => {
+                        JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+                        0.0
+                    }
+                }
             }
             JIT_VAL_ASORTI => {
                 let s = ctx.cp.strings.get(a1);
@@ -2337,7 +2346,13 @@ extern "C" fn jit_val_dispatch(vmctx: *mut c_void, op: u32, a1: u32, a2: f64, a3
                 } else {
                     Some(ctx.cp.strings.get(a2 as u32))
                 };
-                builtins::asorti(ctx.rt, s, d).unwrap_or(0.0)
+                match builtins::asorti(ctx.rt, s, d) {
+                    Ok(n) => n,
+                    Err(e) => {
+                        JIT_CHUNK_ERR.with(|c| *c.borrow_mut() = Some(e));
+                        0.0
+                    }
+                }
             }
             _ => 0.0,
         }

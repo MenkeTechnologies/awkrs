@@ -167,6 +167,7 @@ Columns: **P** = POSIX / universal core, **B** = BSD awk, **M** = mawk, **G** = 
 | `match(str, re, arr)` start/length subscripts | **Match** — writes `arr[i, "start"]` (1-based char index) and `arr[i, "length"]` for each successful submatch; unmatched optional groups have NO entries. |
 | `mktime(spec [, utc])` | **Match** — optional second argument forces UTC interpretation when truthy; one-arg form remains local-time. |
 | Assignment in ternary else-branch (`1 ? x=1 : x=2`) | **Match** — the else-branch parses as an assignment-expression (gawk grammar). Previously rejected as "invalid assignment target". |
+| `asort` / `asorti` on unassigned name | **Match** — treats missing slot as an empty array (returns 0). Scalar values still raise the "first argument is not an array" fatal. Compiler tracks these positions for array-slot promotion. |
 | MPFR (`-M`) | **Part** (precision / rounding via `PROCINFO`) |
 
 ---

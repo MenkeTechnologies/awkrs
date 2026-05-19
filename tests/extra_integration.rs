@@ -3125,3 +3125,28 @@ fn mktime_accepts_optional_utc_arg() {
     assert_eq!(c, 0);
     assert_eq!(o, "1705321800\n0\n1705321800\n");
 }
+
+#[test]
+fn asort_on_unassigned_name_returns_zero() {
+    // gawk parity: `asort(a)` / `asorti(a)` on an unassigned name treats the
+    // missing slot as an empty array — returns 0, not a "not an array" fatal.
+    // Previously awkrs hard-errored. Pure scalar values still raise the fatal.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN {
+            n = asort(empty)
+            print "asort:", n
+            m = asorti(empty2, dst)
+            print "asorti:", m, length(dst)
+        }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "asort: 0\nasorti: 0 0\n");
+    // Scalar still errors.
+    let (c2, _o2, e2) = run_awkrs_stdin(r#"BEGIN { x=5; n=asort(x); print n }"#, "");
+    assert_ne!(c2, 0);
+    assert!(
+        e2.contains("asort: `x` is not an array"),
+        "expected scalar fatal, got: {e2:?}"
+    );
+}

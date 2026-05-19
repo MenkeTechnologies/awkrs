@@ -1600,8 +1600,33 @@ fn collect_array_names_expr(e: &Expr, names: &mut HashSet<String>) {
             collect_array_names_expr(rhs, names);
         }
         Expr::Field(inner) => collect_array_names_expr(inner, names),
-        Expr::Call { args, .. } => {
-            for a in args {
+        Expr::Call { name, args } => {
+            // gawk parity: certain builtins take array-typed parameters by
+            // name. Mark the corresponding `Expr::Var(n)` args so they're
+            // promoted to array slots, not scalar slots. Otherwise calls like
+            // `asort(a)` would lose track of `a` as an array (slot-as-scalar)
+            // and `BEGIN { n=asort(a) }` would error/return 0 incorrectly.
+            //
+            // Array-typed positions (1-based):
+            //   asort(src [, dest])       → 1, 2
+            //   asorti(src [, dest])      → 1, 2
+            //   split(str, arr [, ...])   → 2 (and `seps` at 4)
+            //   patsplit(str, arr [, ...]) → 2 (and `seps` at 4)
+            //   match(str, re, arr)       → 3
+            //   gensub(re, repl, n, str)  → none (str is scalar)
+            //   delete a, length(a)        → handled by their own AST nodes
+            let array_arg_positions: &[usize] = match name.as_str() {
+                "asort" | "asorti" => &[0, 1],
+                "split" | "patsplit" => &[1, 3],
+                "match" => &[2],
+                _ => &[],
+            };
+            for (i, a) in args.iter().enumerate() {
+                if array_arg_positions.contains(&i) {
+                    if let Expr::Var(n) = a {
+                        names.insert(n.clone());
+                    }
+                }
                 collect_array_names_expr(a, names);
             }
         }
