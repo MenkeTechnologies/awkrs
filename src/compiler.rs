@@ -1059,9 +1059,18 @@ impl Compiler {
         if has_fs {
             self.compile_expr(&args[2], ops);
         }
+        let seps = if args.len() >= 4 {
+            match &args[3] {
+                Expr::Var(n) => Some(self.strings.intern(n)),
+                _ => None,
+            }
+        } else {
+            None
+        };
         ops.push(Op::Split {
             arr: arr_idx,
             has_fs,
+            seps,
         });
     }
 
@@ -1138,6 +1147,20 @@ impl Compiler {
     }
 
     fn compile_switch(&mut self, expr: &Expr, arms: &[SwitchArm], ops: &mut Vec<Op>) {
+        // gawk parity: `switch` arms fall through to the next arm's body until
+        // `break` (C semantics). Previously awkrs emitted a `Jump(end)` after
+        // each Case body, which auto-broke and lost the fallthrough behavior.
+        //
+        // Two-phase layout:
+        //   Phase 1 (tests): for each Case, `Dup` the switch value, compare to
+        //   the label, and if it matches: pop both the duped and original
+        //   values and `Jump body_k`. The non-match path falls through to the
+        //   next Case's test. After the last Case, drop the switch value and
+        //   `Jump default_or_end`.
+        //
+        //   Phase 2 (bodies): emit each body in source order with NO
+        //   terminator between them — control falls from `body_k` into
+        //   `body_{k+1}`. `break` jumps to `end`.
         self.structural_stack.push(StructuralKind::Switch {
             break_patches: Vec::new(),
         });
@@ -1147,54 +1170,72 @@ impl Compiler {
             let _ = self.structural_stack.pop();
             return;
         }
-        let mut pending_jfail: Option<usize> = None;
-        let mut end_jumps: Vec<usize> = Vec::new();
+
+        // Phase 1: comparisons. Stack invariant: [switch_value]. For each Case:
+        //   Dup                       -> [sv, sv]
+        //   <label>                   -> [sv, sv, label]
+        //   CmpEq/RegexMatch          -> [sv, sv, bool]
+        //   JumpIfFalsePop next_test  -> [sv, sv]  (skipped on no match)
+        //   Pop; Pop                  -> []
+        //   Jump body_k               -> []
+        let mut case_body_jumps: Vec<usize> = Vec::new();
         for arm in arms {
+            if let SwitchArm::Case { label, .. } = arm {
+                ops.push(Op::Dup);
+                match label {
+                    SwitchLabel::Expr(e) => {
+                        self.compile_expr(e, ops);
+                        ops.push(Op::CmpEq);
+                    }
+                    SwitchLabel::Regexp(re) => {
+                        let idx = self.strings.intern(re);
+                        ops.push(Op::PushStr(idx));
+                        ops.push(Op::RegexMatch);
+                    }
+                }
+                let jfail = ops.len();
+                ops.push(Op::JumpIfFalsePop(0)); // patched after this block
+                ops.push(Op::Pop); // pop duped value
+                ops.push(Op::Pop); // pop original switch value
+                let jbody = ops.len();
+                ops.push(Op::Jump(0)); // patched once we know body_k start
+                case_body_jumps.push(jbody);
+                // Patch jfail to the **next** instruction after the Jump
+                // (i.e., the start of the next test, or the no-match cleanup).
+                let next_test = ops.len();
+                ops[jfail] = Op::JumpIfFalsePop(next_test);
+            }
+        }
+
+        // No-match cleanup: drop the switch value, then either jump to the
+        // Default body (if any) or straight to `end`.
+        ops.push(Op::Pop);
+        let no_match_jump = ops.len();
+        ops.push(Op::Jump(0));
+
+        // Phase 2: bodies in source order. No implicit jump between them.
+        let mut default_body_start: Option<usize> = None;
+        let mut case_jump_iter = case_body_jumps.iter();
+        for arm in arms {
+            let body_start = ops.len();
             match arm {
-                SwitchArm::Case { label, stmts } => {
-                    if let Some(p) = pending_jfail.take() {
-                        ops[p] = Op::JumpIfFalsePop(ops.len());
-                    }
-                    ops.push(Op::Dup);
-                    match label {
-                        SwitchLabel::Expr(e) => {
-                            self.compile_expr(e, ops);
-                            ops.push(Op::CmpEq);
-                        }
-                        SwitchLabel::Regexp(re) => {
-                            let idx = self.strings.intern(re);
-                            ops.push(Op::PushStr(idx));
-                            ops.push(Op::RegexMatch);
-                        }
-                    }
-                    let jfail = ops.len();
-                    ops.push(Op::JumpIfFalsePop(0));
-                    pending_jfail = Some(jfail);
-                    ops.push(Op::Pop);
-                    ops.push(Op::Pop);
+                SwitchArm::Case { stmts, .. } => {
+                    let &jbody = case_jump_iter
+                        .next()
+                        .expect("case_body_jumps aligned with Case arms in source order");
+                    ops[jbody] = Op::Jump(body_start);
                     self.compile_stmts(stmts, ops);
-                    let jend = ops.len();
-                    ops.push(Op::Jump(0));
-                    end_jumps.push(jend);
                 }
                 SwitchArm::Default { stmts } => {
-                    if let Some(p) = pending_jfail.take() {
-                        ops[p] = Op::JumpIfFalsePop(ops.len());
-                    }
-                    ops.push(Op::Pop);
+                    default_body_start = Some(body_start);
                     self.compile_stmts(stmts, ops);
                 }
             }
         }
-        if let Some(p) = pending_jfail {
-            let pop_pos = ops.len();
-            ops.push(Op::Pop);
-            ops[p] = Op::JumpIfFalsePop(pop_pos);
-        }
+
         let end = ops.len();
-        for j in end_jumps {
-            ops[j] = Op::Jump(end);
-        }
+        ops[no_match_jump] = Op::Jump(default_body_start.unwrap_or(end));
+
         if let StructuralKind::Switch { break_patches } = self.structural_stack.pop().unwrap() {
             for bp in break_patches {
                 ops[bp] = Op::Jump(end);
@@ -1501,6 +1542,29 @@ fn peephole_optimize(ops: &mut Vec<Op>, strings: &StringPool) {
     // To avoid invalidating indices, we scan and collect, then apply in reverse order.
     let mut fusions: Vec<(usize, Op, usize)> = Vec::new(); // (pos, new_op, ops_removed_after_pos)
 
+    // Precompute which positions are jump targets. Fusing a "PushStr + Concat"
+    // pair where the Concat is a jump target (e.g. the post-ternary join point)
+    // would silently re-route the jump into the fused op, scrambling the stack
+    // and producing wrong concatenations like `"a" (1?"b":"c") == "bc"`.
+    let is_jump_target: Vec<bool> = {
+        let mut v = vec![false; ops.len() + 1];
+        for op in ops.iter() {
+            match *op {
+                Op::Jump(t)
+                | Op::JumpIfFalsePop(t)
+                | Op::JumpIfTruePop(t)
+                | Op::ForInNext { end_jump: t, .. }
+                | Op::JumpIfSlotGeNum { target: t, .. }
+                    if t < v.len() =>
+                {
+                    v[t] = true;
+                }
+                _ => {}
+            }
+        }
+        v
+    };
+
     let mut i = 0;
     while i < ops.len() {
         // Pattern: PushNum(N) + GetField + Print{argc:1, Stdout} → PrintFieldStdout(N)
@@ -1591,7 +1655,10 @@ fn peephole_optimize(ops: &mut Vec<Op>, strings: &StringPool) {
 
         // Pattern: IncDecSlot(slot, Pre/PostInc) + Pop → IncrSlot(slot)
         // Pattern: IncDecSlot(slot, Pre/PostDec) + Pop → DecrSlot(slot)
-        if i + 2 <= ops.len() {
+        // Skip the fusion if the Pop is a jump target (same reasoning as the
+        // ConcatPoolStr guard below — a jump into the dropped op would change
+        // the stack discipline).
+        if i + 2 <= ops.len() && !is_jump_target[i + 1] {
             if let (Op::IncDecSlot(slot, kind), Op::Pop) = (ops[i], ops[i + 1]) {
                 let fused = match kind {
                     IncDecOp::PreInc | IncDecOp::PostInc => Op::IncrSlot(slot),
@@ -1612,7 +1679,10 @@ fn peephole_optimize(ops: &mut Vec<Op>, strings: &StringPool) {
                 i += 2;
                 continue;
             }
-            // Pattern: PushStr(idx) + Concat → ConcatPoolStr(idx)
+            // Pattern: PushStr(idx) + Concat → ConcatPoolStr(idx). The outer
+            // `!is_jump_target[i + 1]` guard already skips the case where the
+            // Concat is itself a join point (e.g. the merge after a ternary's
+            // THEN branch).
             if let (Op::PushStr(idx), Op::Concat) = (ops[i], ops[i + 1]) {
                 fusions.push((i, Op::ConcatPoolStr(idx), 1));
                 i += 2;

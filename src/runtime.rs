@@ -600,7 +600,19 @@ impl Value {
 /// still display as decimals — matches gawk's `printf("%.0f", n)` behavior.
 #[inline]
 fn format_number(n: f64) -> String {
-    if n.is_finite() && n.fract() == 0.0 {
+    if !n.is_finite() {
+        // gawk: "+inf", "-inf", "+nan", "-nan" — emit the same spelling that `print` /
+        // OFMT-driven `%g` use so `printf "%s"` of a NaN matches `print` of the same value.
+        let sign = if n.is_sign_negative() { '-' } else { '+' };
+        let body = if n.is_nan() { "nan" } else { "inf" };
+        return format!("{sign}{body}");
+    }
+    if n.fract() == 0.0 {
+        // gawk parity: `print -0.0` produces `"0"`, not `"-0"`. Normalize negative
+        // zero so the two awks agree on numeric zero output.
+        if n == 0.0 {
+            return "0".to_string();
+        }
         format!("{:.0}", n)
     } else {
         format!("{n}")
@@ -813,17 +825,36 @@ fn utf8_char_len_at(bytes: &[u8], pos: usize) -> usize {
     }
 }
 
-fn split_fields_fieldwidths(record: &str, widths: &[usize], field_ranges: &mut Vec<(u32, u32)>) {
+/// A FIELDWIDTHS spec entry: skip `skip` bytes before the field, then take `width` bytes.
+/// `width == usize::MAX` means "take everything remaining" (gawk's `*` token).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct FieldwidthsSpec {
+    pub(crate) skip: usize,
+    pub(crate) width: usize,
+}
+
+const FIELDWIDTHS_REST: usize = usize::MAX;
+
+fn split_fields_fieldwidths(
+    record: &str,
+    specs: &[FieldwidthsSpec],
+    field_ranges: &mut Vec<(u32, u32)>,
+) {
     field_ranges.clear();
-    if widths.is_empty() {
+    if specs.is_empty() {
         return;
     }
     let b = record.as_bytes();
     let n = b.len();
     let mut pos = 0usize;
-    let len_w = widths.len();
-    for (i, &w) in widths.iter().enumerate() {
-        let end = if i == len_w - 1 { n } else { (pos + w).min(n) };
+    for spec in specs {
+        // Skip leading bytes (gawk `skip:width`); cannot read past end.
+        pos = (pos + spec.skip).min(n);
+        let end = if spec.width == FIELDWIDTHS_REST {
+            n
+        } else {
+            (pos + spec.width).min(n)
+        };
         field_ranges.push((pos as u32, end as u32));
         pos = end;
         if pos >= n {
@@ -927,7 +958,9 @@ fn split_fields_into(
                 i += 1;
             }
         }
-    } else if fs.len() == 1 && !ignore_case {
+    } else if fs.len() == 1 {
+        // POSIX / gawk: single-char FS is always a **literal** match; IGNORECASE
+        // explicitly does not apply (only multi-char regex FS honors IGNORECASE).
         let sep = fs.as_bytes()[0];
         let bytes = record.as_bytes();
         let mut start = 0;
@@ -942,6 +975,9 @@ fn split_fields_into(
         // POSIX: multi-character FS is treated as a regular expression.
         let mut b = RegexBuilder::new(fs);
         b.case_insensitive(ignore_case);
+        // gawk: `.` in ERE matches any byte including `\n` (matters when RS != "\n"
+        // so records can contain embedded newlines).
+        b.dot_matches_new_line(true);
         match b.build() {
             Ok(re) => {
                 let mut last = 0;
@@ -982,6 +1018,10 @@ pub struct Runtime {
     pub record: String,
     /// Reusable buffer for input line reading (avoids per-line allocation).
     pub line_buf: Vec<u8>,
+    /// Bytes read past the previous record's terminator that belong to the next
+    /// record(s). Used by streaming regex/multi-char `RS` to avoid losing input
+    /// that was over-consumed in chunked reads.
+    pub read_leftover: Vec<u8>,
     pub nr: f64,
     pub fnr: f64,
     pub filename: String,
@@ -999,6 +1039,11 @@ pub struct Runtime {
     /// `print`/`printf` `| "cmd"` — stdin of `sh -c cmd` (key is the command string).
     pub pipe_stdin: HashMap<String, BufWriter<ChildStdin>>,
     pub pipe_children: HashMap<String, Child>,
+    /// `"cmd" | getline …` — stdout of `sh -c cmd`, kept open between calls so the
+    /// command runs **once** per logical pipe and subsequent `getline`s advance
+    /// through the same stream (matches gawk; pre-fix awkrs respawned every call).
+    pub pipe_stdout: HashMap<String, BufReader<std::process::ChildStdout>>,
+    pub pipe_input_children: HashMap<String, Child>,
     /// `print`/`printf` `|& "cmd"` / `getline <& "cmd"` — two-way `sh -c` (same key for both directions).
     pub coproc_handles: HashMap<String, CoprocHandle>,
     /// gawk `/inet/tcp/...` TCP streams (read half).
@@ -1107,6 +1152,7 @@ impl Runtime {
             cached_fs: " ".into(),
             record: String::new(),
             line_buf: Vec::with_capacity(256),
+            read_leftover: Vec::new(),
             nr: 0.0,
             fnr: 0.0,
             filename: String::new(),
@@ -1123,6 +1169,8 @@ impl Runtime {
             output_handles: HashMap::new(),
             pipe_stdin: HashMap::new(),
             pipe_children: HashMap::new(),
+            pipe_stdout: HashMap::new(),
+            pipe_input_children: HashMap::new(),
             coproc_handles: HashMap::new(),
             rand_seed: 1,
             numeric_decimal: '.',
@@ -1478,9 +1526,17 @@ impl Runtime {
     }
 
     /// Initialize POSIX **`ARGC`** / **`ARGV`**: **`ARGV[0]`** is the process name; **`ARGV[1..]`** are input file paths (none when reading stdin only).
+    ///
+    /// `ARGV[0]` uses the basename of `argv[0]` (gawk convention — `"gawk"` rather than
+    /// `"/opt/homebrew/bin/gawk"`); awk scripts that key off the interpreter name
+    /// (`ARGV[0] == "awkrs"`) work regardless of how the binary was launched.
     pub fn init_argv(&mut self, files: &[std::path::PathBuf]) {
         use std::env;
-        let bin = env::args().next().unwrap_or_else(|| "awkrs".to_string());
+        let raw = env::args().next().unwrap_or_else(|| "awkrs".to_string());
+        let bin = std::path::Path::new(&raw)
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or(raw);
         let mut argv = vec![bin];
         for f in files {
             argv.push(f.to_string_lossy().into_owned());
@@ -1521,6 +1577,7 @@ impl Runtime {
             cached_fs: " ".into(),
             record: String::new(),
             line_buf: Vec::new(),
+            read_leftover: Vec::new(),
             nr: 0.0,
             fnr: 0.0,
             filename,
@@ -1537,6 +1594,8 @@ impl Runtime {
             output_handles: HashMap::new(),
             pipe_stdin: HashMap::new(),
             pipe_children: HashMap::new(),
+            pipe_stdout: HashMap::new(),
+            pipe_input_children: HashMap::new(),
             coproc_handles: HashMap::new(),
             rand_seed,
             numeric_decimal,
@@ -1591,6 +1650,10 @@ impl Runtime {
         }
         let mut b = RegexBuilder::new(pat);
         b.case_insensitive(ic);
+        // gawk: in ERE, `.` matches any byte INCLUDING newline. Rust regex defaults
+        // to `dot_matches_new_line(false)`. Enable it so `/a.*d/` on "ab\ncd"
+        // matches, matching gawk behavior for split/match/gsub/etc.
+        b.dot_matches_new_line(true);
         let re = b.build().map_err(|e| e.to_string())?;
         cache.insert(pat.to_string(), re);
         Ok(())
@@ -1621,7 +1684,15 @@ impl Runtime {
 
     pub fn set_errno_io(&mut self, e: &std::io::Error) {
         self.errno_code = e.raw_os_error().unwrap_or(0);
-        self.vars.insert("ERRNO".into(), Value::Str(e.to_string()));
+        // gawk's ERRNO is the strerror string ("No such file or directory"),
+        // not Rust's default Display which appends " (os error <code>)". Strip
+        // that suffix so awkrs's ERRNO matches the gawk parity tests.
+        let msg = e.to_string();
+        let cleaned = match msg.rfind(" (os error ") {
+            Some(pos) if msg.ends_with(')') => msg[..pos].to_string(),
+            _ => msg,
+        };
+        self.vars.insert("ERRNO".into(), Value::Str(cleaned));
     }
 
     pub fn set_errno_str(&mut self, msg: impl Into<String>) {
@@ -1769,30 +1840,47 @@ impl Runtime {
         Ok(Some(line))
     }
 
-    /// `expr | getline` — one line from `sh -c expr` stdout (new subprocess each call).
+    /// `expr | getline` — one line from `sh -c expr` stdout.
+    ///
+    /// Spawns the subprocess on first call for `cmd` and caches the stdout handle so
+    /// subsequent `getline`s advance through the **same** stream. `close(cmd)` tears
+    /// the pipe down. Before this caching, every call respawned `cmd`, which made
+    /// `while ((cmd | getline x) > 0)` loop forever on the first line of output.
     pub fn read_line_pipe(&mut self, cmd: &str) -> Result<Option<String>> {
         self.require_unsandboxed_io()?;
-        let mut child = Command::new("sh")
-            .arg("-c")
-            .arg(cmd)
-            .stdout(Stdio::piped())
-            .spawn()
-            .map_err(|e| Error::Runtime(format!("pipe getline `{cmd}`: {e}")))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| Error::Runtime(format!("pipe getline `{cmd}`: no stdout")))?;
-        let mut reader = BufReader::new(stdout);
+        if !self.pipe_stdout.contains_key(cmd) {
+            let mut child = Command::new("sh")
+                .arg("-c")
+                .arg(cmd)
+                .stdout(Stdio::piped())
+                .spawn()
+                .map_err(|e| Error::Runtime(format!("pipe getline `{cmd}`: {e}")))?;
+            let stdout = child
+                .stdout
+                .take()
+                .ok_or_else(|| Error::Runtime(format!("pipe getline `{cmd}`: no stdout")))?;
+            self.pipe_stdout
+                .insert(cmd.to_string(), BufReader::new(stdout));
+            self.pipe_input_children.insert(cmd.to_string(), child);
+        }
         let to = self.procinfo_read_timeout_ms_for(cmd);
         #[cfg(unix)]
         if to > 0 {
             use std::os::unix::io::AsRawFd;
-            let fd = reader.get_ref().as_raw_fd();
+            let fd = self
+                .pipe_stdout
+                .get(cmd)
+                .expect("pipe_stdout entry exists; just inserted")
+                .get_ref()
+                .as_raw_fd();
             wait_fd_read_timeout(fd, to)?;
         }
+        let reader = self
+            .pipe_stdout
+            .get_mut(cmd)
+            .expect("pipe_stdout entry exists; just inserted");
         let mut line = String::new();
         let n = reader.read_line(&mut line).map_err(Error::Io)?;
-        let _ = child.wait();
         if n == 0 {
             Ok(None)
         } else {
@@ -1957,6 +2045,10 @@ impl Runtime {
     /// matches gawk where any integer-valued `n` prints exact via `%.0f`.
     pub fn num_to_string_convfmt(&self, n: f64) -> String {
         if n.is_finite() && n.fract() == 0.0 {
+            // gawk parity: -0.0 prints as "0", not "-0".
+            if n == 0.0 {
+                return "0".to_string();
+            }
             return format!("{:.0}", n);
         }
         let fmt = self
@@ -1979,6 +2071,10 @@ impl Runtime {
     /// integers past `i64::MAX` still print via `%.0f`.
     pub fn num_to_string_ofmt(&self, n: f64) -> String {
         if n.is_finite() && n.fract() == 0.0 {
+            // gawk parity: -0.0 prints as "0", not "-0".
+            if n == 0.0 {
+                return "0".to_string();
+            }
             return format!("{:.0}", n);
         }
         let fmt = self
@@ -1997,6 +2093,12 @@ impl Runtime {
 
     /// `CONVFMT` formatting for an MPFR value (`-M`).
     pub fn mpfr_to_string_convfmt(&self, f: &Float) -> String {
+        // gawk parity: integer-valued bignums bypass CONVFMT so the full
+        // precision is preserved (otherwise `%.6g` would truncate `2^100` to
+        // "1.2677e+30" instead of the 31-digit exact value).
+        if f.is_finite() && f.is_integer() {
+            return format!("{}", crate::bignum::float_trunc_integer(f));
+        }
         let fmt = self
             .get_global_var("CONVFMT")
             .map(|v| v.as_str())
@@ -2013,6 +2115,10 @@ impl Runtime {
 
     /// `OFMT` formatting for an MPFR value (`-M`).
     pub fn mpfr_to_string_ofmt(&self, f: &Float) -> String {
+        // Same integer fast path as the CONVFMT variant — see comment there.
+        if f.is_finite() && f.is_integer() {
+            return format!("{}", crate::bignum::float_trunc_integer(f));
+        }
         let fmt = self
             .get_global_var("OFMT")
             .map(|v| v.as_str())
@@ -2050,13 +2156,19 @@ impl Runtime {
         let rs = self.rs_string();
         self.ensure_rs_regex_bytes()?;
         let mut rt_sep = Vec::new();
-        if !crate::record_io::read_next_record(
+        let mut line_buf = std::mem::take(&mut self.line_buf);
+        let mut leftover = std::mem::take(&mut self.read_leftover);
+        let read_ok = crate::record_io::read_next_record(
             &reader,
             &rs,
-            &mut self.line_buf,
+            &mut line_buf,
             &mut rt_sep,
             self.rs_regex_bytes.as_ref(),
-        )? {
+            &mut leftover,
+        )?;
+        self.line_buf = line_buf;
+        self.read_leftover = leftover;
+        if !read_ok {
             return Ok(None);
         }
         self.set_rt_from_bytes(&rt_sep);
@@ -2120,7 +2232,11 @@ impl Runtime {
             return Ok(Some(name));
         }
         if !self.file_handles.contains_key(path) {
-            let f = File::open(p).map_err(|e| Error::Runtime(format!("open {path}: {e}")))?;
+            // Preserve the underlying `io::Error` so `getline_error_code_for_key`
+            // can route through `set_errno_io`, giving ERRNO the clean OS error
+            // message ("No such file or directory") that gawk produces, rather
+            // than the noisier "open <path>: <full Rust display>" prefix.
+            let f = File::open(p).map_err(Error::Io)?;
             self.file_handles
                 .insert(path.to_string(), BufReader::new(f));
         }
@@ -2198,18 +2314,34 @@ impl Runtime {
         Ok(())
     }
 
+    /// Flush every open output handle (files via `>` / `>>` and pipes via `|`),
+    /// best-effort — used by `system()` to interleave subprocess output correctly.
+    pub fn flush_all_output_handles(&mut self) {
+        for (_, w) in self.output_handles.iter_mut() {
+            let _ = w.flush();
+        }
+        for (_, w) in self.pipe_stdin.iter_mut() {
+            let _ = w.flush();
+        }
+    }
+
     pub fn close_handle(&mut self, path: &str) -> f64 {
         let mut exit_status: f64 = 0.0;
+        let mut had_any = false;
         if let Some(h) = self.coproc_handles.remove(path) {
+            had_any = true;
             let _ = shutdown_coproc(h);
         }
         if let Some(mut w) = self.output_handles.remove(path) {
+            had_any = true;
             let _ = w.flush();
         }
         if let Some(mut w) = self.pipe_stdin.remove(path) {
+            had_any = true;
             let _ = w.flush();
         }
         if let Some(mut ch) = self.pipe_children.remove(path) {
+            had_any = true;
             match ch.wait() {
                 Ok(status) => {
                     #[cfg(unix)]
@@ -2231,11 +2363,55 @@ impl Runtime {
                 }
             }
         }
-        let _ = self.file_handles.remove(path);
-        let _ = self.dir_read.remove(path);
-        let _ = self.inet_tcp_read.remove(path);
-        let _ = self.inet_tcp_write.remove(path);
-        let _ = self.inet_udp.remove(path);
+        // `cmd | getline` reader/child — drop the reader (closes the read fd), then
+        // reap the child so subsequent calls with the same key respawn cleanly.
+        if self.pipe_stdout.remove(path).is_some() {
+            had_any = true;
+        }
+        if let Some(mut ch) = self.pipe_input_children.remove(path) {
+            had_any = true;
+            match ch.wait() {
+                Ok(status) => {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::process::ExitStatusExt;
+                        if let Some(code) = status.code() {
+                            exit_status = code as f64;
+                        } else if let Some(sig) = status.signal() {
+                            exit_status = (256 + sig) as f64;
+                        }
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        exit_status = status.code().unwrap_or(-1) as f64;
+                    }
+                }
+                Err(_) => {
+                    exit_status = -1.0;
+                }
+            }
+        }
+        if self.file_handles.remove(path).is_some() {
+            had_any = true;
+        }
+        if self.dir_read.remove(path).is_some() {
+            had_any = true;
+        }
+        if self.inet_tcp_read.remove(path).is_some() {
+            had_any = true;
+        }
+        if self.inet_tcp_write.remove(path).is_some() {
+            had_any = true;
+        }
+        if self.inet_udp.remove(path).is_some() {
+            had_any = true;
+        }
+        // gawk parity: `close()` on a name that does not correspond to an open handle
+        // returns -1 (POSIX awk allows the return value to be implementation-defined,
+        // but gawk's contract is "-1 for unknown name, 0 for a clean close of a file/pipe").
+        if !had_any {
+            return -1.0;
+        }
         exit_status
     }
 
@@ -2353,21 +2529,50 @@ impl Runtime {
         }
     }
 
-    fn fieldwidths_vec(&self) -> Option<Vec<usize>> {
+    fn fieldwidths_vec(&self) -> Option<Vec<FieldwidthsSpec>> {
         let t = self.get_global_var("FIELDWIDTHS")?.as_str();
         let t = t.trim();
         if t.is_empty() {
             return None;
         }
-        let v: Vec<usize> = t
-            .split_whitespace()
-            .filter_map(|w| w.parse::<usize>().ok())
-            .filter(|&w| w > 0)
-            .collect();
-        if v.is_empty() {
+        // gawk tokens:
+        //   "N"      → take an N-byte field (skip 0)
+        //   "M:N"    → skip M bytes, then take N bytes
+        //   "*"      → take everything remaining (must be the last token)
+        let mut specs = Vec::new();
+        for tok in t.split_whitespace() {
+            if tok == "*" {
+                specs.push(FieldwidthsSpec {
+                    skip: 0,
+                    width: FIELDWIDTHS_REST,
+                });
+                continue;
+            }
+            if let Some((skip_s, width_s)) = tok.split_once(':') {
+                let skip = skip_s.parse::<usize>().ok()?;
+                if width_s == "*" {
+                    specs.push(FieldwidthsSpec {
+                        skip,
+                        width: FIELDWIDTHS_REST,
+                    });
+                } else {
+                    let width = width_s.parse::<usize>().ok()?;
+                    if width == 0 {
+                        continue;
+                    }
+                    specs.push(FieldwidthsSpec { skip, width });
+                }
+            } else if let Ok(width) = tok.parse::<usize>() {
+                if width == 0 {
+                    continue;
+                }
+                specs.push(FieldwidthsSpec { skip: 0, width });
+            }
+        }
+        if specs.is_empty() {
             None
         } else {
-            Some(v)
+            Some(specs)
         }
     }
 
@@ -2620,7 +2825,10 @@ impl Runtime {
         let rs = self.rs_string();
         let mut end = self.line_buf.len();
         if rs == "\n" {
-            while end > 0 && (self.line_buf[end - 1] == b'\n' || self.line_buf[end - 1] == b'\r') {
+            // gawk parity: only `\n` is the record terminator on Unix; a trailing
+            // `\r` is part of the record (kept in `$0` / `length`). Older awkrs
+            // also stripped `\r` here, breaking CRLF parity.
+            while end > 0 && self.line_buf[end - 1] == b'\n' {
                 end -= 1;
             }
         }
@@ -2959,24 +3167,84 @@ impl Runtime {
 
 /// Field-splitting for `split(s, a [, fs])` — same algorithm as [`crate::bytecode::Op::Split`].
 pub fn split_string_by_field_separator(s: &str, fs: &str, ignore_case: bool) -> Vec<String> {
+    split_string_with_seps(s, fs, ignore_case).0
+}
+
+/// Field-splitting for `split(s, a, fs, seps)` — returns both the fields and the
+/// separator strings between consecutive fields (gawk 4-arg extension).
+/// `seps.len() == fields.len().saturating_sub(1)` on a non-empty record.
+pub fn split_string_with_seps(
+    s: &str,
+    fs: &str,
+    ignore_case: bool,
+) -> (Vec<String>, Vec<String>) {
     if s.is_empty() {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     }
     if fs.is_empty() {
-        s.chars().map(|c| c.to_string()).collect()
-    } else if fs == " " {
-        s.split_whitespace().map(String::from).collect()
-    } else if fs.len() == 1 && !ignore_case {
-        s.split(fs).map(String::from).collect()
-    } else {
-        let mut b = RegexBuilder::new(fs);
-        b.case_insensitive(ignore_case);
-        match b.build() {
-            Ok(re) => re.split(s).map(String::from).collect(),
-            Err(_) => s.split(fs).map(String::from).collect(),
-        }
+        // Empty FS: each character becomes a field; separators between them are empty.
+        let parts: Vec<String> = s.chars().map(|c| c.to_string()).collect();
+        let seps = vec![String::new(); parts.len().saturating_sub(1)];
+        return (parts, seps);
     }
+    if fs == " " {
+        // Default whitespace: leading whitespace is stripped (no leading empty field).
+        let mut parts: Vec<String> = Vec::new();
+        let mut seps: Vec<String> = Vec::new();
+        let bytes = s.as_bytes();
+        let mut i = 0usize;
+        while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t' || bytes[i] == b'\n') {
+            i += 1;
+        }
+        while i < bytes.len() {
+            let start = i;
+            while i < bytes.len() && bytes[i] != b' ' && bytes[i] != b'\t' && bytes[i] != b'\n' {
+                i += 1;
+            }
+            parts.push(s[start..i].to_string());
+            let ws_start = i;
+            while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t' || bytes[i] == b'\n') {
+                i += 1;
+            }
+            if i < bytes.len() {
+                seps.push(s[ws_start..i].to_string());
+            }
+        }
+        return (parts, seps);
+    }
+    // Single-char FS — awk POSIX semantics treat it as a literal character,
+    // never a regex metachar. gawk additionally documents that **IGNORECASE
+    // does not apply** to a single-char string FS (only multi-char regex FS
+    // honors it), so the literal split is always correct here regardless of
+    // `ignore_case`.
+    if fs.chars().count() == 1 {
+        let parts: Vec<String> = s.split(fs).map(String::from).collect();
+        let seps = vec![fs.to_string(); parts.len().saturating_sub(1)];
+        return (parts, seps);
+    }
+    // Regex FS (or multi-char / case-insensitive): use the regex engine and
+    // capture each match for the seps array.
+    let mut b = RegexBuilder::new(fs);
+    b.case_insensitive(ignore_case);
+    // gawk parity: `.` in ERE matches `\n` too.
+    b.dot_matches_new_line(true);
+    let Ok(re) = b.build() else {
+        let parts: Vec<String> = s.split(fs).map(String::from).collect();
+        let seps = vec![fs.to_string(); parts.len().saturating_sub(1)];
+        return (parts, seps);
+    };
+    let mut parts: Vec<String> = Vec::new();
+    let mut seps: Vec<String> = Vec::new();
+    let mut last = 0usize;
+    for m in re.find_iter(s) {
+        parts.push(s[last..m.start()].to_string());
+        seps.push(m.as_str().to_string());
+        last = m.end();
+    }
+    parts.push(s[last..].to_string());
+    (parts, seps)
 }
+
 
 fn shutdown_coproc(mut h: CoprocHandle) -> Result<()> {
     h.stdin.flush().map_err(Error::Io)?;
@@ -3006,6 +3274,7 @@ impl Clone for Runtime {
             cached_fs: self.cached_fs.clone(),
             record: self.record.clone(),
             line_buf: Vec::new(),
+            read_leftover: Vec::new(),
             nr: self.nr,
             fnr: self.fnr,
             filename: self.filename.clone(),
@@ -3022,6 +3291,8 @@ impl Clone for Runtime {
             output_handles: HashMap::new(),
             pipe_stdin: HashMap::new(),
             pipe_children: HashMap::new(),
+            pipe_stdout: HashMap::new(),
+            pipe_input_children: HashMap::new(),
             coproc_handles: HashMap::new(),
             rand_seed: self.rand_seed,
             numeric_decimal: self.numeric_decimal,
@@ -3066,6 +3337,10 @@ impl Drop for Runtime {
             let _ = w.flush();
         }
         for (_, mut ch) in self.pipe_children.drain() {
+            let _ = ch.wait();
+        }
+        self.pipe_stdout.clear();
+        for (_, mut ch) in self.pipe_input_children.drain() {
             let _ = ch.wait();
         }
     }
@@ -4091,5 +4366,71 @@ mod extra_runtime_tests {
         assert_eq!(rt.vars.get("OFS").unwrap().as_str(), " ");
         // FS might be missing from vars map (uses cached_fs until first split/assignment).
         assert_eq!(rt.vars.get("OFMT").unwrap().as_str(), "%.6g");
+    }
+
+    // ── split_string_with_seps (gawk 4-arg split) ───────────────────────────
+
+    #[test]
+    fn split_with_seps_regex_captures_each_matched_run() {
+        // Regression: `split(s, a, /[0-9]+/, seps)` must populate seps with the
+        // actual matched separator strings, not leave them empty.
+        let (parts, seps) = split_string_with_seps("a1b22c333d", "[0-9]+", false);
+        assert_eq!(parts, vec!["a", "b", "c", "d"]);
+        assert_eq!(seps, vec!["1", "22", "333"]);
+    }
+
+    #[test]
+    fn split_with_seps_single_char_fs_separator_is_the_char() {
+        let (parts, seps) = split_string_with_seps("a-b-c", "-", false);
+        assert_eq!(parts, vec!["a", "b", "c"]);
+        assert_eq!(seps, vec!["-", "-"]);
+    }
+
+    #[test]
+    fn split_with_seps_single_char_fs_is_literal_not_regex_dot() {
+        // POSIX awk: single-char FS is always literal. `"."` splits on the dot character,
+        // never as "any byte" (the regex metachar meaning).
+        let (parts, seps) = split_string_with_seps("a.b.c", ".", false);
+        assert_eq!(parts, vec!["a", "b", "c"]);
+        assert_eq!(seps, vec![".", "."]);
+    }
+
+    #[test]
+    fn split_with_seps_empty_fs_yields_empty_separators_between_chars() {
+        let (parts, seps) = split_string_with_seps("abc", "", false);
+        assert_eq!(parts, vec!["a", "b", "c"]);
+        assert_eq!(seps, vec!["", ""]);
+    }
+
+    #[test]
+    fn split_with_seps_whitespace_fs_captures_actual_whitespace_run() {
+        // Default-whitespace FS (`" "`): leading whitespace is dropped (no leading empty
+        // field), and each captured separator is the literal whitespace run found.
+        let (parts, seps) = split_string_with_seps("  a   b\tc", " ", false);
+        assert_eq!(parts, vec!["a", "b", "c"]);
+        assert_eq!(seps, vec!["   ", "\t"]);
+    }
+
+    #[test]
+    fn split_with_seps_no_match_returns_single_field_no_seps() {
+        let (parts, seps) = split_string_with_seps("zzz", "[0-9]+", false);
+        assert_eq!(parts, vec!["zzz"]);
+        assert!(seps.is_empty());
+    }
+
+    #[test]
+    fn split_with_seps_empty_input_returns_empty_vec() {
+        let (parts, seps) = split_string_with_seps("", ",", false);
+        assert!(parts.is_empty());
+        assert!(seps.is_empty());
+    }
+
+    #[test]
+    fn split_with_seps_trailing_separator_keeps_empty_tail_field() {
+        // Single-char FS uses `str::split`, which yields an empty trailing field
+        // when the input ends in the separator. seps has one entry (the trailing match).
+        let (parts, seps) = split_string_with_seps("a,b,", ",", false);
+        assert_eq!(parts, vec!["a", "b", ""]);
+        assert_eq!(seps, vec![",", ","]);
     }
 }

@@ -265,6 +265,19 @@ impl<'a> VmCtx<'a> {
             self.rt.set_nf(n)?;
             return Ok(());
         }
+        // gawk parity: NR/FNR are user-assignable. The internal counters
+        // (`rt.nr`/`rt.fnr`) are read directly by `Op::GetNR` / `Op::GetFNR`,
+        // so updating `rt.vars` alone wouldn't propagate to subsequent reads.
+        // Keep both in sync — the input loop adds 1 to `rt.nr` per record, so
+        // a user-set value of N causes the next record to see N+1.
+        if name == "NR" {
+            self.rt.nr = val.as_number();
+            return Ok(());
+        }
+        if name == "FNR" {
+            self.rt.fnr = val.as_number();
+            return Ok(());
+        }
         // Check slots
         if let Some(&slot) = self.cp.slot_map.get(name) {
             self.rt.slots[slot as usize] = val;
@@ -3070,10 +3083,18 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 if i < 0 {
                     return Err(Error::Runtime("attempt to access field number -1".into()));
                 }
+                // gawk parity: fields are "strnum" if their string value parses
+                // as a number (`$1` of "  42 " is "strnum"), "string" otherwise,
+                // and "unassigned" when the field index is beyond NF.
                 let t = if ctx.rt.field_is_unassigned(i) {
-                    "untyped"
+                    "unassigned"
                 } else {
-                    "string"
+                    let v = ctx.rt.field(i)?;
+                    if v.is_numeric_str() && !matches!(&v, Value::Str(s) if s.is_empty()) {
+                        "strnum"
+                    } else {
+                        "string"
+                    }
                 };
                 ctx.push(Value::Str(t.into()));
             }
@@ -3728,7 +3749,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             Op::GsubFn(target) => exec_sub(ctx, target, true)?,
 
             // ── Split ───────────────────────────────────────────────────
-            Op::Split { arr, has_fs } => {
+            Op::Split { arr, has_fs, seps } => {
                 let fs = if has_fs {
                     ctx.pop().as_str()
                 } else {
@@ -3740,13 +3761,17 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 };
                 let s = ctx.pop().as_str();
                 let arr_name = ctx.str_ref(arr).to_string();
-                let parts = crate::runtime::split_string_by_field_separator(
+                let seps_name = seps.map(|i| ctx.str_ref(i).to_string());
+                let (parts, seps_vec) = crate::runtime::split_string_with_seps(
                     &s,
                     &fs,
                     ctx.rt.ignore_case_flag(),
                 );
                 let n = parts.len();
                 ctx.rt.split_into_array(&arr_name, &parts);
+                if let Some(name) = seps_name {
+                    ctx.rt.split_into_array(&name, &seps_vec);
+                }
                 ctx.push(Value::Num(n as f64));
             }
 
@@ -4351,6 +4376,12 @@ fn exec_getline(
             Ok(())
         }
         Err(e) => {
+            // Sandbox violations are fatal — they should not be quietly mapped
+            // to a getline `-1` result (gawk also makes `--sandbox` redirection
+            // fatal). Propagate so the program aborts like gawk.
+            if matches!(&e, Error::Runtime(msg) if msg.starts_with("sandbox:")) {
+                return Err(e);
+            }
             let code = ctx.rt.getline_error_code_for_key(&e, &input_key);
             if push_result {
                 ctx.push(Value::Num(code));
@@ -4767,6 +4798,13 @@ pub(crate) fn exec_builtin_dispatch(
                 ));
             }
             use std::process::Command;
+            // POSIX/gawk: flush stdout and any buffered pipes/files before launching
+            // the subprocess so its output is correctly interleaved after pending awk
+            // output rather than before it. Without this, `print "a"; system("echo b")`
+            // would emit "b" before the buffered "a".
+            flush_print_buf(&mut ctx.rt.print_buf)?;
+            let _ = std::io::stdout().flush();
+            ctx.rt.flush_all_output_handles();
             let cmd = args[0].as_str();
             let st = Command::new("sh")
                 .arg("-c")

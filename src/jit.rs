@@ -751,7 +751,7 @@ pub fn needs_mixed_mode(ops: &[Op]) -> bool {
                 | Op::TypeofField
                 | Op::TypeofValue
                 | Op::CallBuiltin(_, _)
-                | Op::Split { .. }
+                | Op::Split { seps: None, .. }
                 | Op::Patsplit { .. }
                 | Op::MatchBuiltin { .. }
         ) || matches!(
@@ -1810,7 +1810,7 @@ pub fn try_compile_with_options(
                     );
                     stack.push(builder.inst_results(call)[0]);
                 }
-                Op::Split { arr, has_fs } => {
+                Op::Split { arr, has_fs, seps: _ } => {
                     let a1 = builder.ins().iconst(types::I32, i64::from(arr));
                     let zf = builder.ins().f64const(0.0);
                     if has_fs {
@@ -5330,6 +5330,7 @@ mod tests {
             Op::Split {
                 arr: 1,
                 has_fs: false,
+                seps: None,
             },
             Op::PushNum(0.0),
         ];
@@ -5342,6 +5343,7 @@ mod tests {
             Op::Split {
                 arr: 1,
                 has_fs: true,
+                seps: None,
             },
             Op::PushNum(0.0),
         ];

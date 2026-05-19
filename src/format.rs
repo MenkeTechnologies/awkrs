@@ -204,6 +204,14 @@ fn parse_conversion_rest(
         return Ok(("%".to_string(), i));
     }
 
+    // gawk parity: unknown conversion characters are emitted **literally** as `%X`
+    // and DO NOT consume an argument (so the next `%s` etc. still sees the args
+    // the user intended for it). gawk also emits a warning under `--lint`; awkrs
+    // stays silent for now.
+    if !is_known_conv(conv) {
+        return Ok((format!("%{conv}"), i));
+    }
+
     let v = if let Some(p) = val_pos {
         val_at(vals, p)?
     } else {
@@ -225,6 +233,16 @@ fn parse_conversion_rest(
         mpfr_mode,
     )?;
     Ok((piece, i))
+}
+
+/// Conversion letters that `format_one` understands. Anything outside this set is
+/// emitted as a literal `%<conv>` (gawk's behavior for unknown specifiers).
+fn is_known_conv(c: char) -> bool {
+    matches!(
+        c,
+        's' | 'd' | 'i' | 'u' | 'o' | 'x' | 'X' | 'a' | 'A' |
+        'f' | 'F' | 'e' | 'E' | 'g' | 'G' | 'c'
+    )
 }
 
 /// Insert thousands separators (gawk **`%'`** flag) for a signed decimal digit string.
@@ -271,6 +289,25 @@ fn trim_trailing_zero_fraction(s: &str) -> String {
     t
 }
 
+/// gawk-style spelling of a non-finite float for `%f`/`%e`/`%g`/`%a` conversions.
+///
+/// Returns `+inf`/`-inf`/`+nan`/`-nan` (`INF`/`NAN` for the uppercase variants).
+/// `+` is emitted on positive (or unsigned) values; NaN uses its IEEE sign bit.
+fn format_non_finite(n: f64, upper: bool) -> Option<String> {
+    if n.is_finite() {
+        return None;
+    }
+    let body = if n.is_nan() {
+        if upper { "NAN" } else { "nan" }
+    } else if upper {
+        "INF"
+    } else {
+        "inf"
+    };
+    let sign = if n.is_sign_negative() { '-' } else { '+' };
+    Some(format!("{sign}{body}"))
+}
+
 /// POSIX / awk exponent: `e`/`E` then sign and at least two magnitude digits (`e+03`).
 fn format_sprintf_exponent(exp: i32, upper_e: bool) -> String {
     let ec = if upper_e { 'E' } else { 'e' };
@@ -286,23 +323,8 @@ fn format_sprintf_exponent(exp: i32, upper_e: bool) -> String {
 
 /// Format a float as C99 hex-float (`%a` / `%A`): `[-]0xh.hhhhp±d`.
 fn format_hex_float(n: f64, prec: Option<usize>, upper: bool, alt: bool) -> String {
-    if n.is_nan() {
-        return if upper { "NAN".into() } else { "nan".into() };
-    }
-    if n.is_infinite() {
-        return if n < 0.0 {
-            if upper {
-                "-INF".into()
-            } else {
-                "-inf".into()
-            }
-        } else {
-            if upper {
-                "INF".into()
-            } else {
-                "inf".into()
-            }
-        };
+    if let Some(s) = format_non_finite(n, upper) {
+        return s;
     }
     if n == 0.0 {
         let sign = if n.is_sign_negative() { "-" } else { "" };
@@ -532,6 +554,9 @@ fn format_one(
     };
     match conv {
         's' => {
+            // POSIX / gawk: the `0` flag has no effect on string conversions —
+            // pad with spaces regardless. (Numeric conversions below still
+            // respect `pad_char`.)
             let mut s: String = match (mpfr_mode, v) {
                 (Some(_), Value::Mpfr(f)) => mpfr_string_for_percent_s(f),
                 _ => v.as_str(),
@@ -539,7 +564,7 @@ fn format_one(
             if let Some(p) = prec {
                 s = s.chars().take(p).collect::<String>();
             }
-            pad_string(&s, w, left, pad_char)
+            pad_string(&s, w, left, ' ')
         }
         'd' | 'i' => {
             let mut s = if let Some((pr, rd)) = mpfr_mode {
@@ -552,6 +577,14 @@ fn format_one(
                 let n = v.as_number() as i64;
                 format!("{n}")
             };
+            // POSIX: `%.Nd` with N==0 and value 0 produces NO digits at all
+            // ("[]"), not "0". This matches gawk and most libc printf impls.
+            if matches!(prec, Some(0)) {
+                let mag = s.trim_start_matches('-');
+                if mag == "0" {
+                    s.clear();
+                }
+            }
             // POSIX: `%.Nd` zero-pads the integer magnitude to at least N digits
             // (the sign is added separately and doesn't count toward N).
             if let Some(p) = prec {
@@ -577,14 +610,24 @@ fn format_one(
                 };
                 let int = float_trunc_integer(&f);
                 if int < 0 {
-                    "0".to_string()
+                    // MPFR mode: negative integers wrap as 64-bit two's complement
+                    // (gawk parity). `to_u64_wrapping` reads the low 64 bits of the
+                    // truncated bignum, exactly matching `i64 → u64` cast semantics.
+                    format!("{}", int.to_u64_wrapping())
                 } else {
                     format!("{}", int)
                 }
             } else {
-                let n = v.as_number().max(0.0) as u64;
+                // gawk: `%u` of a negative number wraps via i64 → u64 (two's complement)
+                // — `printf "%u", -5` yields 18446744073709551611, not 0. Previously
+                // awkrs clamped to 0, breaking gawk parity.
+                let n = v.as_number() as i64 as u64;
                 format!("{n}")
             };
+            // POSIX %.Nu with N==0 and value 0 → empty (gawk parity).
+            if matches!(prec, Some(0)) && s == "0" {
+                s.clear();
+            }
             if group && sep != '\0' {
                 s = insert_thousands_sep(s, sep);
             }
@@ -603,7 +646,10 @@ fn format_one(
                 let un = n as u64;
                 format!("{un:o}")
             };
-            if alt && s != "0" {
+            if matches!(prec, Some(0)) && s == "0" {
+                s.clear();
+            }
+            if alt && s != "0" && !s.is_empty() {
                 s = format!("0{s}");
             }
             pad_numeric(&s, w, left, pad_char)
@@ -629,7 +675,10 @@ fn format_one(
                     format!("{un:X}")
                 }
             };
-            if alt {
+            if matches!(prec, Some(0)) && s == "0" {
+                s.clear();
+            }
+            if alt && !s.is_empty() {
                 s = if conv == 'x' {
                     format!("0x{s}")
                 } else {
@@ -646,6 +695,13 @@ fn format_one(
         }
         'f' | 'F' => {
             let p = prec.unwrap_or(6);
+            let n_f64 = match (mpfr_mode, v) {
+                (Some(_), Value::Mpfr(f)) => f.to_f64(),
+                _ => v.as_number(),
+            };
+            if let Some(spelled) = format_non_finite(n_f64, conv == 'F') {
+                return pad_numeric(&spelled, w, left, ' ');
+            }
             let s = if let Some((pr, rd)) = mpfr_mode {
                 let fsrc = match v {
                     Value::Mpfr(f) => f.clone(),
@@ -660,6 +716,13 @@ fn format_one(
         }
         'e' | 'E' => {
             let p = prec.unwrap_or(6);
+            let n_f64 = match (mpfr_mode, v) {
+                (Some(_), Value::Mpfr(f)) => f.to_f64(),
+                _ => v.as_number(),
+            };
+            if let Some(spelled) = format_non_finite(n_f64, conv == 'E') {
+                return pad_numeric(&spelled, w, left, ' ');
+            }
             let raw = if let Some((pr, rd)) = mpfr_mode {
                 let fsrc = match v {
                     Value::Mpfr(f) => f.clone(),
@@ -690,8 +753,8 @@ fn format_one(
                     _ => value_to_mpfr(v, pr, rd),
                 };
                 let n = fsrc.to_f64();
-                if !n.is_finite() {
-                    return Err("sprintf: non-finite value for %g".into());
+                if let Some(spelled) = format_non_finite(n, conv == 'G') {
+                    return pad_numeric(&spelled, w, left, ' ');
                 }
                 let abs_n = n.abs();
                 if abs_n == 0.0 {
@@ -703,7 +766,10 @@ fn format_one(
                 let exp = abs_n.log10().floor() as i32;
                 let use_e = exp < -4 || exp >= p as i32;
                 let raw = if use_e {
-                    let mantissa_prec = p.saturating_sub(1).max(1);
+                    // C99 / POSIX %g: precision is *significant digits*, so the
+                    // exponent form needs (p - 1) digits after the radix. With p=1
+                    // that's zero — output is e.g. "1e+02", matching gawk.
+                    let mantissa_prec = p.saturating_sub(1);
                     format!("{:.*e}", mantissa_prec, fsrc)
                 } else {
                     let n0 = fsrc.to_f64();
@@ -725,8 +791,8 @@ fn format_one(
                 return pad_numeric(&s, w, left, pad_char);
             }
             let n = v.as_number();
-            if !n.is_finite() {
-                return Err("sprintf: non-finite value for %g".into());
+            if let Some(spelled) = format_non_finite(n, conv == 'G') {
+                return pad_numeric(&spelled, w, left, ' ');
             }
             let abs_n = n.abs();
             if abs_n == 0.0 {
@@ -735,11 +801,18 @@ fn format_one(
                 let s = trim_trailing_zero_fraction(&localized);
                 return pad_numeric(&s, w, left, pad_char);
             }
-            let exp = abs_n.log10().floor() as i32;
-            let use_e = exp < -4 || exp >= p as i32;
+            // C99 / POSIX: the exponent that decides fixed-vs-e form is the
+            // exponent of the **rounded** value, not `floor(log10(n))`. Otherwise
+            // values like 9.5 with precision 1 stay in fixed form ("10") instead
+            // of switching to e-form ("1e+01") like gawk does.
+            let raw_e = format!("{:.*e}", p.saturating_sub(1), n);
+            let exp_x: i32 = raw_e
+                .find('e')
+                .and_then(|i| raw_e[i + 1..].parse().ok())
+                .unwrap_or(0);
+            let use_e = exp_x < -4 || exp_x >= p as i32;
             let raw = if use_e {
-                let mantissa_prec = p.saturating_sub(1).max(1);
-                format!("{:.*e}", mantissa_prec, n)
+                raw_e
             } else {
                 format_g_decimal_significant_f64(n, p)
             };
@@ -755,9 +828,14 @@ fn format_one(
             pad_numeric(&s, w, left, pad_char)
         }
         'c' => {
+            // `%c` is a string-like conversion: the `0` flag is meaningless and
+            // gawk pads with spaces regardless.
             let s = sprintf_c_char(v);
-            pad_string(&s, w, left, pad_char)
+            pad_string(&s, w, left, ' ')
         }
+        // Unreachable in normal flow: `parse_conversion_rest` filters unknown
+        // conversion characters through `is_known_conv` before reaching here.
+        // Kept as a defensive error in case `format_one` is called directly.
         _ => Err(format!("unsupported conversion %{conv}")),
     }
 }
@@ -1077,27 +1155,114 @@ mod tests {
     }
 
     #[test]
-    fn percent_u_negative_truncates_to_zero() {
+    fn percent_u_negative_wraps_as_two_s_complement_u64() {
+        // gawk parity: `printf "%u", -9` → 18446744073709551607 (i64 → u64 wrap),
+        // not 0 (which is what awkrs previously emitted).
         let s = awk_sprintf("%u", &[Value::Num(-9.0)]).unwrap();
-        assert_eq!(s, "0");
+        assert_eq!(s, "18446744073709551607");
     }
 
     #[test]
-    fn percent_g_rejects_nan() {
-        let e = awk_sprintf("%g", &[Value::Num(f64::NAN)]).unwrap_err();
-        assert!(e.contains("non-finite"), "{e}");
+    fn percent_u_minus_one_is_all_ones_u64() {
+        let s = awk_sprintf("%u", &[Value::Num(-1.0)]).unwrap();
+        assert_eq!(s, "18446744073709551615");
     }
 
     #[test]
-    fn percent_g_rejects_infinity() {
-        let e = awk_sprintf("%g", &[Value::Num(f64::INFINITY)]).unwrap_err();
-        assert!(e.contains("non-finite"), "{e}");
+    fn percent_s_zero_flag_pads_with_spaces_not_zeros() {
+        // POSIX / gawk: the `0` flag is for numeric conversions; on `%s` it is
+        // ignored and the field still pads with spaces.
+        let s = awk_sprintf("[%05s]", &[Value::Str("ab".into())]).unwrap();
+        assert_eq!(s, "[   ab]");
     }
 
     #[test]
-    fn unsupported_conversion_errors() {
-        let e = awk_sprintf("%z", &[Value::Num(1.0)]).unwrap_err();
-        assert!(e.contains("unsupported"), "{e}");
+    fn percent_c_zero_flag_pads_with_spaces() {
+        let s = awk_sprintf("[%05c]", &[Value::Num(65.0)]).unwrap();
+        assert_eq!(s, "[    A]");
+    }
+
+    #[test]
+    fn percent_g_nan_emits_gawk_style_plus_nan() {
+        let s = awk_sprintf("%g", &[Value::Num(f64::NAN)]).unwrap();
+        assert_eq!(s, "+nan");
+    }
+
+    #[test]
+    fn percent_g_infinity_emits_plus_inf() {
+        let s = awk_sprintf("%g", &[Value::Num(f64::INFINITY)]).unwrap();
+        assert_eq!(s, "+inf");
+    }
+
+    #[test]
+    fn percent_g_negative_infinity_emits_minus_inf() {
+        let s = awk_sprintf("%g", &[Value::Num(f64::NEG_INFINITY)]).unwrap();
+        assert_eq!(s, "-inf");
+    }
+
+    #[test]
+    fn percent_capital_g_negative_infinity_emits_minus_capital_inf() {
+        let s = awk_sprintf("%G", &[Value::Num(f64::NEG_INFINITY)]).unwrap();
+        assert_eq!(s, "-INF");
+    }
+
+    #[test]
+    fn percent_f_infinity_pads_to_width_with_spaces_not_zeros() {
+        // gawk: "[      +inf]" — non-finite is padded with spaces even with `%010f`.
+        let s = awk_sprintf("[%010f]", &[Value::Num(f64::INFINITY)]).unwrap();
+        assert_eq!(s, "[      +inf]");
+    }
+
+    #[test]
+    fn percent_e_negative_infinity_minus_inf() {
+        let s = awk_sprintf("%e", &[Value::Num(f64::NEG_INFINITY)]).unwrap();
+        assert_eq!(s, "-inf");
+    }
+
+    #[test]
+    fn percent_a_infinity_plus_inf() {
+        let s = awk_sprintf("%a", &[Value::Num(f64::INFINITY)]).unwrap();
+        assert_eq!(s, "+inf");
+    }
+
+    #[test]
+    fn percent_g_precision_one_emits_single_significant_digit() {
+        // C99 / POSIX: %g's precision is the total significant digit count.
+        // With precision 1 and a value that uses %e form, exactly one digit appears.
+        let s = awk_sprintf("%.1g", &[Value::Num(123.456)]).unwrap();
+        assert_eq!(s, "1e+02");
+    }
+
+    #[test]
+    fn percent_g_precision_zero_treated_as_one() {
+        // gawk parity: `%.0g` and `%.1g` produce the same output.
+        let s = awk_sprintf("%.0g", &[Value::Num(123.456)]).unwrap();
+        assert_eq!(s, "1e+02");
+    }
+
+    #[test]
+    fn percent_g_precision_two_keeps_two_significant_digits() {
+        let s = awk_sprintf("%.2g", &[Value::Num(123.456)]).unwrap();
+        assert_eq!(s, "1.2e+02");
+    }
+
+    #[test]
+    fn unknown_conversion_emits_literal_does_not_consume_arg() {
+        // gawk parity: `%z` (and other unsupported conversion characters) emit
+        // `%z` literally and DO NOT consume an argument. The following `%s` still
+        // sees the user's intended value.
+        let s = awk_sprintf(
+            "[%z][%s]",
+            &[Value::Str("first".into()), Value::Num(2.0)],
+        )
+        .unwrap();
+        assert_eq!(s, "[%z][first]");
+    }
+
+    #[test]
+    fn unknown_conversion_alone_emits_literal() {
+        let s = awk_sprintf("%q\n", &[Value::Str("ignored".into())]).unwrap();
+        assert_eq!(s, "%q\n");
     }
 
     #[test]

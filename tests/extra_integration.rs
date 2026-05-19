@@ -900,10 +900,11 @@ fn postfix_increment_uninitialized_scalar_starts_at_zero() {
 }
 
 #[test]
-fn gensub_numeric_zero_replaces_all_occurrences() {
+fn gensub_numeric_zero_treated_as_one_like_gawk() {
+    // gawk emits "third argument `0' treated as 1" and replaces only the first match.
     let (c, o, _) = run_awkrs_stdin(r#"BEGIN { print gensub(/a/, "A", 0, "aba") }"#, "");
     assert_eq!(c, 0);
-    assert_eq!(o, "AbA\n");
+    assert_eq!(o, "Aba\n");
 }
 
 #[test]
@@ -1059,18 +1060,18 @@ fn unclosed_brace_program_exits_nonzero_with_parse_error() {
 
 #[test]
 fn log_zero_is_negative_infinity() {
+    // gawk prints "-inf" for `print log(0)`.
     let (c, o, _) = run_awkrs_stdin("BEGIN { print log(0) }", "");
     assert_eq!(c, 0);
-    let t = o.trim();
-    assert!(t.eq_ignore_ascii_case("-inf"), "expected -inf, got {o:?}");
+    assert_eq!(o.trim(), "-inf");
 }
 
 #[test]
-fn sqrt_negative_one_is_nan() {
+fn sqrt_negative_one_prints_gawk_style_plus_nan() {
+    // gawk: `print sqrt(-1)` → "+nan" (sign-tagged, lowercase).
     let (c, o, e) = run_awkrs_stdin("BEGIN { print sqrt(-1) }", "");
     assert_eq!(c, 0);
-    let t = o.trim();
-    assert!(t.eq_ignore_ascii_case("nan"), "expected NaN, got {o:?}");
+    assert_eq!(o.trim(), "+nan", "expected +nan, got {o:?}");
     assert!(
         e.contains("sqrt: received negative argument"),
         "gawk warns on stderr even without LINT; stderr={e:?}"
@@ -1078,14 +1079,36 @@ fn sqrt_negative_one_is_nan() {
 }
 
 #[test]
-fn log_negative_one_warns_and_yields_nan() {
+fn log_negative_one_warns_and_prints_plus_nan() {
     let (c, o, e) = run_awkrs_stdin("BEGIN { print log(-1) }", "");
     assert_eq!(c, 0);
-    assert!(o.trim().eq_ignore_ascii_case("nan"), "stdout={o:?}");
+    assert_eq!(o.trim(), "+nan", "stdout={o:?}");
     assert!(
         e.contains("log: received negative argument"),
         "stderr={e:?}"
     );
+}
+
+#[test]
+fn printf_percent_s_on_nan_matches_print_spelling() {
+    // Both `print x` and `printf "%s", x` should produce "+nan" so the two display paths
+    // agree (gawk parity).
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { x=sqrt(-1); printf "%s|%s\n", x, x }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "+nan|+nan\n");
+}
+
+#[test]
+fn printf_percent_s_on_infinity_matches_print_spelling() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { x=exp(800); printf "%s\n", x; print x }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "+inf\n+inf\n");
 }
 
 // ── JIT integration tests ───────────────────────────────────────────────
@@ -1318,7 +1341,10 @@ fn jit_typeof_expressions_and_slot() {
 }
 
 #[test]
-fn jit_typeof_field_unassigned() {
+fn jit_typeof_field_beyond_nf_is_unassigned() {
+    // gawk parity: out-of-range fields report "unassigned" (gawk's vocabulary
+    // for fields that exist by reference but have no value). Older awkrs
+    // reported "untyped".
     let (c, o, e) = run_awkrs_stdin_args_env(
         std::iter::empty::<&str>(),
         r#"{ print typeof($2) }"#,
@@ -1326,7 +1352,7 @@ fn jit_typeof_field_unassigned() {
         std::iter::empty::<(OsString, OsString)>(),
     );
     assert_eq!(c, 0, "stderr: {e}");
-    assert_eq!(o.trim(), "untyped");
+    assert_eq!(o.trim(), "unassigned");
 }
 
 #[test]
@@ -1539,4 +1565,901 @@ fn print_paren_list_emits_multiple_fields() {
     let (c, o, e) = run_awkrs_stdin(r#"BEGIN { OFS=","; print (1, 2) }"#, "");
     assert_eq!(c, 0, "stderr={e:?}");
     assert_eq!(o, "1,2\n");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Regression suite for bugs found in the v0.4.3 audit:
+//   * `gsub(//, …)` zero-width matches
+//   * `split(s, a, fs, seps)` populating the seps array
+//   * Streaming multi-char and regex `RS` returning only one record from stdin
+//   * `printf "%g"/"%f"/"%e"/"%a"` formatting of non-finite values
+//   * `print` / `printf "%s"` of NaN / ±inf using gawk's "+nan" / "+inf" spelling
+//   * `gensub(re, repl, 0, …)` and negative `how` matching gawk's "treat as 1"
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn gsub_empty_pattern_inserts_replacement_between_every_character() {
+    // Before the fix the literal-pattern fast path treated "" as "no match"
+    // and returned 0. gawk treats // as a zero-width match at every position.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { s="abc"; n=gsub(//, "-", s); print n, s }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "4 -a-b-c-\n");
+}
+
+#[test]
+fn gsub_empty_pattern_on_empty_target_matches_once() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { s=""; n=gsub(//, "-", s); print n, "[" s "]" }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "1 [-]\n");
+}
+
+#[test]
+fn sub_empty_pattern_inserts_at_start() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { s="abc"; n=sub(//, "-", s); print n, s }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "1 -abc\n");
+}
+
+#[test]
+fn split_four_arg_populates_seps_for_regex_fs() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN {
+            n = split("a1b22c333d", a, /[0-9]+/, seps);
+            printf "n=%d\n", n;
+            for (i = 1; i <= n; i++) printf "a[%d]=%s\n", i, a[i];
+            for (i = 1; i < n; i++) printf "seps[%d]=%s\n", i, seps[i];
+        }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(
+        o,
+        "n=4\na[1]=a\na[2]=b\na[3]=c\na[4]=d\nseps[1]=1\nseps[2]=22\nseps[3]=333\n"
+    );
+}
+
+#[test]
+fn split_four_arg_populates_seps_for_single_char_fs() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN {
+            n = split("x-y-z", a, "-", seps);
+            for (i = 1; i < n; i++) printf "[%s]", seps[i];
+            print ""
+        }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "[-][-]\n");
+}
+
+#[test]
+fn split_four_arg_captures_whitespace_run_for_default_fs() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN {
+            n = split("a   b\tc", a, " ", seps);
+            for (i = 1; i < n; i++) printf "<%s>", seps[i];
+            print ""
+        }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "<   ><\t>\n");
+}
+
+#[test]
+fn split_four_arg_empty_seps_array_for_empty_fs() {
+    // `""` FS: each char becomes a field, separators between them are empty strings.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN {
+            n = split("xy", a, "", seps);
+            print n, "[" seps[1] "]"
+        }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "2 []\n");
+}
+
+#[test]
+fn stdin_multi_char_literal_rs_reads_every_record() {
+    // Regression: streaming `RS` with multi-byte literal was reading only the first record
+    // because chunk reads discarded leftover bytes.
+    let (c, o, _) = run_awkrs_stdin(
+        "BEGIN { RS=\"\\n---\\n\" } { print NR, \"[\" $0 \"]\" }",
+        "a\n---\nb\n---\nc",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "1 [a]\n2 [b]\n3 [c]\n");
+}
+
+#[test]
+fn stdin_regex_rs_reads_every_record() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { RS="[|,]" } { print NR, "[" $0 "]" }"#,
+        "a|b,c|d",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "1 [a]\n2 [b]\n3 [c]\n4 [d]\n");
+}
+
+#[test]
+fn stdin_paragraph_mode_strips_trailing_newlines_from_record() {
+    // gawk paragraph mode (RS=="") records do NOT include trailing newlines.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { RS="" } { print NR, "[" $0 "]" }"#,
+        "para1\nline2\n\npara2\nline2\n",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "1 [para1\nline2]\n2 [para2\nline2]\n");
+}
+
+#[test]
+fn stdin_single_char_rs_strips_separator_from_record() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { RS=":" } { print NR, "[" $0 "]" }"#,
+        "a:b:c",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "1 [a]\n2 [b]\n3 [c]\n");
+}
+
+#[test]
+fn printf_percent_g_on_infinity_emits_signed_inf() {
+    // Before the fix this raised "sprintf: non-finite value for %g".
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { x=exp(800); printf "%g %G\n", x, x }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "+inf +INF\n");
+}
+
+#[test]
+fn printf_percent_f_on_negative_infinity_emits_minus_inf() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { x=-exp(800); printf "%f %F\n", x, x }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "-inf -INF\n");
+}
+
+#[test]
+fn printf_percent_e_padding_on_infinity_uses_spaces_not_zeros() {
+    // POSIX: zero-padding does not apply to non-finite values — gawk also outputs
+    // "[      +inf]" rather than "[0000000+inf]" when given `%010e`.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { x=exp(800); printf "[%010e]\n", x }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "[      +inf]\n");
+}
+
+#[test]
+fn printf_percent_g_precision_one_uses_one_significant_digit() {
+    // Regression: awkrs's `%.1g` used to keep an extra fractional digit ("1.2e+02"),
+    // ignoring the C99 "significant digits" semantics. gawk and the POSIX/ISO C
+    // contract emit "1e+02" for precision 1.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { printf "%.0g|%.1g|%.2g|%.3g\n", 123.456, 123.456, 123.456, 123.456 }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "1e+02|1e+02|1.2e+02|123\n");
+}
+
+#[test]
+fn printf_percent_a_on_nan_uses_signed_nan() {
+    // sqrt(-1) yields a positive NaN; `%a` prints "+nan" (gawk parity).
+    let (c, o, _e) = run_awkrs_stdin(
+        r#"BEGIN { x=sqrt(-1); printf "%a\n", x }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "+nan\n");
+}
+
+#[test]
+fn gensub_numeric_negative_treated_as_one() {
+    // Matches gawk's "third argument `-1' treated as 1" behavior.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { print gensub(/a/, "X", -3, "aaaa") }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "Xaaa\n");
+}
+
+#[test]
+fn gensub_numeric_zero_treated_as_one() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { print gensub(/a/, "X", 0, "aaaa") }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "Xaaa\n");
+}
+
+#[test]
+fn rs_change_takes_effect_for_subsequent_records() {
+    // Switching RS mid-stream: first record uses default newline, then RS becomes ":".
+    let (c, o, _) = run_awkrs_stdin(
+        r#"NR==1 { RS=":" } { printf "[%d:%s]\n", NR, $0 }"#,
+        "first\nrest1:rest2:rest3",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "[1:first]\n[2:rest1]\n[3:rest2]\n[4:rest3]\n");
+}
+
+#[test]
+fn pipe_getline_advances_through_subprocess_output() {
+    // Regression: `cmd | getline x` used to respawn `cmd` on every call, so the
+    // expression returned the same first line forever and `while ((cmd|getline x)>0)`
+    // looped indefinitely. Now the subprocess runs once per pipe key.
+    let (c, o, e) = run_awkrs_stdin(
+        r#"BEGIN {
+            cmd = "echo one; echo two; echo three"
+            while ((cmd | getline line) > 0) print "got:", line
+            close(cmd)
+            print "done"
+        }"#,
+        "",
+    );
+    assert_eq!(c, 0, "stderr={e:?}");
+    assert_eq!(o, "got: one\ngot: two\ngot: three\ndone\n");
+}
+
+#[test]
+fn pipe_getline_explicit_calls_advance_line_by_line() {
+    // Each `(cmd | getline x)` returns the *next* line; the fourth call hits EOF and
+    // returns 0 (leaving `x` unchanged at the last successfully read value).
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN {
+            cmd = "echo a; echo b; echo c"
+            r1 = (cmd | getline x); print r1, x
+            r2 = (cmd | getline x); print r2, x
+            r3 = (cmd | getline x); print r3, x
+            r4 = (cmd | getline x); print r4, x
+            close(cmd)
+        }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "1 a\n1 b\n1 c\n0 c\n");
+}
+
+#[test]
+fn close_on_never_opened_path_returns_minus_one() {
+    // gawk parity: `close("name")` returns -1 when nothing is open under that name.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { print close("/tmp/awkrs_never_opened_xyz_path_abc123") }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "-1\n");
+}
+
+#[test]
+fn close_returns_zero_on_first_close_then_minus_one_on_second() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN {
+            print "a" > "/tmp/awkrs_close_twice_test.txt"
+            print close("/tmp/awkrs_close_twice_test.txt")
+            print close("/tmp/awkrs_close_twice_test.txt")
+        }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "0\n-1\n");
+    // Cleanup
+    let _ = std::fs::remove_file("/tmp/awkrs_close_twice_test.txt");
+}
+
+#[test]
+fn system_flushes_stdout_before_invoking_subprocess() {
+    // Regression: `system()` used to run *before* the buffered `print "before"` was
+    // flushed, producing the wrong interleaving "middle\nbefore\nafter".
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { print "before"; system("echo middle"); print "after" }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "before\nmiddle\nafter\n");
+}
+
+#[test]
+fn system_flushes_pending_redirect_output_before_subprocess() {
+    // The same buffering hazard applies to `print >` files — make sure the bytes
+    // are on disk before the subprocess reads them back.
+    let path = "/tmp/awkrs_sys_flush_test.txt";
+    let _ = std::fs::remove_file(path);
+    let prog = format!(
+        r#"BEGIN {{ print "hi" > "{path}"; system("cat {path}"); }}"#,
+        path = path,
+    );
+    let (c, o, _) = run_awkrs_stdin(&prog, "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "hi\n");
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn close_after_pipe_getline_reaps_subprocess() {
+    // After `close(cmd)`, the pipe reader/child are gone; another pipe getline with
+    // the same key respawns cleanly and starts from the top.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN {
+            cmd = "echo line1; echo line2"
+            (cmd | getline x); print "first:", x
+            close(cmd)
+            (cmd | getline y); print "after-reopen:", y
+            close(cmd)
+        }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "first: line1\nafter-reopen: line1\n");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Second round of regressions: FIELDWIDTHS, IGNORECASE single-char FS,
+// unknown printf conversion specifiers, regex `.` matching newline.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn fieldwidths_clamps_last_field_to_specified_width() {
+    // Regression: the last FIELDWIDTHS entry used to auto-extend to the end of
+    // the record (taking 3 bytes for "H99" with width 2), instead of clamping
+    // to the declared width and leaving the trailing byte unused.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { FIELDWIDTHS="3 4 2" } { print NF, "[" $1 "]", "[" $2 "]", "[" $3 "]" }"#,
+        "abcDEFGH99\n",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "3 [abc] [DEFG] [H9]\n");
+}
+
+#[test]
+fn fieldwidths_supports_skip_colon_width_syntax() {
+    // gawk syntax: `M:N` means skip M bytes, then take N bytes for the field.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { FIELDWIDTHS="3 2:2 3" } { print "[" $1 "]", "[" $2 "]", "[" $3 "]" }"#,
+        "abcXXdefghi\n",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "[abc] [de] [fgh]\n");
+}
+
+#[test]
+fn fieldwidths_supports_star_token_for_remaining() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { FIELDWIDTHS="3 2:2 *" } { print "[" $1 "]", "[" $2 "]", "[" $3 "]" }"#,
+        "abcXXdefghi\n",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "[abc] [de] [fghi]\n");
+}
+
+#[test]
+fn ignorecase_does_not_apply_to_single_char_fs() {
+    // gawk: `IGNORECASE` affects multi-char regex FS but **not** a single-char
+    // literal FS. With FS="x" on input "aXbXc", no splitting happens.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { IGNORECASE=1; FS="x" } { print NF, "[" $0 "]" }"#,
+        "aXbXc\n",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "1 [aXbXc]\n");
+}
+
+#[test]
+fn ignorecase_does_not_apply_to_single_char_split_fs() {
+    // Same rule for the `split` builtin's single-char FS string.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN {
+            IGNORECASE = 1
+            n = split("aXbXc", a, "x")
+            print n, "[" a[1] "]"
+        }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "1 [aXbXc]\n");
+}
+
+#[test]
+fn ignorecase_does_apply_to_multi_char_regex_fs() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { IGNORECASE=1; FS="xx" } { print NF, $1, $2, $3, $4 }"#,
+        "aXXbXXcXXd\n",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "4 a b c d\n");
+}
+
+#[test]
+fn printf_unknown_conversion_emits_literal_and_keeps_arg() {
+    // gawk parity: `%q` (any letter not in the known set) emits "%q" literally
+    // and does NOT consume an argument, so the next conversion sees the args
+    // the user intended for it.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { printf "[%q][%s]\n", "first", "second" }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "[%q][first]\n");
+}
+
+#[test]
+fn regex_dot_matches_embedded_newline_in_match() {
+    // gawk: in ERE, `.` matches any byte including `\n`. Rust regex defaults to
+    // NOT matching newline; awkrs explicitly enables `dot_matches_new_line`.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { s = "ab\ncd"; print s ~ /a.*d/ ? "yes" : "no" }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "yes\n");
+}
+
+#[test]
+fn printf_percent_u_negative_wraps_two_s_complement() {
+    // gawk parity: `printf "%u", -5` emits the 64-bit two's complement of -5,
+    // not 0. Previously awkrs clamped negatives to 0.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { printf "%u %u %u\n", -1, -5, 5 }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "18446744073709551615 18446744073709551611 5\n");
+}
+
+#[test]
+fn stray_semicolons_are_empty_statements() {
+    // gawk: bare `;` between statements is an empty statement (POSIX C-style).
+    // awkrs previously rejected `} ; print` as a parse error.
+    let (c, o, e) = run_awkrs_stdin(
+        r#"BEGIN { ; print "a" ; ; ; if (1) { print "b" } ; print "c" }"#,
+        "",
+    );
+    assert_eq!(c, 0, "stderr={e:?}");
+    assert_eq!(o, "a\nb\nc\n");
+}
+
+#[test]
+fn crlf_line_terminator_preserves_cr_in_record() {
+    // gawk parity: only `\n` is the record terminator on Unix; a trailing `\r`
+    // is part of `$0` and counts toward `length`. Previously awkrs stripped
+    // both `\n` and `\r`, silently dropping CR bytes on CRLF input.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"{ printf "%d|%d|[%s]\n", NR, length, $0 }"#,
+        "a\r\nb\n",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "1|2|[a\r]\n2|1|[b]\n");
+}
+
+#[test]
+fn bignum_print_uses_full_precision_for_integers() {
+    // Regression: `print` of a bignum integer used to go through OFMT (%.6g)
+    // and truncate to scientific form ("1.2677e+30"). With the integer fast
+    // path the full 31-digit value of 2^100 is preserved.
+    let (c, o, _) = run_awkrs_stdin_args(
+        ["-M"],
+        "BEGIN { print 2^100 }",
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "1267650600228229401496703205376\n");
+}
+
+#[test]
+fn bignum_factorial_uses_full_precision() {
+    let (c, o, _) = run_awkrs_stdin_args(
+        ["-M"],
+        "function f(n) { return n<=1?1:n*f(n-1) } BEGIN { print f(25) }",
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "15511210043330985984000000\n");
+}
+
+#[test]
+fn user_assignment_to_nr_persists_and_is_incremented_per_record() {
+    // gawk parity: NR is user-assignable. BEGIN sets NR=5; reading the first
+    // record bumps it to 6 (not back to 1).
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { NR = 5 } NR == 5 { print "five:", $0 } NR == 6 { print "six:", $0 }"#,
+        "x\ny\n",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "six: x\n");
+}
+
+#[test]
+fn user_assignment_to_fnr_persists_per_record() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"{ if (FNR == 1) FNR = 99; print FNR }"#,
+        "a\nb\nc\n",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "99\n100\n101\n");
+}
+
+#[test]
+fn at_namespace_directive_followed_by_inline_program_on_same_line() {
+    // gawk accepts `@namespace "name"; rest_of_program` on a single line.
+    // awkrs previously dropped the trailing program text on the same line.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"@namespace "awk"; BEGIN { print "ok" }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "ok\n");
+}
+
+#[test]
+fn strtonum_takes_longest_numeric_prefix() {
+    // Regression: `strtonum("42abc")` used to return 0; gawk returns 42 (the
+    // longest leading numeric prefix). Trailing junk is ignored.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { print strtonum("42abc"), strtonum("  -5.5xyz  "), strtonum("1e3and") }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "42 -5.5 1000\n");
+}
+
+#[test]
+fn strtonum_bare_inf_nan_return_zero() {
+    // gawk's strtonum requires a digit / sign / dot as the first char. Bare
+    // "inf" and "nan" return 0 even though Rust's `f64::parse` would accept them.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { print strtonum("nan"), strtonum("inf"), strtonum("NaN") }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "0 0 0\n");
+}
+
+#[test]
+fn strtonum_signed_inf_passes_through() {
+    // With an explicit sign, the parser accepts non-finite values.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { print strtonum("+inf"), strtonum("-inf"), strtonum("+nan") }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "+inf -inf +nan\n");
+}
+
+#[test]
+fn strtonum_signed_hex_returns_zero() {
+    // gawk: `strtonum("+0x10")` / `"-0x10"` return 0 because the hex prefix is
+    // only honored without a sign.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { print strtonum("0x10"), strtonum("+0x10"), strtonum("-0x10") }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "16 0 0\n");
+}
+
+#[test]
+fn errno_message_strips_rust_os_error_suffix() {
+    // Regression: ERRNO used to contain Rust's full `io::Error` Display
+    // ("No such file or directory (os error 2)"). gawk emits just the strerror
+    // text — the " (os error N)" suffix is now stripped.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { r = (getline line < "/nonexistent_xyz123"); print r, "[" line "]"; print "errno:" ERRNO }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "-1 []\nerrno:No such file or directory\n");
+}
+
+#[test]
+fn getline_from_missing_file_does_not_print_runtime_error() {
+    // Regression: the file-open error used to be wrapped as `Error::Runtime`
+    // with a long message that polluted ERRNO and bypassed the `Error::Io` path.
+    // Now ERRNO holds the OS strerror and stderr stays clean.
+    let (_c, o, e) = run_awkrs_stdin(
+        r#"BEGIN { getline line < "/nonexistent_xyz123" }"#,
+        "",
+    );
+    assert!(
+        !e.contains("runtime error"),
+        "stderr should not contain Rust panic-style text; got {e:?}"
+    );
+    // The program produces no output either way (no print statements).
+    assert!(o.is_empty(), "stdout={o:?}");
+}
+
+#[test]
+fn unknown_escape_sequence_drops_backslash() {
+    // gawk parity: `\q` in a string literal emits just `q` (with a `--lint`
+    // warning). awkrs previously kept the backslash, so `"a\qb"` came out as
+    // `a\qb` instead of `aqb`.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { print "a\qb", length("a\qb"), "x\z" }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "aqb 3 xz\n");
+}
+
+#[test]
+fn sandbox_rejects_pipe_getline_fatally() {
+    // gawk parity: `-S` / `--sandbox` should make pipe getline a *fatal* error,
+    // not silently return -1. The expression form used to absorb the sandbox
+    // violation through `getline_error_code_for_key`.
+    let (c, _o, e) = run_awkrs_stdin_args(
+        ["-S"],
+        r#"BEGIN { r = ("echo hi" | getline x); print "r=" r }"#,
+        "",
+    );
+    assert_ne!(c, 0, "expected non-zero exit");
+    assert!(e.contains("sandbox"), "stderr={e:?}");
+}
+
+#[test]
+fn concat_with_parenthesized_ternary_uses_then_value() {
+    // Regression: `"a" (cond ? "b" : "c")` used to produce `"bc"` (then ++ else)
+    // because the `PushStr; Concat` peephole fused the *outer* Concat with the
+    // ELSE branch's PushStr, scrambling the post-ternary join. The optimizer
+    // now refuses to fuse when the Concat is itself a jump target.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN {
+            print "a" (1 ? "b" : "c")
+            print "a" (0 ? "b" : "c")
+            x = "x" (1 ? "y" : "z"); print x
+        }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "ab\nac\nxy\n");
+}
+
+#[test]
+fn newlines_allowed_after_continuation_tokens() {
+    // POSIX / gawk: after `,`, `||`, `&&`, `?`, `:`, a newline is whitespace
+    // (the statement continues on the next line). Previously awkrs's parser
+    // rejected newlines in these positions.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"function f(a, b, c) { return a + b + c }
+BEGIN {
+    printf "%s %s %s\n",
+        "x",
+        "y",
+        "z"
+    x = 0 ||
+        1 ||
+        0
+    y = 1 &&
+        1 &&
+        1
+    t = (x > 0 ?
+            "yes" :
+            "no")
+    print x, y, t, f(1,
+                     2,
+                     3)
+}"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "x y z\n1 1 yes 6\n");
+}
+
+#[test]
+fn typeof_field_returns_strnum_for_numeric_field_value() {
+    // gawk parity: a field whose string value parses as a number reports its
+    // type as "strnum" (numeric string). Previously awkrs reported plain
+    // "string", losing the numeric-comparison hint.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"{ printf "%s %s %s\n", typeof($1), typeof($2), typeof($3) }"#,
+        "42 abc 3.14\n",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "strnum string strnum\n");
+}
+
+#[test]
+fn typeof_field_beyond_nf_returns_unassigned() {
+    // gawk's typeof vocabulary uses "unassigned" for fields past NF (not
+    // "untyped", which is reserved for never-touched scalars).
+    let (c, o, _) = run_awkrs_stdin(r#"{ print typeof($5) }"#, "a b\n");
+    assert_eq!(c, 0);
+    assert_eq!(o, "unassigned\n");
+}
+
+#[test]
+fn switch_case_falls_through_to_next_arm_without_break() {
+    // gawk parity: `switch` is C-style — without `break`, control falls
+    // through to the next arm's body. Previously awkrs auto-broke after each
+    // case, so `case "a"` only executed its own body.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN {
+            x = "a"
+            switch (x) {
+                case "a": print "A"
+                case "b": print "B"
+                case "c": print "C"
+            }
+        }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "A\nB\nC\n");
+}
+
+#[test]
+fn switch_case_break_stops_fallthrough() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN {
+            x = "a"
+            switch (x) {
+                case "a": print "A"; break
+                case "b": print "B"
+                case "c": print "C"
+            }
+            print "after"
+        }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "A\nafter\n");
+}
+
+#[test]
+fn switch_falls_into_default_when_explicitly_chained() {
+    // Match in the middle, fall through to the rest including default.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN {
+            x = "b"
+            switch (x) {
+                case "a": print "A"
+                case "b": print "B"
+                case "c": print "C"
+                default:  print "D"
+            }
+        }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "B\nC\nD\n");
+}
+
+#[test]
+fn switch_no_match_with_default_jumps_to_default() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN {
+            switch ("zzz") {
+                case "a": print "A"; break
+                default:  print "D"
+            }
+        }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "D\n");
+}
+
+#[test]
+fn switch_no_match_no_default_falls_through_to_end() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN {
+            switch ("zzz") {
+                case "a": print "A"
+                case "b": print "B"
+            }
+            print "after"
+        }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "after\n");
+}
+
+#[test]
+fn printf_precision_zero_on_value_zero_emits_empty_string() {
+    // POSIX: `printf "%.0d", 0` produces NO digits. Same for `%.0i`, `%.0u`,
+    // `%.0o`, `%.0x`. Non-zero values still print at least one digit.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN {
+            printf "[%.0d|%.0i|%.0u|%.0o|%.0x]\n", 0, 0, 0, 0, 0
+            printf "[%.0d|%.0u|%.0x]\n", 5, 5, 255
+        }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "[||||]\n[5|5|ff]\n");
+}
+
+#[test]
+fn negative_zero_prints_as_plain_zero() {
+    // gawk parity: `-0.0` is printed as `"0"`, not `"-0"`.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { print -0.0; print 0.0 - 0; print -1 * 0 }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "0\n0\n0\n");
+}
+
+#[test]
+fn bignum_non_integer_value_still_uses_ofmt() {
+    // The integer fast path must not affect non-integer bignums — they still
+    // go through OFMT (`%.6g` default).
+    let (c, o, _) = run_awkrs_stdin_args(
+        ["-M"],
+        "BEGIN { print 1/3 }",
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "0.333333\n");
+}
+
+#[test]
+fn for_in_block_followed_by_semicolon_and_statement() {
+    // Regression: `for (k in a) { … } ; print …` parsed as if the `;` started
+    // an expression.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN {
+            a[1] = 1; a[2] = 2; a[3] = 3
+            for (k in a) { if (k == "2") delete a[k] }
+            ;
+            print length(a)
+        }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "2\n");
+}
+
+#[test]
+fn printf_zero_flag_on_string_ignored_pads_with_spaces() {
+    // POSIX: `0` flag is for numeric conversions only.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { printf "[%05s][%05c]\n", "ab", 65 }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "[   ab][    A]\n");
+}
+
+#[test]
+fn regex_dot_matches_newline_in_gsub() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { s = "ab\ncd"; n = gsub(/./, "X", s); print n, "[" s "]" }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "5 [XXXXX]\n");
+}
+
+#[test]
+fn split_with_seps_variable_keeps_target_array_isolated() {
+    // The `seps` parameter must be a separate array — assigning to it should not
+    // perturb the destination array `a`.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN {
+            n = split("a-b-c", a, "-", seps);
+            seps[1] = "MUTATED";
+            print a[1], a[2], a[3], "|", seps[1], seps[2]
+        }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "a b c | MUTATED -\n");
 }

@@ -7,10 +7,15 @@ use memchr::memchr;
 use regex::bytes::Regex as BytesRegex;
 use std::io::BufRead;
 
-/// Trim trailing `\r` / `\n` from a byte slice (record content).
+/// Trim trailing `\n` from a byte slice (record content).
+///
+/// gawk parity (POSIX text mode on Unix): only `\n` is stripped — `\r` is
+/// preserved so that a CRLF input keeps the `\r` in `$0` and `length`. Older
+/// awkrs versions also stripped `\r`, which silently dropped CR bytes on Unix.
+/// (Use `BINMODE` / explicit `gsub(/\r$/, "")` to remove them if desired.)
 pub fn trim_end_record_bytes(buf: &[u8]) -> usize {
     let mut end = buf.len();
-    while end > 0 && (buf[end - 1] == b'\n' || buf[end - 1] == b'\r') {
+    while end > 0 && buf[end - 1] == b'\n' {
         end -= 1;
     }
     end
@@ -21,12 +26,17 @@ pub fn trim_end_record_bytes(buf: &[u8]) -> usize {
 /// - `rs == ""` → paragraph mode (records separated by blank lines).
 /// - `regex_rs == Some` → gawk: `RS` length > 1, treated as a regex; `rt_sep` is the matched bytes.
 /// - else → read until `rs` appears as a byte substring (literal `RS`).
+///
+/// `leftover` holds bytes that were read past the previous record's terminator;
+/// it must be the same `Vec` across consecutive calls on a single stream so that
+/// chunked reads (used by the regex path) don't lose input.
 pub fn read_next_record(
     reader: &SharedInputReader,
     rs: &str,
     out: &mut Vec<u8>,
     rt_sep: &mut Vec<u8>,
     regex_rs: Option<&BytesRegex>,
+    leftover: &mut Vec<u8>,
 ) -> Result<bool> {
     out.clear();
     rt_sep.clear();
@@ -35,44 +45,91 @@ pub fn read_next_record(
         .map_err(|_| Error::Runtime("input reader lock poisoned".into()))?;
     let r = &mut *guard;
     if rs == "\n" {
-        let n = r.read_until(b'\n', out).map_err(Error::Io)?;
-        if n > 0 {
-            rt_sep.extend_from_slice(b"\n");
-        }
-        return Ok(n > 0);
+        return read_until_lf(r, out, rt_sep, leftover);
     }
     if rs.is_empty() {
-        let ok = read_paragraph_record(r, out, rt_sep)?;
+        let ok = read_paragraph_record(r, out, rt_sep, leftover)?;
         return Ok(ok);
     }
     if let Some(re) = regex_rs {
-        return read_until_regex_bytes(r, re, out, rt_sep);
+        return read_until_regex_bytes(r, re, out, rt_sep, leftover);
     }
-    read_until_bytes(r, rs.as_bytes(), out, rt_sep)
+    read_until_bytes(r, rs.as_bytes(), out, rt_sep, leftover)
+}
+
+fn read_until_lf<R: BufRead>(
+    reader: &mut R,
+    out: &mut Vec<u8>,
+    rt_sep: &mut Vec<u8>,
+    leftover: &mut Vec<u8>,
+) -> Result<bool> {
+    if !leftover.is_empty() {
+        if let Some(pos) = memchr(b'\n', leftover) {
+            out.extend_from_slice(&leftover[..=pos]);
+            leftover.drain(..=pos);
+            rt_sep.extend_from_slice(b"\n");
+            return Ok(true);
+        }
+        out.extend_from_slice(leftover);
+        leftover.clear();
+    }
+    let n = reader.read_until(b'\n', out).map_err(Error::Io)?;
+    if !out.is_empty() {
+        if out.last() == Some(&b'\n') {
+            rt_sep.extend_from_slice(b"\n");
+        }
+        return Ok(true);
+    }
+    Ok(n > 0)
 }
 
 fn read_paragraph_record<R: BufRead>(
     reader: &mut R,
     out: &mut Vec<u8>,
     rt_sep: &mut Vec<u8>,
+    leftover: &mut Vec<u8>,
 ) -> Result<bool> {
-    let mut line = String::new();
+    let mut line = Vec::<u8>::new();
     let mut saw_content = false;
     loop {
         line.clear();
-        let n = reader.read_line(&mut line).map_err(Error::Io)?;
-        if n == 0 {
+        if !leftover.is_empty() {
+            if let Some(pos) = memchr(b'\n', leftover) {
+                line.extend_from_slice(&leftover[..=pos]);
+                leftover.drain(..=pos);
+            } else {
+                line.extend_from_slice(leftover);
+                leftover.clear();
+                let _ = reader.read_until(b'\n', &mut line).map_err(Error::Io)?;
+            }
+        } else {
+            let n = reader.read_until(b'\n', &mut line).map_err(Error::Io)?;
+            if n == 0 {
+                // Trim trailing newlines accumulated in `out` to match gawk paragraph mode.
+                let end = trim_end_record_bytes(out);
+                out.truncate(end);
+                return Ok(saw_content);
+            }
+        }
+        if line.is_empty() {
+            let end = trim_end_record_bytes(out);
+            out.truncate(end);
             return Ok(saw_content);
         }
-        if line.trim().is_empty() {
+        let is_blank = line
+            .iter()
+            .all(|b| matches!(*b, b' ' | b'\t' | b'\r' | b'\n'));
+        if is_blank {
             if saw_content {
                 rt_sep.extend_from_slice(b"\n");
+                let end = trim_end_record_bytes(out);
+                out.truncate(end);
                 return Ok(true);
             }
             continue;
         }
         saw_content = true;
-        out.extend_from_slice(line.as_bytes());
+        out.extend_from_slice(&line);
     }
 }
 
@@ -81,25 +138,26 @@ fn read_until_regex_bytes<R: BufRead>(
     re: &BytesRegex,
     out: &mut Vec<u8>,
     rt_sep: &mut Vec<u8>,
+    leftover: &mut Vec<u8>,
 ) -> Result<bool> {
-    let mut buf = Vec::<u8>::new();
     let mut chunk = [0u8; 4096];
     loop {
-        if let Some(m) = re.find(&buf) {
-            out.extend_from_slice(&buf[..m.start()]);
+        if let Some(m) = re.find(leftover) {
+            out.extend_from_slice(&leftover[..m.start()]);
             rt_sep.extend_from_slice(m.as_bytes());
-            buf.drain(..m.end());
+            leftover.drain(..m.end());
             return Ok(true);
         }
         let n = reader.read(&mut chunk).map_err(Error::Io)?;
         if n == 0 {
-            if buf.is_empty() {
+            if leftover.is_empty() {
                 return Ok(false);
             }
-            out.extend_from_slice(&buf);
+            out.extend_from_slice(leftover);
+            leftover.clear();
             return Ok(true);
         }
-        buf.extend_from_slice(&chunk[..n]);
+        leftover.extend_from_slice(&chunk[..n]);
     }
 }
 
@@ -108,30 +166,56 @@ fn read_until_bytes<R: BufRead>(
     delim: &[u8],
     out: &mut Vec<u8>,
     rt_sep: &mut Vec<u8>,
+    leftover: &mut Vec<u8>,
 ) -> Result<bool> {
     if delim.is_empty() {
         return Ok(false);
     }
+    // Single-byte literal: serve from leftover first, then fall through to `read_until`.
     if delim.len() == 1 {
+        if !leftover.is_empty() {
+            if let Some(pos) = memchr(delim[0], leftover) {
+                out.extend_from_slice(&leftover[..pos]);
+                leftover.drain(..=pos);
+                rt_sep.push(delim[0]);
+                return Ok(true);
+            }
+            out.extend_from_slice(leftover);
+            leftover.clear();
+        }
         let n = reader.read_until(delim[0], out).map_err(Error::Io)?;
-        if n > 0 {
-            rt_sep.push(delim[0]);
+        if !out.is_empty() {
+            if out.last() == Some(&delim[0]) {
+                out.pop();
+                rt_sep.push(delim[0]);
+            }
+            return Ok(true);
         }
         return Ok(n > 0);
     }
-    let mut byte = [0u8; 1];
+    // Multi-byte literal: scan leftover; on miss, refill from reader.
+    let mut chunk = [0u8; 4096];
     loop {
-        match reader.read(&mut byte) {
-            Ok(0) => return Ok(!out.is_empty()),
-            Ok(_) => {}
-            Err(e) => return Err(Error::Io(e)),
+        if leftover.len() >= delim.len() {
+            for start in 0..=leftover.len() - delim.len() {
+                if &leftover[start..start + delim.len()] == delim {
+                    out.extend_from_slice(&leftover[..start]);
+                    rt_sep.extend_from_slice(delim);
+                    leftover.drain(..start + delim.len());
+                    return Ok(true);
+                }
+            }
         }
-        out.push(byte[0]);
-        if out.len() >= delim.len() && out[out.len() - delim.len()..] == *delim {
-            out.truncate(out.len() - delim.len());
-            rt_sep.extend_from_slice(delim);
+        let n = reader.read(&mut chunk).map_err(Error::Io)?;
+        if n == 0 {
+            if leftover.is_empty() {
+                return Ok(false);
+            }
+            out.extend_from_slice(leftover);
+            leftover.clear();
             return Ok(true);
         }
+        leftover.extend_from_slice(&chunk[..n]);
     }
 }
 
@@ -175,12 +259,9 @@ fn split_lines_unix(data: &[u8]) -> Vec<&[u8]> {
         let eol = memchr(b'\n', &data[pos..len])
             .map(|i| pos + i)
             .unwrap_or(len);
-        let end = if eol > pos && data[eol - 1] == b'\r' {
-            eol - 1
-        } else {
-            eol
-        };
-        v.push(&data[pos..end]);
+        // gawk parity: do NOT strip a trailing `\r` here — `\r\n` input yields a
+        // record that includes the `\r`. Only the `\n` is the record terminator.
+        v.push(&data[pos..eol]);
         pos = eol + 1;
     }
     v
@@ -201,7 +282,9 @@ fn split_paragraph_mmap(data: &[u8]) -> Vec<&[u8]> {
         let blank = line.iter().all(|b| b.is_ascii_whitespace());
         if blank {
             if let Some(s) = start.take() {
-                out.push(&data[s..cur_end]);
+                // gawk paragraph mode strips trailing newlines/CRs from each record.
+                let trimmed_end = s + trim_end_record_bytes(&data[s..cur_end]);
+                out.push(&data[s..trimmed_end]);
             }
         } else if start.is_none() {
             start = Some(pos);
@@ -212,7 +295,8 @@ fn split_paragraph_mmap(data: &[u8]) -> Vec<&[u8]> {
         pos = if eol < len { eol + 1 } else { len };
     }
     if let Some(s) = start {
-        out.push(&data[s..cur_end]);
+        let trimmed_end = s + trim_end_record_bytes(&data[s..cur_end]);
+        out.push(&data[s..trimmed_end]);
     }
     out
 }
@@ -252,10 +336,12 @@ mod tests {
     }
 
     #[test]
-    fn trim_end_record_bytes_strips_trailing_lf_cr() {
+    fn trim_end_record_bytes_strips_only_trailing_lf_not_cr() {
+        // gawk parity: `\r` is part of the record on Unix; only `\n` is stripped.
         assert_eq!(trim_end_record_bytes(b"abc\n"), 3);
-        assert_eq!(trim_end_record_bytes(b"abc\r\n"), 3);
-        assert_eq!(trim_end_record_bytes(b"abc\r\r\n"), 3);
+        assert_eq!(trim_end_record_bytes(b"abc\r\n"), 4); // keeps the CR
+        assert_eq!(trim_end_record_bytes(b"abc\r\r\n"), 5); // keeps both CRs
+        assert_eq!(trim_end_record_bytes(b"abc\n\n"), 3); // strips multiple trailing LFs
     }
 
     #[test]
@@ -264,9 +350,10 @@ mod tests {
     }
 
     #[test]
-    fn trim_end_record_bytes_only_newlines_yields_zero_len_content() {
+    fn trim_end_record_bytes_only_lf_yields_zero_len_content() {
         assert_eq!(trim_end_record_bytes(b"\n"), 0);
-        assert_eq!(trim_end_record_bytes(b"\r\n\r\n"), 0);
+        // `\r` is no longer stripped — only `\n` between them is.
+        assert_eq!(trim_end_record_bytes(b"\r\n"), 1);
     }
 
     #[test]
@@ -288,10 +375,12 @@ mod tests {
     }
 
     #[test]
-    fn split_newline_strips_cr_before_lf() {
+    fn split_newline_preserves_cr_before_lf() {
+        // gawk parity (Unix text mode): `\r` is NOT stripped; only `\n` is the
+        // record terminator. A CRLF input yields a record that includes `\r`.
         let d = b"a\r\nb\r\n";
         let r = split_input_into_records(d, "\n", None);
-        assert_eq!(r, vec![&b"a"[..], &b"b"[..]]);
+        assert_eq!(r, vec![&b"a\r"[..], &b"b\r"[..]]);
     }
 
     #[test]
@@ -302,19 +391,20 @@ mod tests {
     }
 
     #[test]
-    fn split_paragraph_mode_blank_line_separator() {
+    fn split_paragraph_mode_blank_line_separator_strips_trailing_newlines() {
+        // gawk paragraph mode: trailing newlines/CRs are stripped from each record.
         let d = b"para one line\n\npara two\n";
         let r = split_input_into_records(d, "", None);
         assert_eq!(r.len(), 2);
-        assert_eq!(r[0], &b"para one line\n"[..]);
-        assert_eq!(r[1], &b"para two\n"[..]);
+        assert_eq!(r[0], &b"para one line"[..]);
+        assert_eq!(r[1], &b"para two"[..]);
     }
 
     #[test]
     fn split_paragraph_leading_blank_lines_skipped() {
         let d = b"\n\nbody\n\n";
         let r = split_input_into_records(d, "", None);
-        assert_eq!(r, vec![&b"body\n"[..]]);
+        assert_eq!(r, vec![&b"body"[..]]);
     }
 
     #[test]
@@ -370,14 +460,15 @@ mod tests {
         let rdr = shared_reader(b"hi\nthere\n");
         let mut out = Vec::new();
         let mut sep = Vec::new();
-        assert!(read_next_record(&rdr, "\n", &mut out, &mut sep, None).unwrap());
+        let mut lo = Vec::new();
+        assert!(read_next_record(&rdr, "\n", &mut out, &mut sep, None, &mut lo).unwrap());
         assert_eq!(out, b"hi\n");
         assert_eq!(sep, b"\n");
         out.clear();
         sep.clear();
-        assert!(read_next_record(&rdr, "\n", &mut out, &mut sep, None).unwrap());
+        assert!(read_next_record(&rdr, "\n", &mut out, &mut sep, None, &mut lo).unwrap());
         assert_eq!(out, b"there\n");
-        assert!(!read_next_record(&rdr, "\n", &mut out, &mut sep, None).unwrap());
+        assert!(!read_next_record(&rdr, "\n", &mut out, &mut sep, None, &mut lo).unwrap());
     }
 
     #[test]
@@ -385,40 +476,62 @@ mod tests {
         let rdr = shared_reader(b"axXXbXX");
         let mut out = Vec::new();
         let mut sep = Vec::new();
-        assert!(read_next_record(&rdr, "XX", &mut out, &mut sep, None).unwrap());
+        let mut lo = Vec::new();
+        assert!(read_next_record(&rdr, "XX", &mut out, &mut sep, None, &mut lo).unwrap());
         assert_eq!(out, b"ax");
         assert_eq!(sep, b"XX");
         out.clear();
         sep.clear();
-        assert!(read_next_record(&rdr, "XX", &mut out, &mut sep, None).unwrap());
+        assert!(read_next_record(&rdr, "XX", &mut out, &mut sep, None, &mut lo).unwrap());
         assert_eq!(out, b"b");
         assert_eq!(sep, b"XX");
     }
 
     #[test]
-    fn read_next_record_regex_rs() {
-        let rdr = shared_reader(b"a---b");
+    fn read_next_record_regex_rs_reads_every_record() {
+        // Regression: prior to the persistent-leftover fix, only the first record was returned.
+        let rdr = shared_reader(b"a---b--c-d");
         let re = BytesRegex::new("-+").unwrap();
         let mut out = Vec::new();
         let mut sep = Vec::new();
-        assert!(read_next_record(&rdr, "-+", &mut out, &mut sep, Some(&re)).unwrap());
+        let mut lo = Vec::new();
+        assert!(read_next_record(&rdr, "-+", &mut out, &mut sep, Some(&re), &mut lo).unwrap());
         assert_eq!(out, b"a");
         assert_eq!(sep, b"---");
+        out.clear();
+        sep.clear();
+        assert!(read_next_record(&rdr, "-+", &mut out, &mut sep, Some(&re), &mut lo).unwrap());
+        assert_eq!(out, b"b");
+        assert_eq!(sep, b"--");
+        out.clear();
+        sep.clear();
+        assert!(read_next_record(&rdr, "-+", &mut out, &mut sep, Some(&re), &mut lo).unwrap());
+        assert_eq!(out, b"c");
+        assert_eq!(sep, b"-");
+        out.clear();
+        sep.clear();
+        // Final tail (no trailing match) — record is what's left, no separator.
+        assert!(read_next_record(&rdr, "-+", &mut out, &mut sep, Some(&re), &mut lo).unwrap());
+        assert_eq!(out, b"d");
+        assert_eq!(sep, b"");
+        assert!(!read_next_record(&rdr, "-+", &mut out, &mut sep, Some(&re), &mut lo).unwrap());
     }
 
     #[test]
     fn read_next_record_paragraph_mode_blank_line_boundary() {
+        // gawk paragraph mode (RS == "") strips trailing newlines from the record.
         let rdr = shared_reader(b"first para line\n\nsecond\n");
         let mut out = Vec::new();
         let mut sep = Vec::new();
-        assert!(read_next_record(&rdr, "", &mut out, &mut sep, None).unwrap());
-        assert_eq!(out, b"first para line\n");
+        let mut lo = Vec::new();
+        assert!(read_next_record(&rdr, "", &mut out, &mut sep, None, &mut lo).unwrap());
+        assert_eq!(out, b"first para line");
         assert_eq!(sep, b"\n");
         out.clear();
         sep.clear();
-        assert!(read_next_record(&rdr, "", &mut out, &mut sep, None).unwrap());
-        assert_eq!(out, b"second\n");
-        assert!(!read_next_record(&rdr, "", &mut out, &mut sep, None).unwrap());
+        assert!(read_next_record(&rdr, "", &mut out, &mut sep, None, &mut lo).unwrap());
+        assert_eq!(out, b"second");
+        assert!(!read_next_record(&rdr, "", &mut out, &mut sep, None, &mut lo).unwrap());
     }
 
     #[test]
@@ -426,35 +539,57 @@ mod tests {
         let rdr = shared_reader(b"\n\nbody\n\n");
         let mut out = Vec::new();
         let mut sep = Vec::new();
-        assert!(read_next_record(&rdr, "", &mut out, &mut sep, None).unwrap());
-        assert_eq!(out, b"body\n");
-        assert!(!read_next_record(&rdr, "", &mut out, &mut sep, None).unwrap());
+        let mut lo = Vec::new();
+        assert!(read_next_record(&rdr, "", &mut out, &mut sep, None, &mut lo).unwrap());
+        assert_eq!(out, b"body");
+        assert!(!read_next_record(&rdr, "", &mut out, &mut sep, None, &mut lo).unwrap());
     }
 
     #[test]
-    fn read_next_record_custom_rs_char() {
+    fn read_next_record_custom_rs_char_strips_separator_from_record() {
+        // gawk: `BEGIN { RS=":" } { ... }` on "a:b:c" yields records "a", "b", "c".
         let rdr = shared_reader(b"a:b:c");
         let mut out = Vec::new();
         let mut sep = Vec::new();
-        assert!(read_next_record(&rdr, ":", &mut out, &mut sep, None).unwrap());
-        // In awkrs, custom RS char might be included in `out` if it's a single char?
-        // No, `out` is the record, `sep` is the separator.
-        // The failure shows `out` is [97, 58] ('a:') while it should be [97] ('a').
-        // This implies the implementation includes the separator in the record buffer.
-        assert_eq!(out, b"a:");
+        let mut lo = Vec::new();
+        assert!(read_next_record(&rdr, ":", &mut out, &mut sep, None, &mut lo).unwrap());
+        assert_eq!(out, b"a");
         assert_eq!(sep, b":");
+        out.clear();
+        sep.clear();
+        assert!(read_next_record(&rdr, ":", &mut out, &mut sep, None, &mut lo).unwrap());
+        assert_eq!(out, b"b");
+        assert_eq!(sep, b":");
+        out.clear();
+        sep.clear();
+        assert!(read_next_record(&rdr, ":", &mut out, &mut sep, None, &mut lo).unwrap());
+        assert_eq!(out, b"c");
+        assert!(!read_next_record(&rdr, ":", &mut out, &mut sep, None, &mut lo).unwrap());
     }
 
     #[test]
-    fn read_next_record_multi_char_rs() {
+    fn read_next_record_multi_char_rs_returns_every_record() {
+        // Regression: streaming multi-char `RS` used to return only the first record because
+        // the over-read chunk was thrown away after the first match.
         let rdr = shared_reader(b"a--b--c");
         let mut out = Vec::new();
         let mut sep = Vec::new();
-        // multi-char RS is a regex in gawk, but if it's literal in awkrs?
-        // Let's test basic literal multi-char match if supported.
-        assert!(read_next_record(&rdr, "--", &mut out, &mut sep, None).unwrap());
+        let mut lo = Vec::new();
+        assert!(read_next_record(&rdr, "--", &mut out, &mut sep, None, &mut lo).unwrap());
         assert_eq!(out, b"a");
         assert_eq!(sep, b"--");
+        out.clear();
+        sep.clear();
+        assert!(read_next_record(&rdr, "--", &mut out, &mut sep, None, &mut lo).unwrap());
+        assert_eq!(out, b"b");
+        assert_eq!(sep, b"--");
+        out.clear();
+        sep.clear();
+        // Tail with no trailing separator: record is "c", sep is empty, EOF after.
+        assert!(read_next_record(&rdr, "--", &mut out, &mut sep, None, &mut lo).unwrap());
+        assert_eq!(out, b"c");
+        assert_eq!(sep, b"");
+        assert!(!read_next_record(&rdr, "--", &mut out, &mut sep, None, &mut lo).unwrap());
     }
 
     #[test]
@@ -462,12 +597,13 @@ mod tests {
         let rdr = shared_reader(b"para1\n\npara2");
         let mut out = Vec::new();
         let mut sep = Vec::new();
-        assert!(read_next_record(&rdr, "", &mut out, &mut sep, None).unwrap());
-        assert_eq!(out, b"para1\n");
+        let mut lo = Vec::new();
+        assert!(read_next_record(&rdr, "", &mut out, &mut sep, None, &mut lo).unwrap());
+        assert_eq!(out, b"para1");
         out.clear();
-        assert!(read_next_record(&rdr, "", &mut out, &mut sep, None).unwrap());
+        assert!(read_next_record(&rdr, "", &mut out, &mut sep, None, &mut lo).unwrap());
         assert_eq!(out, b"para2");
-        assert!(!read_next_record(&rdr, "", &mut out, &mut sep, None).unwrap());
+        assert!(!read_next_record(&rdr, "", &mut out, &mut sep, None, &mut lo).unwrap());
     }
 
     #[test]
@@ -476,7 +612,8 @@ mod tests {
         let rdr = shared_reader(&data);
         let mut out = Vec::new();
         let mut sep = Vec::new();
-        assert!(read_next_record(&rdr, "\n", &mut out, &mut sep, None).unwrap());
+        let mut lo = Vec::new();
+        assert!(read_next_record(&rdr, "\n", &mut out, &mut sep, None, &mut lo).unwrap());
         assert_eq!(out, data);
     }
 }

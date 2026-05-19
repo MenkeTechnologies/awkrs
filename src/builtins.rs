@@ -8,24 +8,28 @@ use std::cmp::Ordering;
 
 /// Check if a regex pattern is a plain literal (no metacharacters).
 pub(crate) fn is_literal_pattern(pat: &str) -> bool {
-    !pat.bytes().any(|b| {
-        matches!(
-            b,
-            b'.' | b'*'
-                | b'+'
-                | b'?'
-                | b'['
-                | b']'
-                | b'('
-                | b')'
-                | b'{'
-                | b'}'
-                | b'|'
-                | b'^'
-                | b'$'
-                | b'\\'
-        )
-    })
+    // Empty pattern is NOT a literal fast-path candidate: gawk semantics require
+    // a zero-width match at every position (gsub of // on "abc" emits 4 replacements),
+    // which the literal substring scanner cannot express.
+    !pat.is_empty()
+        && !pat.bytes().any(|b| {
+            matches!(
+                b,
+                b'.' | b'*'
+                    | b'+'
+                    | b'?'
+                    | b'['
+                    | b']'
+                    | b'('
+                    | b')'
+                    | b'{'
+                    | b'}'
+                    | b'|'
+                    | b'^'
+                    | b'$'
+                    | b'\\'
+            )
+        })
 }
 
 /// Literal `gsub` fast path: plain pattern and replacement without `&` / `\` escapes.
@@ -316,8 +320,8 @@ fn expand_repl_with_caps(repl: &str, caps: &regex::Captures<'_>) -> String {
 }
 
 /// gawk `gensub(ere, repl, how [, target])` — returns modified string.
-/// `how`: a string beginning with `g` / `G` replaces all matches; a non‑negative number replaces
-/// that occurrence (`0` = all matches, like `g`).
+/// `how`: a string beginning with `g` / `G` replaces all matches; a positive integer replaces
+/// that occurrence. gawk treats `0` (and negative integers) as `1` (replace the first match).
 pub fn awk_gensub(
     rt: &mut Runtime,
     ere: &str,
@@ -352,14 +356,13 @@ pub fn awk_gensub(
             }
         }
         Value::Num(n) => {
-            let which = *n as i64;
-            if which < 0 {
-                return Err(Error::Runtime(
-                    "gensub: numeric third argument must be >= 0".into(),
-                ));
-            }
-            // Use backref-aware replacement (gawk gensub semantics).
-            Ok(replace_nth_gensub(&re, s_ref, repl, which as usize))
+            // Match gawk: 0 (and any value < 1) means "replace the first match".
+            // (gawk also emits a warning here; awkrs deliberately stays silent — gawk's
+            // warning message embeds the source file/line, which complicates parity diffs
+            // and isn't load-bearing for the behavior. Add an explicit emitter later if
+            // a `--lint` flag wants strict parity.)
+            let which = (*n as i64).max(1) as usize;
+            Ok(replace_nth_gensub(&re, s_ref, repl, which))
         }
         _ => Err(Error::Runtime(
             "gensub: third argument must be string or number".into(),
@@ -569,16 +572,41 @@ pub fn awk_strtonum(s: &str) -> f64 {
     if t.is_empty() {
         return 0.0;
     }
-    if t.starts_with("0x") || t.starts_with("0X") {
-        return u64::from_str_radix(&t[2..], 16)
-            .map(|v| v as f64)
-            .unwrap_or(0.0);
+    // gawk parity: bare `"nan"` / `"inf"` (no sign) → 0 because gawk's number
+    // scan rejects non-digit/non-sign prefixes. Rust's `f64::parse` would
+    // happily accept those tokens.
+    let first = t.as_bytes()[0];
+    if !matches!(first, b'+' | b'-' | b'.' | b'0'..=b'9') {
+        return 0.0;
     }
-    if t.len() > 1 && t.starts_with('0') && !t.contains('.') && !t.contains('e') && !t.contains('E')
-    {
-        return i64::from_str_radix(t, 8).map(|v| v as f64).unwrap_or(0.0);
+    // gawk: `0x…` / `0…` octal prefixes are only honored *without* a sign.
+    // `"+0x10"` and `"-0x10"` return 0 (the sign disqualifies the hex form).
+    let unsigned_hex_or_octal = !matches!(first, b'+' | b'-');
+    if unsigned_hex_or_octal {
+        if t.starts_with("0x") || t.starts_with("0X") {
+            return u64::from_str_radix(&t[2..], 16)
+                .map(|v| v as f64)
+                .unwrap_or(0.0);
+        }
+        if t.len() > 1
+            && t.starts_with('0')
+            && !t.contains('.')
+            && !t.contains('e')
+            && !t.contains('E')
+        {
+            return i64::from_str_radix(t, 8).map(|v| v as f64).unwrap_or(0.0);
+        }
     }
-    t.parse::<f64>().unwrap_or(0.0)
+    // gawk parity: longest leading numeric prefix (so `"42abc"` → 42, not 0).
+    // Signed `"+inf"` / `"-inf"` and `"+nan"` / `"-nan"` pass through here because
+    // their leading sign satisfies the first-byte check above; the f64 parser
+    // then yields the matching non-finite value.
+    if let Some(prefix) = crate::runtime::longest_f64_prefix(t) {
+        if let Ok(v) = prefix.parse::<f64>() {
+            return v;
+        }
+    }
+    0.0
 }
 
 fn locale_str_cmp_sort(a: &str, b: &str) -> Ordering {
@@ -946,7 +974,8 @@ mod tests {
     }
 
     #[test]
-    fn awk_gensub_numeric_zero_replaces_all_like_g() {
+    fn awk_gensub_numeric_zero_treated_as_one_like_gawk() {
+        // gawk: "gensub: third argument `0' treated as 1" — only the first match is replaced.
         let mut rt = Runtime::new();
         let out = awk_gensub(
             &mut rt,
@@ -956,7 +985,21 @@ mod tests {
             Some("z9y9z".into()),
         )
         .unwrap();
-        assert_eq!(out, "z_y_z");
+        assert_eq!(out, "z_y9z");
+    }
+
+    #[test]
+    fn awk_gensub_numeric_negative_treated_as_one_like_gawk() {
+        let mut rt = Runtime::new();
+        let out = awk_gensub(
+            &mut rt,
+            "[0-9]",
+            "_",
+            &Value::Num(-3.0),
+            Some("z9y9z".into()),
+        )
+        .unwrap();
+        assert_eq!(out, "z_y9z");
     }
 
     #[test]
@@ -1042,10 +1085,13 @@ mod tests {
     }
 
     #[test]
-    fn awk_gensub_negative_numeric_how_errors() {
+    fn awk_gensub_negative_numeric_how_treated_as_one_like_gawk() {
+        // gawk's behavior: any non-positive numeric `how` is silently treated as 1
+        // (replace only the first match) — no error.
         let mut rt = Runtime::new();
-        let e = awk_gensub(&mut rt, "a", "b", &Value::Num(-1.0), Some("x".into())).unwrap_err();
-        assert!(e.to_string().contains("gensub"), "{e}");
+        let out =
+            awk_gensub(&mut rt, "a", "X", &Value::Num(-1.0), Some("aaa".into())).unwrap();
+        assert_eq!(out, "Xaa");
     }
 
     #[test]

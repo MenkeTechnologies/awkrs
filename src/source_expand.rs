@@ -181,16 +181,29 @@ fn expand_inner(
         }
         if trimmed.starts_with("@namespace") {
             let rest = trimmed.strip_prefix("@namespace").unwrap().trim_start();
-            if let Some((ns, _)) = take_double_quoted(rest) {
+            // After the namespace identifier, capture any trailing source (e.g.
+            // `; BEGIN { … }` on the same line) so we don't silently drop it.
+            let after_ns: &str = if let Some((ns, after)) = take_double_quoted(rest) {
                 *default_ns = Some(ns);
-            } else if let Some((ns, _)) = take_bare_ident(rest) {
+                after
+            } else if let Some((ns, after)) = take_bare_ident(rest) {
                 *default_ns = Some(ns);
+                after
             } else {
                 return Err(Error::Parse {
                     line: line_no,
                     msg: "malformed `@namespace` (expected `@namespace \"name\"` or `@namespace name`)"
                         .into(),
                 });
+            };
+            // gawk parity: `@namespace "name"; rest_of_program` is legal; emit
+            // the remainder so the parser sees it as if the directive line had
+            // ended where the directive ended.
+            let after_ns = after_ns.trim_start();
+            let rest_after_semi = after_ns.strip_prefix(';').unwrap_or(after_ns);
+            if !rest_after_semi.trim().is_empty() {
+                out.push_str(rest_after_semi);
+                out.push('\n');
             }
             continue;
         }

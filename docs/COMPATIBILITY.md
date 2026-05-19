@@ -98,7 +98,7 @@ References: special variables and builtins lists in `src/compiler.rs` (`SPECIAL_
 | Variable | BSD | mawk | gawk | awkrs |
 |----------|-----|------|------|-------|
 | `NR` `FNR` `NF` `$0` `$n` | Yes | Yes | Yes | **Match** (invalid `NF` / negative fields fatal like gawk — tested) |
-| `FS` `RS` `OFS` `ORS` `OFMT` `CONVFMT` | Yes | Yes | Yes | **Match** |
+| `FS` `RS` `OFS` `ORS` `OFMT` `CONVFMT` | Yes | Yes | Yes | **Match** — including streaming multi-char `RS`, regex `RS`, and paragraph mode (`RS == ""`) over both stdin and files (trailing-newline trim matches gawk). |
 | `FILENAME` `ARGC` `ARGV` `ENVIRON` | Yes | Yes | Yes | **Match** |
 | `SUBSEP` | Yes | Yes | Yes | **Match** |
 | `RSTART` `RLENGTH` | Yes | Yes | Yes | **Match** |
@@ -107,8 +107,8 @@ References: special variables and builtins lists in `src/compiler.rs` (`SPECIAL_
 | `ERRNO` | No | No | Yes | **Match** |
 | `PROCINFO` | No | No | Yes | **Part** (keys: `sorted_in`, read timeout, errno, FS mode, bignum, identifiers, etc. — not every gawk key) |
 | `SYMTAB` `FUNCTAB` | No | No | Yes | **Part** (reflection best-effort) |
-| `FIELDWIDTHS` `FPAT` | Part | Part | Yes | **Match** |
-| `IGNORECASE` | Part | Part | Yes | **Match** |
+| `FIELDWIDTHS` `FPAT` | Part | Part | Yes | **Match** — `FIELDWIDTHS` accepts gawk's `width`, `skip:width`, and `*` tokens; the last entry is clamped to its declared width (no auto-extend), so any trailing input bytes are left unused like gawk. |
+| `IGNORECASE` | Part | Part | Yes | **Match** — applies to multi-char regex FS, `match`/`sub`/`gsub`/`split`/`gensub`, and `~`/`!~`. Single-char string FS (and single-char `split` separator) is always literal, independent of `IGNORECASE` (gawk parity). |
 | `BINMODE` | No | No | Yes | **Part** |
 | `LINT` | No | No | Yes | **Part** |
 | `TEXTDOMAIN` | No | No | Yes | **Part** (gettext path) |
@@ -125,9 +125,9 @@ Columns: **P** = POSIX / universal core, **B** = BSD awk, **M** = mawk, **G** = 
 | `rand` `srand` | * | * | * | * | **Part** (sequence not guaranteed to match any one engine) |
 | `length` / `length()` | * | * | * | * | **Match** (bare `length` → `$0` — `parser.rs`) |
 | `index` `substr` `sprintf` | * | * | * | * | **Match** |
-| `match` `sub` `gsub` `split` | * | * | * | * | **Match** / **Part** (regex engine = Rust `regex`; subtle differences possible) |
+| `match` `sub` `gsub` `split` | * | * | * | * | **Match** / **Part** (regex engine = Rust `regex`; subtle differences possible). `gsub(//, …)` produces gawk's zero-width matches at every position; `split(s, a, fs, seps)` populates the 4th-arg `seps` array with the actual separator strings between fields. |
 | `tolower` `toupper` | * | * | * | * | **Match** |
-| `system` `close` | * | * | * | * | **Part** (sandbox; `close` return semantics) |
+| `system` `close` | * | * | * | * | **Match** — `system()` flushes buffered stdout / pipes / files before invoking the subprocess; `close()` returns -1 for an unopened name and the exit code / 0 for a clean close (gawk parity, `runtime::close_handle`) |
 | `strtonum` | *¹ | Part | Part | Yes | **Match** |
 | `asort` `asorti` | — | — | — | Yes | **Match** |
 | `gensub` `patsplit` | — | — | — | Yes | **Part** |
@@ -150,8 +150,13 @@ Columns: **P** = POSIX / universal core, **B** = BSD awk, **M** = mawk, **G** = 
 
 | Topic | awkrs |
 |-------|--------|
-| `%g` / `%G` | **Match** (ISO C significant-digit semantics in fixed style — `src/format.rs`) |
-| `%a` / `%A` hex float | **Part** (if present — verify vs gawk) |
+| `%g` / `%G` | **Match** — precision is total significant digits (C99/POSIX); the fixed-vs-`e` form decision uses the **rounded** exponent (so `%.1g` of `9.5` is `1e+01`, not `10`). Precision 0 is treated as 1. |
+| `%u` on negative values | **Match** — wraps via i64→u64 two's complement (gawk parity), not clamped to 0. |
+| `0` flag on `%s` / `%c` | **Match** — POSIX says the flag is for numeric conversions only; awkrs pads with spaces for string/char conversions. |
+| Unknown conversion letters (`%q`, `%v`, …) | **Match** — emit the literal `%X` without consuming an argument (gawk parity). |
+| `%a` / `%A` hex float | **Match** (`format_hex_float` in `src/format.rs`; gawk parity confirmed) |
+| Non-finite floats (`±inf`, `±nan`) across `%f`/`%e`/`%g`/`%a` | **Match** (gawk-style `+inf` / `-inf` / `+nan` / `-nan`, with `INF` / `NAN` for uppercase variants — `format_non_finite` in `src/format.rs`) |
+| `print` of non-finite values | **Match** — `format_number` in `src/runtime.rs` emits the same `+inf` / `+nan` spelling so `print x` and `printf "%s", x` agree |
 | `LC_NUMERIC` (`-N`) | **Part** (documented split: format vs parse) |
 | MPFR (`-M`) | **Part** (precision / rounding via `PROCINFO`) |
 
@@ -164,6 +169,9 @@ Columns: **P** = POSIX / universal core, **B** = BSD awk, **M** = mawk, **G** = 
 | Engine | Rust `regex` crate (not literal GNU regex copy). |
 | Interval quantifiers `{m,n}` | Enabled ( `-r` is no-op). |
 | `IGNORECASE` | Supported for split/match contexts that consult runtime. |
+| `.` matches `\n` | **Match** — all built regexes use `dot_matches_new_line(true)` (gawk ERE convention). |
+| Backreferences in patterns (e.g. `(.)\1`) | **No** — Rust regex is linear-time and does not support pattern-side backrefs. (Backrefs in **replacement** text via `gensub` `\1`..`\9` and `&` are supported.) |
+| POSIX character classes (`[[:digit:]]`, etc.) | **Match** |
 | NUL bytes / binary | **Part** (`-b` / `BINMODE` — exercise before relying on). |
 
 ---

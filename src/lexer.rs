@@ -286,10 +286,10 @@ impl<'a> Lexer<'a> {
                             }
                         }
                         Some(x) => {
-                            // Unknown escape: keep the backslash (gawk warns
-                            // with --lint but accepts).
+                            // gawk parity: unknown escape (`\q`) drops the
+                            // backslash and emits just the character — gawk
+                            // also warns under `--lint`, awkrs stays silent.
                             self.bump();
-                            s.push('\\');
                             s.push(x);
                         }
                         None => {
@@ -1344,9 +1344,10 @@ mod tests {
     }
 
     #[test]
-    fn lex_stray_backslash_in_string() {
-        // gawk-style: \z -> \z
-        assert_eq!(lex_string(r"\z"), r"\z");
+    fn lex_stray_unknown_escape_drops_backslash() {
+        // gawk parity: `\z` (unknown) emits just `z` — the backslash is dropped
+        // with a warning under `--lint`.
+        assert_eq!(lex_string(r"\z"), "z");
     }
 
     #[test]
@@ -1486,13 +1487,11 @@ mod tests {
         assert_eq!(lex_string(r"\f"), "\x0c");
         assert_eq!(lex_string(r"\v"), "\x0b");
         assert_eq!(lex_string(r"\r"), "\r");
-        // gawk: \? is \? in some implementations or ? in others.
-        // awkrs seems to preserve it as \?
-        assert_eq!(lex_string(r"\?"), r"\?");
-        // \' is \' in awkrs
-        assert_eq!(lex_string(r"\'"), r"\'");
-        // unknown escape preserves backslash
-        assert_eq!(lex_string(r"\z"), r"\z");
+        // gawk parity: unknown escape sequences drop the backslash and emit
+        // just the following character (e.g. `\?` → `?`, `\z` → `z`).
+        assert_eq!(lex_string(r"\?"), "?");
+        assert_eq!(lex_string(r"\'"), "'");
+        assert_eq!(lex_string(r"\z"), "z");
     }
 
     #[test]

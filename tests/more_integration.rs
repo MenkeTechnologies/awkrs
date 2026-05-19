@@ -1124,7 +1124,13 @@ fn argc_argv_includes_executable_and_input_paths() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     let mut lines = stdout.lines();
     assert_eq!(lines.next(), Some("3"));
-    assert_eq!(lines.next(), Some(bin));
+    // ARGV[0] is the basename of argv[0] (gawk convention), not the full path.
+    let bin_basename = std::path::Path::new(bin)
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    assert_eq!(lines.next(), Some(bin_basename.as_str()));
     assert!(lines
         .next()
         .unwrap()
@@ -1498,9 +1504,15 @@ fn environ_array_reflects_variable_set_on_child_process() {
 
 #[test]
 fn rt_is_text_of_rs_for_each_record_when_rs_is_single_char() {
-    let (c, o, _) = run_awkrs_stdin("BEGIN { RS = \":\" } { print NR, RT }", "a:b\n");
+    // gawk: RT is the actual matched separator. For the final record (no trailing `:`),
+    // RT is empty. Input "a:b\n" → first record "a" with RT=":", second record "b\n"
+    // (the `\n` is just part of the record because RS is now `:`) with RT="".
+    let (c, o, _) = run_awkrs_stdin(
+        "BEGIN { RS = \":\" } { print NR, \"[\" RT \"]\" }",
+        "a:b\n",
+    );
     assert_eq!(c, 0);
-    assert_eq!(o, "1 :\n2 :\n");
+    assert_eq!(o, "1 [:]\n2 []\n");
 }
 
 #[test]

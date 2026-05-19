@@ -223,10 +223,13 @@ pub enum Op {
     GsubFn(SubTarget),
 
     // ── Split / Patsplit / Match ────────────────────────────────────────
-    /// `split(s, arr [, fs])`. Pop fs if `has_fs`, pop s. Push count.
+    /// `split(s, arr [, fs [, seps]])`. Pop fs if `has_fs`, pop s. Push count.
+    /// When `seps` is `Some`, populate that array with the separator strings
+    /// between fields (gawk extension); seps[i] is the separator between arr[i] and arr[i+1].
     Split {
         arr: u32,
         has_fs: bool,
+        seps: Option<u32>,
     },
     /// `patsplit(s, arr [, fp [, seps]])`. Pop fp if `has_fp`, pop s. Push count.
     Patsplit {

@@ -290,9 +290,11 @@ pub fn translate_op(op: &bytecode::Op, line: u32) -> Vec<(fusevm::Op, u32)> {
         A::SubFn(_) => vec![(F::Extended(AWK_SUB_FN, 0), line)],
         A::GsubFn(_) => vec![(F::Extended(AWK_GSUB_FN, 0), line)],
 
-        A::Split { arr: _, has_fs } => {
-            vec![(F::Extended(AWK_SPLIT, if *has_fs { 1 } else { 0 }), line)]
-        }
+        A::Split {
+            arr: _,
+            has_fs,
+            seps: _,
+        } => vec![(F::Extended(AWK_SPLIT, if *has_fs { 1 } else { 0 }), line)],
         A::Patsplit {
             arr: _,
             has_fp,

@@ -341,12 +341,23 @@ impl<'a> Parser<'a> {
 
     fn parse_stmt_list(&mut self) -> Result<Vec<Stmt>> {
         let mut v = Vec::new();
-        self.skip_newlines()?;
+        self.skip_stmt_separators()?;
         while self.cur != Token::RBrace && !matches!(self.cur, Token::Eof) {
             v.push(self.parse_stmt()?);
-            self.skip_newlines()?;
+            self.skip_stmt_separators()?;
         }
         Ok(v)
+    }
+
+    /// Skip any number of `;` and newline tokens — these all act as statement
+    /// separators at the top of a `{ … }` block. gawk allows stray `;` as an
+    /// empty statement (e.g. `if (cond) { … } ; print`); accepting them here
+    /// stops `;` from being parsed as the start of an expression.
+    fn skip_stmt_separators(&mut self) -> Result<()> {
+        while matches!(self.cur, Token::Newline | Token::Semi) {
+            self.bump(true)?;
+        }
+        Ok(())
     }
 
     fn parse_stmt(&mut self) -> Result<Stmt> {
@@ -739,6 +750,10 @@ impl<'a> Parser<'a> {
                         args.push(arg);
                         if self.cur == Token::Comma {
                             self.bump(true)?;
+                            // gawk parity: `,` is a continuation token — a
+                            // newline after a comma is whitespace, not a
+                            // statement terminator.
+                            self.skip_newlines()?;
                             continue;
                         }
                         break;
@@ -774,6 +789,9 @@ impl<'a> Parser<'a> {
                     args.push(arg);
                     if self.cur == Token::Comma {
                         self.bump(true)?;
+                        // `,` is a continuation token — newlines after a
+                        // comma are whitespace.
+                        self.skip_newlines()?;
                         continue;
                     }
                     break Ok(());
@@ -1022,6 +1040,9 @@ impl<'a> Parser<'a> {
         if self.cur == Token::Question {
             Self::reject_tuple_expr(&e, self.line)?;
             self.bump(true)?;
+            // gawk parity: `?` and `:` are statement-continuation tokens — a
+            // newline after either is whitespace.
+            self.skip_newlines()?;
             let t = self.parse_expr(false, re_pat)?;
             Self::reject_tuple_expr(&t, self.line)?;
             if self.cur != Token::Colon {
@@ -1031,6 +1052,7 @@ impl<'a> Parser<'a> {
                 });
             }
             self.bump(true)?;
+            self.skip_newlines()?;
             let f = self.parse_cond(false, re_pat)?;
             Self::reject_tuple_expr(&f, self.line)?;
             e = Expr::Ternary {
@@ -1051,6 +1073,9 @@ impl<'a> Parser<'a> {
         while self.cur == Token::Or {
             Self::reject_tuple_expr(&e, self.line)?;
             self.bump(true)?;
+            // gawk parity: `||` is a continuation token; newlines after it are
+            // treated as whitespace.
+            self.skip_newlines()?;
             let r = self.parse_and(false, re_pat)?;
             Self::reject_tuple_expr(&r, self.line)?;
             e = Expr::Binary {
@@ -1071,6 +1096,8 @@ impl<'a> Parser<'a> {
         while self.cur == Token::And {
             Self::reject_tuple_expr(&e, self.line)?;
             self.bump(true)?;
+            // `&&` is a continuation token.
+            self.skip_newlines()?;
             let r = self.parse_array(false, re_pat)?;
             Self::reject_tuple_expr(&r, self.line)?;
             e = Expr::Binary {
@@ -1394,6 +1421,7 @@ impl<'a> Parser<'a> {
         v.push(self.parse_expr_allow_gt(false, false)?);
         while self.cur == Token::Comma {
             self.bump(true)?;
+            self.skip_newlines()?;
             v.push(self.parse_expr_allow_gt(false, false)?);
         }
         Ok(v)
@@ -1464,6 +1492,7 @@ impl<'a> Parser<'a> {
                         args.push(self.parse_expr_allow_gt(false, false)?);
                         if self.cur == Token::Comma {
                             self.bump(true)?;
+                            self.skip_newlines()?;
                             continue;
                         }
                         break;
@@ -1504,6 +1533,7 @@ impl<'a> Parser<'a> {
                             args.push(self.parse_expr_allow_gt(false, re_for_arg)?);
                             if self.cur == Token::Comma {
                                 self.bump(true)?;
+                                self.skip_newlines()?;
                                 continue;
                             }
                             break;

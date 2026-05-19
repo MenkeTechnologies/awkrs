@@ -863,19 +863,28 @@ fn process_file(
     };
 
     let mut count = 0usize;
+    let mut rt_sep = Vec::new();
     loop {
         #[cfg(unix)]
         rt.poll_primary_read_timeout_if_needed()?;
         let rs = rt.rs_string();
         rt.ensure_rs_regex_bytes()?;
-        let mut rt_sep = Vec::new();
-        if !crate::record_io::read_next_record(
+        rt_sep.clear();
+        // SAFETY: we split the &mut borrow of rt across line_buf, rt_sep (local), and
+        // the cached regex/leftover via temporary swaps to satisfy the borrow checker.
+        let mut line_buf = std::mem::take(&mut rt.line_buf);
+        let mut leftover = std::mem::take(&mut rt.read_leftover);
+        let read_ok = crate::record_io::read_next_record(
             &br,
             &rs,
-            &mut rt.line_buf,
+            &mut line_buf,
             &mut rt_sep,
             rt.rs_regex_bytes.as_ref(),
-        )? {
+            &mut leftover,
+        )?;
+        rt.line_buf = line_buf;
+        rt.read_leftover = leftover;
+        if !read_ok {
             break;
         }
         rt.set_rt_from_bytes(&rt_sep);
