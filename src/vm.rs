@@ -4664,6 +4664,11 @@ pub(crate) fn exec_builtin_dispatch(
             }
         }
         "index" => {
+            if argc != 2 {
+                return Err(Error::Runtime(format!(
+                    "{argc} is invalid as number of arguments for index"
+                )));
+            }
             let hay = args[0].as_str();
             let needle = args[1].as_str();
             if needle.is_empty() {
@@ -4707,6 +4712,11 @@ pub(crate) fn exec_builtin_dispatch(
             }
         }
         "substr" => {
+            if !(2..=3).contains(&argc) {
+                return Err(Error::Runtime(format!(
+                    "{argc} is invalid as number of arguments for substr"
+                )));
+            }
             let s = args[0].as_str();
             let start_raw = args[1].as_number();
             let mut m = start_raw as i64;
@@ -4743,9 +4753,32 @@ pub(crate) fn exec_builtin_dispatch(
                 Value::Str(slice)
             }
         }
-        "tolower" => Value::Str(args[0].as_str().to_lowercase()),
-        "toupper" => Value::Str(args[0].as_str().to_uppercase()),
-        "int" => bignum::awk_int_value(&args[0], ctx.rt),
+        "tolower" => {
+            // gawk parity: `tolower()` with no args is a runtime error, not a
+            // panic. Earlier awkrs indexed args[0] unchecked.
+            if argc != 1 {
+                return Err(Error::Runtime(format!(
+                    "{argc} is invalid as number of arguments for tolower"
+                )));
+            }
+            Value::Str(args[0].as_str().to_lowercase())
+        }
+        "toupper" => {
+            if argc != 1 {
+                return Err(Error::Runtime(format!(
+                    "{argc} is invalid as number of arguments for toupper"
+                )));
+            }
+            Value::Str(args[0].as_str().to_uppercase())
+        }
+        "int" => {
+            if argc != 1 {
+                return Err(Error::Runtime(format!(
+                    "{argc} is invalid as number of arguments for int"
+                )));
+            }
+            bignum::awk_int_value(&args[0], ctx.rt)
+        }
         "intdiv" => {
             if argc != 2 {
                 return Err(Error::Runtime("`intdiv` expects two arguments".into()));

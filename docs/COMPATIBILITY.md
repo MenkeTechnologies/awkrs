@@ -171,6 +171,8 @@ Columns: **P** = POSIX / universal core, **B** = BSD awk, **M** = mawk, **G** = 
 | Numeric `==` precision | **Match** — bit-exact (POSIX). Previously used a fuzzy `f64::EPSILON` tolerance, so `0.1 + 0.2 == 0.3` returned true (the difference is ~5.55e-17, below EPSILON). Now matches gawk's 0. |
 | Paragraph-mode `RT` (`RS == ""`) | **Match** — captures the FULL run of trailing newlines from the last content line plus the blank lines separating records (`b\n\nc` → RT == "\n\n"). The last record also captures EOF-trailing newlines into RT. |
 | `PROCINFO["strftime"]` default | **Match** — `"%a %b %e %H:%M:%S %Z %Y"` (gawk's date(1)-equivalent default), not `"%c"`. |
+| `printf("fmt", a, b)` function-call form | **Match** — equivalent to `printf "fmt", a, b`. Previously rejected as "parenthesized comma list is not allowed". Mixed paren-args + bare args (`printf(a,b), c`) still rejected. |
+| Builtin called with wrong arity | **Match (no panic)** — `tolower()`, `toupper()`, `index()`, `substr()` with too few args now emit `"N is invalid as number of arguments for X"` instead of panicking on out-of-bounds. |
 | MPFR (`-M`) | **Part** (precision / rounding via `PROCINFO`) |
 
 ---

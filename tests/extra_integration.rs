@@ -3201,3 +3201,52 @@ fn procinfo_strftime_is_gawk_default_format() {
     assert_eq!(c, 0);
     assert_eq!(o, "%a %b %e %H:%M:%S %Z %Y\n");
 }
+
+#[test]
+fn printf_paren_function_call_style_accepted() {
+    // gawk parity: `printf("fmt", a, b)` is the function-call form of
+    // `printf "fmt", a, b`. Earlier awkrs rejected the parenthesized form
+    // with "parenthesized comma list is not allowed in `printf` arguments".
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN {
+            printf("%d %d\n", 1, 2)
+            printf("hello\n")
+            printf("%d %s %d\n", 1, "two", 3)
+        }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "1 2\nhello\n1 two 3\n");
+    // Mixed paren-args + bare args still rejected.
+    let (c2, _o2, e2) = run_awkrs_stdin(r#"BEGIN { printf(a,b), c }"#, "");
+    assert_ne!(c2, 0);
+    assert!(
+        e2.contains("parenthesized"),
+        "expected mixed-form rejection, got: {e2:?}"
+    );
+}
+
+#[test]
+fn no_arg_builtin_calls_error_instead_of_panic() {
+    // gawk parity: builtins that require arguments raise a runtime error on
+    // wrong arity instead of panicking on out-of-bounds array access.
+    for prog in [
+        "BEGIN { print tolower() }",
+        "BEGIN { print toupper() }",
+        "BEGIN { print index() }",
+        "BEGIN { print index(\"a\") }",
+        "BEGIN { print substr() }",
+        "BEGIN { print substr(\"a\") }",
+    ] {
+        let (c, _o, e) = run_awkrs_stdin(prog, "");
+        assert_ne!(c, 0, "expected non-zero exit for {prog}");
+        assert!(
+            e.contains("invalid as number of arguments"),
+            "expected arity error for {prog}, got: {e:?}"
+        );
+        assert!(
+            !e.contains("panicked"),
+            "expected non-panic error for {prog}, got: {e:?}"
+        );
+    }
+}

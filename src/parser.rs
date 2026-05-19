@@ -779,12 +779,26 @@ impl<'a> Parser<'a> {
                 self.in_printf_args = true;
                 let pf_res = loop {
                     let arg = self.parse_print_expr()?;
+                    // gawk parity: `printf(fmt, a, b)` (function-call style) is
+                    // equivalent to `printf fmt, a, b` (bare args). The parser
+                    // sees the parenthesized comma list as `Expr::Tuple`; only
+                    // unfold it when it is the ONLY arg (i.e. no bare commas
+                    // follow). A bare-comma-after-tuple form like
+                    // `printf (a,b), c` would mix paren-args with bare-args
+                    // and is still rejected.
                     if matches!(arg, Expr::Tuple(_)) {
-                        break Err(Error::Parse {
-                            line: self.line,
-                            msg: "parenthesized comma list is not allowed in `printf` arguments"
-                                .into(),
-                        });
+                        if !args.is_empty() || self.cur == Token::Comma {
+                            break Err(Error::Parse {
+                                line: self.line,
+                                msg:
+                                    "parenthesized comma list is not allowed in `printf` arguments"
+                                        .into(),
+                            });
+                        }
+                        if let Expr::Tuple(parts) = arg {
+                            args.extend(parts);
+                        }
+                        break Ok(());
                     }
                     args.push(arg);
                     if self.cur == Token::Comma {
@@ -1652,13 +1666,12 @@ impl<'a> Parser<'a> {
                 self.bump(true)?;
                 let first = self.parse_expr_allow_gt(false, re_pat)?;
                 if self.cur == Token::Comma {
-                    if self.in_printf_args {
-                        return Err(Error::Parse {
-                            line: self.line,
-                            msg: "parenthesized comma list is not allowed in `printf` arguments"
-                                .into(),
-                        });
-                    }
+                    // gawk parity: `printf("fmt", a, b)` is the function-call
+                    // form of `printf "fmt", a, b`. Earlier awkrs rejected the
+                    // parenthesized comma list when nested inside printf args;
+                    // we now build the `Expr::Tuple` and the printf statement
+                    // parser unfolds it (still rejects mixed paren-args + bare
+                    // args like `printf (a,b), c`).
                     let mut parts = vec![first];
                     while self.cur == Token::Comma {
                         self.bump(true)?;
