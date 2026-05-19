@@ -160,6 +160,10 @@ Columns: **P** = POSIX / universal core, **B** = BSD awk, **M** = mawk, **G** = 
 | `LC_NUMERIC` (`-N`) | **Part** (documented split: format vs parse) |
 | `%'` flag thousands grouping | **Match** — consults `localeconv()->thousands_sep` regardless of `-N` (gawk parity). Empty in `LC_ALL=C` → no grouping; `","` in `en_US.UTF-8` → comma grouping. |
 | `==` / `<` / `>` of `Num` vs string literal | **Match** — string-compare fallback stringifies the number via `CONVFMT` (not the default `%.6g`). E.g. `BEGIN{CONVFMT="%.2f"; print 3.14159=="3.14"}` prints `1`. |
+| `a % 0` / `a %= 0` | **Match** — fatal "division by zero attempted in `%'" (was previously NaN). |
+| Numeric coercion of `"inf"` / `"nan"` | **Match** — bare special names coerce to 0; only signed three-letter `inf` / `nan` (case-insensitive) are accepted. `"+infinity"` is rejected like in gawk. |
+| `lshift` / `rshift` / `compl` negative args | **Match** — fatal "negative values are not allowed". |
+| `typeof($field)` of noisy numeric text (e.g. `"42abc"`) | **Match** — reports `"string"` (numeric prefix alone is not enough); field comparisons against numbers use string-compare. Pure-numeric text (`"42"`) still reports `"strnum"`. |
 | MPFR (`-M`) | **Part** (precision / rounding via `PROCINFO`) |
 
 ---

@@ -3447,13 +3447,25 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                     let round = ctx.rt.mpfr_round();
                     let fa = value_to_float(&a, prec, round);
                     let fb = value_to_float(&b, prec, round);
+                    if fb.is_zero() {
+                        return Err(Error::Runtime(
+                            "division by zero attempted in `%'".into(),
+                        ));
+                    }
                     ctx.push(Value::Mpfr(Float::with_val_round(prec, &fa % &fb, round).0));
                 } else {
                     let b = ctx.pop();
                     let a = ctx.pop();
                     a.reject_if_array_scalar()?;
                     b.reject_if_array_scalar()?;
-                    ctx.push(Value::Num(a.as_number() % b.as_number()));
+                    let bn = b.as_number();
+                    let an = a.as_number();
+                    if bn == 0.0 {
+                        return Err(Error::Runtime(
+                            "division by zero attempted in `%'".into(),
+                        ));
+                    }
+                    ctx.push(Value::Num(an % bn));
                 }
             }
             Op::Pow => {
@@ -4973,17 +4985,48 @@ pub(crate) fn exec_builtin_dispatch(
             if argc != 2 {
                 return Err(Error::Runtime("`lshift` expects two arguments".into()));
             }
+            // gawk parity: negative shift count is a fatal runtime error.
+            let av = args[0].as_number();
+            let bv = args[1].as_number();
+            if av < 0.0 {
+                return Err(Error::Runtime(format!(
+                    "lshift({av:.6}, {bv:.6}): negative values are not allowed"
+                )));
+            }
+            if bv < 0.0 {
+                return Err(Error::Runtime(format!(
+                    "lshift({av:.6}, {bv:.6}): negative values are not allowed"
+                )));
+            }
             bignum::awk_lshift_values(&args[0], &args[1], ctx.rt)
         }
         "rshift" => {
             if argc != 2 {
                 return Err(Error::Runtime("`rshift` expects two arguments".into()));
             }
+            let av = args[0].as_number();
+            let bv = args[1].as_number();
+            if av < 0.0 {
+                return Err(Error::Runtime(format!(
+                    "rshift({av:.6}, {bv:.6}): negative values are not allowed"
+                )));
+            }
+            if bv < 0.0 {
+                return Err(Error::Runtime(format!(
+                    "rshift({av:.6}, {bv:.6}): negative values are not allowed"
+                )));
+            }
             bignum::awk_rshift_values(&args[0], &args[1], ctx.rt)
         }
         "compl" => {
             if argc != 1 {
                 return Err(Error::Runtime("`compl` expects one argument".into()));
+            }
+            let av = args[0].as_number();
+            if av < 0.0 {
+                return Err(Error::Runtime(format!(
+                    "compl({av:.6}): negative value is not allowed"
+                )));
             }
             bignum::awk_compl_values(&args[0], ctx.rt)
         }

@@ -281,7 +281,14 @@ pub fn awk_binop_values(
                 }
                 a / b
             }
-            BinOp::Mod => a % b,
+            BinOp::Mod => {
+                if b == 0.0 {
+                    return Err(Error::Runtime(
+                        "division by zero attempted in `%'".into(),
+                    ));
+                }
+                a % b
+            }
             BinOp::Pow => a.powf(b),
             _ => return Err(Error::Runtime("invalid compound assignment op".into())),
         };
@@ -301,7 +308,14 @@ pub fn awk_binop_values(
             }
             Float::with_val_round(prec, &a / &b, round).0
         }
-        BinOp::Mod => Float::with_val_round(prec, &a % &b, round).0,
+        BinOp::Mod => {
+            if b.is_zero() {
+                return Err(Error::Runtime(
+                    "division by zero attempted in `%'".into(),
+                ));
+            }
+            Float::with_val_round(prec, &a % &b, round).0
+        }
         BinOp::Pow => Float::with_val_round(prec, a.pow(&b), round).0,
         _ => return Err(Error::Runtime("invalid compound assignment op".into())),
     };
@@ -401,17 +415,57 @@ fn mpfr_value_default_display(f: &Float) -> String {
 
 /// Longest leading substring of `s` that `f64::from_str` accepts (POSIX awk string→number prefix rule).
 /// Parseability is not monotonic in prefix length (e.g. `1` ok, `1e` err, `1e2` ok), so we scan downward.
+///
+/// gawk parity: Rust's `f64::from_str` accepts bare `"inf"`, `"nan"`, `"infinity"`, `"Infinity"`, etc.
+/// gawk does NOT — bare special names coerce to 0. The only special-name forms gawk accepts are
+/// sign-prefixed three-letter `inf` / `nan` (case-insensitive), AND only when not followed by more
+/// alphanumeric characters (so `"+infzzz"` and `"+infinity"` both coerce to 0, not `+inf`).
 #[inline]
 pub(crate) fn longest_f64_prefix(s: &str) -> Option<&str> {
     if s.is_empty() {
         return None;
     }
     for end in (1..=s.len()).rev() {
-        if s[..end].parse::<f64>().is_ok() {
-            return Some(&s[..end]);
+        let p = &s[..end];
+        if !awk_numeric_prefix_acceptable(p, end < s.len() && next_byte_is_alnum(s, end)) {
+            continue;
+        }
+        if p.parse::<f64>().is_ok() {
+            return Some(p);
         }
     }
     None
+}
+
+#[inline]
+fn next_byte_is_alnum(s: &str, end: usize) -> bool {
+    s.as_bytes()
+        .get(end)
+        .map(|c| c.is_ascii_alphanumeric())
+        .unwrap_or(false)
+}
+
+/// gawk numeric coercion rule: accept ordinary decimal/float prefixes (must contain a digit), plus
+/// signed three-letter `inf` / `nan` (case-insensitive). The special-name form is rejected when
+/// followed by an alphanumeric byte in the source (gawk requires the keyword to stand alone, so
+/// `"+infzzz"` and `"+infinity"` both coerce to 0).
+#[inline]
+fn awk_numeric_prefix_acceptable(p: &str, has_trailing_alnum: bool) -> bool {
+    if p.bytes().any(|c| c.is_ascii_digit()) {
+        return true;
+    }
+    if has_trailing_alnum {
+        return false;
+    }
+    let b = p.as_bytes();
+    if b.len() != 4 {
+        return false;
+    }
+    if !matches!(b[0], b'+' | b'-') {
+        return false;
+    }
+    let tail = &p[1..];
+    tail.eq_ignore_ascii_case("inf") || tail.eq_ignore_ascii_case("nan")
 }
 
 impl Value {
@@ -586,8 +640,19 @@ impl Value {
             Value::Mpfr(_) => true,
             Value::StrLit(_) => false,
             Value::Str(s) => {
+                // POSIX / gawk: a string is "numeric" only if the ENTIRE trimmed text is a
+                // valid number — `"42abc"` is NOT numeric (typeof is `"string"`), even though
+                // `+"42abc"` yields 42 via prefix parsing. Earlier we used the prefix check
+                // alone, which made `typeof($1)` report `strnum` for noisy fields like
+                // `"42abc"` and made `"42abc" == 42` a numeric compare instead of string.
                 let t = s.trim();
-                !t.is_empty() && longest_f64_prefix(t).is_some()
+                if t.is_empty() {
+                    return false;
+                }
+                match longest_f64_prefix(t) {
+                    Some(p) => p.len() == t.len(),
+                    None => false,
+                }
             }
             Value::Regexp(_) => false,
             Value::Array(_) => false,
@@ -4156,8 +4221,12 @@ mod extra_runtime_tests {
         assert_eq!(Value::Uninit.as_number(), 0.0);
         assert_eq!(Value::Str("  123.45  ".into()).as_number(), 123.45);
         assert_eq!(Value::Str("1e2".into()).as_number(), 100.0);
-        assert_eq!(Value::Str("inf".into()).as_number(), f64::INFINITY);
-        assert!(Value::Str("nan".into()).as_number().is_nan());
+        // gawk parity: bare "inf"/"nan" coerce to 0 (no sign prefix → not a
+        // numeric prefix in gawk). Signed three-letter forms are accepted.
+        assert_eq!(Value::Str("inf".into()).as_number(), 0.0);
+        assert_eq!(Value::Str("nan".into()).as_number(), 0.0);
+        assert_eq!(Value::Str("+inf".into()).as_number(), f64::INFINITY);
+        assert!(Value::Str("+nan".into()).as_number().is_nan());
         // large integers
         assert_eq!(
             Value::Str("9223372036854775807".into()).as_number(),
@@ -4175,9 +4244,12 @@ mod extra_runtime_tests {
         assert!(!Value::StrLit("123".into()).is_numeric_str());
         // extreme scientific
         assert!(Value::Str("1.234567e+10".into()).is_numeric_str());
-        // INF/NAN
-        assert!(Value::Str("inf".into()).is_numeric_str());
-        assert!(Value::Str("nan".into()).is_numeric_str());
+        // gawk parity: bare "inf"/"nan" are NOT numeric strings (no sign prefix
+        // → not a numeric prefix in gawk). Only signed forms count.
+        assert!(!Value::Str("inf".into()).is_numeric_str());
+        assert!(!Value::Str("nan".into()).is_numeric_str());
+        assert!(Value::Str("+inf".into()).is_numeric_str());
+        assert!(Value::Str("-nan".into()).is_numeric_str());
     }
 
     #[test]

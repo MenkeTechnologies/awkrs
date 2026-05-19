@@ -2980,3 +2980,84 @@ fn printf_apostrophe_flag_skipped_in_c_locale() {
     assert_eq!(c, 0);
     assert_eq!(o, "1234567\n1234567.890000\n9876543.21\n");
 }
+
+#[test]
+fn coerce_bare_special_names_yield_zero() {
+    // gawk parity: bare "inf"/"nan"/"infinity" coerce to 0 (no sign prefix is
+    // not a numeric prefix). Signed three-letter forms are accepted; longer
+    // signed forms like "+infinity" are NOT.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN {
+            print +"inf", +"nan", +"infinity", +"NaN"
+            print +"+inf", +"-inf", +"+nan"
+            print +"+infinity", +"-infinity"
+            print +"+infzzz"
+        }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "0 0 0 0\n+inf -inf +nan\n0 0\n0\n");
+}
+
+#[test]
+fn modulo_by_zero_is_fatal() {
+    // gawk parity: `10 % 0` raises "division by zero attempted in `%'", not NaN.
+    let (c, _o, e) = run_awkrs_stdin(r#"BEGIN { print 10 % 0 }"#, "");
+    assert_ne!(c, 0);
+    assert!(
+        e.contains("division by zero attempted in `%'"),
+        "expected mod-by-zero fatal, got stderr: {e:?}"
+    );
+    // Also the compound form `x %= 0` must fatal.
+    let (c2, _o2, e2) = run_awkrs_stdin(r#"BEGIN { x=7; x %= 0 }"#, "");
+    assert_ne!(c2, 0);
+    assert!(
+        e2.contains("division by zero attempted in `%'"),
+        "expected compound mod-by-zero fatal, got stderr: {e2:?}"
+    );
+}
+
+#[test]
+fn shift_and_compl_reject_negative_args() {
+    // gawk parity: lshift/rshift/compl fatal on negative arguments.
+    for (prog, needle) in [
+        (
+            "BEGIN { print lshift(1, -1) }",
+            "lshift(1.000000, -1.000000): negative values are not allowed",
+        ),
+        (
+            "BEGIN { print rshift(8, -1) }",
+            "rshift(8.000000, -1.000000): negative values are not allowed",
+        ),
+        (
+            "BEGIN { print compl(-1) }",
+            "compl(-1.000000): negative value is not allowed",
+        ),
+    ] {
+        let (c, _o, e) = run_awkrs_stdin(prog, "");
+        assert_ne!(c, 0, "expected non-zero exit for {prog}");
+        assert!(
+            e.contains(needle),
+            "expected substring {needle:?} in stderr for {prog}, got {e:?}"
+        );
+    }
+}
+
+#[test]
+fn noisy_numeric_field_is_string_not_strnum() {
+    // gawk parity: field "42abc" has a numeric prefix but is NOT a numeric
+    // string — `typeof($1)` reports `"string"`, and comparisons against
+    // numbers use string-compare. Earlier awkrs used the prefix alone and
+    // wrongly reported `"strnum"` / numeric compare.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"{ print typeof($1), ($1 == 42), ($1 < 100) ? "lt" : "ge" }"#,
+        "42abc\n",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "string 0 ge\n");
+    // Sanity: pure-numeric field stays strnum and numeric-compares.
+    let (c2, o2, _) =
+        run_awkrs_stdin(r#"{ print typeof($1), ($1 == 42) }"#, "42\n");
+    assert_eq!(c2, 0);
+    assert_eq!(o2, "strnum 1\n");
+}
