@@ -1057,7 +1057,12 @@ impl<'a> Parser<'a> {
             }
             self.bump(true)?;
             self.skip_newlines()?;
-            let f = self.parse_cond(false, re_pat)?;
+            // gawk parity: the else-branch is an assignment-expression (so
+            // `1 ? x=1 : x=2` parses with `x=2` as the else arm). Previously
+            // awkrs only allowed `conditional_expression` here, which made
+            // `=2` look like a stray assign-into-ternary token. parse_assign
+            // recursively handles nested ternary via parse_cond.
+            let f = self.parse_assign(false, re_pat)?;
             Self::reject_tuple_expr(&f, self.line)?;
             e = Expr::Ternary {
                 cond: Box::new(e),

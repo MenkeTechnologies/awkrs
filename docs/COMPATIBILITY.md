@@ -164,6 +164,9 @@ Columns: **P** = POSIX / universal core, **B** = BSD awk, **M** = mawk, **G** = 
 | Numeric coercion of `"inf"` / `"nan"` | **Match** — bare special names coerce to 0; only signed three-letter `inf` / `nan` (case-insensitive) are accepted. `"+infinity"` is rejected like in gawk. |
 | `lshift` / `rshift` / `compl` negative args | **Match** — fatal "negative values are not allowed". |
 | `typeof($field)` of noisy numeric text (e.g. `"42abc"`) | **Match** — reports `"string"` (numeric prefix alone is not enough); field comparisons against numbers use string-compare. Pure-numeric text (`"42"`) still reports `"strnum"`. |
+| `match(str, re, arr)` start/length subscripts | **Match** — writes `arr[i, "start"]` (1-based char index) and `arr[i, "length"]` for each successful submatch; unmatched optional groups have NO entries. |
+| `mktime(spec [, utc])` | **Match** — optional second argument forces UTC interpretation when truthy; one-arg form remains local-time. |
+| Assignment in ternary else-branch (`1 ? x=1 : x=2`) | **Match** — the else-branch parses as an assignment-expression (gawk grammar). Previously rejected as "invalid assignment target". |
 | MPFR (`-M`) | **Part** (precision / rounding via `PROCINFO`) |
 
 ---

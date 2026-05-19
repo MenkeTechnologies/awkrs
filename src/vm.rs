@@ -4857,10 +4857,14 @@ pub(crate) fn exec_builtin_dispatch(
         }
         "strftime" => builtins::awk_strftime(&args).map_err(Error::Runtime)?,
         "mktime" => {
-            if argc != 1 {
-                return Err(Error::Runtime("`mktime` expects one argument".into()));
+            // gawk parity: `mktime(datespec [, utc])` — when the optional second
+            // argument is truthy, interpret the datespec in UTC, otherwise in
+            // local time.
+            if !(1..=2).contains(&argc) {
+                return Err(Error::Runtime("`mktime` expects one or two arguments".into()));
             }
-            Value::Num(builtins::awk_mktime(&args[0].as_str()))
+            let utc = argc == 2 && args[1].as_number() != 0.0;
+            Value::Num(builtins::awk_mktime_with_utc(&args[0].as_str(), utc))
         }
         "rand" => Value::Num(ctx.rt.rand()),
         "srand" => {

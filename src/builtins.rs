@@ -208,13 +208,35 @@ pub fn match_fn(rt: &mut Runtime, s: &str, re_pat: &str, arr_name: Option<&str>)
                 // gawk parity: a[0] is the whole match, a[1]..a[n] are
                 // parenthesized subexpressions. Previously awkrs skipped
                 // group 0, so `match(s, /(a)|(b)/, arr)` left arr[0] empty.
+                //
+                // gawk also writes `a[i, "start"]` and `a[i, "length"]` for
+                // each successful submatch (1-based char position, length in
+                // chars). Unmatched optional groups (e.g. `(a)?`) get NO
+                // entries — `a[1]` / `a[1,"start"]` / `a[1,"length"]` all
+                // absent — matching gawk. The byte offset is converted to a
+                // 1-based character index so `\w` matches in multibyte input
+                // report the position users see (gawk uses char positions).
+                let subsep = rt
+                    .get_global_var("SUBSEP")
+                    .map(|v| v.as_str())
+                    .unwrap_or_else(|| "\x1c".to_string());
                 for i in 0..caps.len() {
-                    let key = format!("{i}");
-                    let val = caps
-                        .get(i)
-                        .map(|x| x.as_str().to_string())
-                        .unwrap_or_default();
-                    rt.array_set(a, key, Value::Str(val));
+                    if let Some(g) = caps.get(i) {
+                        let key = format!("{i}");
+                        rt.array_set(a, key, Value::Str(g.as_str().to_string()));
+                        let char_start = s[..g.start()].chars().count() + 1;
+                        let char_len = g.as_str().chars().count();
+                        rt.array_set(
+                            a,
+                            format!("{i}{subsep}start"),
+                            Value::Num(char_start as f64),
+                        );
+                        rt.array_set(
+                            a,
+                            format!("{i}{subsep}length"),
+                            Value::Num(char_len as f64),
+                        );
+                    }
                 }
             }
         }
@@ -492,8 +514,12 @@ pub fn awk_systime() -> f64 {
 
 /// gawk-style `strftime([format [, timestamp[, utc]]])`.
 pub fn awk_strftime(args: &[Value]) -> std::result::Result<Value, String> {
+    // gawk default format (from PROCINFO["strftime"]): includes the timezone
+    // abbreviation (`%Z`). Earlier awkrs used `%c` which drops the timezone in
+    // most C locales, so `strftime()` output diverged from gawk.
+    let default_fmt = "%a %b %e %H:%M:%S %Z %Y";
     let (fmt, ts, utc) = match args.len() {
-        0 => ("%c".to_string(), awk_systime(), false),
+        0 => (default_fmt.to_string(), awk_systime(), false),
         1 => (args[0].as_str(), awk_systime(), false),
         2 => (args[0].as_str(), args[1].as_number(), false),
         3 => (
@@ -523,7 +549,18 @@ pub fn awk_strftime(args: &[Value]) -> std::result::Result<Value, String> {
 }
 
 /// gawk-style `mktime(datespec)` — `"YYYY MM DD HH MM SS"` (whitespace-separated).
+/// Defers to [`awk_mktime_with_utc`] with `utc=false` for the historical single-arg
+/// behavior (interpret in local time). Retained for stability of internal callers
+/// and unit tests that haven't been migrated to the explicit `utc` form.
+#[allow(dead_code)]
 pub fn awk_mktime(s: &str) -> f64 {
+    awk_mktime_with_utc(s, false)
+}
+
+/// gawk-style `mktime(datespec [, utc])` — when `utc` is `true`, interpret the
+/// datespec in UTC; otherwise in the local timezone. Returns `-1` for unparseable
+/// or out-of-range datespecs.
+pub fn awk_mktime_with_utc(s: &str, utc: bool) -> f64 {
     let parts: Vec<&str> = s.split_whitespace().collect();
     if parts.len() < 6 {
         return -1.0;
@@ -559,9 +596,16 @@ pub fn awk_mktime(s: &str) -> f64 {
         },
         None => return -1.0,
     };
-    match Local.from_local_datetime(&naive) {
-        LocalResult::Single(dt) => dt.timestamp() as f64,
-        LocalResult::Ambiguous(_, _) | LocalResult::None => -1.0,
+    if utc {
+        match Utc.from_local_datetime(&naive) {
+            LocalResult::Single(dt) => dt.timestamp() as f64,
+            LocalResult::Ambiguous(_, _) | LocalResult::None => -1.0,
+        }
+    } else {
+        match Local.from_local_datetime(&naive) {
+            LocalResult::Single(dt) => dt.timestamp() as f64,
+            LocalResult::Ambiguous(_, _) | LocalResult::None => -1.0,
+        }
     }
 }
 

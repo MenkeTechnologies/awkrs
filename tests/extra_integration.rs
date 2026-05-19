@@ -3061,3 +3061,67 @@ fn noisy_numeric_field_is_string_not_strnum() {
     assert_eq!(c2, 0);
     assert_eq!(o2, "strnum 1\n");
 }
+
+#[test]
+fn match_array_writes_start_and_length_subscripts() {
+    // gawk parity: `match(str, regex, arr)` writes `arr[i, "start"]` and
+    // `arr[i, "length"]` for each successful submatch (1-based char index
+    // and char length). Unmatched optional groups get no entries.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN {
+            match("foo bar baz", /(\w+) (\w+)/, m)
+            print m[0], m[0,"start"], m[0,"length"]
+            print m[1], m[1,"start"], m[1,"length"]
+            print m[2], m[2,"start"], m[2,"length"]
+            # Unmatched (a)? — no key written for index 1.
+            match("hello", /(a)?(l)+/, n)
+            print "n0:", n[0], n[0,"start"], n[0,"length"]
+            print "n1:", "[" n[1] "]", "[" n[1,"start"] "]", "[" n[1,"length"] "]"
+            print "n2:", n[2], n[2,"start"], n[2,"length"]
+        }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(
+        o,
+        "foo bar 1 7\nfoo 1 3\nbar 5 3\nn0: ll 3 2\nn1: [] [] []\nn2: l 4 1\n"
+    );
+}
+
+#[test]
+fn ternary_else_branch_allows_assignment() {
+    // gawk parity: the else-branch of `? :` is an assignment-expression, so
+    // `(1 ? x=1 : x=2)` parses (with `x=2` as the else arm), not a parse
+    // error. awkrs previously only allowed conditional_expression there.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN {
+            x=0; (1 ? x=1 : x=2); print x
+            y=0; (0 ? y=1 : y=2); print y
+            # nested ternary on either branch still works
+            z = 1 ? "a" : 2 ? "b" : "c"
+            print z
+        }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "1\n2\na\n");
+}
+
+#[test]
+fn mktime_accepts_optional_utc_arg() {
+    // gawk parity: `mktime(spec, utc)` with truthy `utc` interprets the
+    // datespec in UTC. Earlier awkrs rejected the 2-arg form.
+    let env = vec![(OsString::from("TZ"), OsString::from("UTC"))];
+    let (c, o, _) = run_awkrs_stdin_args_env(
+        Vec::<&str>::new(),
+        r#"BEGIN {
+            print mktime("2024 01 15 12 30 00", 1)
+            print mktime("1970 01 01 00 00 00", 1)
+            print mktime("2024 01 15 12 30 00")
+        }"#,
+        "",
+        env,
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "1705321800\n0\n1705321800\n");
+}
