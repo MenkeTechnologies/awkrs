@@ -4130,22 +4130,17 @@ fn awk_cmp_eq(a: &Value, b: &Value, ignore_case: bool, rt: &Runtime) -> Value {
         let fb = value_to_float(b, prec, round);
         return Value::Num(if fa == fb { 1.0 } else { 0.0 });
     }
-    // Fast path: both Num — skip is_numeric_str() entirely.
+    // POSIX / gawk parity: numeric `==` is BIT-EXACT, not a fuzzy tolerance.
+    // Previously awkrs used `(an - bn).abs() < f64::EPSILON` (~2.22e-16), which
+    // wrongly reported `0.1 + 0.2 == 0.3` as true (the difference is 5.55e-17,
+    // below EPSILON). gawk and POSIX awk return 0 for that comparison.
     if let (Value::Num(an), Value::Num(bn)) = (a, b) {
-        return Value::Num(if (an - bn).abs() < f64::EPSILON {
-            1.0
-        } else {
-            0.0
-        });
+        return Value::Num(if an == bn { 1.0 } else { 0.0 });
     }
     if a.is_numeric_str() && b.is_numeric_str() {
         let an = a.as_number();
         let bn = b.as_number();
-        return Value::Num(if (an - bn).abs() < f64::EPSILON {
-            1.0
-        } else {
-            0.0
-        });
+        return Value::Num(if an == bn { 1.0 } else { 0.0 });
     }
     // POSIX/gawk: string compare path — Num/Mpfr stringify via CONVFMT, not the
     // default %.6g. Without this, `BEGIN { CONVFMT="%.2f"; print 3.14159 == "3.14" }`

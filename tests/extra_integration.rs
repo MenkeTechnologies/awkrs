@@ -3150,3 +3150,54 @@ fn asort_on_unassigned_name_returns_zero() {
         "expected scalar fatal, got: {e2:?}"
     );
 }
+
+#[test]
+fn numeric_eq_is_bit_exact_not_fuzzy() {
+    // POSIX / gawk: numeric `==` compares bit-exact. Earlier awkrs used a
+    // fuzzy tolerance of `f64::EPSILON`, so `0.1 + 0.2 == 0.3` reported as
+    // true (the difference is ~5.55e-17, below EPSILON ~2.22e-16). gawk
+    // returns 0.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN {
+            print (0.1 + 0.2 == 0.3)
+            print (1.0 == 1), (1e0 == 1), (1.5 == 1.5), (-0.0 == 0.0)
+            # Very near but not equal: still 0.
+            print (0.0 == 1e-300), (1e-300 == 0.0)
+        }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "0\n1 1 1 1\n0 0\n");
+}
+
+#[test]
+fn rt_paragraph_captures_full_blank_run() {
+    // gawk parity: in paragraph mode (RS == ""), RT contains the FULL run of
+    // newlines/blank lines between records — `b\n\nc` → RT == "\n\n", not "\n".
+    // The last record's RT contains any trailing newlines stripped at EOF.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { RS="" } { print NR, "[" RT "]" }"#,
+        "a\nb\n\nc\nd",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "1 [\n\n]\n2 []\n");
+    // Multiple blank lines between records, plus a trailing newline at EOF
+    // (gawk captures the EOF-trailing newline into RT for the last record).
+    let (c2, o2, _) = run_awkrs_stdin(
+        r#"BEGIN { RS="" } { print NR, "[" RT "]" }"#,
+        "x\n\n\n\ny\n",
+    );
+    assert_eq!(c2, 0);
+    assert_eq!(o2, "1 [\n\n\n\n]\n2 [\n]\n");
+}
+
+#[test]
+fn procinfo_strftime_is_gawk_default_format() {
+    // gawk parity: PROCINFO["strftime"] is the default format used when
+    // strftime() is called with no args. Should be the date(1)-equivalent
+    // "%a %b %e %H:%M:%S %Z %Y", not "%c".
+    let (c, o, _) =
+        run_awkrs_stdin(r#"BEGIN { print PROCINFO["strftime"] }"#, "");
+    assert_eq!(c, 0);
+    assert_eq!(o, "%a %b %e %H:%M:%S %Z %Y\n");
+}

@@ -1466,7 +1466,13 @@ impl Runtime {
             "FS".into(),
             Value::Str(crate::procinfo::field_split_mode(self).into()),
         );
-        p.insert("strftime".into(), Value::Str("%c".into()));
+        // gawk parity: `PROCINFO["strftime"]` is the default format used when
+        // `strftime()` is called with no arguments. Use gawk's actual default
+        // (date(1)-equivalent) instead of `%c`.
+        p.insert(
+            "strftime".into(),
+            Value::Str("%a %b %e %H:%M:%S %Z %Y".into()),
+        );
 
         let mut argv_proc = AwkMap::default();
         for (i, a) in std::env::args().enumerate() {

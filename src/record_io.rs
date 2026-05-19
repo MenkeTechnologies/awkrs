@@ -105,14 +105,18 @@ fn read_paragraph_record<R: BufRead>(
         } else {
             let n = reader.read_until(b'\n', &mut line).map_err(Error::Io)?;
             if n == 0 {
-                // Trim trailing newlines accumulated in `out` to match gawk paragraph mode.
+                // EOF: trim trailing newlines accumulated in `out` to match
+                // gawk paragraph mode and capture them in RT so the last
+                // record reports its terminator.
                 let end = trim_end_record_bytes(out);
+                rt_sep.extend_from_slice(&out[end..]);
                 out.truncate(end);
                 return Ok(saw_content);
             }
         }
         if line.is_empty() {
             let end = trim_end_record_bytes(out);
+            rt_sep.extend_from_slice(&out[end..]);
             out.truncate(end);
             return Ok(saw_content);
         }
@@ -121,9 +125,47 @@ fn read_paragraph_record<R: BufRead>(
             .all(|b| matches!(*b, b' ' | b'\t' | b'\r' | b'\n'));
         if is_blank {
             if saw_content {
-                rt_sep.extend_from_slice(b"\n");
+                // gawk parity: RT for paragraph mode is the FULL run of trailing
+                // newlines from the last content line PLUS the blank lines
+                // separating records (e.g. `b\n\n` → RT == "\n\n"). Capture the
+                // trailing newlines stripped from `out` first, then the current
+                // blank line, then drain any additional consecutive blank lines.
                 let end = trim_end_record_bytes(out);
+                rt_sep.extend_from_slice(&out[end..]);
                 out.truncate(end);
+                rt_sep.extend_from_slice(&line);
+                let mut peek = Vec::<u8>::new();
+                loop {
+                    peek.clear();
+                    if !leftover.is_empty() {
+                        if let Some(pos) = memchr(b'\n', leftover) {
+                            peek.extend_from_slice(&leftover[..=pos]);
+                            leftover.drain(..=pos);
+                        } else {
+                            peek.extend_from_slice(leftover);
+                            leftover.clear();
+                            let _ = reader.read_until(b'\n', &mut peek).map_err(Error::Io)?;
+                        }
+                    } else {
+                        let n = reader.read_until(b'\n', &mut peek).map_err(Error::Io)?;
+                        if n == 0 {
+                            break;
+                        }
+                    }
+                    let peek_blank = peek
+                        .iter()
+                        .all(|b| matches!(*b, b' ' | b'\t' | b'\r' | b'\n'));
+                    if peek_blank {
+                        rt_sep.extend_from_slice(&peek);
+                    } else {
+                        // Push the non-blank line back into leftover for the
+                        // next record.
+                        let mut new_leftover = peek.clone();
+                        new_leftover.extend_from_slice(leftover);
+                        *leftover = new_leftover;
+                        break;
+                    }
+                }
                 return Ok(true);
             }
             continue;
@@ -519,14 +561,17 @@ mod tests {
 
     #[test]
     fn read_next_record_paragraph_mode_blank_line_boundary() {
-        // gawk paragraph mode (RS == "") strips trailing newlines from the record.
+        // gawk paragraph mode (RS == "") strips trailing newlines from the
+        // record. RT captures the full run of newlines/blank lines between
+        // records — for `first para line\n\nsecond` that is `\n\n`
+        // (the newline ending the content line plus the blank separator).
         let rdr = shared_reader(b"first para line\n\nsecond\n");
         let mut out = Vec::new();
         let mut sep = Vec::new();
         let mut lo = Vec::new();
         assert!(read_next_record(&rdr, "", &mut out, &mut sep, None, &mut lo).unwrap());
         assert_eq!(out, b"first para line");
-        assert_eq!(sep, b"\n");
+        assert_eq!(sep, b"\n\n");
         out.clear();
         sep.clear();
         assert!(read_next_record(&rdr, "", &mut out, &mut sep, None, &mut lo).unwrap());
