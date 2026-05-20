@@ -2390,12 +2390,16 @@ fn validate_expr(e: &Expr, allow_tuple: bool) -> Result<()> {
                     )));
                 }
                 "patsplit" if !(2..=4).contains(&args.len()) => {
-                    return Err(Error::Runtime(
-                        "patsplit: expected 2, 3, or 4 arguments".into(),
-                    ));
+                    return Err(Error::Runtime(format!(
+                        "{} is invalid as number of arguments for patsplit",
+                        args.len()
+                    )));
                 }
                 "gensub" if !(3..=4).contains(&args.len()) => {
-                    return Err(Error::Runtime("gensub: expected 3 or 4 arguments".into()));
+                    return Err(Error::Runtime(format!(
+                        "{} is invalid as number of arguments for gensub",
+                        args.len()
+                    )));
                 }
                 _ => {}
             }

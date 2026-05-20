@@ -4991,7 +4991,9 @@ pub(crate) fn exec_builtin_dispatch(
         }
         "systime" => {
             if argc != 0 {
-                return Err(Error::Runtime("`systime` expects no arguments".into()));
+                return Err(Error::Runtime(format!(
+                    "{argc} is invalid as number of arguments for systime"
+                )));
             }
             Value::Num(builtins::awk_systime())
         }
@@ -5001,7 +5003,9 @@ pub(crate) fn exec_builtin_dispatch(
             // argument is truthy, interpret the datespec in UTC, otherwise in
             // local time.
             if !(1..=2).contains(&argc) {
-                return Err(Error::Runtime("`mktime` expects one or two arguments".into()));
+                return Err(Error::Runtime(format!(
+                    "{argc} is invalid as number of arguments for mktime"
+                )));
             }
             let utc = argc == 2 && args[1].as_number() != 0.0;
             Value::Num(builtins::awk_mktime_with_utc(&args[0].as_str(), utc))
@@ -5118,7 +5122,7 @@ pub(crate) fn exec_builtin_dispatch(
         "and" => {
             if argc < 2 {
                 return Err(Error::Runtime(
-                    "`and` expects at least two arguments".into(),
+                    "and: called with less than two arguments".into(),
                 ));
             }
             let mut acc = bignum::awk_and_values(&args[0], &args[1], ctx.rt);
@@ -5129,7 +5133,9 @@ pub(crate) fn exec_builtin_dispatch(
         }
         "or" => {
             if argc < 2 {
-                return Err(Error::Runtime("`or` expects at least two arguments".into()));
+                return Err(Error::Runtime(
+                    "or: called with less than two arguments".into(),
+                ));
             }
             let mut acc = bignum::awk_or_values(&args[0], &args[1], ctx.rt);
             for a in &args[2..] {
@@ -5140,7 +5146,7 @@ pub(crate) fn exec_builtin_dispatch(
         "xor" => {
             if argc < 2 {
                 return Err(Error::Runtime(
-                    "`xor` expects at least two arguments".into(),
+                    "xor: called with less than two arguments".into(),
                 ));
             }
             let mut acc = bignum::awk_xor_values(&args[0], &args[1], ctx.rt);
@@ -5151,7 +5157,9 @@ pub(crate) fn exec_builtin_dispatch(
         }
         "lshift" => {
             if argc != 2 {
-                return Err(Error::Runtime("`lshift` expects two arguments".into()));
+                return Err(Error::Runtime(format!(
+                    "{argc} is invalid as number of arguments for lshift"
+                )));
             }
             // gawk parity: negative shift count is a fatal runtime error.
             let av = args[0].as_number();
@@ -5170,7 +5178,9 @@ pub(crate) fn exec_builtin_dispatch(
         }
         "rshift" => {
             if argc != 2 {
-                return Err(Error::Runtime("`rshift` expects two arguments".into()));
+                return Err(Error::Runtime(format!(
+                    "{argc} is invalid as number of arguments for rshift"
+                )));
             }
             let av = args[0].as_number();
             let bv = args[1].as_number();
@@ -5188,7 +5198,9 @@ pub(crate) fn exec_builtin_dispatch(
         }
         "compl" => {
             if argc != 1 {
-                return Err(Error::Runtime("`compl` expects one argument".into()));
+                return Err(Error::Runtime(format!(
+                    "{argc} is invalid as number of arguments for compl"
+                )));
             }
             let av = args[0].as_number();
             if av < 0.0 {
@@ -5200,19 +5212,25 @@ pub(crate) fn exec_builtin_dispatch(
         }
         "strtonum" => {
             if argc != 1 {
-                return Err(Error::Runtime("`strtonum` expects one argument".into()));
+                return Err(Error::Runtime(format!(
+                    "{argc} is invalid as number of arguments for strtonum"
+                )));
             }
             bignum::awk_strtonum_value(&args[0].as_str(), ctx.rt)
         }
         "typeof" => {
             if argc != 1 {
-                return Err(Error::Runtime("`typeof` expects one argument".into()));
+                return Err(Error::Runtime(format!(
+                    "{argc} is invalid as number of arguments for typeof"
+                )));
             }
             Value::Str(builtins::awk_typeof_value(&args[0]).into())
         }
         "gensub" => {
             if !(3..=4).contains(&argc) {
-                return Err(Error::Runtime("gensub: expected 3 or 4 arguments".into()));
+                return Err(Error::Runtime(format!(
+                    "{argc} is invalid as number of arguments for gensub"
+                )));
             }
             let target = if argc == 4 {
                 Some(args[3].as_str())
@@ -5230,7 +5248,9 @@ pub(crate) fn exec_builtin_dispatch(
         }
         "isarray" => {
             if argc != 1 {
-                return Err(Error::Runtime("`isarray` expects one argument".into()));
+                return Err(Error::Runtime(format!(
+                    "{argc} is invalid as number of arguments for isarray"
+                )));
             }
             Value::Num(match &args[0] {
                 Value::Array(_) => 1.0,
