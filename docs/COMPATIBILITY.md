@@ -174,6 +174,7 @@ Columns: **P** = POSIX / universal core, **B** = BSD awk, **M** = mawk, **G** = 
 | `printf("fmt", a, b)` function-call form | **Match** — equivalent to `printf "fmt", a, b`. Previously rejected as "parenthesized comma list is not allowed". Mixed paren-args + bare args (`printf(a,b), c`) still rejected. |
 | Builtin called with wrong arity | **Match (no panic)** — `tolower()`, `toupper()`, `index()`, `substr()`, `system()`, `close()`, `rand()`, `srand()`, `asort()`, `asorti()` with wrong arity emit `"N is invalid as number of arguments for X"` instead of panicking or silently accepting extra args. |
 | `delete x` / `delete x[k]` on a scalar | **Match** — fatal "attempt to use scalar `x' as an array". Unassigned names still silently no-op (POSIX). |
+| Scalar used as array (`x[k]=…`, `x[k]`, `k in x`, `for (k in x)`) | **Match** — fatal "attempt to use scalar `x' as an array". Earlier awkrs silently auto-promoted on write, returned empty on read, returned 0 from `in`, and ran zero iterations on for-in. |
 | `printf "%u"` of values past 2^64 | **Match** — falls back to `%g`-style formatting (`2^65` → `"3.68935e+19"`). The exact 2^64 boundary still prints as the u64::MAX digit string. Earlier awkrs saturated all over-u64 values at u64::MAX. |
 | MPFR (`-M`) | **Part** (precision / rounding via `PROCINFO`) |
 

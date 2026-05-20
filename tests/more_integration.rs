@@ -333,9 +333,15 @@ fn in_operator_chained_comparison() {
 
 #[test]
 fn in_operator_false_when_name_not_array() {
-    let (c, o, _) = run_awkrs_stdin("BEGIN { s = \"scalar\"; print (\"k\" in s) }", "");
-    assert_eq!(c, 0);
-    assert_eq!(o, "0\n");
+    // gawk parity: `key in scalar` raises "attempt to use scalar `s' as an
+    // array". Previously awkrs silently returned 0, masking a type error.
+    let (c, _o, e) =
+        run_awkrs_stdin("BEGIN { s = \"scalar\"; print (\"k\" in s) }", "");
+    assert_ne!(c, 0);
+    assert!(
+        e.contains("attempt to use scalar `s' as an array"),
+        "expected scalar-as-array fatal, got: {e:?}"
+    );
 }
 
 #[test]

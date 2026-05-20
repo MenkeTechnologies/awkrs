@@ -3063,6 +3063,11 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 // POSIX: numeric subscripts are stringified via CONVFMT.
                 let k = ctx.rt.value_to_array_key(&key_val);
                 let name = ctx.str_ref(arr).to_string();
+                // gawk parity: reading `x[k]` where `x` is a scalar is a fatal
+                // "attempt to use scalar `x' as an array". POSIX auto-creates
+                // arrays from missing names; we only error on existing non-array,
+                // non-uninit values.
+                check_array_target(ctx, &name)?;
                 // POSIX: reading `a[k]` auto-creates the entry as `Uninit` if
                 // missing. Subsequent `k in a` returns 1, `typeof(a[k])` is
                 // "untyped" (rather than "string" from a coerced "").
@@ -3151,6 +3156,11 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 let key_val = ctx.pop();
                 let key = ctx.rt.value_to_array_key(&key_val);
                 let name = ctx.cp.strings.get(arr);
+                // gawk parity: `x[k] = …` on a scalar `x` is a fatal "attempt
+                // to use scalar `x' as an array". Check both the local frames
+                // and globals before delegating to `array_elem_set` (which
+                // would silently overwrite a scalar with an array).
+                check_array_target(ctx, name)?;
                 ctx.array_elem_set(name, key, val.clone());
                 ctx.push(val);
             }
@@ -3723,11 +3733,14 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             Op::InArray(arr) => {
                 let key_val = ctx.pop();
                 let k = key_val.as_str_cow();
-                let name = ctx.str_ref(arr);
+                let name = ctx.str_ref(arr).to_string();
+                // gawk parity: `key in x` on a scalar `x` raises "attempt to
+                // use scalar `x' as an array". Earlier awkrs returned 0.
+                check_array_target(ctx, &name)?;
                 let b = if name == "SYMTAB" {
                     ctx.symtab_has(k.as_ref())
                 } else {
-                    ctx.rt.array_has(name, k.as_ref())
+                    ctx.rt.array_has(&name, k.as_ref())
                 };
                 ctx.push(Value::Num(if b { 1.0 } else { 0.0 }));
             }
@@ -3898,6 +3911,10 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             // ── ForIn ───────────────────────────────────────────────────
             Op::ForInStart(arr) => {
                 let name = ctx.str_ref(arr).to_string();
+                // gawk parity: `for (k in x)` where `x` is a scalar raises
+                // "attempt to use scalar `x' as an array". Earlier awkrs
+                // ran zero iterations and continued silently.
+                check_array_target(ctx, &name)?;
                 let keys = ctx.for_in_keys(name.as_str())?;
                 ctx.for_in_iters.push(ForInState { keys, index: 0 });
             }
@@ -4149,6 +4166,30 @@ fn incdec_push(kind: IncDecOp, old_n: f64, new_n: f64) -> f64 {
 
 fn apply_binop(op: BinOp, old: &Value, rhs: &Value, use_mpfr: bool, rt: &Runtime) -> Result<Value> {
     crate::runtime::awk_binop_values(op, old, rhs, use_mpfr, rt)
+}
+
+/// gawk parity: subscript assignment (`x[k] = …`) requires `x` to be an array
+/// (or unassigned). A pre-existing scalar value raises "attempt to use scalar
+/// `x' as an array". Checks local frames first (function array-by-reference),
+/// then globals.
+fn check_array_target(ctx: &VmCtx<'_>, name: &str) -> Result<()> {
+    for frame in ctx.locals.iter().rev() {
+        match frame.get(name) {
+            Some(Value::Array(_)) => return Ok(()),
+            Some(Value::Uninit) | None => continue,
+            Some(_) => {
+                return Err(Error::Runtime(format!(
+                    "attempt to use scalar `{name}' as an array"
+                )));
+            }
+        }
+    }
+    match ctx.rt.get_global_var(name) {
+        Some(Value::Array(_)) | None | Some(Value::Uninit) => Ok(()),
+        Some(_) => Err(Error::Runtime(format!(
+            "attempt to use scalar `{name}' as an array"
+        ))),
+    }
 }
 
 /// POSIX string compare via `strcoll` on Unix.

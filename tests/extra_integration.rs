@@ -3346,3 +3346,30 @@ fn delete_scalar_is_fatal() {
     assert_eq!(c3, 0);
     assert_eq!(o3, "ok\n");
 }
+
+#[test]
+fn scalar_used_as_array_subscript_is_fatal() {
+    // gawk parity: assigning, reading, `in`, or for-in on a scalar variable
+    // raises "attempt to use scalar `x' as an array". Earlier awkrs silently
+    // promoted/auto-created. Each operation must fatal.
+    for prog in [
+        "BEGIN { x=5; x[1]=1 }",
+        "BEGIN { x=5; print x[1] }",
+        "BEGIN { x=5; print (1 in x) }",
+        "BEGIN { x=5; for (k in x) print k }",
+    ] {
+        let (c, _o, e) = run_awkrs_stdin(prog, "");
+        assert_ne!(c, 0, "expected fatal for {prog}");
+        assert!(
+            e.contains("attempt to use scalar `x' as an array"),
+            "expected scalar-as-array fatal for {prog}, got: {e:?}"
+        );
+    }
+    // Unassigned name is still allowed to auto-create as array.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { y[1]=10; print y[1], (1 in y), length(y) }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "10 1 1\n");
+}
