@@ -2371,14 +2371,22 @@ fn validate_expr(e: &Expr, allow_tuple: bool) -> Result<()> {
         }
         Expr::Call { name, args } => {
             match name.as_str() {
-                "gsub" | "sub" if args.len() < 2 => {
+                "gsub" | "sub" if !(2..=3).contains(&args.len()) => {
                     return Err(Error::Runtime(format!(
-                        "{name}: expected at least 2 arguments"
+                        "{} is invalid as number of arguments for {name}",
+                        args.len()
                     )));
                 }
-                "split" | "match" if args.len() < 2 => {
+                "split" if !(2..=4).contains(&args.len()) => {
                     return Err(Error::Runtime(format!(
-                        "{name}: expected at least 2 arguments"
+                        "{} is invalid as number of arguments for split",
+                        args.len()
+                    )));
+                }
+                "match" if !(2..=3).contains(&args.len()) => {
+                    return Err(Error::Runtime(format!(
+                        "{} is invalid as number of arguments for match",
+                        args.len()
                     )));
                 }
                 "patsplit" if !(2..=4).contains(&args.len()) => {

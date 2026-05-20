@@ -4730,6 +4730,14 @@ pub(crate) fn exec_builtin_dispatch(
     let argc = args.len();
     let result = match name {
         "length" => {
+            // gawk parity: length takes 0 or 1 argument. `length("a", "b")`
+            // fatals with "2 is invalid as number of arguments for length".
+            // Previously awkrs silently ignored extra args.
+            if argc > 1 {
+                return Err(Error::Runtime(format!(
+                    "{argc} is invalid as number of arguments for length"
+                )));
+            }
             if args.is_empty() {
                 let n = if ctx.rt.characters_as_bytes {
                     ctx.rt.record.len()
@@ -4882,7 +4890,7 @@ pub(crate) fn exec_builtin_dispatch(
         }
         "sqrt" => {
             if argc != 1 {
-                return Err(Error::Runtime("`sqrt` expects one argument".into()));
+                return Err(Error::Runtime(format!("{argc} is invalid as number of arguments for sqrt")));
             }
             if ctx.rt.bignum {
                 let prec = ctx.rt.mpfr_prec_bits();
@@ -4902,7 +4910,7 @@ pub(crate) fn exec_builtin_dispatch(
         }
         "sin" => {
             if argc != 1 {
-                return Err(Error::Runtime("`sin` expects one argument".into()));
+                return Err(Error::Runtime(format!("{argc} is invalid as number of arguments for sin")));
             }
             if ctx.rt.bignum {
                 let prec = ctx.rt.mpfr_prec_bits();
@@ -4915,7 +4923,7 @@ pub(crate) fn exec_builtin_dispatch(
         }
         "cos" => {
             if argc != 1 {
-                return Err(Error::Runtime("`cos` expects one argument".into()));
+                return Err(Error::Runtime(format!("{argc} is invalid as number of arguments for cos")));
             }
             if ctx.rt.bignum {
                 let prec = ctx.rt.mpfr_prec_bits();
@@ -4928,7 +4936,7 @@ pub(crate) fn exec_builtin_dispatch(
         }
         "atan2" => {
             if argc != 2 {
-                return Err(Error::Runtime("`atan2` expects two arguments".into()));
+                return Err(Error::Runtime(format!("{argc} is invalid as number of arguments for atan2")));
             }
             if ctx.rt.bignum {
                 let prec = ctx.rt.mpfr_prec_bits();
@@ -4942,7 +4950,7 @@ pub(crate) fn exec_builtin_dispatch(
         }
         "exp" => {
             if argc != 1 {
-                return Err(Error::Runtime("`exp` expects one argument".into()));
+                return Err(Error::Runtime(format!("{argc} is invalid as number of arguments for exp")));
             }
             if ctx.rt.bignum {
                 let prec = ctx.rt.mpfr_prec_bits();
@@ -4955,7 +4963,7 @@ pub(crate) fn exec_builtin_dispatch(
         }
         "log" => {
             if argc != 1 {
-                return Err(Error::Runtime("`log` expects one argument".into()));
+                return Err(Error::Runtime(format!("{argc} is invalid as number of arguments for log")));
             }
             if ctx.rt.bignum {
                 let prec = ctx.rt.mpfr_prec_bits();

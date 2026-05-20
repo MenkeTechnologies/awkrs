@@ -3373,3 +3373,39 @@ fn scalar_used_as_array_subscript_is_fatal() {
     assert_eq!(c, 0);
     assert_eq!(o, "10 1 1\n");
 }
+
+#[test]
+fn length_split_match_sub_extra_args_error() {
+    // gawk parity: extra args to length/split/match/sub/gsub raise the
+    // "N is invalid as number of arguments for X" fatal. Earlier awkrs
+    // silently ignored extras in some cases.
+    for (prog, needle) in [
+        (
+            "BEGIN { print length(\"a\", \"b\") }",
+            "2 is invalid as number of arguments for length",
+        ),
+        (
+            "BEGIN { n = split(\"a\", a, \",\", b, c); print n }",
+            "5 is invalid as number of arguments for split",
+        ),
+        (
+            "BEGIN { print match(\"a\", \"b\", c, \"x\") }",
+            "4 is invalid as number of arguments for match",
+        ),
+        (
+            "BEGIN { sub() }",
+            "0 is invalid as number of arguments for sub",
+        ),
+        (
+            "BEGIN { gsub(\"a\", \"b\", x, \"extra\") }",
+            "4 is invalid as number of arguments for gsub",
+        ),
+    ] {
+        let (c, _o, e) = run_awkrs_stdin(prog, "");
+        assert_ne!(c, 0, "expected fatal for {prog}");
+        assert!(
+            e.contains(needle),
+            "expected substring {needle:?} for {prog}, got: {e:?}"
+        );
+    }
+}
