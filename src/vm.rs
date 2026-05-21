@@ -3473,9 +3473,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                     let fa = value_to_float(&a, prec, round);
                     let fb = value_to_float(&b, prec, round);
                     if fb.is_zero() {
-                        return Err(Error::Runtime(
-                            "division by zero attempted in `%'".into(),
-                        ));
+                        return Err(Error::Runtime("division by zero attempted in `%'".into()));
                     }
                     ctx.push(Value::Mpfr(Float::with_val_round(prec, &fa % &fb, round).0));
                 } else {
@@ -3486,9 +3484,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                     let bn = b.as_number();
                     let an = a.as_number();
                     if bn == 0.0 {
-                        return Err(Error::Runtime(
-                            "division by zero attempted in `%'".into(),
-                        ));
+                        return Err(Error::Runtime("division by zero attempted in `%'".into()));
                     }
                     ctx.push(Value::Num(an % bn));
                 }
@@ -3871,11 +3867,8 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 let s = ctx.pop().as_str();
                 let arr_name = ctx.str_ref(arr).to_string();
                 let seps_name = seps.map(|i| ctx.str_ref(i).to_string());
-                let (parts, seps_vec) = crate::runtime::split_string_with_seps(
-                    &s,
-                    &fs,
-                    ctx.rt.ignore_case_flag(),
-                );
+                let (parts, seps_vec) =
+                    crate::runtime::split_string_with_seps(&s, &fs, ctx.rt.ignore_case_flag());
                 let n = parts.len();
                 ctx.rt.split_into_array(&arr_name, &parts);
                 if let Some(name) = seps_name {
@@ -4787,10 +4780,7 @@ pub(crate) fn exec_builtin_dispatch(
                             // can differ in length but the relative position
                             // is preserved for common cases. Iterate `hay`'s
                             // chars to convert byte to char position.
-                            hay.char_indices()
-                                .take_while(|&(off, _)| off < b)
-                                .count()
-                                + 1
+                            hay.char_indices().take_while(|&(off, _)| off < b).count() + 1
                         }
                     })
                 } else {
@@ -4890,7 +4880,9 @@ pub(crate) fn exec_builtin_dispatch(
         }
         "sqrt" => {
             if argc != 1 {
-                return Err(Error::Runtime(format!("{argc} is invalid as number of arguments for sqrt")));
+                return Err(Error::Runtime(format!(
+                    "{argc} is invalid as number of arguments for sqrt"
+                )));
             }
             if ctx.rt.bignum {
                 let prec = ctx.rt.mpfr_prec_bits();
@@ -4910,7 +4902,9 @@ pub(crate) fn exec_builtin_dispatch(
         }
         "sin" => {
             if argc != 1 {
-                return Err(Error::Runtime(format!("{argc} is invalid as number of arguments for sin")));
+                return Err(Error::Runtime(format!(
+                    "{argc} is invalid as number of arguments for sin"
+                )));
             }
             if ctx.rt.bignum {
                 let prec = ctx.rt.mpfr_prec_bits();
@@ -4923,7 +4917,9 @@ pub(crate) fn exec_builtin_dispatch(
         }
         "cos" => {
             if argc != 1 {
-                return Err(Error::Runtime(format!("{argc} is invalid as number of arguments for cos")));
+                return Err(Error::Runtime(format!(
+                    "{argc} is invalid as number of arguments for cos"
+                )));
             }
             if ctx.rt.bignum {
                 let prec = ctx.rt.mpfr_prec_bits();
@@ -4936,7 +4932,9 @@ pub(crate) fn exec_builtin_dispatch(
         }
         "atan2" => {
             if argc != 2 {
-                return Err(Error::Runtime(format!("{argc} is invalid as number of arguments for atan2")));
+                return Err(Error::Runtime(format!(
+                    "{argc} is invalid as number of arguments for atan2"
+                )));
             }
             if ctx.rt.bignum {
                 let prec = ctx.rt.mpfr_prec_bits();
@@ -4950,7 +4948,9 @@ pub(crate) fn exec_builtin_dispatch(
         }
         "exp" => {
             if argc != 1 {
-                return Err(Error::Runtime(format!("{argc} is invalid as number of arguments for exp")));
+                return Err(Error::Runtime(format!(
+                    "{argc} is invalid as number of arguments for exp"
+                )));
             }
             if ctx.rt.bignum {
                 let prec = ctx.rt.mpfr_prec_bits();
@@ -4963,7 +4963,9 @@ pub(crate) fn exec_builtin_dispatch(
         }
         "log" => {
             if argc != 1 {
-                return Err(Error::Runtime(format!("{argc} is invalid as number of arguments for log")));
+                return Err(Error::Runtime(format!(
+                    "{argc} is invalid as number of arguments for log"
+                )));
             }
             if ctx.rt.bignum {
                 let prec = ctx.rt.mpfr_prec_bits();
@@ -8619,5 +8621,609 @@ mod tests {
     fn vm_delete_array_reassign_v2() {
         let out = run_begin_capture("BEGIN { a[1]=1; delete a; a[1]=2; print a[1] }");
         assert_eq!(out, "2\n");
+    }
+
+    #[test]
+    fn vm_multidim_array_custom_subsep_v2() {
+        let out = run_begin_capture("BEGIN { SUBSEP=\"|\"; a[1,2]=42; for (k in a) print k }");
+        assert_eq!(out, "1|2\n");
+    }
+
+    #[test]
+    fn vm_for_in_loop_with_delete_current_v2() {
+        // gawk: deleting the current key during for-in loop is safe.
+        let out = run_begin_capture(
+            "BEGIN { a[1]=1; a[2]=2; for (k in a) { delete a[k]; n++ }; print n, length(a) }",
+        );
+        assert_eq!(out, "2 0\n");
+    }
+
+    #[test]
+    fn vm_math_trig_v2() {
+        let out = run_begin_capture("BEGIN { printf \"%.2f %.2f\", sin(0), cos(0) }");
+        assert_eq!(out, "0.00 1.00");
+    }
+
+    #[test]
+    fn vm_string_substr_v2() {
+        let out = run_begin_capture("BEGIN { print substr(\"abcde\", 2, 3) }");
+        assert_eq!(out, "bcd\n");
+    }
+
+    #[test]
+    fn vm_gsub_on_var_v2() {
+        let out = run_begin_capture("BEGIN { s=\"foo\"; n=gsub(\"o\", \"x\", s); print s, n }");
+        assert_eq!(out, "fxx 2\n");
+    }
+
+    #[test]
+    fn vm_length_empty_v2() {
+        let out = run_begin_capture("BEGIN { print length(\"\") }");
+        assert_eq!(out, "0\n");
+    }
+
+    #[test]
+    fn vm_split_empty_v2() {
+        let out = run_begin_capture("BEGIN { n=split(\"\", a, \":\"); print n, length(a) }");
+        assert_eq!(out, "0 0\n");
+    }
+
+    #[test]
+    fn vm_math_atan2_v2() {
+        let out = run_begin_capture("BEGIN { print atan2(0, -1) }");
+        // atan2(0, -1) should be PI (approx 3.14159)
+        assert!(out.contains("3.1415"));
+    }
+
+    #[test]
+    fn vm_multidim_delete_whole_array_v3() {
+        let out = run_begin_capture("BEGIN { a[1,2]=3; a[3,4]=5; delete a; print length(a) }");
+        assert_eq!(out, "0\n");
+    }
+
+    #[test]
+    fn vm_multidim_in_v3() {
+        let out = run_begin_capture("BEGIN { a[1,2,3]=4; print (1,2,3) in a }");
+        assert_eq!(out, "1\n");
+    }
+
+    #[test]
+    fn vm_multidim_subsep_join_v3() {
+        let out = run_begin_capture("BEGIN { SUBSEP=\":\"; a[1,2]=3; for (k in a) print k }");
+        assert_eq!(out, "1:2\n");
+    }
+
+    #[test]
+    fn vm_indirect_call_with_args_v3() {
+        let out =
+            run_begin_capture("function f(x) { return x+1 } BEGIN { fn=\"f\"; print @fn(10) }");
+        assert_eq!(out, "11\n");
+    }
+
+    #[test]
+    fn vm_local_array_passed_to_func_v3() {
+        let out = run_begin_capture("function f(a) { a[1]=2 } BEGIN { f(b); print b[1] }");
+        assert_eq!(out, "2\n");
+    }
+
+    #[test]
+    fn vm_split_with_long_string_v3() {
+        let s = "a".repeat(1000);
+        let src = format!(
+            "BEGIN {{ n=split(\"{}\", a, \"b\"); print n, length(a[1]) }}",
+            s
+        );
+        let out = run_begin_capture(&src);
+        assert_eq!(out, "1 1000\n");
+    }
+
+    #[test]
+    fn vm_gsub_with_metachar_v3() {
+        let out = run_begin_capture("BEGIN { s=\"a.c\"; gsub(/\\./, \"b\", s); print s }");
+        assert_eq!(out, "abc\n");
+    }
+
+    #[test]
+    fn vm_match_sets_rlenght_v3() {
+        let out = run_begin_capture("BEGIN { match(\"foobar\", /oo/); print RLENGTH }");
+        assert_eq!(out, "2\n");
+    }
+
+    #[test]
+    fn vm_sprintf_large_float_v3() {
+        let out = run_begin_capture("BEGIN { printf \"%.0f\", 1e10 }");
+        assert_eq!(out, "10000000000");
+    }
+
+    #[test]
+    fn vm_assign_to_nf_extends_fields_v3() {
+        let out = run_begin_capture("BEGIN { $3=\"x\"; print $1, $2, $3 }");
+        assert_eq!(out, "  x\n");
+    }
+
+    #[test]
+    fn vm_environ_access_v2() {
+        let _g = crate::test_sync::ENV_LOCK.lock().unwrap();
+        std::env::set_var("AWKRS_TEST_VAR", "hello");
+        let out = run_begin_capture("BEGIN { print ENVIRON[\"AWKRS_TEST_VAR\"] }");
+        assert_eq!(out, "hello\n");
+        std::env::remove_var("AWKRS_TEST_VAR");
+    }
+
+    #[test]
+    fn vm_nested_loops_break_v2() {
+        let out = run_begin_capture("BEGIN { for(i=1;i<=2;i++) { for(j=1;j<=2;j++) { print i,j; if(i==1 && j==1) break } } }");
+        // i=1, j=1 -> print 1 1 -> break inner -> i=2
+        // i=2, j=1 -> print 2 1
+        // i=2, j=2 -> print 2 2
+        assert_eq!(out, "1 1\n2 1\n2 2\n");
+    }
+
+    #[test]
+    fn vm_split_with_seps_array_v4() {
+        // gawk parity: split(s, a, fs, seps)
+        let out = run_begin_capture("BEGIN { split(\"a:b:c\", a, \":\", s); print s[1], s[2] }");
+        assert_eq!(out, ": :\n");
+    }
+
+    #[test]
+    fn vm_printf_escape_sequences_v4() {
+        let out = run_begin_capture("BEGIN { printf \"a\\tb\\nc\" }");
+        assert_eq!(out, "a\tb\nc");
+    }
+
+    #[test]
+    fn vm_string_to_number_coercion_v4() {
+        let out = run_begin_capture("BEGIN { print \"123.45foo\" + 0 }");
+        assert_eq!(out, "123.45\n");
+    }
+
+    #[test]
+    fn vm_complex_concatenation_v4() {
+        let out = run_begin_capture("BEGIN { print \"a\" 1 \"b\" 2.5 }");
+        assert_eq!(out, "a1b2.5\n");
+    }
+
+    #[test]
+    fn vm_assignment_as_expression_v4() {
+        let out = run_begin_capture("BEGIN { print (x = 5) + 10 }");
+        assert_eq!(out, "15\n");
+    }
+
+    #[test]
+    fn vm_pre_inc_as_expression_v4() {
+        let out = run_begin_capture("BEGIN { x = 5; print ++x }");
+        assert_eq!(out, "6\n");
+    }
+
+    #[test]
+    fn vm_post_inc_as_expression_v4() {
+        let out = run_begin_capture("BEGIN { x = 5; print x++ }");
+        assert_eq!(out, "5\n");
+    }
+
+    #[test]
+    fn vm_post_dec_as_expression_v4() {
+        let out = run_begin_capture("BEGIN { x = 5; print x-- }");
+        assert_eq!(out, "5\n");
+    }
+
+    #[test]
+    fn vm_pre_dec_as_expression_v4() {
+        let out = run_begin_capture("BEGIN { x = 5; print --x }");
+        assert_eq!(out, "4\n");
+    }
+
+    #[test]
+    fn vm_array_element_inc_v4() {
+        let out = run_begin_capture("BEGIN { a[1] = 5; print ++a[1] }");
+        assert_eq!(out, "6\n");
+    }
+
+    #[test]
+    fn vm_symtab_access_v4() {
+        let src = "BEGIN { x = 10; print SYMTAB[\"x\"] }";
+        let cp = compile(src);
+        let mut rt = runtime_with_slots(&cp);
+        rt.refresh_special_arrays(&cp, "awkrs");
+        vm_run_begin(&cp, &mut rt).unwrap();
+        let out = String::from_utf8_lossy(&rt.print_buf).into_owned();
+        assert_eq!(out, "10\n");
+    }
+
+    #[test]
+    fn vm_length_array_v4() {
+        let out = run_begin_capture("BEGIN { a[1]=1; a[2]=2; print length(a) }");
+        assert_eq!(out, "2\n");
+    }
+
+    #[test]
+    fn vm_length_number_v4() {
+        let out = run_begin_capture("BEGIN { print length(12345) }");
+        assert_eq!(out, "5\n");
+    }
+
+    #[test]
+    fn vm_index_substring_v4() {
+        let out = run_begin_capture("BEGIN { print index(\"foobar\", \"bar\") }");
+        assert_eq!(out, "4\n");
+    }
+
+    #[test]
+    fn vm_tolower_toupper_v4() {
+        let out = run_begin_capture("BEGIN { print tolower(\"ABC\"), toupper(\"abc\") }");
+        assert_eq!(out, "abc ABC\n");
+    }
+
+    #[test]
+    fn vm_atan2_v4() {
+        let out = run_begin_capture("BEGIN { printf \"%.2f\", atan2(1, 1) }");
+        // atan2(1,1) is PI/4 approx 0.785...
+        assert!(out.contains("0.79") || out.contains("0.78"));
+    }
+
+    #[test]
+    fn vm_exp_log_v4() {
+        let out = run_begin_capture("BEGIN { printf \"%.0f\", exp(log(10)) }");
+        assert_eq!(out, "10");
+    }
+
+    #[test]
+    fn vm_sqrt_v4() {
+        let out = run_begin_capture("BEGIN { print sqrt(16) }");
+        assert_eq!(out, "4\n");
+    }
+
+    #[test]
+    fn vm_int_v4() {
+        let out = run_begin_capture("BEGIN { print int(3.9), int(-3.9) }");
+        assert_eq!(out, "3 -3\n");
+    }
+
+    #[test]
+    fn vm_num_add_v17() {
+        assert_eq!(run_begin_capture("BEGIN{print 1+2}"), "3\n");
+    }
+    #[test]
+    fn vm_num_sub_v17() {
+        assert_eq!(run_begin_capture("BEGIN{print 5-2}"), "3\n");
+    }
+    #[test]
+    fn vm_num_mul_v17() {
+        assert_eq!(run_begin_capture("BEGIN{print 2*3}"), "6\n");
+    }
+    #[test]
+    fn vm_num_div_v17() {
+        assert_eq!(run_begin_capture("BEGIN{print 6/2}"), "3\n");
+    }
+    #[test]
+    fn vm_num_mod_v17() {
+        assert_eq!(run_begin_capture("BEGIN{print 5%2}"), "1\n");
+    }
+    #[test]
+    fn vm_num_pow_v17() {
+        assert_eq!(run_begin_capture("BEGIN{print 2^3}"), "8\n");
+    }
+
+    #[test]
+    fn vm_cmp_eq_v17() {
+        assert_eq!(run_begin_capture("BEGIN{print 1==1}"), "1\n");
+    }
+    #[test]
+    fn vm_cmp_ne_v17() {
+        assert_eq!(run_begin_capture("BEGIN{print 1!=2}"), "1\n");
+    }
+    #[test]
+    fn vm_cmp_lt_v17() {
+        assert_eq!(run_begin_capture("BEGIN{print 1<2}"), "1\n");
+    }
+    #[test]
+    fn vm_cmp_le_v17() {
+        assert_eq!(run_begin_capture("BEGIN{print 1<=1}"), "1\n");
+    }
+    #[test]
+    fn vm_cmp_gt_v17() {
+        assert_eq!(run_begin_capture("BEGIN{print (2>1)}"), "1\n");
+    }
+    #[test]
+    fn vm_cmp_ge_v17() {
+        assert_eq!(run_begin_capture("BEGIN{print 2>=2}"), "1\n");
+    }
+
+    #[test]
+    fn vm_logic_and_v17() {
+        assert_eq!(run_begin_capture("BEGIN{print 1&&1}"), "1\n");
+    }
+    #[test]
+    fn vm_logic_or_v17() {
+        assert_eq!(run_begin_capture("BEGIN{print 1||0}"), "1\n");
+    }
+    #[test]
+    fn vm_logic_not_v17() {
+        assert_eq!(run_begin_capture("BEGIN{print !0}"), "1\n");
+    }
+
+    #[test]
+    fn vm_str_concat_v17() {
+        assert_eq!(run_begin_capture("BEGIN{print \"a\" \"b\"}"), "ab\n");
+    }
+    #[test]
+    fn vm_str_len_v17() {
+        assert_eq!(run_begin_capture("BEGIN{print length(\"abc\")}"), "3\n");
+    }
+    #[test]
+    fn vm_str_sub_v17() {
+        assert_eq!(
+            run_begin_capture("BEGIN{print substr(\"abcd\",2,2)}"),
+            "bc\n"
+        );
+    }
+    #[test]
+    fn vm_str_idx_v17() {
+        assert_eq!(
+            run_begin_capture("BEGIN{print index(\"abcd\",\"bc\")}"),
+            "2\n"
+        );
+    }
+
+    #[test]
+    fn vm_array_basic_v17() {
+        assert_eq!(run_begin_capture("BEGIN{a[1]=2; print a[1]}"), "2\n");
+    }
+    #[test]
+    fn vm_array_in_v17() {
+        assert_eq!(run_begin_capture("BEGIN{a[1]=2; print 1 in a}"), "1\n");
+    }
+    #[test]
+    fn vm_array_del_v17() {
+        assert_eq!(
+            run_begin_capture("BEGIN{a[1]=2; delete a[1]; print 1 in a}"),
+            "0\n"
+        );
+    }
+    #[test]
+    fn vm_array_len_v17() {
+        assert_eq!(
+            run_begin_capture("BEGIN{a[1]=1; a[2]=2; print length(a)}"),
+            "2\n"
+        );
+    }
+
+    #[test]
+    fn vm_if_true_v17() {
+        assert_eq!(run_begin_capture("BEGIN{if(1)print 1}"), "1\n");
+    }
+    #[test]
+    fn vm_if_false_v17() {
+        assert_eq!(
+            run_begin_capture("BEGIN{if(0)print 1; else print 2}"),
+            "2\n"
+        );
+    }
+    #[test]
+    fn vm_while_v17() {
+        assert_eq!(
+            run_begin_capture("BEGIN{i=0; while(i<3) i++; print i}"),
+            "3\n"
+        );
+    }
+    #[test]
+    fn vm_do_while_v17() {
+        assert_eq!(
+            run_begin_capture("BEGIN{i=0; do i++; while(i<3); print i}"),
+            "3\n"
+        );
+    }
+    #[test]
+    fn vm_for_v17() {
+        assert_eq!(
+            run_begin_capture("BEGIN{for(i=0;i<3;i++) { }; print i}"),
+            "3\n"
+        );
+    }
+    #[test]
+    fn vm_for_in_v17() {
+        assert_eq!(
+            run_begin_capture("BEGIN{a[1]=1; for(k in a) print k}"),
+            "1\n"
+        );
+    }
+
+    #[test]
+    fn vm_func_call_v17() {
+        assert_eq!(
+            run_begin_capture("function f(x){return x+1} BEGIN{print f(1)}"),
+            "2\n"
+        );
+    }
+    #[test]
+    fn vm_func_rec_v17() {
+        assert_eq!(
+            run_begin_capture("function f(x){if(x<=0)return 0; return x+f(x-1)} BEGIN{print f(3)}"),
+            "6\n"
+        );
+    }
+
+    #[test]
+    fn vm_assign_expr_v17() {
+        assert_eq!(run_begin_capture("BEGIN{print x=5}"), "5\n");
+    }
+    #[test]
+    fn vm_compound_add_v17() {
+        assert_eq!(run_begin_capture("BEGIN{x=1; x+=2; print x}"), "3\n");
+    }
+    #[test]
+    fn vm_inc_dec_v17() {
+        assert_eq!(
+            run_begin_capture("BEGIN{x=1; print x++; print ++x; print x--; print --x}"),
+            "1\n3\n3\n1\n"
+        );
+    }
+
+    #[test]
+    fn vm_ternary_v17() {
+        assert_eq!(run_begin_capture("BEGIN{print 1?2:3}"), "2\n");
+    }
+    #[test]
+    fn vm_ternary_false_v17() {
+        assert_eq!(run_begin_capture("BEGIN{print 0?2:3}"), "3\n");
+    }
+
+    #[test]
+    fn vm_sprintf_v17() {
+        assert_eq!(
+            run_begin_capture("BEGIN{print sprintf(\"%d\",123)}"),
+            "123\n"
+        );
+    }
+    #[test]
+    fn vm_toupper_v17() {
+        assert_eq!(run_begin_capture("BEGIN{print toupper(\"abc\")}"), "ABC\n");
+    }
+    #[test]
+    fn vm_tolower_v17() {
+        assert_eq!(run_begin_capture("BEGIN{print tolower(\"ABC\")}"), "abc\n");
+    }
+
+    #[test]
+    fn vm_num_add_v37() {
+        assert_eq!(run_begin_capture("BEGIN{print 1+2}"), "3\n");
+    }
+    #[test]
+    fn vm_num_sub_v37() {
+        assert_eq!(run_begin_capture("BEGIN{print 5-2}"), "3\n");
+    }
+    #[test]
+    fn vm_num_mul_v37() {
+        assert_eq!(run_begin_capture("BEGIN{print 2*3}"), "6\n");
+    }
+    #[test]
+    fn vm_num_div_v37() {
+        assert_eq!(run_begin_capture("BEGIN{print 6/2}"), "3\n");
+    }
+    #[test]
+    fn vm_num_mod_v37() {
+        assert_eq!(run_begin_capture("BEGIN{print 5%2}"), "1\n");
+    }
+    #[test]
+    fn vm_num_pow_v37() {
+        assert_eq!(run_begin_capture("BEGIN{print 2^3}"), "8\n");
+    }
+
+    #[test]
+    fn vm_cmp_eq_v37() {
+        assert_eq!(run_begin_capture("BEGIN{print 1==1}"), "1\n");
+    }
+    #[test]
+    fn vm_cmp_ne_v37() {
+        assert_eq!(run_begin_capture("BEGIN{print 1!=2}"), "1\n");
+    }
+    #[test]
+    fn vm_cmp_lt_v37() {
+        assert_eq!(run_begin_capture("BEGIN{print 1<2}"), "1\n");
+    }
+    #[test]
+    fn vm_cmp_le_v37() {
+        assert_eq!(run_begin_capture("BEGIN{print 1<=1}"), "1\n");
+    }
+    #[test]
+    fn vm_cmp_gt_v37() {
+        assert_eq!(run_begin_capture("BEGIN{print (2>1)}"), "1\n");
+    }
+    #[test]
+    fn vm_cmp_ge_v37() {
+        assert_eq!(run_begin_capture("BEGIN{print 2>=2}"), "1\n");
+    }
+
+    #[test]
+    fn vm_logic_and_v37() {
+        assert_eq!(run_begin_capture("BEGIN{print 1&&1}"), "1\n");
+    }
+    #[test]
+    fn vm_logic_or_v37() {
+        assert_eq!(run_begin_capture("BEGIN{print 1||0}"), "1\n");
+    }
+    #[test]
+    fn vm_logic_not_v37() {
+        assert_eq!(run_begin_capture("BEGIN{print !0}"), "1\n");
+    }
+
+    #[test]
+    fn vm_str_concat_v37() {
+        assert_eq!(run_begin_capture("BEGIN{print \"a\" \"b\"}"), "ab\n");
+    }
+    #[test]
+    fn vm_str_len_v37() {
+        assert_eq!(run_begin_capture("BEGIN{print length(\"abc\")}"), "3\n");
+    }
+    #[test]
+    fn vm_str_sub_v37() {
+        assert_eq!(
+            run_begin_capture("BEGIN{print substr(\"abcd\",2,2)}"),
+            "bc\n"
+        );
+    }
+    #[test]
+    fn vm_str_idx_v37() {
+        assert_eq!(
+            run_begin_capture("BEGIN{print index(\"abcd\",\"bc\")}"),
+            "2\n"
+        );
+    }
+
+    #[test]
+    fn vm_array_basic_v37() {
+        assert_eq!(run_begin_capture("BEGIN{a[1]=2; print a[1]}"), "2\n");
+    }
+    #[test]
+    fn vm_array_in_v37() {
+        assert_eq!(run_begin_capture("BEGIN{a[1]=2; print 1 in a}"), "1\n");
+    }
+    #[test]
+    fn vm_array_del_v37() {
+        assert_eq!(
+            run_begin_capture("BEGIN{a[1]=2; delete a[1]; print 1 in a}"),
+            "0\n"
+        );
+    }
+    #[test]
+    fn vm_array_len_v37() {
+        assert_eq!(
+            run_begin_capture("BEGIN{a[1]=1; a[2]=2; print length(a)}"),
+            "2\n"
+        );
+    }
+
+    #[test]
+    fn vm_if_true_v37() {
+        assert_eq!(run_begin_capture("BEGIN{if(1)print 1}"), "1\n");
+    }
+    #[test]
+    fn vm_if_false_v37() {
+        assert_eq!(
+            run_begin_capture("BEGIN{if(0)print 1; else print 2}"),
+            "2\n"
+        );
+    }
+    #[test]
+    fn vm_while_v37() {
+        assert_eq!(
+            run_begin_capture("BEGIN{i=0; while(i<3) i++; print i}"),
+            "3\n"
+        );
+    }
+    #[test]
+    fn vm_do_while_v37() {
+        assert_eq!(
+            run_begin_capture("BEGIN{i=0; do i++; while(i<3); print i}"),
+            "3\n"
+        );
+    }
+    #[test]
+    fn vm_for_v37() {
+        assert_eq!(
+            run_begin_capture("BEGIN{for(i=0;i<3;i++) { }; print i}"),
+            "3\n"
+        );
     }
 }

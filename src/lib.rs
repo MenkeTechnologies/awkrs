@@ -1800,6 +1800,18 @@ mod lib_internal_tests {
     }
 
     #[test]
+    fn awk_float_eq_nan_v2() {
+        assert!(!awk_float_eq(f64::NAN, f64::NAN));
+        assert!(!awk_float_eq(1.0, f64::NAN));
+    }
+
+    #[test]
+    fn read_all_lines_crlf_v2() {
+        let lines = read_all_lines(Cursor::new(b"a\r\nb\r\n")).unwrap();
+        assert_eq!(lines, vec!["a\r\n".to_string(), "b\r\n".to_string()]);
+    }
+
+    #[test]
     fn awk_float_eq_negative_and_symmetric() {
         assert!(awk_float_eq(-3.0, -3.0));
         assert!(!awk_float_eq(-1.0, 1.0));

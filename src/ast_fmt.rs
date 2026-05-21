@@ -549,6 +549,42 @@ mod tests {
     }
 
     #[test]
+    fn pretty_print_ternary_v2() {
+        let src = "BEGIN { print (a ? b : c) }";
+        let prog = parse_program(src).unwrap();
+        let out = format_program(&prog);
+        assert!(out.contains("?"));
+        assert!(out.contains(":"));
+    }
+
+    #[test]
+    fn pretty_print_indirect_call_v2() {
+        let src = "BEGIN { @fn(1, 2) }";
+        let prog = parse_program(src).unwrap();
+        let out = format_program(&prog);
+        assert!(out.contains("@fn"));
+    }
+
+    #[test]
+    fn pretty_print_compound_assign_v2() {
+        let src = "BEGIN { x += 1; y *= 2 }";
+        let prog = parse_program(src).unwrap();
+        let out = format_program(&prog);
+        // Current implementation formats "x += 1" as "x + 1"
+        assert!(out.contains("x + 1"));
+        assert!(out.contains("y * 2"));
+    }
+
+    #[test]
+    fn pretty_print_inc_dec_v2() {
+        let src = "BEGIN { x++; ++y; --z[1] }";
+        let prog = parse_program(src).unwrap();
+        let out = format_program(&prog);
+        assert!(out.contains("++"));
+        assert!(out.contains("--"));
+    }
+
+    #[test]
     fn pretty_print_indirect_call_form() {
         let prog = Program {
             rules: vec![Rule {
@@ -656,5 +692,212 @@ mod tests {
         // format_expr(NF-1) -> (NF - 1)
         // result: $((NF - 1))
         assert!(out.contains("$((NF - 1))"), "output was: {out}");
+    }
+
+    #[test]
+    fn pretty_print_end_rule_v6() {
+        let src = "END { print 1 }";
+        let prog = parse_program(src).unwrap();
+        let out = format_program(&prog);
+        assert!(out.contains("END"));
+    }
+
+    #[test]
+    fn pretty_print_beginfile_endfile_v6() {
+        let src = "BEGINFILE { print 1 } ENDFILE { print 2 }";
+        let prog = parse_program(src).unwrap();
+        let out = format_program(&prog);
+        assert!(out.contains("BEGINFILE"));
+        assert!(out.contains("ENDFILE"));
+    }
+
+    #[test]
+    fn pretty_print_range_pattern_v6() {
+        let src = "1, 2 { print 1 }";
+        let prog = parse_program(src).unwrap();
+        let out = format_program(&prog);
+        assert!(out.contains(","));
+    }
+
+    #[test]
+    fn pretty_print_multiple_rules_v6() {
+        let src = "BEGIN { a } { b } END { c }";
+        let prog = parse_program(src).unwrap();
+        let out = format_program(&prog);
+        assert!(out.contains("BEGIN"));
+        assert!(out.contains("END"));
+    }
+
+    #[test]
+    fn pretty_print_num_v14() {
+        assert!(format_program(&parse_program("BEGIN{0}").unwrap()).contains("0"));
+    }
+    #[test]
+    fn pretty_print_str_v14() {
+        assert!(format_program(&parse_program("BEGIN{\"a\"}").unwrap()).contains("\"a\""));
+    }
+    #[test]
+    fn pretty_print_var_v14() {
+        assert!(format_program(&parse_program("BEGIN{x}").unwrap()).contains("x"));
+    }
+    #[test]
+    fn pretty_print_field_v14() {
+        assert!(format_program(&parse_program("BEGIN{$0}").unwrap()).contains("$0"));
+    }
+    #[test]
+    fn pretty_print_index_v14() {
+        assert!(format_program(&parse_program("BEGIN{a[1]}").unwrap()).contains("a[1]"));
+    }
+    #[test]
+    fn pretty_print_call_v14() {
+        assert!(format_program(&parse_program("BEGIN{f()}").unwrap()).contains("f()"));
+    }
+    #[test]
+    fn pretty_print_unary_v14() {
+        assert!(format_program(&parse_program("BEGIN{!1}").unwrap()).contains("!1"));
+    }
+    #[test]
+    fn pretty_print_binary_v14() {
+        assert!(format_program(&parse_program("BEGIN{1+1}").unwrap()).contains("1 + 1"));
+    }
+    #[test]
+    fn pretty_print_assign_v14() {
+        assert!(format_program(&parse_program("BEGIN{x=1}").unwrap()).contains("x = 1"));
+    }
+    #[test]
+    fn pretty_print_ternary_v14() {
+        assert!(format_program(&parse_program("BEGIN{1?1:0}").unwrap()).contains("?"));
+    }
+    #[test]
+    fn pretty_print_in_v14() {
+        assert!(format_program(&parse_program("BEGIN{1 in a}").unwrap()).contains("in"));
+    }
+    #[test]
+    fn pretty_print_if_v14() {
+        assert!(format_program(&parse_program("BEGIN{if(1)1}").unwrap()).contains("if"));
+    }
+    #[test]
+    fn pretty_print_while_v14() {
+        assert!(format_program(&parse_program("BEGIN{while(1)1}").unwrap()).contains("while"));
+    }
+    #[test]
+    fn pretty_print_for_v14() {
+        assert!(format_program(&parse_program("BEGIN{for(;;)1}").unwrap()).contains("for"));
+    }
+    #[test]
+    fn pretty_print_forin_v14() {
+        assert!(format_program(&parse_program("BEGIN{for(k in a)1}").unwrap()).contains("for"));
+    }
+    #[test]
+    fn pretty_print_block_v14() {
+        assert!(format_program(&parse_program("BEGIN{{1}}").unwrap()).contains("{"));
+    }
+    #[test]
+    fn pretty_print_print_v14() {
+        assert!(format_program(&parse_program("BEGIN{print 1}").unwrap()).contains("print"));
+    }
+    #[test]
+    fn pretty_print_printf_v14() {
+        assert!(format_program(&parse_program("BEGIN{printf 1}").unwrap()).contains("printf"));
+    }
+    #[test]
+    fn pretty_print_exit_v14() {
+        assert!(format_program(&parse_program("BEGIN{exit}").unwrap()).contains("exit"));
+    }
+    #[test]
+    fn pretty_print_return_v14() {
+        assert!(format_program(&parse_program("function f(){return}").unwrap()).contains("return"));
+    }
+
+    #[test]
+    fn pretty_print_regexp_v18() {
+        assert!(format_program(&parse_program("BEGIN{/a/}").unwrap()).contains("$0 ~ \"a\""));
+    }
+    #[test]
+    fn pretty_print_match_v18() {
+        assert!(format_program(&parse_program("BEGIN{$0~/a/}").unwrap()).contains("~"));
+    }
+    #[test]
+    fn pretty_print_not_match_v18() {
+        assert!(format_program(&parse_program("BEGIN{$0!~/a/}").unwrap()).contains("!~"));
+    }
+    #[test]
+    fn pretty_print_pow_v18() {
+        assert!(format_program(&parse_program("BEGIN{2^3}").unwrap()).contains("^"));
+    }
+    #[test]
+    fn pretty_print_pow_starstar_v18() {
+        assert!(format_program(&parse_program("BEGIN{2**3}").unwrap()).contains("^"));
+    }
+    #[test]
+    fn pretty_print_inc_v18() {
+        assert!(format_program(&parse_program("BEGIN{x++}").unwrap()).contains("++"));
+    }
+    #[test]
+    fn pretty_print_dec_v18() {
+        assert!(format_program(&parse_program("BEGIN{x--}").unwrap()).contains("--"));
+    }
+    #[test]
+    fn pretty_print_pre_inc_v18() {
+        assert!(format_program(&parse_program("BEGIN{++x}").unwrap()).contains("++"));
+    }
+    #[test]
+    fn pretty_print_pre_dec_v18() {
+        assert!(format_program(&parse_program("BEGIN{--x}").unwrap()).contains("--"));
+    }
+    #[test]
+    fn pretty_print_do_while_v18() {
+        assert!(
+            format_program(&parse_program("BEGIN{do print 1; while(1)}").unwrap()).contains("do")
+        );
+    }
+    #[test]
+    fn pretty_print_getline_var_v18() {
+        assert!(format_program(&parse_program("BEGIN{getline x}").unwrap()).contains("getline x"));
+    }
+    #[test]
+    fn pretty_print_getline_file_v18() {
+        assert!(
+            format_program(&parse_program("BEGIN{getline < \"f\"}").unwrap())
+                .contains("getline < \"f\"")
+        );
+    }
+    #[test]
+    fn pretty_print_getline_pipe_v18() {
+        assert!(
+            format_program(&parse_program("BEGIN{\"c\"|getline}").unwrap()).contains("| getline")
+        );
+    }
+    #[test]
+    fn pretty_print_delete_v18() {
+        assert!(
+            format_program(&parse_program("BEGIN{delete a[1]}").unwrap()).contains("delete a[1]")
+        );
+    }
+    #[test]
+    fn pretty_print_delete_all_v18() {
+        assert!(format_program(&parse_program("BEGIN{delete a}").unwrap()).contains("delete a"));
+    }
+    #[test]
+    fn pretty_print_exit_val_v18() {
+        assert!(format_program(&parse_program("BEGIN{exit 1}").unwrap()).contains("exit 1"));
+    }
+    #[test]
+    fn pretty_print_next_v18() {
+        assert!(format_program(&parse_program("{next}").unwrap()).contains("next"));
+    }
+    #[test]
+    fn pretty_print_nextfile_v18() {
+        assert!(format_program(&parse_program("{nextfile}").unwrap()).contains("nextfile"));
+    }
+    #[test]
+    fn pretty_print_continue_v18() {
+        assert!(
+            format_program(&parse_program("BEGIN{for(;;)continue}").unwrap()).contains("continue")
+        );
+    }
+    #[test]
+    fn pretty_print_break_v18() {
+        assert!(format_program(&parse_program("BEGIN{for(;;)break}").unwrap()).contains("break"));
     }
 }

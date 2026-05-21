@@ -357,4 +357,55 @@ mod tests {
         assert_eq!(binop_to_u8(BinOp::Sub), 1);
         assert_eq!(binop_to_u8(BinOp::Or), 16);
     }
+
+    #[test]
+    fn translate_pop_dup_v2() {
+        assert!(matches!(translate_op(&Op::Pop, 1)[0].0, fusevm::Op::Pop));
+        assert!(matches!(translate_op(&Op::Dup, 1)[0].0, fusevm::Op::Dup));
+    }
+
+    #[test]
+    fn translate_control_flow_v2() {
+        assert!(matches!(
+            translate_op(&Op::Jump(10), 1)[0].0,
+            fusevm::Op::Jump(10)
+        ));
+        assert!(matches!(
+            translate_op(&Op::JumpIfFalsePop(20), 1)[0].0,
+            fusevm::Op::JumpIfFalse(20)
+        ));
+    }
+
+    #[test]
+    fn translate_comparisons_v2() {
+        assert!(matches!(
+            translate_op(&Op::CmpEq, 1)[0].0,
+            fusevm::Op::NumEq
+        ));
+        assert!(matches!(
+            translate_op(&Op::CmpLt, 1)[0].0,
+            fusevm::Op::NumLt
+        ));
+    }
+
+    #[test]
+    fn redir_encoding_v2() {
+        assert_eq!(redir_to_u8(RedirKind::Stdout), 0);
+        assert_eq!(redir_to_u8(RedirKind::Overwrite), 1);
+    }
+
+    #[test]
+    fn getline_source_encoding_v2() {
+        assert_eq!(getline_source_to_u8(GetlineSource::Primary), 0);
+        assert_eq!(getline_source_to_u8(GetlineSource::File), 1);
+    }
+
+    #[test]
+    fn translate_math_v28() {
+        assert!(matches!(translate_op(&Op::Add, 1)[0].0, fusevm::Op::Add));
+    }
+    #[test]
+    fn translate_neg_v28() {
+        assert!(matches!(translate_op(&Op::Neg, 1)[0].0, fusevm::Op::Negate));
+    }
 }

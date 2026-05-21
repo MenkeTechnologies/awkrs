@@ -1051,4 +1051,53 @@ mod tests {
         assert!(matches!(**then_, Expr::Var(ref s) if s == "ns::a"));
         assert!(matches!(**else_, Expr::Var(ref s) if s == "ns::b"));
     }
+
+    #[test]
+    fn function_def_name_qualified_v2() {
+        let mut funcs = HashMap::new();
+        funcs.insert(
+            "f".into(),
+            FunctionDef {
+                name: "f".into(),
+                params: vec![],
+                body: vec![],
+            },
+        );
+        let mut prog = Program {
+            rules: vec![],
+            funcs,
+        };
+        apply_default_namespace(&mut prog, Some("ns"));
+        assert!(prog.funcs.contains_key("ns::f"));
+        assert_eq!(prog.funcs.get("ns::f").unwrap().name, "ns::f");
+    }
+
+    #[test]
+    fn predefined_function_not_qualified_v2() {
+        let mut prog = prog_one_rule(Rule {
+            pattern: Pattern::Begin,
+            stmts: vec![Stmt::Expr(Expr::Call {
+                name: "sin".into(),
+                args: vec![],
+            })],
+        });
+        apply_default_namespace(&mut prog, Some("ns"));
+        match &prog.rules[0].stmts[0] {
+            Stmt::Expr(Expr::Call { name, .. }) => assert_eq!(name, "sin"),
+            _ => panic!("expected Call"),
+        }
+    }
+
+    #[test]
+    fn awk_namespace_stays_qualified_v2() {
+        let mut prog = prog_one_rule(Rule {
+            pattern: Pattern::Begin,
+            stmts: vec![Stmt::Expr(Expr::Var("awk::x".into()))],
+        });
+        apply_default_namespace(&mut prog, Some("ns"));
+        match &prog.rules[0].stmts[0] {
+            Stmt::Expr(Expr::Var(n)) => assert_eq!(n, "awk::x"),
+            _ => panic!("expected Var"),
+        }
+    }
 }

@@ -335,8 +335,7 @@ fn in_operator_chained_comparison() {
 fn in_operator_false_when_name_not_array() {
     // gawk parity: `key in scalar` raises "attempt to use scalar `s' as an
     // array". Previously awkrs silently returned 0, masking a type error.
-    let (c, _o, e) =
-        run_awkrs_stdin("BEGIN { s = \"scalar\"; print (\"k\" in s) }", "");
+    let (c, _o, e) = run_awkrs_stdin("BEGIN { s = \"scalar\"; print (\"k\" in s) }", "");
     assert_ne!(c, 0);
     assert!(
         e.contains("attempt to use scalar `s' as an array"),
@@ -1519,10 +1518,7 @@ fn rt_is_text_of_rs_for_each_record_when_rs_is_single_char() {
     // gawk: RT is the actual matched separator. For the final record (no trailing `:`),
     // RT is empty. Input "a:b\n" → first record "a" with RT=":", second record "b\n"
     // (the `\n` is just part of the record because RS is now `:`) with RT="".
-    let (c, o, _) = run_awkrs_stdin(
-        "BEGIN { RS = \":\" } { print NR, \"[\" RT \"]\" }",
-        "a:b\n",
-    );
+    let (c, o, _) = run_awkrs_stdin("BEGIN { RS = \":\" } { print NR, \"[\" RT \"]\" }", "a:b\n");
     assert_eq!(c, 0);
     assert_eq!(o, "1 [:]\n2 []\n");
 }

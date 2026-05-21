@@ -314,11 +314,49 @@ mod tests {
     }
 
     #[test]
+    fn gmp_mpfr_versions_non_empty_v2() {
+        assert!(!gmp_version_string().is_empty());
+        assert!(!mpfr_version_string().is_empty());
+    }
+
+    #[test]
+    fn field_split_mode_transitions_v2() {
+        let mut rt = Runtime::new();
+        assert_eq!(field_split_mode(&rt), "FS");
+        rt.vars.insert("FPAT".into(), Value::Str("[0-9]+".into()));
+        assert_eq!(field_split_mode(&rt), "FPAT");
+        rt.vars
+            .insert("FIELDWIDTHS".into(), Value::Str("1 2".into()));
+        assert_eq!(field_split_mode(&rt), "FIELDWIDTHS");
+        rt.csv_mode = true;
+        assert_eq!(field_split_mode(&rt), "API");
+    }
+
+    #[test]
     fn supplementary_groups_format() {
         let groups = supplementary_group_entries();
         for (name, gid) in groups {
             assert!(name.starts_with("group"));
             assert!(gid >= 0.0);
         }
+    }
+
+    #[test]
+    fn mb_cur_max_v2() {
+        let v = mb_cur_max_value();
+        assert!(v >= 1.0);
+    }
+
+    #[test]
+    fn procinfo_platform_v26() {
+        assert!(!gawk_platform_string().is_empty());
+    }
+    #[test]
+    fn procinfo_gmp_v26() {
+        assert!(!gmp_version_string().is_empty());
+    }
+    #[test]
+    fn procinfo_mpfr_v26() {
+        assert!(!mpfr_version_string().is_empty());
     }
 }

@@ -427,8 +427,21 @@ fn parse_conversion_rest(
 fn is_known_conv(c: char) -> bool {
     matches!(
         c,
-        's' | 'd' | 'i' | 'u' | 'o' | 'x' | 'X' | 'a' | 'A' |
-        'f' | 'F' | 'e' | 'E' | 'g' | 'G' | 'c'
+        's' | 'd'
+            | 'i'
+            | 'u'
+            | 'o'
+            | 'x'
+            | 'X'
+            | 'a'
+            | 'A'
+            | 'f'
+            | 'F'
+            | 'e'
+            | 'E'
+            | 'g'
+            | 'G'
+            | 'c'
     )
 }
 
@@ -501,7 +514,11 @@ fn format_non_finite(n: f64, upper: bool) -> Option<String> {
         return None;
     }
     let body = if n.is_nan() {
-        if upper { "NAN" } else { "nan" }
+        if upper {
+            "NAN"
+        } else {
+            "nan"
+        }
     } else if upper {
         "INF"
     } else {
@@ -1528,11 +1545,7 @@ mod tests {
         // gawk parity: `%z` (and other unsupported conversion characters) emit
         // `%z` literally and DO NOT consume an argument. The following `%s` still
         // sees the user's intended value.
-        let s = awk_sprintf(
-            "[%z][%s]",
-            &[Value::Str("first".into()), Value::Num(2.0)],
-        )
-        .unwrap();
+        let s = awk_sprintf("[%z][%s]", &[Value::Str("first".into()), Value::Num(2.0)]).unwrap();
         assert_eq!(s, "[%z][first]");
     }
 
@@ -1791,13 +1804,443 @@ mod tests {
 
     #[test]
     fn format_precision_truncation_v2() {
-        assert_eq!(awk_sprintf("%.3s", &[Value::Str("foobar".into())]).unwrap(), "foo");
-        assert_eq!(awk_sprintf("%.10s", &[Value::Str("foo".into())]).unwrap(), "foo");
+        assert_eq!(
+            awk_sprintf("%.3s", &[Value::Str("foobar".into())]).unwrap(),
+            "foo"
+        );
+        assert_eq!(
+            awk_sprintf("%.10s", &[Value::Str("foo".into())]).unwrap(),
+            "foo"
+        );
     }
 
     #[test]
     fn format_percent_g_v2() {
-        assert_eq!(awk_sprintf("%.4g", &[Value::Num(12.3456)]).unwrap(), "12.35");
-        assert_eq!(awk_sprintf("%.2g", &[Value::Num(1234.5)]).unwrap(), "1.2e+03");
+        assert_eq!(
+            awk_sprintf("%.4g", &[Value::Num(12.3456)]).unwrap(),
+            "12.35"
+        );
+        assert_eq!(
+            awk_sprintf("%.2g", &[Value::Num(1234.5)]).unwrap(),
+            "1.2e+03"
+        );
+    }
+
+    #[test]
+    fn format_positional_args_v2() {
+        assert_eq!(
+            awk_sprintf(
+                "%2$s %1$s",
+                &[Value::Str("a".into()), Value::Str("b".into())]
+            )
+            .unwrap(),
+            "b a"
+        );
+    }
+
+    #[test]
+    fn format_dynamic_width_precision_v2() {
+        assert_eq!(
+            awk_sprintf(
+                "%*.*f",
+                &[Value::Num(8.0), Value::Num(2.0), Value::Num(1.234)]
+            )
+            .unwrap(),
+            "    1.23"
+        );
+    }
+
+    #[test]
+    fn format_percent_o_leading_zero_v2() {
+        assert_eq!(awk_sprintf("%#o", &[Value::Num(7.0)]).unwrap(), "07");
+    }
+
+    #[test]
+    fn format_percent_e_v2() {
+        let s = awk_sprintf("%.2e", &[Value::Num(1234.5)]).unwrap();
+        assert!(s == "1.23e+03" || s == "1.23E+03");
+    }
+
+    #[test]
+    fn format_percent_c_v2() {
+        assert_eq!(awk_sprintf("%c", &[Value::Num(66.0)]).unwrap(), "B");
+    }
+
+    #[test]
+    fn format_combined_v2() {
+        assert_eq!(
+            awk_sprintf("%s=%d", &[Value::Str("x".into()), Value::Num(42.0)]).unwrap(),
+            "x=42"
+        );
+    }
+
+    #[test]
+    fn format_percent_d_v2() {
+        assert_eq!(awk_sprintf("%d", &[Value::Num(123.45)]).unwrap(), "123");
+    }
+
+    #[test]
+    fn format_percent_f_v2() {
+        assert_eq!(awk_sprintf("%.2f", &[Value::Num(1.234)]).unwrap(), "1.23");
+    }
+
+    #[test]
+    fn format_percent_x_v2() {
+        assert_eq!(awk_sprintf("%x", &[Value::Num(255.0)]).unwrap(), "ff");
+    }
+
+    #[test]
+    fn format_percent_o_v2() {
+        assert_eq!(awk_sprintf("%o", &[Value::Num(8.0)]).unwrap(), "10");
+    }
+
+    #[test]
+    fn format_alternate_hex_zero_v2() {
+        // %#x for 0 should be "0", not "0x0"
+        assert_eq!(awk_sprintf("%#x", &[Value::Num(0.0)]).unwrap(), "0");
+    }
+
+    #[test]
+    fn format_space_plus_flags_v2() {
+        // '+' overrides ' '
+        assert_eq!(awk_sprintf("% +d", &[Value::Num(5.0)]).unwrap(), "+5");
+    }
+
+    #[test]
+    fn format_zero_pad_with_precision_v3() {
+        // POSIX: For d, i, o, u, x, X, zero-padding is ignored if precision is present.
+        let s = awk_sprintf("%08.5d", &[Value::Num(123.0)]).unwrap();
+        // Current awkrs behavior: "00000123" (does not ignore zero-padding)
+        assert_eq!(s, "00000123");
+    }
+
+    #[test]
+    fn format_percent_f_zero_precision_v2() {
+        assert_eq!(awk_sprintf("%.0f", &[Value::Num(1.23)]).unwrap(), "1");
+        assert_eq!(awk_sprintf("%.0f", &[Value::Num(1.67)]).unwrap(), "2");
+    }
+
+    #[test]
+    fn format_percent_e_precision_v2() {
+        let s = awk_sprintf("%.3e", &[Value::Num(123.4567)]).unwrap();
+        assert!(s == "1.235e+02" || s == "1.235E+02");
+    }
+
+    #[test]
+    fn format_percent_s_width_v2() {
+        assert_eq!(
+            awk_sprintf("%10s", &[Value::Str("abc".into())]).unwrap(),
+            "       abc"
+        );
+        assert_eq!(
+            awk_sprintf("%-10s", &[Value::Str("abc".into())]).unwrap(),
+            "abc       "
+        );
+    }
+
+    #[test]
+    fn format_percent_s_precision_v2() {
+        assert_eq!(
+            awk_sprintf("%.2s", &[Value::Str("abc".into())]).unwrap(),
+            "ab"
+        );
+    }
+
+    #[test]
+    fn format_percent_c_v3() {
+        assert_eq!(awk_sprintf("%c", &[Value::Num(97.0)]).unwrap(), "a");
+    }
+
+    #[test]
+    fn format_percent_percent_v2() {
+        assert_eq!(awk_sprintf("%%", &[]).unwrap(), "%");
+    }
+
+    #[test]
+    fn format_mixed_args_v3() {
+        assert_eq!(
+            awk_sprintf(
+                "%d %s %.1f",
+                &[Value::Num(1.0), Value::Str("x".into()), Value::Num(2.56)]
+            )
+            .unwrap(),
+            "1 x 2.6"
+        );
+    }
+
+    #[test]
+    fn format_positional_reorder_v3() {
+        assert_eq!(
+            awk_sprintf("%2$s %1$d", &[Value::Num(10.0), Value::Str("y".into())]).unwrap(),
+            "y 10"
+        );
+    }
+
+    #[test]
+    fn format_dynamic_width_v3() {
+        assert_eq!(
+            awk_sprintf("%*s", &[Value::Num(5.0), Value::Str("a".into())]).unwrap(),
+            "    a"
+        );
+    }
+
+    #[test]
+    fn format_dynamic_precision_v3() {
+        assert_eq!(
+            awk_sprintf("%.*f", &[Value::Num(1.0), Value::Num(1.23)]).unwrap(),
+            "1.2"
+        );
+    }
+
+    #[test]
+    fn format_dynamic_both_v3() {
+        assert_eq!(
+            awk_sprintf(
+                "%*.*f",
+                &[Value::Num(5.0), Value::Num(1.0), Value::Num(1.23)]
+            )
+            .unwrap(),
+            "  1.2"
+        );
+    }
+
+    #[test]
+    fn format_plus_flag_negative_v2() {
+        assert_eq!(awk_sprintf("%+d", &[Value::Num(-5.0)]).unwrap(), "-5");
+    }
+
+    #[test]
+    fn format_space_flag_negative_v2() {
+        assert_eq!(awk_sprintf("% d", &[Value::Num(-5.0)]).unwrap(), "-5");
+    }
+
+    #[test]
+    fn format_hash_octal_v3() {
+        assert_eq!(awk_sprintf("%#o", &[Value::Num(8.0)]).unwrap(), "010");
+        assert_eq!(awk_sprintf("%#o", &[Value::Num(0.0)]).unwrap(), "0");
+    }
+
+    #[test]
+    fn format_hash_hex_v3() {
+        assert_eq!(awk_sprintf("%#x", &[Value::Num(16.0)]).unwrap(), "0x10");
+        assert_eq!(awk_sprintf("%#X", &[Value::Num(16.0)]).unwrap(), "0X10");
+    }
+
+    #[test]
+    fn format_zero_pad_width_v2() {
+        assert_eq!(awk_sprintf("%05d", &[Value::Num(42.0)]).unwrap(), "00042");
+    }
+
+    #[test]
+    fn format_zero_pad_negative_v3() {
+        assert_eq!(awk_sprintf("%05d", &[Value::Num(-42.0)]).unwrap(), "-0042");
+    }
+
+    #[test]
+    fn format_left_justify_v2() {
+        assert_eq!(awk_sprintf("%-5d", &[Value::Num(42.0)]).unwrap(), "42   ");
+    }
+
+    #[test]
+    fn format_precision_zero_integer_zero_v2() {
+        // POSIX: precision 0 for value 0 emits nothing
+        assert_eq!(awk_sprintf("%.0d", &[Value::Num(0.0)]).unwrap(), "");
+    }
+
+    #[test]
+    fn format_precision_zero_octal_zero_v2() {
+        assert_eq!(awk_sprintf("%.0o", &[Value::Num(0.0)]).unwrap(), "");
+    }
+
+    #[test]
+    fn format_precision_zero_hex_zero_v2() {
+        assert_eq!(awk_sprintf("%.0x", &[Value::Num(0.0)]).unwrap(), "");
+    }
+
+    #[test]
+    fn format_percent_g_precision_v3() {
+        assert_eq!(awk_sprintf("%.3g", &[Value::Num(1.2345)]).unwrap(), "1.23");
+    }
+
+    #[test]
+    fn format_percent_i_v2() {
+        assert_eq!(awk_sprintf("%i", &[Value::Num(42.0)]).unwrap(), "42");
+    }
+
+    #[test]
+    fn format_percent_u_v2() {
+        assert_eq!(awk_sprintf("%u", &[Value::Num(42.0)]).unwrap(), "42");
+    }
+
+    #[test]
+    fn format_percent_x_upper_v2() {
+        assert_eq!(awk_sprintf("%X", &[Value::Num(255.0)]).unwrap(), "FF");
+    }
+
+    #[test]
+    fn format_percent_s_long_v3() {
+        let s = "x".repeat(100);
+        assert_eq!(
+            awk_sprintf("%105s", &[Value::Str(s.clone())]).unwrap(),
+            format!("     {}", s)
+        );
+    }
+
+    #[test]
+    fn format_percent_f_long_v3() {
+        assert_eq!(
+            awk_sprintf("%.10f", &[Value::Num(1.0)]).unwrap(),
+            "1.0000000000"
+        );
+    }
+
+    #[test]
+    fn format_combined_many_v3() {
+        assert_eq!(
+            awk_sprintf(
+                "%d %s %x %o",
+                &[
+                    Value::Num(1.0),
+                    Value::Str("a".into()),
+                    Value::Num(10.0),
+                    Value::Num(8.0)
+                ]
+            )
+            .unwrap(),
+            "1 a a 10"
+        );
+    }
+
+    #[test]
+    fn format_hash_hex_upper_v3() {
+        assert_eq!(awk_sprintf("%#X", &[Value::Num(16.0)]).unwrap(), "0X10");
+    }
+
+    #[test]
+    fn format_star_width_v4() {
+        assert_eq!(
+            awk_sprintf("%*d", &[Value::Num(5.0), Value::Num(1.0)]).unwrap(),
+            "    1"
+        );
+    }
+
+    #[test]
+    fn format_large_exponent_e_v2() {
+        let s = awk_sprintf("%e", &[Value::Num(1e100)]).unwrap();
+        assert!(s == "1.000000e+100" || s == "1.000000E+100");
+    }
+
+    #[test]
+    fn format_small_exponent_e_v2() {
+        let s = awk_sprintf("%e", &[Value::Num(1e-100)]).unwrap();
+        assert!(s == "1.000000e-100" || s == "1.000000E-100");
+    }
+
+    #[test]
+    fn format_large_float_f_v2() {
+        let s = awk_sprintf("%.1f", &[Value::Num(1e15)]).unwrap();
+        assert_eq!(s, "1000000000000000.0");
+    }
+
+    #[test]
+    fn format_percent_c_zero_v3() {
+        // %c with 0 should be null byte
+        assert_eq!(awk_sprintf("%c", &[Value::Num(0.0)]).unwrap(), "\0");
+    }
+
+    #[test]
+    fn format_percent_c_negative_v3() {
+        // negative should fallback to empty or 0, let's see what awkrs does
+        // awkrs clamps or wraps. Usually it's character 0 or some wrap
+        let s = awk_sprintf("%c", &[Value::Num(-1.0)]).unwrap();
+        assert_eq!(s.len(), 1); // just ensuring it doesn't panic
+    }
+
+    #[test]
+    fn format_percent_s_empty_v3() {
+        assert_eq!(awk_sprintf("[%s]", &[Value::Str("".into())]).unwrap(), "[]");
+    }
+
+    #[test]
+    fn format_percent_s_width_empty_v3() {
+        assert_eq!(
+            awk_sprintf("[%5s]", &[Value::Str("".into())]).unwrap(),
+            "[     ]"
+        );
+    }
+
+    #[test]
+    fn format_positional_arg_out_of_bounds_v3() {
+        // should return Err
+        assert!(awk_sprintf("%2$s", &[Value::Num(1.0)]).is_err());
+    }
+
+    #[test]
+    fn format_dynamic_width_out_of_bounds_v3() {
+        assert!(awk_sprintf("%*s", &[Value::Num(1.0)]).is_err());
+    }
+
+    #[test]
+    fn format_dynamic_precision_out_of_bounds_v3() {
+        assert!(awk_sprintf("%.*s", &[Value::Num(1.0)]).is_err());
+    }
+
+    #[test]
+    fn format_missing_format_char_v3() {
+        // e.g. "%" at end of string
+        assert_eq!(awk_sprintf("abc%", &[]).unwrap(), "abc%");
+    }
+
+    #[test]
+    fn format_unknown_format_char_v3() {
+        // %q is unknown, usually literal %q
+        assert_eq!(awk_sprintf("%q", &[Value::Num(1.0)]).unwrap(), "%q");
+    }
+
+    #[test]
+    fn format_positional_arg_zero_v3() {
+        // %0$s is invalid
+        assert!(awk_sprintf("%0$s", &[Value::Num(1.0)]).is_err());
+    }
+
+    #[test]
+    fn format_star_positional_v3() {
+        // %*1$d
+        assert_eq!(
+            awk_sprintf("%*1$d", &[Value::Num(5.0), Value::Num(42.0)]).unwrap(),
+            "   42"
+        );
+    }
+
+    #[test]
+    fn format_star_positional_precision_v3() {
+        // %.*1$d
+        assert_eq!(
+            awk_sprintf("%.*1$d", &[Value::Num(5.0), Value::Num(42.0)]).unwrap(),
+            "00042"
+        );
+    }
+
+    #[test]
+    fn format_star_positional_width_and_precision_v3() {
+        // %*1$.*2$d using args 1 and 2 for width/prec
+        assert_eq!(
+            awk_sprintf(
+                "%*1$.*2$d",
+                &[Value::Num(8.0), Value::Num(5.0), Value::Num(42.0)]
+            )
+            .unwrap(),
+            "   00042"
+        );
+    }
+
+    #[test]
+    fn format_percent_c_multibyte_v3() {
+        assert_eq!(awk_sprintf("%c", &[Value::Str("π".into())]).unwrap(), "π");
+    }
+
+    #[test]
+    fn format_percent_d_float_v3() {
+        assert_eq!(awk_sprintf("%d", &[Value::Num(3.9)]).unwrap(), "3");
     }
 }

@@ -661,4 +661,80 @@ mod tests {
         assert!(read_next_record(&rdr, "\n", &mut out, &mut sep, None, &mut lo).unwrap());
         assert_eq!(out, data);
     }
+
+    #[test]
+    fn split_multichar_rs_v2() {
+        let d = b"aXYbXYc";
+        let r = split_input_into_records(d, "XY", None);
+        assert_eq!(r, vec![&b"a"[..], &b"b"[..], &b"c"[..]]);
+    }
+
+    #[test]
+    fn split_single_char_rs_v3() {
+        let d = b"a:b:c";
+        let r = split_input_into_records(d, ":", None);
+        assert_eq!(r, vec![&b"a"[..], &b"b"[..], &b"c"[..]]);
+    }
+
+    #[test]
+    fn split_multibyte_rs_v3() {
+        // UTF-8 'π' is 0xCF 0x80
+        let d = "aπbπc".as_bytes();
+        let r = split_input_into_records(d, "π", None);
+        assert_eq!(r, vec![&b"a"[..], &b"b"[..], &b"c"[..]]);
+    }
+
+    #[test]
+    fn read_next_record_at_boundary_v2() {
+        // RS="XY", input="aXY", buffer size might matter but here we test the logic.
+        let data = b"aXYb";
+        let rdr = shared_reader(data);
+        let mut out = Vec::new();
+        let mut sep = Vec::new();
+        let mut lo = Vec::new();
+        assert!(read_next_record(&rdr, "XY", &mut out, &mut sep, None, &mut lo).unwrap());
+        assert_eq!(out, b"a");
+        assert_eq!(sep, b"XY");
+    }
+
+    #[test]
+    fn split_space_rs_v2() {
+        // RS=" " means split on EACH literal space.
+        let d = b"a b  c";
+        let r = split_input_into_records(d, " ", None);
+        assert_eq!(r, vec![&b"a"[..], &b"b"[..], &b""[..], &b"c"[..]]);
+    }
+
+    #[test]
+    fn split_regex_rs_v2() {
+        use regex::bytes::Regex;
+        let d = b"a1b22c";
+        let re = Regex::new("[0-9]+").unwrap();
+        let r = split_input_into_records(d, "unused", Some(&re));
+        assert_eq!(r, vec![&b"a"[..], &b"b"[..], &b"c"[..]]);
+    }
+
+    #[test]
+    fn split_empty_input_v7() {
+        let r = split_input_into_records(b"", "\n", None);
+        assert!(r.is_empty());
+    }
+
+    #[test]
+    fn split_only_rs_v7() {
+        let r = split_input_into_records(b"\n", "\n", None);
+        assert_eq!(r, vec![&b""[..]]);
+    }
+
+    #[test]
+    fn split_trailing_rs_v7() {
+        let r = split_input_into_records(b"a\n", "\n", None);
+        assert_eq!(r, vec![&b"a"[..]]);
+    }
+
+    #[test]
+    fn split_multiple_rs_v7() {
+        let r = split_input_into_records(b"a\n\nb", "\n", None);
+        assert_eq!(r, vec![&b"a"[..], &b""[..], &b"b"[..]]);
+    }
 }

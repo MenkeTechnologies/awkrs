@@ -1093,20 +1093,14 @@ fn log_negative_one_warns_and_prints_plus_nan() {
 fn printf_percent_s_on_nan_matches_print_spelling() {
     // Both `print x` and `printf "%s", x` should produce "+nan" so the two display paths
     // agree (gawk parity).
-    let (c, o, _) = run_awkrs_stdin(
-        r#"BEGIN { x=sqrt(-1); printf "%s|%s\n", x, x }"#,
-        "",
-    );
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { x=sqrt(-1); printf "%s|%s\n", x, x }"#, "");
     assert_eq!(c, 0);
     assert_eq!(o, "+nan|+nan\n");
 }
 
 #[test]
 fn printf_percent_s_on_infinity_matches_print_spelling() {
-    let (c, o, _) = run_awkrs_stdin(
-        r#"BEGIN { x=exp(800); printf "%s\n", x; print x }"#,
-        "",
-    );
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { x=exp(800); printf "%s\n", x; print x }"#, "");
     assert_eq!(c, 0);
     assert_eq!(o, "+inf\n+inf\n");
 }
@@ -1581,10 +1575,7 @@ fn print_paren_list_emits_multiple_fields() {
 fn gsub_empty_pattern_inserts_replacement_between_every_character() {
     // Before the fix the literal-pattern fast path treated "" as "no match"
     // and returned 0. gawk treats // as a zero-width match at every position.
-    let (c, o, _) = run_awkrs_stdin(
-        r#"BEGIN { s="abc"; n=gsub(//, "-", s); print n, s }"#,
-        "",
-    );
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { s="abc"; n=gsub(//, "-", s); print n, s }"#, "");
     assert_eq!(c, 0);
     assert_eq!(o, "4 -a-b-c-\n");
 }
@@ -1601,10 +1592,7 @@ fn gsub_empty_pattern_on_empty_target_matches_once() {
 
 #[test]
 fn sub_empty_pattern_inserts_at_start() {
-    let (c, o, _) = run_awkrs_stdin(
-        r#"BEGIN { s="abc"; n=sub(//, "-", s); print n, s }"#,
-        "",
-    );
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { s="abc"; n=sub(//, "-", s); print n, s }"#, "");
     assert_eq!(c, 0);
     assert_eq!(o, "1 -abc\n");
 }
@@ -1683,10 +1671,7 @@ fn stdin_multi_char_literal_rs_reads_every_record() {
 
 #[test]
 fn stdin_regex_rs_reads_every_record() {
-    let (c, o, _) = run_awkrs_stdin(
-        r#"BEGIN { RS="[|,]" } { print NR, "[" $0 "]" }"#,
-        "a|b,c|d",
-    );
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { RS="[|,]" } { print NR, "[" $0 "]" }"#, "a|b,c|d");
     assert_eq!(c, 0);
     assert_eq!(o, "1 [a]\n2 [b]\n3 [c]\n4 [d]\n");
 }
@@ -1704,10 +1689,7 @@ fn stdin_paragraph_mode_strips_trailing_newlines_from_record() {
 
 #[test]
 fn stdin_single_char_rs_strips_separator_from_record() {
-    let (c, o, _) = run_awkrs_stdin(
-        r#"BEGIN { RS=":" } { print NR, "[" $0 "]" }"#,
-        "a:b:c",
-    );
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { RS=":" } { print NR, "[" $0 "]" }"#, "a:b:c");
     assert_eq!(c, 0);
     assert_eq!(o, "1 [a]\n2 [b]\n3 [c]\n");
 }
@@ -1715,20 +1697,14 @@ fn stdin_single_char_rs_strips_separator_from_record() {
 #[test]
 fn printf_percent_g_on_infinity_emits_signed_inf() {
     // Before the fix this raised "sprintf: non-finite value for %g".
-    let (c, o, _) = run_awkrs_stdin(
-        r#"BEGIN { x=exp(800); printf "%g %G\n", x, x }"#,
-        "",
-    );
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { x=exp(800); printf "%g %G\n", x, x }"#, "");
     assert_eq!(c, 0);
     assert_eq!(o, "+inf +INF\n");
 }
 
 #[test]
 fn printf_percent_f_on_negative_infinity_emits_minus_inf() {
-    let (c, o, _) = run_awkrs_stdin(
-        r#"BEGIN { x=-exp(800); printf "%f %F\n", x, x }"#,
-        "",
-    );
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { x=-exp(800); printf "%f %F\n", x, x }"#, "");
     assert_eq!(c, 0);
     assert_eq!(o, "-inf -INF\n");
 }
@@ -1737,10 +1713,7 @@ fn printf_percent_f_on_negative_infinity_emits_minus_inf() {
 fn printf_percent_e_padding_on_infinity_uses_spaces_not_zeros() {
     // POSIX: zero-padding does not apply to non-finite values — gawk also outputs
     // "[      +inf]" rather than "[0000000+inf]" when given `%010e`.
-    let (c, o, _) = run_awkrs_stdin(
-        r#"BEGIN { x=exp(800); printf "[%010e]\n", x }"#,
-        "",
-    );
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { x=exp(800); printf "[%010e]\n", x }"#, "");
     assert_eq!(c, 0);
     assert_eq!(o, "[      +inf]\n");
 }
@@ -1761,10 +1734,7 @@ fn printf_percent_g_precision_one_uses_one_significant_digit() {
 #[test]
 fn printf_percent_a_on_nan_uses_signed_nan() {
     // sqrt(-1) yields a positive NaN; `%a` prints "+nan" (gawk parity).
-    let (c, o, _e) = run_awkrs_stdin(
-        r#"BEGIN { x=sqrt(-1); printf "%a\n", x }"#,
-        "",
-    );
+    let (c, o, _e) = run_awkrs_stdin(r#"BEGIN { x=sqrt(-1); printf "%a\n", x }"#, "");
     assert_eq!(c, 0);
     assert_eq!(o, "+nan\n");
 }
@@ -1772,20 +1742,14 @@ fn printf_percent_a_on_nan_uses_signed_nan() {
 #[test]
 fn gensub_numeric_negative_treated_as_one() {
     // Matches gawk's "third argument `-1' treated as 1" behavior.
-    let (c, o, _) = run_awkrs_stdin(
-        r#"BEGIN { print gensub(/a/, "X", -3, "aaaa") }"#,
-        "",
-    );
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { print gensub(/a/, "X", -3, "aaaa") }"#, "");
     assert_eq!(c, 0);
     assert_eq!(o, "Xaaa\n");
 }
 
 #[test]
 fn gensub_numeric_zero_treated_as_one() {
-    let (c, o, _) = run_awkrs_stdin(
-        r#"BEGIN { print gensub(/a/, "X", 0, "aaaa") }"#,
-        "",
-    );
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { print gensub(/a/, "X", 0, "aaaa") }"#, "");
     assert_eq!(c, 0);
     assert_eq!(o, "Xaaa\n");
 }
@@ -1992,10 +1956,7 @@ fn printf_unknown_conversion_emits_literal_and_keeps_arg() {
     // gawk parity: `%q` (any letter not in the known set) emits "%q" literally
     // and does NOT consume an argument, so the next conversion sees the args
     // the user intended for it.
-    let (c, o, _) = run_awkrs_stdin(
-        r#"BEGIN { printf "[%q][%s]\n", "first", "second" }"#,
-        "",
-    );
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { printf "[%q][%s]\n", "first", "second" }"#, "");
     assert_eq!(c, 0);
     assert_eq!(o, "[%q][first]\n");
 }
@@ -2016,10 +1977,7 @@ fn regex_dot_matches_embedded_newline_in_match() {
 fn printf_percent_u_negative_wraps_two_s_complement() {
     // gawk parity: `printf "%u", -5` emits the 64-bit two's complement of -5,
     // not 0. Previously awkrs clamped negatives to 0.
-    let (c, o, _) = run_awkrs_stdin(
-        r#"BEGIN { printf "%u %u %u\n", -1, -5, 5 }"#,
-        "",
-    );
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { printf "%u %u %u\n", -1, -5, 5 }"#, "");
     assert_eq!(c, 0);
     assert_eq!(o, "18446744073709551615 18446744073709551611 5\n");
 }
@@ -2041,10 +1999,7 @@ fn crlf_line_terminator_preserves_cr_in_record() {
     // gawk parity: only `\n` is the record terminator on Unix; a trailing `\r`
     // is part of `$0` and counts toward `length`. Previously awkrs stripped
     // both `\n` and `\r`, silently dropping CR bytes on CRLF input.
-    let (c, o, _) = run_awkrs_stdin(
-        r#"{ printf "%d|%d|[%s]\n", NR, length, $0 }"#,
-        "a\r\nb\n",
-    );
+    let (c, o, _) = run_awkrs_stdin(r#"{ printf "%d|%d|[%s]\n", NR, length, $0 }"#, "a\r\nb\n");
     assert_eq!(c, 0);
     assert_eq!(o, "1|2|[a\r]\n2|1|[b]\n");
 }
@@ -2054,11 +2009,7 @@ fn bignum_print_uses_full_precision_for_integers() {
     // Regression: `print` of a bignum integer used to go through OFMT (%.6g)
     // and truncate to scientific form ("1.2677e+30"). With the integer fast
     // path the full 31-digit value of 2^100 is preserved.
-    let (c, o, _) = run_awkrs_stdin_args(
-        ["-M"],
-        "BEGIN { print 2^100 }",
-        "",
-    );
+    let (c, o, _) = run_awkrs_stdin_args(["-M"], "BEGIN { print 2^100 }", "");
     assert_eq!(c, 0);
     assert_eq!(o, "1267650600228229401496703205376\n");
 }
@@ -2088,10 +2039,7 @@ fn user_assignment_to_nr_persists_and_is_incremented_per_record() {
 
 #[test]
 fn user_assignment_to_fnr_persists_per_record() {
-    let (c, o, _) = run_awkrs_stdin(
-        r#"{ if (FNR == 1) FNR = 99; print FNR }"#,
-        "a\nb\nc\n",
-    );
+    let (c, o, _) = run_awkrs_stdin(r#"{ if (FNR == 1) FNR = 99; print FNR }"#, "a\nb\nc\n");
     assert_eq!(c, 0);
     assert_eq!(o, "99\n100\n101\n");
 }
@@ -2100,10 +2048,7 @@ fn user_assignment_to_fnr_persists_per_record() {
 fn at_namespace_directive_followed_by_inline_program_on_same_line() {
     // gawk accepts `@namespace "name"; rest_of_program` on a single line.
     // awkrs previously dropped the trailing program text on the same line.
-    let (c, o, _) = run_awkrs_stdin(
-        r#"@namespace "awk"; BEGIN { print "ok" }"#,
-        "",
-    );
+    let (c, o, _) = run_awkrs_stdin(r#"@namespace "awk"; BEGIN { print "ok" }"#, "");
     assert_eq!(c, 0);
     assert_eq!(o, "ok\n");
 }
@@ -2173,10 +2118,7 @@ fn getline_from_missing_file_does_not_print_runtime_error() {
     // Regression: the file-open error used to be wrapped as `Error::Runtime`
     // with a long message that polluted ERRNO and bypassed the `Error::Io` path.
     // Now ERRNO holds the OS strerror and stderr stays clean.
-    let (_c, o, e) = run_awkrs_stdin(
-        r#"BEGIN { getline line < "/nonexistent_xyz123" }"#,
-        "",
-    );
+    let (_c, o, e) = run_awkrs_stdin(r#"BEGIN { getline line < "/nonexistent_xyz123" }"#, "");
     assert!(
         !e.contains("runtime error"),
         "stderr should not contain Rust panic-style text; got {e:?}"
@@ -2190,10 +2132,7 @@ fn unknown_escape_sequence_drops_backslash() {
     // gawk parity: `\q` in a string literal emits just `q` (with a `--lint`
     // warning). awkrs previously kept the backslash, so `"a\qb"` came out as
     // `a\qb` instead of `aqb`.
-    let (c, o, _) = run_awkrs_stdin(
-        r#"BEGIN { print "a\qb", length("a\qb"), "x\z" }"#,
-        "",
-    );
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { print "a\qb", length("a\qb"), "x\z" }"#, "");
     assert_eq!(c, 0);
     assert_eq!(o, "aqb 3 xz\n");
 }
@@ -2407,10 +2346,7 @@ fn split_ignores_zero_width_regex_matches() {
 fn printf_alternate_form_hex_zero_emits_just_zero() {
     // POSIX / gawk: the `#` flag adds the `0x`/`0X` prefix only when the
     // value is non-zero. `printf "%#x", 0` is `"0"`, not `"0x0"`.
-    let (c, o, _) = run_awkrs_stdin(
-        r#"BEGIN { printf "%#x|%#X|%#x|%#o\n", 0, 0, 255, 0 }"#,
-        "",
-    );
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { printf "%#x|%#X|%#x|%#o\n", 0, 0, 255, 0 }"#, "");
     assert_eq!(c, 0);
     assert_eq!(o, "0|0|0xff|0\n");
 }
@@ -2424,10 +2360,7 @@ fn jit_correctly_handles_short_circuit_with_regex_match() {
     // refuses to JIT chunks that mix `~`/`!~` with `JumpIf{False,True}Pop`.
     //
     // Test with 4+ records so we definitely cross the JIT-compile threshold.
-    let (c, o, _) = run_awkrs_stdin(
-        r#"/a/ && /b/"#,
-        "ab\nac\nabc\nzz\nabcd\nbb\nbab\n",
-    );
+    let (c, o, _) = run_awkrs_stdin(r#"/a/ && /b/"#, "ab\nac\nabc\nzz\nabcd\nbb\nbab\n");
     assert_eq!(c, 0);
     assert_eq!(o, "ab\nabc\nabcd\nbab\n");
 }
@@ -2724,10 +2657,7 @@ fn printf_percent_d_handles_values_past_i64_max() {
 fn printf_percent_u_saturates_above_u64_max() {
     // For `printf "%u"`, gawk saturates the (uintmax_t)val cast at u64::MAX
     // for positive values larger than 2^64.
-    let (c, o, _) = run_awkrs_stdin(
-        r#"BEGIN { printf "%u %u %u\n", 2^63, 2^64, -1 }"#,
-        "",
-    );
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { printf "%u %u %u\n", 2^63, 2^64, -1 }"#, "");
     assert_eq!(c, 0);
     assert_eq!(
         o,
@@ -2863,10 +2793,7 @@ fn printf_precision_zero_on_value_zero_emits_empty_string() {
 #[test]
 fn negative_zero_prints_as_plain_zero() {
     // gawk parity: `-0.0` is printed as `"0"`, not `"-0"`.
-    let (c, o, _) = run_awkrs_stdin(
-        r#"BEGIN { print -0.0; print 0.0 - 0; print -1 * 0 }"#,
-        "",
-    );
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { print -0.0; print 0.0 - 0; print -1 * 0 }"#, "");
     assert_eq!(c, 0);
     assert_eq!(o, "0\n0\n0\n");
 }
@@ -2875,11 +2802,7 @@ fn negative_zero_prints_as_plain_zero() {
 fn bignum_non_integer_value_still_uses_ofmt() {
     // The integer fast path must not affect non-integer bignums — they still
     // go through OFMT (`%.6g` default).
-    let (c, o, _) = run_awkrs_stdin_args(
-        ["-M"],
-        "BEGIN { print 1/3 }",
-        "",
-    );
+    let (c, o, _) = run_awkrs_stdin_args(["-M"], "BEGIN { print 1/3 }", "");
     assert_eq!(c, 0);
     assert_eq!(o, "0.333333\n");
 }
@@ -2904,10 +2827,7 @@ fn for_in_block_followed_by_semicolon_and_statement() {
 #[test]
 fn printf_zero_flag_on_string_ignored_pads_with_spaces() {
     // POSIX: `0` flag is for numeric conversions only.
-    let (c, o, _) = run_awkrs_stdin(
-        r#"BEGIN { printf "[%05s][%05c]\n", "ab", 65 }"#,
-        "",
-    );
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { printf "[%05s][%05c]\n", "ab", 65 }"#, "");
     assert_eq!(c, 0);
     assert_eq!(o, "[   ab][    A]\n");
 }
@@ -3056,8 +2976,7 @@ fn noisy_numeric_field_is_string_not_strnum() {
     assert_eq!(c, 0);
     assert_eq!(o, "string 0 ge\n");
     // Sanity: pure-numeric field stays strnum and numeric-compares.
-    let (c2, o2, _) =
-        run_awkrs_stdin(r#"{ print typeof($1), ($1 == 42) }"#, "42\n");
+    let (c2, o2, _) = run_awkrs_stdin(r#"{ print typeof($1), ($1 == 42) }"#, "42\n");
     assert_eq!(c2, 0);
     assert_eq!(o2, "strnum 1\n");
 }
@@ -3196,8 +3115,7 @@ fn procinfo_strftime_is_gawk_default_format() {
     // gawk parity: PROCINFO["strftime"] is the default format used when
     // strftime() is called with no args. Should be the date(1)-equivalent
     // "%a %b %e %H:%M:%S %Z %Y", not "%c".
-    let (c, o, _) =
-        run_awkrs_stdin(r#"BEGIN { print PROCINFO["strftime"] }"#, "");
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { print PROCINFO["strftime"] }"#, "");
     assert_eq!(c, 0);
     assert_eq!(o, "%a %b %e %H:%M:%S %Z %Y\n");
 }
@@ -3341,8 +3259,7 @@ fn delete_scalar_is_fatal() {
         "delete-scalar-subscript: {e2:?}"
     );
     // Unassigned: still no-op.
-    let (c3, o3, _) =
-        run_awkrs_stdin(r#"BEGIN { delete y; print "ok" }"#, "");
+    let (c3, o3, _) = run_awkrs_stdin(r#"BEGIN { delete y; print "ok" }"#, "");
     assert_eq!(c3, 0);
     assert_eq!(o3, "ok\n");
 }
@@ -3366,10 +3283,7 @@ fn scalar_used_as_array_subscript_is_fatal() {
         );
     }
     // Unassigned name is still allowed to auto-create as array.
-    let (c, o, _) = run_awkrs_stdin(
-        r#"BEGIN { y[1]=10; print y[1], (1 in y), length(y) }"#,
-        "",
-    );
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { y[1]=10; print y[1], (1 in y), length(y) }"#, "");
     assert_eq!(c, 0);
     assert_eq!(o, "10 1 1\n");
 }

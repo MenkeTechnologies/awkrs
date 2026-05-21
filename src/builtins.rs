@@ -87,8 +87,7 @@ pub fn gsub(
     // But IGNORECASE only takes effect via the regex engine, so when it's on we
     // have to compile a regex even for a plain `"b"` pattern; otherwise
     // `IGNORECASE=1; gsub("b", "X", "ABC")` would silently not match.
-    let use_literal =
-        is_literal_pattern(re_pat) && !repl_has_special && !rt.ignore_case_flag();
+    let use_literal = is_literal_pattern(re_pat) && !repl_has_special && !rt.ignore_case_flag();
 
     let n = if let Some(t) = target {
         if use_literal {
@@ -231,11 +230,7 @@ pub fn match_fn(rt: &mut Runtime, s: &str, re_pat: &str, arr_name: Option<&str>)
                             format!("{i}{subsep}start"),
                             Value::Num(char_start as f64),
                         );
-                        rt.array_set(
-                            a,
-                            format!("{i}{subsep}length"),
-                            Value::Num(char_len as f64),
-                        );
+                        rt.array_set(a, format!("{i}{subsep}length"), Value::Num(char_len as f64));
                     }
                 }
             }
@@ -1064,7 +1059,8 @@ mod tests {
         // (Str/Num) at that slot raise the "not an array" fatal.
         let n = asorti(&mut rt, "missing", None).unwrap();
         assert_eq!(n, 0.0);
-        rt.vars.insert("scalar".into(), crate::runtime::Value::Num(5.0));
+        rt.vars
+            .insert("scalar".into(), crate::runtime::Value::Num(5.0));
         let e = asorti(&mut rt, "scalar", None).unwrap_err();
         assert!(e.to_string().contains("asorti"), "{e}");
     }
@@ -1211,8 +1207,7 @@ mod tests {
         // gawk's behavior: any non-positive numeric `how` is silently treated as 1
         // (replace only the first match) — no error.
         let mut rt = Runtime::new();
-        let out =
-            awk_gensub(&mut rt, "a", "X", &Value::Num(-1.0), Some("aaa".into())).unwrap();
+        let out = awk_gensub(&mut rt, "a", "X", &Value::Num(-1.0), Some("aaa".into())).unwrap();
         assert_eq!(out, "Xaa");
     }
 
@@ -1401,5 +1396,215 @@ mod tests {
     fn awk_strtonum_scientific_v3() {
         assert_eq!(awk_strtonum("1e3"), 1000.0);
         assert_eq!(awk_strtonum("0x10"), 16.0);
+    }
+
+    #[test]
+    fn awk_bitwise_direct_v2() {
+        assert_eq!(super::awk_and(255.0, 15.0), 15.0);
+        assert_eq!(super::awk_or(240.0, 15.0), 255.0);
+        assert_eq!(super::awk_xor(255.0, 15.0), 240.0);
+        assert_eq!(super::awk_lshift(1.0, 4.0), 16.0);
+        assert_eq!(super::awk_rshift(16.0, 4.0), 1.0);
+        assert_eq!(super::awk_compl(0.0), -1.0);
+    }
+
+    #[test]
+    fn gsub_literal_eligible_v2() {
+        assert!(super::gsub_literal_eligible("abc", "def"));
+        assert!(!super::gsub_literal_eligible("a.c", "def"));
+        assert!(!super::gsub_literal_eligible("abc", "d&f"));
+    }
+
+    #[test]
+    fn awk_typeof_array_elem_untyped_v2() {
+        let rt = Runtime::new();
+        assert_eq!(
+            super::awk_typeof_array_elem(&rt, "nonexistent", "key"),
+            "untyped"
+        );
+    }
+
+    #[test]
+    fn awk_is_literal_pattern_v2() {
+        assert!(super::is_literal_pattern("abc"));
+        assert!(!super::is_literal_pattern("a.c"));
+    }
+
+    #[test]
+    fn awk_typeof_value_v2() {
+        assert_eq!(super::awk_typeof_value(&Value::Uninit), "untyped");
+        assert_eq!(super::awk_typeof_value(&Value::Num(1.0)), "number");
+        assert_eq!(super::awk_typeof_value(&Value::Str("a".into())), "string");
+    }
+
+    #[test]
+    fn awk_typeof_array_v3() {
+        let mut rt = Runtime::new();
+        rt.vars.insert("a".into(), Value::Array(AwkMap::default()));
+        assert_eq!(super::awk_typeof_value(rt.vars.get("a").unwrap()), "array");
+    }
+
+    #[test]
+    fn awk_typeof_regexp_v3() {
+        assert_eq!(
+            super::awk_typeof_value(&Value::Regexp(".*".into())),
+            "regexp"
+        );
+    }
+
+    #[test]
+    fn awk_and_large_values_v3() {
+        assert_eq!(
+            super::awk_and(0xFFFFFFFFu64 as f64, 0x0000000Fu64 as f64),
+            15.0
+        );
+    }
+
+    #[test]
+    fn awk_or_large_values_v3() {
+        assert_eq!(
+            super::awk_or(0xF0000000u64 as f64, 0x0F000000u64 as f64),
+            0xFF000000u64 as f64
+        );
+    }
+
+    #[test]
+    fn awk_xor_large_values_v3() {
+        assert_eq!(
+            super::awk_xor(0xFFFFFFFFu64 as f64, 0x0F0F0F0Fu64 as f64),
+            0xF0F0F0F0u64 as f64
+        );
+    }
+
+    #[test]
+    fn awk_lshift_large_v3() {
+        assert_eq!(super::awk_lshift(1.0, 32.0), 4294967296.0);
+    }
+
+    #[test]
+    fn awk_rshift_large_v3() {
+        assert_eq!(super::awk_rshift(4294967296.0, 32.0), 1.0);
+    }
+
+    #[test]
+    fn gsub_backrefs_v2() {
+        let mut rt = Runtime::new();
+        let mut s = "aabb".to_string();
+        // gawk: & in replacement means the whole match
+        let n = super::gsub(&mut rt, "a", "x&y", Some(&mut s)).unwrap();
+        assert_eq!(n, 2.0);
+        assert_eq!(s, "xayxaybb");
+    }
+
+    #[test]
+    fn patsplit_basic_v2() {
+        let mut rt = Runtime::new();
+        // patsplit(s, a, [r])
+        let n = super::patsplit(&mut rt, "a1b22c", "a", Some("[0-9]+"), None).unwrap();
+        assert_eq!(n, 2.0);
+        assert_eq!(rt.array_get("a", "1").as_str(), "1");
+        assert_eq!(rt.array_get("a", "2").as_str(), "22");
+    }
+
+    #[test]
+    fn awk_strtonum_octal_v4() {
+        assert_eq!(super::awk_strtonum("010"), 8.0);
+    }
+
+    #[test]
+    fn awk_strtonum_invalid_hex_v4() {
+        assert_eq!(super::awk_strtonum("0xG"), 0.0);
+    }
+
+    #[test]
+    fn awk_strtonum_empty_v4() {
+        assert_eq!(super::awk_strtonum(""), 0.0);
+    }
+
+    #[test]
+    fn awk_strtonum_ws_v4() {
+        assert_eq!(super::awk_strtonum("  123  "), 123.0);
+    }
+
+    #[test]
+    fn awk_and_v10() {
+        assert_eq!(super::awk_and(1.0, 1.0), 1.0);
+    }
+    #[test]
+    fn awk_or_v10() {
+        assert_eq!(super::awk_or(1.0, 0.0), 1.0);
+    }
+    #[test]
+    fn awk_xor_v10() {
+        assert_eq!(super::awk_xor(1.0, 1.0), 0.0);
+    }
+    #[test]
+    fn awk_compl_v10() {
+        assert_eq!(super::awk_compl(-1.0), 0.0);
+    }
+    #[test]
+    fn awk_lshift_v10() {
+        assert_eq!(super::awk_lshift(1.0, 1.0), 2.0);
+    }
+    #[test]
+    fn awk_rshift_v10() {
+        assert_eq!(super::awk_rshift(2.0, 1.0), 1.0);
+    }
+    #[test]
+    fn awk_typeof_num_v10() {
+        assert_eq!(super::awk_typeof_value(&Value::Num(1.0)), "number");
+    }
+    #[test]
+    fn awk_typeof_str_v10() {
+        assert_eq!(super::awk_typeof_value(&Value::Str("a".into())), "string");
+    }
+    #[test]
+    fn awk_typeof_uninit_v10() {
+        assert_eq!(super::awk_typeof_value(&Value::Uninit), "untyped");
+    }
+    #[test]
+    fn awk_is_literal_v10() {
+        assert!(super::is_literal_pattern("abc"));
+    }
+    #[test]
+    fn awk_not_literal_v10() {
+        assert!(!super::is_literal_pattern("a*"));
+    }
+    #[test]
+    fn awk_gsub_eligible_v10() {
+        assert!(super::gsub_literal_eligible("a", "b"));
+    }
+    #[test]
+    fn awk_gsub_not_eligible_v10() {
+        assert!(!super::gsub_literal_eligible("a*", "b"));
+    }
+    #[test]
+    fn awk_systime_v10() {
+        assert!(super::awk_systime() > 0.0);
+    }
+
+    #[test]
+    fn awk_bitwise_and_v33() {
+        assert_eq!(super::awk_and(3.0, 1.0), 1.0);
+    }
+    #[test]
+    fn awk_bitwise_or_v33() {
+        assert_eq!(super::awk_or(2.0, 1.0), 3.0);
+    }
+    #[test]
+    fn awk_bitwise_xor_v33() {
+        assert_eq!(super::awk_xor(3.0, 1.0), 2.0);
+    }
+    #[test]
+    fn awk_bitwise_compl_v33() {
+        assert_eq!(super::awk_compl(-1.0), 0.0);
+    }
+    #[test]
+    fn awk_bitwise_lshift_v33() {
+        assert_eq!(super::awk_lshift(1.0, 1.0), 2.0);
+    }
+    #[test]
+    fn awk_bitwise_rshift_v33() {
+        assert_eq!(super::awk_rshift(2.0, 1.0), 1.0);
     }
 }

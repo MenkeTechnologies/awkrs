@@ -713,4 +713,50 @@ mod tests {
         assert!(matches!(rule.pattern, CompiledPattern::Always));
         assert_eq!(rule.body.ops.len(), 1);
     }
+
+    #[test]
+    fn chunk_from_ops_v2() {
+        let ops = vec![Op::Add, Op::Sub];
+        let chunk = Chunk::from_ops(ops);
+        assert_eq!(chunk.ops.len(), 2);
+    }
+
+    #[test]
+    #[should_panic]
+    fn string_pool_get_out_of_bounds_v2() {
+        let p = StringPool::default();
+        p.get(0);
+    }
+
+    #[test]
+    fn redir_kind_clones_v2() {
+        let r = RedirKind::Overwrite;
+        assert_eq!(r.clone(), RedirKind::Overwrite);
+    }
+
+    #[test]
+    fn getline_source_clones_v2() {
+        let s = GetlineSource::File;
+        assert_eq!(s.clone(), GetlineSource::File);
+    }
+
+    #[test]
+    fn op_is_copy_v2() {
+        // Op should be Copy. We just test we can pass it around.
+        let op = Op::Add;
+        let _op2 = op;
+    }
+
+    #[test]
+    fn redir_kind_debug_v27() {
+        assert!(format!("{:?}", RedirKind::Stdout).contains("Stdout"));
+    }
+    #[test]
+    fn getlinesource_debug_v27() {
+        assert!(format!("{:?}", GetlineSource::Primary).contains("Primary"));
+    }
+    #[test]
+    fn subtarget_debug_v27() {
+        assert!(format!("{:?}", SubTarget::Record).contains("Record"));
+    }
 }

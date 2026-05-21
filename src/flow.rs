@@ -40,4 +40,17 @@ mod tests {
             assert!(s.contains(needle), "{s}");
         }
     }
+
+    #[test]
+    fn flow_variants_exist_v7() {
+        let _ = Flow::Normal;
+        let _ = Flow::Next;
+        let _ = Flow::NextFile;
+        let _ = Flow::ExitPending;
+    }
+
+    #[test]
+    fn flow_debug_v30() {
+        assert!(format!("{:?}", Flow::Normal).contains("Normal"));
+    }
 }

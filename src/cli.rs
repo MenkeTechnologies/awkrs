@@ -211,6 +211,7 @@ pub enum MawkWAction {
 mod tests {
     use super::{Args, MawkWAction};
     use clap::Parser;
+    use std::path::PathBuf;
 
     #[test]
     fn mawk_w_help_returns_action() {
@@ -372,5 +373,239 @@ mod tests {
         let a = Args::try_parse_from(["awkrs", "-f", "p1.awk", "-e", "rule1"]).unwrap();
         assert_eq!(a.progfiles.len(), 1);
         assert_eq!(a.source, vec!["rule1".to_string()]);
+    }
+
+    #[test]
+    fn fs_flag_sets_field_sep_v3() {
+        let a = Args::try_parse_from(["awkrs", "-F", ":", "1"]).unwrap();
+        assert_eq!(a.field_sep, Some(":".to_string()));
+    }
+
+    #[test]
+    fn csv_flag_sets_csv_mode_v3() {
+        let a = Args::try_parse_from(["awkrs", "--csv", "1"]).unwrap();
+        assert!(a.csv);
+    }
+
+    #[test]
+    fn jobs_flag_sets_threads_v3() {
+        let a = Args::try_parse_from(["awkrs", "-j", "8", "1"]).unwrap();
+        assert_eq!(a.threads, Some(8));
+    }
+
+    #[test]
+    fn copyright_flag_v2() {
+        let a = Args::try_parse_from(["awkrs", "-C"]).unwrap();
+        assert!(a.copyright);
+    }
+
+    #[test]
+    fn traditional_flag_v2() {
+        let a = Args::try_parse_from(["awkrs", "-c"]).unwrap();
+        assert!(a.traditional);
+    }
+
+    #[test]
+    fn bignum_flag_v2() {
+        let a = Args::try_parse_from(["awkrs", "-M"]).unwrap();
+        assert!(a.bignum);
+    }
+
+    #[test]
+    fn lint_flag_v2() {
+        let a = Args::try_parse_from(["awkrs", "-L", "1"]).unwrap();
+        assert!(a.lint.is_some());
+    }
+
+    #[test]
+    fn profile_flag_v2() {
+        let a = Args::try_parse_from(["awkrs", "-p", "1"]).unwrap();
+        assert!(a.profile.is_some());
+    }
+
+    #[test]
+    fn sandbox_flag_v2() {
+        let a = Args::try_parse_from(["awkrs", "-S", "1"]).unwrap();
+        assert!(a.sandbox);
+    }
+
+    #[test]
+    fn include_flag_v2() {
+        let a = Args::try_parse_from(["awkrs", "-i", "lib.awk", "1"]).unwrap();
+        assert_eq!(a.include[0], PathBuf::from("lib.awk"));
+    }
+
+    #[test]
+    fn dump_variables_flag_v2() {
+        let a = Args::try_parse_from(["awkrs", "-d", "vars.out", "1"]).unwrap();
+        assert_eq!(a.dump_variables, Some("vars.out".into()));
+    }
+
+    #[test]
+    fn debug_flag_v2() {
+        let a = Args::try_parse_from(["awkrs", "-D", "debug.out", "1"]).unwrap();
+        assert_eq!(a.debug, Some("debug.out".into()));
+    }
+
+    #[test]
+    fn optimize_flag_v2() {
+        let a = Args::try_parse_from(["awkrs", "-O", "1"]).unwrap();
+        assert!(a.optimize);
+    }
+
+    #[test]
+    fn posix_flag_v2() {
+        let a = Args::try_parse_from(["awkrs", "-P", "1"]).unwrap();
+        assert!(a.posix);
+    }
+
+    #[test]
+    fn re_interval_flag_v2() {
+        let a = Args::try_parse_from(["awkrs", "-r", "1"]).unwrap();
+        assert!(a.re_interval);
+    }
+
+    #[test]
+    fn cli_no_args_v16() {
+        assert!(Args::try_parse_from(["awkrs"]).is_ok());
+    } // Defaults to stdin
+    #[test]
+    fn cli_version_long_v16() {
+        assert!(
+            Args::try_parse_from(["awkrs", "--version"])
+                .unwrap()
+                .show_version
+        );
+    }
+    #[test]
+    fn cli_file_v16() {
+        assert_eq!(
+            Args::try_parse_from(["awkrs", "-f", "f.awk"])
+                .unwrap()
+                .progfiles
+                .len(),
+            1
+        );
+    }
+    #[test]
+    fn cli_assign_v16() {
+        assert_eq!(
+            Args::try_parse_from(["awkrs", "-v", "x=1", "1"])
+                .unwrap()
+                .assigns
+                .len(),
+            1
+        );
+    }
+    #[test]
+    fn cli_source_v16() {
+        assert_eq!(
+            Args::try_parse_from(["awkrs", "-e", "BEGIN{print 1}"])
+                .unwrap()
+                .source
+                .len(),
+            1
+        );
+    }
+    #[test]
+    fn cli_input_file_v16() {
+        assert_eq!(
+            Args::try_parse_from(["awkrs", "1", "in.txt"])
+                .unwrap()
+                .rest
+                .len(),
+            2
+        );
+    }
+    #[test]
+    fn cli_multiple_input_files_v16() {
+        assert_eq!(
+            Args::try_parse_from(["awkrs", "1", "f1", "f2"])
+                .unwrap()
+                .rest
+                .len(),
+            3
+        );
+    }
+    #[test]
+    fn cli_csv_v16() {
+        assert!(Args::try_parse_from(["awkrs", "--csv", "1"]).unwrap().csv);
+    }
+    #[test]
+    fn cli_threads_v16() {
+        assert_eq!(
+            Args::try_parse_from(["awkrs", "-j", "4", "1"])
+                .unwrap()
+                .threads,
+            Some(4)
+        );
+    }
+
+    #[test]
+    fn cli_sandbox_v22() {
+        assert!(Args::try_parse_from(["awkrs", "-S", "1"]).unwrap().sandbox);
+    }
+    #[test]
+    fn cli_lint_v22() {
+        assert!(Args::try_parse_from(["awkrs", "-L", "1"])
+            .unwrap()
+            .lint
+            .is_some());
+    }
+    #[test]
+    fn cli_lint_old_v22() {
+        assert!(Args::try_parse_from(["awkrs", "-t", "1"]).unwrap().lint_old);
+    }
+    #[test]
+    fn cli_trace_v22() {
+        assert!(
+            Args::try_parse_from(["awkrs", "--trace", "1"])
+                .unwrap()
+                .trace
+        );
+    }
+    #[test]
+    fn cli_gen_pot_v22() {
+        assert!(
+            Args::try_parse_from(["awkrs", "--gen-pot", "1"])
+                .unwrap()
+                .gen_pot
+        );
+    }
+    #[test]
+    fn cli_traditional_v22() {
+        assert!(
+            Args::try_parse_from(["awkrs", "-c", "1"])
+                .unwrap()
+                .traditional
+        );
+    }
+    #[test]
+    fn cli_copyright_v22() {
+        assert!(
+            Args::try_parse_from(["awkrs", "-C", "1"])
+                .unwrap()
+                .copyright
+        );
+    }
+    #[test]
+    fn cli_bignum_v22() {
+        assert!(Args::try_parse_from(["awkrs", "-M", "1"]).unwrap().bignum);
+    }
+    #[test]
+    fn cli_use_lc_numeric_v22() {
+        assert!(
+            Args::try_parse_from(["awkrs", "-N", "1"])
+                .unwrap()
+                .use_lc_numeric
+        );
+    }
+    #[test]
+    fn cli_non_decimal_data_v22() {
+        assert!(
+            Args::try_parse_from(["awkrs", "-n", "1"])
+                .unwrap()
+                .non_decimal_data
+        );
     }
 }

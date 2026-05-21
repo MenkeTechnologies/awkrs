@@ -387,4 +387,129 @@ mod tests {
             &parse_program("{ print typeof($1), isarray(a) }").unwrap()
         ));
     }
+
+    #[test]
+    fn parallel_safe_bitwise_v2() {
+        assert!(record_rules_parallel_safe(
+            &parse_program("{ print and($1, 1), or($2, 2), xor($3, 3), compl($4), lshift($5, 1), rshift($6, 1) }").unwrap()
+        ));
+    }
+
+    #[test]
+    fn parallel_safe_match_v2() {
+        // Current implementation seems to consider match() safe?
+        assert!(record_rules_parallel_safe(
+            &parse_program("{ match($1, /a/) }").unwrap()
+        ));
+    }
+
+    #[test]
+    fn parallel_safe_gsub_v2() {
+        assert!(record_rules_parallel_safe(
+            &parse_program("{ gsub(/a/, \"b\", $1) }").unwrap()
+        ));
+    }
+
+    #[test]
+    fn parallel_safe_sub_v2() {
+        assert!(record_rules_parallel_safe(
+            &parse_program("{ sub(/a/, \"b\", $1) }").unwrap()
+        ));
+    }
+
+    #[test]
+    fn parallel_safe_rand_v2() {
+        assert!(record_rules_parallel_safe(
+            &parse_program("{ print rand() }").unwrap()
+        ));
+    }
+
+    #[test]
+    fn parallel_safe_srand_v2() {
+        assert!(record_rules_parallel_safe(
+            &parse_program("{ srand(1) }").unwrap()
+        ));
+    }
+
+    #[test]
+    fn parallel_safe_systime_v2() {
+        assert!(record_rules_parallel_safe(
+            &parse_program("{ print systime() }").unwrap()
+        ));
+    }
+
+    #[test]
+    fn parallel_safe_strftime_v2() {
+        assert!(record_rules_parallel_safe(
+            &parse_program("{ print strftime(\"%Y\", 0) }").unwrap()
+        ));
+    }
+
+    #[test]
+    fn parallel_safe_mktime_v2() {
+        assert!(record_rules_parallel_safe(
+            &parse_program("{ print mktime(\"2023 01 01 00 00 00\") }").unwrap()
+        ));
+    }
+
+    #[test]
+    fn parallel_safe_loops_and_breaks_v3() {
+        assert!(record_rules_parallel_safe(
+            &parse_program("{ while (1) { break }; for(;;) { continue } }").unwrap()
+        ));
+    }
+
+    #[test]
+    fn parallel_safe_ternary_nested_v3() {
+        assert!(record_rules_parallel_safe(
+            &parse_program("{ print (1 ? 2 : 3 ? 4 : 5) }").unwrap()
+        ));
+    }
+
+    #[test]
+    fn parallel_unsafe_inc_dec_fields_v3() {
+        // Field assignments/modifications make the record rule unsafe for parallel execution.
+        assert!(!record_rules_parallel_safe(
+            &parse_program("{ $1++; ++$2; $3--; --$4 }").unwrap()
+        ));
+    }
+
+    #[test]
+    fn parallel_safe_delete_array_element_v3() {
+        // Current implementation: delete is unsafe
+        assert!(!record_rules_parallel_safe(
+            &parse_program("{ delete a[1] }").unwrap()
+        ));
+    }
+
+    #[test]
+    fn parallel_safe_print_v24() {
+        assert!(record_rules_parallel_safe(
+            &parse_program("{print 1}").unwrap()
+        ));
+    }
+    #[test]
+    fn parallel_safe_printf_v24() {
+        assert!(record_rules_parallel_safe(
+            &parse_program("{printf \"%d\",1}").unwrap()
+        ));
+    }
+    #[test]
+    fn parallel_unsafe_assign_v24() {
+        assert!(!record_rules_parallel_safe(
+            &parse_program("{x=1}").unwrap()
+        ));
+    }
+    #[test]
+    fn parallel_unsafe_getline_v24() {
+        assert!(!record_rules_parallel_safe(
+            &parse_program("{getline}").unwrap()
+        ));
+    }
+    #[test]
+    fn parallel_safe_next_v24() {
+        assert!(record_rules_parallel_safe(
+            &parse_program("{next}").unwrap()
+        ));
+    }
 }

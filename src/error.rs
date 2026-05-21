@@ -102,4 +102,141 @@ mod tests {
         let e = Error::Runtime("".into());
         assert_eq!(e.to_string(), "runtime error: ");
     }
+
+    #[test]
+    fn vm_error_format_v2() {
+        let e = Error::Runtime("stack overflow".into());
+        assert!(e.to_string().contains("runtime error: stack overflow"));
+    }
+
+    #[test]
+    fn parse_error_with_long_msg_v2() {
+        let msg = "a".repeat(100);
+        let e = Error::Parse {
+            line: 1,
+            msg: msg.clone(),
+        };
+        assert!(e.to_string().contains(&msg));
+    }
+
+    #[test]
+    fn io_error_format_v2() {
+        let inner = std::io::Error::new(std::io::ErrorKind::NotFound, "not found");
+        let e = Error::Io(inner);
+        assert!(e.to_string().contains("I/O error: not found"));
+    }
+
+    #[test]
+    fn program_file_error_format_v2() {
+        let inner = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied");
+        let e = Error::ProgramFile(PathBuf::from("script.awk"), inner);
+        assert!(e
+            .to_string()
+            .contains("cannot read program file \"script.awk\": denied"));
+    }
+
+    #[test]
+    fn exit_error_format_v2() {
+        let e = Error::Exit(1);
+        assert_eq!(e.to_string(), "exit 1");
+    }
+
+    #[test]
+    fn result_alias_usage_v2() {
+        let r: crate::error::Result<i32> = Ok(1);
+        assert!(matches!(r, Ok(1)));
+    }
+
+    #[test]
+    fn result_alias_error_v2() {
+        let r: crate::error::Result<i32> = Err(Error::Runtime("err".into()));
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn error_debug_format_v2() {
+        let e = Error::Runtime("err".into());
+        let s = format!("{:?}", e);
+        assert!(s.contains("Runtime"));
+    }
+
+    #[test]
+    fn error_display_io_v3() {
+        let e = Error::Io(std::io::Error::other("ioerr"));
+        assert_eq!(format!("{e}"), "I/O error: ioerr");
+    }
+
+    #[test]
+    fn error_display_parse_v3() {
+        let e = Error::Parse {
+            line: 10,
+            msg: "msg".into(),
+        };
+        assert_eq!(format!("{e}"), "parse error at line 10: msg");
+    }
+
+    #[test]
+    fn error_display_runtime_v3() {
+        let e = Error::Runtime("runerr".into());
+        assert_eq!(format!("{e}"), "runtime error: runerr");
+    }
+
+    #[test]
+    fn error_display_program_file_v3() {
+        let e = Error::ProgramFile(PathBuf::from("f.awk"), std::io::Error::other("f-err"));
+        assert!(format!("{e}").contains("cannot read program file \"f.awk\""));
+    }
+
+    #[test]
+    fn error_display_exit_v3() {
+        let e = Error::Exit(42);
+        assert_eq!(format!("{e}"), "exit 42");
+    }
+
+    #[test]
+    fn error_from_io_v2() {
+        let io = std::io::Error::other("raw");
+        let e: Error = io.into();
+        assert!(matches!(e, Error::Io(_)));
+    }
+
+    #[test]
+    fn error_is_std_error_v2() {
+        let e = Error::Runtime("err".into());
+        let _s: &dyn std::error::Error = &e;
+    }
+
+    #[test]
+    fn error_display_io_inner_v2() {
+        let e = Error::Io(std::io::Error::other("inner_err"));
+        assert!(e.to_string().contains("inner_err"));
+    }
+
+    #[test]
+    fn error_display_runtime_v21() {
+        assert!(format!("{}", Error::Runtime("a".into())).contains("runtime error: a"));
+    }
+    #[test]
+    fn error_display_parse_v21() {
+        assert!(format!(
+            "{}",
+            Error::Parse {
+                line: 1,
+                msg: "b".into()
+            }
+        )
+        .contains("parse error at line 1: b"));
+    }
+    #[test]
+    fn error_display_programfile_v21() {
+        assert!(format!(
+            "{}",
+            Error::ProgramFile("f".into(), std::io::Error::other("c"))
+        )
+        .contains("cannot read program file \"f\""));
+    }
+    #[test]
+    fn error_display_exit_v21() {
+        assert_eq!(format!("{}", Error::Exit(1)), "exit 1");
+    }
 }

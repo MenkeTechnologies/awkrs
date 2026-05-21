@@ -18,4 +18,14 @@ mod tests {
     fn test_build_uses_lower_call_depth_cap() {
         assert_eq!(super::MAX_USER_CALL_DEPTH, 32);
     }
+
+    #[test]
+    fn max_user_call_depth_is_positive_v7() {
+        assert!(super::MAX_USER_CALL_DEPTH > 0);
+    }
+
+    #[test]
+    fn limits_cap_is_small_v29() {
+        assert!(super::MAX_USER_CALL_DEPTH < 1000);
+    }
 }

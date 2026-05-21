@@ -1903,7 +1903,9 @@ mod write_debug_listing_tests {
 
 #[cfg(test)]
 mod write_profile_summary_tests {
-    use super::write_profile_summary;
+    use super::{dump_variables, escape_pot_str, write_profile_summary};
+    use crate::bytecode::CompiledProgram;
+    use crate::runtime::{Runtime, Value};
     use std::time::Duration;
     use tempfile::tempdir;
 
@@ -1985,5 +1987,43 @@ mod write_profile_summary_tests {
             !s.contains("rule[0]: 99"),
             "parallel must not print hits: {s}"
         );
+    }
+
+    #[test]
+    fn dump_shadowed_variable_v2() {
+        let mut rt = Runtime::new();
+        rt.vars.insert("x".into(), Value::Num(1.0));
+        let mut cp = CompiledProgram {
+            begin_chunks: vec![],
+            end_chunks: vec![],
+            beginfile_chunks: vec![],
+            endfile_chunks: vec![],
+            record_rules: vec![],
+            functions: std::collections::HashMap::new(),
+            strings: crate::bytecode::StringPool::default(),
+            slot_count: 1,
+            slot_names: vec!["x".into()],
+            slot_map: std::collections::HashMap::from([("x".into(), 0u16)]),
+            array_var_names: vec![],
+            parallel_safe: false,
+            prog_rules_len: 0,
+        };
+        rt.slots = vec![Value::Num(99.0)];
+
+        let mut buf = Vec::new();
+        dump_variables(&rt, &cp, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        // Vars should win over slots if names match
+        assert!(s.contains("x: number (1)"));
+        assert!(!s.contains("number (99)"));
+    }
+
+    #[test]
+    fn escape_pot_str_complex_v2() {
+        let s = "a\"b\\c\nd";
+        let res = escape_pot_str(s);
+        assert!(res.contains("\\\""));
+        assert!(res.contains("\\\\"));
+        assert!(res.contains("\\n"));
     }
 }

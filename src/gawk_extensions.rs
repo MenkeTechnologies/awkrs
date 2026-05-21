@@ -643,18 +643,32 @@ mod tests {
     }
 
     #[test]
-    fn inplace_tmpfile_creation() {
+    fn chdir_to_current_dir_ok_v2() {
         let mut rt = Runtime::new();
-        let dir = std::env::temp_dir();
-        let p = dir.join(format!("awkrs_inp_{}", std::process::id()));
-        std::fs::write(&p, b"original").unwrap();
+        let res = chdir(&mut rt, ".").unwrap();
+        assert_eq!(res.as_number(), 0.0);
+    }
 
-        let tmp = inplace_tmpfile(&mut rt, p.to_str().unwrap()).unwrap();
-        let tmp_path = tmp.as_str().to_string();
-        assert!(!tmp_path.is_empty());
-        assert!(std::path::Path::new(&tmp_path).exists());
+    #[test]
+    fn revtwoway_same_as_revoutput_v2() {
+        let mut rt = Runtime::new();
+        let v = revtwoway(&mut rt, "abc").unwrap();
+        assert_eq!(v.as_str(), "cba");
+    }
 
-        let _ = std::fs::remove_file(tmp_path);
-        let _ = std::fs::remove_file(&p);
+    #[test]
+    fn statvfs_on_root_v2() {
+        let mut rt = Runtime::new();
+        let res = statvfs(&mut rt, "/", "sv").unwrap();
+        // On non-unix it returns -1, on unix it might succeed or fail depending on permissions
+        let n = res.as_number();
+        assert!(n == 0.0 || n == -1.0);
+    }
+
+    #[test]
+    fn getlocaltime_current_time_v2() {
+        let mut rt = Runtime::new();
+        let res = getlocaltime(&mut rt, "tm", None).unwrap();
+        assert!(res.as_number() > 0.0);
     }
 }

@@ -83,4 +83,47 @@ mod tests {
             std::env::remove_var("LANG");
         }
     }
+
+    #[test]
+    fn try_load_language_priority_v2() {
+        let _g = crate::test_sync::ENV_LOCK.lock().unwrap();
+        // Set LANGUAGE which should take priority over LANG
+        std::env::set_var("LANGUAGE", "fr_FR:de_DE");
+        std::env::set_var("LANG", "en_US.UTF-8");
+        let res = try_load_gettext_catalog("domain", "/tmp");
+        assert!(res.is_none());
+        std::env::remove_var("LANGUAGE");
+    }
+
+    #[test]
+    fn try_load_lc_messages_priority_v2() {
+        let _g = crate::test_sync::ENV_LOCK.lock().unwrap();
+        // Set LC_MESSAGES which should take priority over LANG
+        std::env::set_var("LC_MESSAGES", "es_ES.UTF-8");
+        std::env::set_var("LANG", "en_US.UTF-8");
+        let res = try_load_gettext_catalog("domain", "/tmp");
+        assert!(res.is_none());
+        std::env::remove_var("LC_MESSAGES");
+    }
+
+    #[test]
+    fn try_load_fallback_to_c_v2() {
+        let _g = crate::test_sync::ENV_LOCK.lock().unwrap();
+        // Clear all env vars
+        std::env::remove_var("LANGUAGE");
+        std::env::remove_var("LC_ALL");
+        std::env::remove_var("LC_MESSAGES");
+        std::env::remove_var("LANG");
+        let res = try_load_gettext_catalog("domain", "/tmp");
+        assert!(res.is_none());
+    }
+
+    #[test]
+    fn gettext_empty_domain_v25() {
+        assert!(try_load_gettext_catalog("", "/tmp").is_none());
+    }
+    #[test]
+    fn gettext_invalid_path_v25() {
+        assert!(try_load_gettext_catalog("d", "/invalid/path").is_none());
+    }
 }

@@ -205,4 +205,22 @@ mod tests {
             logo.len()
         );
     }
+
+    #[test]
+    fn cyber_styles_instantiates_without_panic_v2() {
+        let _s = cyber_styles();
+    }
+
+    #[test]
+    fn color_helpers_fallback_to_string_v2() {
+        let s = "test_string";
+        let cyan = c_cyan(s);
+        let mag = c_magenta(s);
+        let yel = c_yellow(s);
+        let dim = c_dim(s);
+        assert!(cyan.contains(s));
+        assert!(mag.contains(s));
+        assert!(yel.contains(s));
+        assert!(dim.contains(s));
+    }
 }

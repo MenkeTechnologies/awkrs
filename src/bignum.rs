@@ -598,4 +598,39 @@ mod tests {
         let f = Float::with_val(64, f64::INFINITY);
         assert!(f.is_infinite() && f.is_sign_positive());
     }
+
+    #[test]
+    fn awk_and_bignum_v2() {
+        let rt = Runtime::new();
+        let a = Value::Num(255.0);
+        let b = Value::Num(15.0);
+        let res = super::awk_and_values(&a, &b, &rt);
+        assert_eq!(res.as_number(), 15.0);
+    }
+
+    #[test]
+    fn awk_or_bignum_v2() {
+        let rt = Runtime::new();
+        let a = Value::Num(240.0);
+        let b = Value::Num(15.0);
+        let res = super::awk_or_values(&a, &b, &rt);
+        assert_eq!(res.as_number(), 255.0);
+    }
+
+    #[test]
+    fn awk_xor_bignum_v2() {
+        let rt = Runtime::new();
+        let a = Value::Num(255.0);
+        let b = Value::Num(15.0);
+        let res = super::awk_xor_values(&a, &b, &rt);
+        assert_eq!(res.as_number(), 240.0);
+    }
+
+    #[test]
+    fn awk_compl_bignum_v2() {
+        let rt = Runtime::new();
+        // compl(-1) -> !(-1u64) -> !0xFFFF... -> 0
+        let res = super::awk_compl_values(&Value::Num(-1.0), &rt);
+        assert_eq!(res.as_number(), 0.0);
+    }
 }

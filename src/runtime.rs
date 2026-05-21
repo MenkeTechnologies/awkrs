@@ -283,9 +283,7 @@ pub fn awk_binop_values(
             }
             BinOp::Mod => {
                 if b == 0.0 {
-                    return Err(Error::Runtime(
-                        "division by zero attempted in `%'".into(),
-                    ));
+                    return Err(Error::Runtime("division by zero attempted in `%'".into()));
                 }
                 a % b
             }
@@ -310,9 +308,7 @@ pub fn awk_binop_values(
         }
         BinOp::Mod => {
             if b.is_zero() {
-                return Err(Error::Runtime(
-                    "division by zero attempted in `%'".into(),
-                ));
+                return Err(Error::Runtime("division by zero attempted in `%'".into()));
             }
             Float::with_val_round(prec, &a % &b, round).0
         }
@@ -3255,11 +3251,7 @@ pub fn split_string_by_field_separator(s: &str, fs: &str, ignore_case: bool) -> 
 /// Field-splitting for `split(s, a, fs, seps)` — returns both the fields and the
 /// separator strings between consecutive fields (gawk 4-arg extension).
 /// `seps.len() == fields.len().saturating_sub(1)` on a non-empty record.
-pub fn split_string_with_seps(
-    s: &str,
-    fs: &str,
-    ignore_case: bool,
-) -> (Vec<String>, Vec<String>) {
+pub fn split_string_with_seps(s: &str, fs: &str, ignore_case: bool) -> (Vec<String>, Vec<String>) {
     if s.is_empty() {
         return (Vec::new(), Vec::new());
     }
@@ -3335,7 +3327,6 @@ pub fn split_string_with_seps(
     parts.push(s[last..].to_string());
     (parts, seps)
 }
-
 
 fn shutdown_coproc(mut h: CoprocHandle) -> Result<()> {
     h.stdin.flush().map_err(Error::Io)?;
@@ -4542,7 +4533,7 @@ mod extra_runtime_tests {
         assert_eq!(m.get(&String::from("key2")).unwrap().as_str(), "val2");
 
         m.remove(&String::from("key1"));
-        assert!(m.get(&String::from("key1")).is_none());
+        assert!(!m.contains_key(&String::from("key1")));
     }
 
     #[test]
@@ -4556,5 +4547,93 @@ mod extra_runtime_tests {
         rt.set_field(0, "x y").unwrap();
         assert_eq!(rt.record, "x y");
         assert_eq!(rt.nf(), 2);
+    }
+
+    #[test]
+    fn value_truthiness_v2() {
+        assert!(!Value::Uninit.truthy());
+        assert!(Value::Num(1.0).truthy());
+        assert!(!Value::Num(0.0).truthy());
+        // Value::Str parses as number if possible; "0" -> 0.0 -> false
+        assert!(!Value::Str("0".into()).truthy());
+        assert!(Value::StrLit("0".into()).truthy()); // Literals are truthy if non-empty
+        assert!(!Value::Str("".into()).truthy());
+    }
+
+    #[test]
+    fn value_numeric_conversions_v2() {
+        assert_eq!(Value::Uninit.as_number(), 0.0);
+        assert_eq!(Value::Str("123.45".into()).as_number(), 123.45);
+        assert_eq!(Value::Str("abc".into()).as_number(), 0.0);
+    }
+
+    #[test]
+    fn runtime_variable_overlay_v2() {
+        let mut rt = super::Runtime::new();
+        rt.vars.insert("x".into(), Value::Num(10.0));
+        assert_eq!(rt.vars.get("x").unwrap().as_number(), 10.0);
+    }
+
+    #[test]
+    fn runtime_nf_truncation_v2() {
+        let mut rt = super::Runtime::new();
+        rt.set_field_sep_split(":", "a:b:c:d");
+        rt.ensure_fields_split();
+        let _ = rt.set_nf(2);
+        assert_eq!(rt.nf(), 2);
+        // Default OFS is " "
+        assert_eq!(rt.record, "a b");
+    }
+
+    #[test]
+    fn runtime_record_reconstruction_with_ofs_v2() {
+        let mut rt = super::Runtime::new();
+        rt.set_field_sep_split(",", "a,b");
+        rt.ensure_fields_split();
+        rt.vars.insert("OFS".into(), Value::Str("|".into()));
+        rt.set_field(1, "x").unwrap();
+        // Changing a field should rebuild the record using OFS
+        assert_eq!(rt.record, "x|b");
+    }
+
+    #[test]
+    fn value_num_v9() {
+        let _ = Value::Num(0.0).clone();
+    }
+    #[test]
+    fn value_str_v9() {
+        let _ = Value::Str("".into()).clone();
+    }
+    #[test]
+    fn value_uninit_v9() {
+        let _ = Value::Uninit.clone();
+    }
+    #[test]
+    fn value_as_number_v9() {
+        assert_eq!(Value::Num(1.2).as_number(), 1.2);
+    }
+    #[test]
+    fn value_as_str_v9() {
+        assert_eq!(Value::Str("abc".into()).as_str(), "abc");
+    }
+    #[test]
+    fn runtime_nf_initial_v9() {
+        assert_eq!(super::Runtime::new().nf(), 0);
+    }
+    #[test]
+    fn runtime_nr_initial_v9() {
+        assert_eq!(super::Runtime::new().nr, 0.0);
+    }
+    #[test]
+    fn runtime_fnr_initial_v9() {
+        assert_eq!(super::Runtime::new().fnr, 0.0);
+    }
+    #[test]
+    fn runtime_fpat_initial_v9() {
+        assert_eq!(super::Runtime::new().vars.get("FPAT").unwrap().as_str(), "");
+    }
+    #[test]
+    fn runtime_fs_initial_v9() {
+        assert!(super::Runtime::new().vars.get("FS").is_none());
     }
 }

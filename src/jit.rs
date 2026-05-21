@@ -1830,7 +1830,11 @@ pub fn try_compile_with_options(
                     );
                     stack.push(builder.inst_results(call)[0]);
                 }
-                Op::Split { arr, has_fs, seps: _ } => {
+                Op::Split {
+                    arr,
+                    has_fs,
+                    seps: _,
+                } => {
                     let a1 = builder.ins().iconst(types::I32, i64::from(arr));
                     let zf = builder.ins().f64const(0.0);
                     if has_fs {
@@ -5737,5 +5741,39 @@ mod tests {
         assert!(is_jit_eligible(&[Op::PushNum(1.0), Op::Neg]));
         assert!(is_jit_eligible(&[Op::PushNum(1.0), Op::Not]));
         assert!(is_jit_eligible(&[Op::PushNum(1.0), Op::ToBool]));
+    }
+
+    #[test]
+    fn jit_eligible_arith_v23() {
+        assert!(is_jit_eligible(&[
+            Op::PushNum(1.0),
+            Op::PushNum(1.0),
+            Op::Add
+        ]));
+    }
+    #[test]
+    fn jit_eligible_cmp_v23() {
+        assert!(is_jit_eligible(&[
+            Op::PushNum(1.0),
+            Op::PushNum(1.0),
+            Op::CmpEq
+        ]));
+    }
+    #[test]
+    fn jit_not_eligible_empty_v23() {
+        assert!(!is_jit_eligible(&[]));
+    }
+    #[test]
+    fn jit_not_eligible_underflow_v23() {
+        assert!(!is_jit_eligible(&[Op::Add]));
+    }
+
+    #[test]
+    fn jit_needs_mixed_mode_str_v23() {
+        assert!(needs_mixed_mode(&[Op::PushStr(0)]));
+    }
+    #[test]
+    fn jit_no_mixed_mode_num_v23() {
+        assert!(!needs_mixed_mode(&[Op::PushNum(1.0)]));
     }
 }

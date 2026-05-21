@@ -888,4 +888,113 @@ mod tests {
         cache.clear().unwrap();
         cache.clear().unwrap(); // second call should also succeed
     }
+
+    #[test]
+    fn evict_multiple_entries_v2() {
+        let dir = tempdir().unwrap();
+        let cache_path = dir.path().join("evict_test.rkyv");
+        let cache = ScriptCache::open(&cache_path).unwrap();
+        let p1 = dir.path().join("a.awk");
+        std::fs::write(&p1, "BEGIN { print 1 }").unwrap();
+        let (s1, n1) = file_mtime(&p1).unwrap();
+        cache
+            .put("a.awk", s1, n1, &compile("BEGIN { print 1 }"))
+            .unwrap();
+
+        // Remove file p1, it should be evicted
+        std::fs::remove_file(&p1).unwrap();
+        let count = cache.evict_stale();
+        assert_eq!(count, 1);
+        let (n, _) = cache.stats();
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn stats_sums_blob_bytes_v2() {
+        let dir = tempdir().unwrap();
+        let cache_path = dir.path().join("stats_test.rkyv");
+        let cache = ScriptCache::open(&cache_path).unwrap();
+        let p1 = dir.path().join("a.awk");
+        std::fs::write(&p1, "BEGIN { print 1 }").unwrap();
+        let (s1, n1) = file_mtime(&p1).unwrap();
+        cache
+            .put("a.awk", s1, n1, &compile("BEGIN { print 1 }"))
+            .unwrap();
+
+        let (count, bytes) = cache.stats();
+        assert_eq!(count, 1);
+        assert!(bytes > 0);
+    }
+
+    #[test]
+    fn cache_overwrite_entry_v2() {
+        let dir = tempdir().unwrap();
+        let cache_path = dir.path().join("overwrite_test.rkyv");
+        let cache = ScriptCache::open(&cache_path).unwrap();
+        let p1 = dir.path().join("a.awk");
+        std::fs::write(&p1, "BEGIN { print 1 }").unwrap();
+        let (s1, n1) = file_mtime(&p1).unwrap();
+        cache
+            .put("a.awk", s1, n1, &compile("BEGIN { print 1 }"))
+            .unwrap();
+        cache
+            .put("a.awk", s1, n1, &compile("BEGIN { print 2 }"))
+            .unwrap();
+        let (count, _) = cache.stats();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn cache_open_nonexistent_dir_v2() {
+        let cache = ScriptCache::open(Path::new("/nonexistent/dir/cache.rkyv"));
+        assert!(cache.is_err());
+    }
+
+    #[test]
+    fn cache_put_get_roundtrip_v2() {
+        let dir = tempdir().unwrap();
+        let cache_path = dir.path().join("roundtrip_test.rkyv");
+        let cache = ScriptCache::open(&cache_path).unwrap();
+        let p = compile("BEGIN { print 1 }");
+        cache.put("a.awk", 100, 200, &p).unwrap();
+        let res = cache.get("a.awk", 100, 200);
+        assert!(res.is_some());
+    }
+
+    #[test]
+    fn cache_get_mtime_mismatch_v2() {
+        let dir = tempdir().unwrap();
+        let cache_path = dir.path().join("mismatch_test.rkyv");
+        let cache = ScriptCache::open(&cache_path).unwrap();
+        let p = compile("BEGIN { print 1 }");
+        cache.put("a.awk", 100, 200, &p).unwrap();
+        let res = cache.get("a.awk", 101, 200);
+        assert!(res.is_none());
+    }
+
+    #[test]
+    fn cache_enabled_logic_v3() {
+        let _g = crate::test_sync::ENV_LOCK.lock().unwrap();
+        let old = std::env::var("AWKRS_CACHE").ok();
+
+        std::env::set_var("AWKRS_CACHE", "0");
+        assert!(!cache_enabled());
+
+        std::env::set_var("AWKRS_CACHE", "1");
+        assert!(cache_enabled());
+
+        if let Some(v) = old {
+            std::env::set_var("AWKRS_CACHE", v);
+        } else {
+            std::env::remove_var("AWKRS_CACHE");
+        }
+    }
+
+    #[test]
+    fn read_owned_shard_corrupted_v3() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("corrupt.rkyv");
+        std::fs::write(&p, b"not-a-shard").unwrap();
+        assert!(read_owned_shard(&p).is_none());
+    }
 }

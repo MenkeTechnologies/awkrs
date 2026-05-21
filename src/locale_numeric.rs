@@ -7,11 +7,20 @@
 
 #[cfg(unix)]
 pub fn set_locale_numeric_from_env() {
-    use std::ffi::CString;
-    unsafe {
-        let empty = CString::new("").expect("empty CString");
-        libc::setlocale(libc::LC_NUMERIC, empty.as_ptr());
-    }
+    // setlocale is process-global mutable state; calling it from multiple
+    // threads concurrently is UB and produces SIGSEGV/SIGBUS in libc. Runtime::new()
+    // calls this on every construction, so under parallel tests we hit the race.
+    // Once::call_once gives at-most-once semantics with internal synchronization —
+    // the first caller activates LC_NUMERIC, the rest become no-ops.
+    use std::sync::Once;
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        use std::ffi::CString;
+        unsafe {
+            let empty = CString::new("").expect("empty CString");
+            libc::setlocale(libc::LC_NUMERIC, empty.as_ptr());
+        }
+    });
 }
 
 /// Thousands separator from `localeconv()` (gawk **`%'`** integer grouping). Empty means “no separator”
@@ -92,5 +101,21 @@ mod tests {
     #[test]
     fn set_locale_numeric_from_env_does_not_panic() {
         super::set_locale_numeric_from_env();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn decimal_point_is_valid_char() {
+        let dp = super::decimal_point_from_locale();
+        assert!(dp == '.' || dp == ',');
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn thousands_sep_is_valid_or_none() {
+        let ts = super::thousands_sep_from_locale();
+        if let Some(c) = ts {
+            assert!(c == ',' || c == '.' || c == ' ' || c == '\u{a0}' || c == '\u{202f}');
+        }
     }
 }

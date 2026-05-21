@@ -1410,14 +1410,18 @@ fn propagate_array_call_args(
                     visit_stmt(t, user_fns, names);
                 }
             }
-            Stmt::While { cond, body }
-            | Stmt::DoWhile { cond, body } => {
+            Stmt::While { cond, body } | Stmt::DoWhile { cond, body } => {
                 visit_expr(cond, user_fns, names);
                 for t in body {
                     visit_stmt(t, user_fns, names);
                 }
             }
-            Stmt::ForC { init, cond, iter, body } => {
+            Stmt::ForC {
+                init,
+                cond,
+                iter,
+                body,
+            } => {
                 if let Some(e) = init {
                     visit_expr(e, user_fns, names);
                 }
@@ -2990,6 +2994,7 @@ mod slot_allocation_pinning {
 #[cfg(test)]
 mod peephole_pinning {
     use super::Compiler;
+    use crate::ast::BinOp;
     use crate::bytecode::{Chunk, Op};
     use crate::parser::parse_program;
 
@@ -3323,5 +3328,338 @@ mod peephole_pinning {
             contains_op(&ops, |op| matches!(op, Op::ConcatPoolStr(_))),
             "expected ConcatPoolStr fusion, got: {ops:?}"
         );
+    }
+
+    #[test]
+    fn compile_while_loop_jumps() {
+        let ops = compile_begin_ops("BEGIN { while (1) { print 1 } }");
+        // Should have JumpIfFalsePop and Jump (back to start)
+        assert!(
+            contains_op(&ops, |op| matches!(op, Op::JumpIfFalsePop(_))),
+            "expected JumpIfFalsePop for while, got: {ops:?}"
+        );
+        assert!(
+            contains_op(&ops, |op| matches!(op, Op::Jump(_))),
+            "expected Jump for while, got: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn compile_switch_statement_v2() {
+        let ops = compile_begin_ops("BEGIN { switch(x) { case 1: break; default: break } }");
+        // switch (x) { case 1: ... }
+        // Should have CmpEq and JumpIfFalsePop/Jump
+        assert!(
+            contains_op(&ops, |op| matches!(op, Op::CmpEq)),
+            "expected CmpEq for switch case, got: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn compile_compound_mul_assign_v2() {
+        let ops = compile_begin_ops("BEGIN { x = 2; x *= 3 }");
+        // Should have CompoundAssignSlot(0, BinOp::Mul)
+        assert!(
+            contains_op(&ops, |op| matches!(
+                op,
+                Op::CompoundAssignSlot(_, BinOp::Mul)
+            )),
+            "expected CompoundAssignSlot with Mul for *=, got: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn peephole_add_slot_to_slot_v2() {
+        // x += y -> GetSlot(y) + CompoundAssignSlot(x, Add) -> AddSlotToSlot { src: y, dst: x }
+        // We need both to be slots.
+        let ops = compile_begin_ops("BEGIN { x=0; y=0; x+=y }");
+        assert!(
+            contains_op(&ops, |op| matches!(op, Op::AddSlotToSlot { .. })),
+            "expected AddSlotToSlot fusion, got: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn peephole_incr_slot_v3() {
+        // x++ -> IncDecSlot(x, PostInc) + Pop -> IncrSlot(x)
+        let ops = compile_begin_ops("BEGIN { x=0; x++ }");
+        assert!(
+            contains_op(&ops, |op| matches!(op, Op::IncrSlot(_))),
+            "expected IncrSlot fusion for x++, got: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn peephole_decr_slot_v3() {
+        // --x -> IncDecSlot(x, PreDec) + Pop -> DecrSlot(x)
+        let ops = compile_begin_ops("BEGIN { x=0; --x }");
+        assert!(
+            contains_op(&ops, |op| matches!(op, Op::DecrSlot(_))),
+            "expected DecrSlot fusion for --x, got: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn compile_nested_ternary_v2() {
+        let ops = compile_begin_ops("BEGIN { x = a ? (b ? c : d) : e }");
+        assert!(ops.len() > 10);
+    }
+
+    #[test]
+    fn compile_field_assignment_v2() {
+        let ops = compile_begin_ops("BEGIN { $1 = 42 }");
+        assert!(contains_op(&ops, |op| matches!(op, Op::SetField)));
+    }
+
+    #[test]
+    fn compile_array_assignment_v2() {
+        let ops = compile_begin_ops("BEGIN { a[1] = 2 }");
+        assert!(contains_op(&ops, |op| matches!(op, Op::SetArrayElem(_))));
+    }
+
+    #[test]
+    fn compile_delete_array_v3() {
+        let ops = compile_begin_ops("BEGIN { delete a }");
+        assert!(contains_op(&ops, |op| matches!(op, Op::DeleteArray(_))));
+    }
+
+    #[test]
+    fn compile_in_expression_v2() {
+        let ops = compile_begin_ops("BEGIN { if (1 in a) print 1 }");
+        assert!(contains_op(&ops, |op| matches!(op, Op::InArray(_))));
+    }
+
+    #[test]
+    fn compile_for_in_loop_v2() {
+        let ops = compile_begin_ops("BEGIN { for (k in a) print k }");
+        assert!(contains_op(&ops, |op| matches!(op, Op::ForInNext { .. })));
+    }
+
+    #[test]
+    fn compile_return_no_val_v2() {
+        // Must be in a function
+        let prog = parse_program("function f() { return }").unwrap();
+        let cp = Compiler::compile_program(&prog).unwrap();
+        let ops = &cp.functions.get("f").unwrap().body.ops;
+        assert!(contains_op(ops, |op| matches!(op, Op::ReturnEmpty)));
+    }
+
+    #[test]
+    fn compile_exit_no_val_v2() {
+        let ops = compile_begin_ops("BEGIN { exit }");
+        assert!(contains_op(&ops, |op| matches!(op, Op::ExitDefault)));
+    }
+
+    #[test]
+    fn compile_empty_block_v4() {
+        let ops = compile_begin_ops("BEGIN { {} }");
+        assert!(ops.is_empty());
+    }
+
+    #[test]
+    fn compile_break_v4() {
+        let ops = compile_begin_ops("BEGIN { while(1) break }");
+        assert!(contains_op(&ops, |op| matches!(op, Op::Jump(_))));
+    }
+
+    #[test]
+    fn compile_continue_v4() {
+        let ops = compile_begin_ops("BEGIN { while(1) continue }");
+        assert!(contains_op(&ops, |op| matches!(op, Op::Jump(_))));
+    }
+
+    #[test]
+    fn compile_unary_plus_v4() {
+        let ops = compile_begin_ops("BEGIN { x = +1 }");
+        assert!(contains_op(&ops, |op| matches!(op, Op::Pos)));
+    }
+
+    #[test]
+    fn compile_unary_minus_v4() {
+        let ops = compile_begin_ops("BEGIN { x = -1 }");
+        assert!(contains_op(&ops, |op| matches!(op, Op::Neg)));
+    }
+
+    #[test]
+    fn compile_logical_not_v4() {
+        let ops = compile_begin_ops("BEGIN { x = !1 }");
+        assert!(contains_op(&ops, |op| matches!(op, Op::Not)));
+    }
+
+    #[test]
+    fn compile_concat_v4() {
+        let ops = compile_begin_ops("BEGIN { x = 1 2 }");
+        assert!(contains_op(&ops, |op| matches!(op, Op::Concat)));
+    }
+
+    #[test]
+    fn compile_match_v4() {
+        let ops = compile_begin_ops("BEGIN { if (1 ~ 2) print 1 }");
+        assert!(contains_op(&ops, |op| matches!(op, Op::RegexMatch)));
+    }
+
+    #[test]
+    fn compile_not_match_v4() {
+        let ops = compile_begin_ops("BEGIN { if (1 !~ 2) print 1 }");
+        assert!(contains_op(&ops, |op| matches!(op, Op::RegexNotMatch)));
+    }
+
+    #[test]
+    fn compile_exponent_v4() {
+        let ops = compile_begin_ops("BEGIN { x = 2 ^ 3 }");
+        assert!(contains_op(&ops, |op| matches!(op, Op::Pow)));
+    }
+
+    #[test]
+    fn compile_modulo_v4() {
+        let ops = compile_begin_ops("BEGIN { x = 5 % 2 }");
+        assert!(contains_op(&ops, |op| matches!(op, Op::Mod)));
+    }
+
+    #[test]
+    fn compile_print_pipe_v4() {
+        let ops = compile_begin_ops("BEGIN { print 1 | \"cmd\" }");
+        assert!(contains_op(&ops, |op| matches!(
+            op,
+            Op::Print {
+                redir: crate::bytecode::RedirKind::Pipe,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn compile_print_append_v4() {
+        let ops = compile_begin_ops("BEGIN { print 1 >> \"out\" }");
+        assert!(contains_op(&ops, |op| matches!(
+            op,
+            Op::Print {
+                redir: crate::bytecode::RedirKind::Append,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn compile_getline_var_v4() {
+        let ops = compile_begin_ops("BEGIN { getline x }");
+        assert!(contains_op(&ops, |op| matches!(op, Op::GetLine { .. })));
+    }
+
+    #[test]
+    fn compile_func_call_builtin_v4() {
+        let ops = compile_begin_ops("BEGIN { length(\"a\") }");
+        assert!(contains_op(&ops, |op| matches!(op, Op::CallBuiltin { .. })));
+    }
+
+    #[test]
+    fn compile_func_call_user_v4() {
+        let prog = parse_program("function f() {} BEGIN { f() }").unwrap();
+        let cp = Compiler::compile_program(&prog).unwrap();
+        let ops = &cp.begin_chunks[0].ops;
+        assert!(
+            contains_op(ops, |op| matches!(
+                op,
+                Op::CallBuiltin(_, _) | Op::CallUserBindArrays(_, _)
+            )),
+            "expected CallBuiltin or CallUserBindArrays for user func call, got: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn compile_pre_inc_v4() {
+        let ops = compile_begin_ops("BEGIN { ++x }");
+        assert!(contains_op(&ops, |op| matches!(op, Op::IncrSlot(_))));
+    }
+
+    #[test]
+    fn compile_pre_dec_v4() {
+        let ops = compile_begin_ops("BEGIN { --x }");
+        assert!(contains_op(&ops, |op| matches!(op, Op::DecrSlot(_))));
+    }
+
+    #[test]
+    fn compile_next_v4() {
+        let prog = parse_program("{ next }").unwrap();
+        let cp = Compiler::compile_program(&prog).unwrap();
+        let ops = &cp.record_rules[0].body.ops;
+        assert!(contains_op(ops, |op| matches!(op, Op::Next)));
+    }
+
+    #[test]
+    fn compile_num_v15() {
+        assert!(!compile_begin_ops("BEGIN{0}").is_empty());
+    }
+    #[test]
+    fn compile_str_v15() {
+        assert!(!compile_begin_ops("BEGIN{\"a\"}").is_empty());
+    }
+    #[test]
+    fn compile_var_v15() {
+        assert!(!compile_begin_ops("BEGIN{x}").is_empty());
+    }
+    #[test]
+    fn compile_field_v15() {
+        assert!(!compile_begin_ops("BEGIN{$0}").is_empty());
+    }
+    #[test]
+    fn compile_index_v15() {
+        assert!(!compile_begin_ops("BEGIN{a[1]}").is_empty());
+    }
+    #[test]
+    fn compile_call_v15() {
+        assert!(!compile_begin_ops("BEGIN{length()}").is_empty());
+    }
+    #[test]
+    fn compile_unary_v15() {
+        assert!(!compile_begin_ops("BEGIN{!1}").is_empty());
+    }
+    #[test]
+    fn compile_binary_v15() {
+        assert!(!compile_begin_ops("BEGIN{1+1}").is_empty());
+    }
+    #[test]
+    fn compile_assign_v15() {
+        assert!(!compile_begin_ops("BEGIN{x=1}").is_empty());
+    }
+    #[test]
+    fn compile_ternary_v15() {
+        assert!(!compile_begin_ops("BEGIN{1?1:0}").is_empty());
+    }
+    #[test]
+    fn compile_in_v15() {
+        assert!(!compile_begin_ops("BEGIN{1 in a}").is_empty());
+    }
+    #[test]
+    fn compile_if_v15() {
+        assert!(!compile_begin_ops("BEGIN{if(1)1}").is_empty());
+    }
+    #[test]
+    fn compile_while_v15() {
+        assert!(!compile_begin_ops("BEGIN{while(1)1}").is_empty());
+    }
+    #[test]
+    fn compile_for_v15() {
+        assert!(!compile_begin_ops("BEGIN{for(;;)break}").is_empty());
+    }
+    #[test]
+    fn compile_forin_v15() {
+        assert!(!compile_begin_ops("BEGIN{for(k in a)break}").is_empty());
+    }
+    #[test]
+    fn compile_block_v15() {
+        assert!(!compile_begin_ops("BEGIN{{1}}").is_empty());
+    }
+    #[test]
+    fn compile_print_v15() {
+        assert!(!compile_begin_ops("BEGIN{print 1}").is_empty());
+    }
+    #[test]
+    fn compile_printf_v15() {
+        assert!(!compile_begin_ops("BEGIN{printf 1}").is_empty());
+    }
+    #[test]
+    fn compile_exit_v15() {
+        assert!(!compile_begin_ops("BEGIN{exit}").is_empty());
     }
 }

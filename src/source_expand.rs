@@ -448,4 +448,82 @@ mod tests {
         assert!(res.is_absolute());
         assert_eq!(res.to_str().unwrap(), p);
     }
+
+    #[test]
+    fn include_relative_path_v2() {
+        let dir = std::env::temp_dir();
+        let id = std::process::id();
+        let inc1 = dir.join(format!("awkrs_inc1_{id}.awk"));
+        let inc2 = dir.join(format!("awkrs_inc2_{id}.awk"));
+
+        // inc1 includes inc2 via relative path
+        std::fs::write(
+            &inc1,
+            format!(
+                "@include \"{}\"\n",
+                inc2.file_name().unwrap().to_str().unwrap()
+            ),
+        )
+        .unwrap();
+        std::fs::write(&inc2, "function f() { return 2 }\n").unwrap();
+
+        // main includes inc1 via absolute path
+        let main = format!("@include \"{}\"\nBEGIN {{ print f() }}\n", inc1.display());
+        let e = expand_source_directives(&main).unwrap();
+        assert!(e.text.contains("function f"));
+
+        let _ = std::fs::remove_file(&inc1);
+        let _ = std::fs::remove_file(&inc2);
+    }
+
+    #[test]
+    fn multiple_directives_on_one_line_v2() {
+        // gawk doesn't typically support multiple @directives on one line if they consume the rest of the line,
+        // but let's see how our expander handles it.
+        let main = "@load \"filefuncs\" @include \"nonexistent.awk\"\nBEGIN {}";
+        // If it treats '@load' as consuming the line, it might ignore @include.
+        let e = expand_source_directives(main).unwrap();
+        assert!(!e.text.contains("@load"));
+    }
+
+    #[test]
+    fn namespace_with_trailing_comment_v7() {
+        let e = expand_source_directives("@namespace \"ns\" # comment\nBEGIN {}").unwrap();
+        assert_eq!(e.default_namespace.as_deref(), Some("ns"));
+        // The expander preserves trailing text after the namespace identifier
+        assert!(e.text.contains("# comment"));
+    }
+
+    #[test]
+    fn include_with_leading_whitespace_v7() {
+        let dir = std::env::temp_dir();
+        let id = std::process::id();
+        let inc = dir.join(format!("awkrs_inc_ws_{id}.awk"));
+        std::fs::write(&inc, "BEGIN { x=1 }\n").unwrap();
+
+        let main = format!("  @include \"{}\"\n", inc.display());
+        let e = expand_source_directives(&main).unwrap();
+        assert!(e.text.contains("BEGIN"));
+
+        let _ = std::fs::remove_file(&inc);
+    }
+
+    #[test]
+    fn load_with_relative_path_and_no_base_v7() {
+        // If no base_dir, it uses current_dir.
+        // We can't easily rely on current_dir containing a specific file,
+        // but we can test it doesn't panic.
+        let r = expand_source_directives("@load \"nonexistent.awk\"");
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn take_bare_ident_leading_underscore_v7() {
+        assert_eq!(take_bare_ident("  _var").unwrap().0, "_var");
+    }
+
+    #[test]
+    fn take_bare_ident_empty_fails_v7() {
+        assert!(take_bare_ident("  ").is_none());
+    }
 }

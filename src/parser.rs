@@ -2779,9 +2779,7 @@ mod tests {
             panic!("expected assign");
         };
         match rhs.as_ref() {
-            Expr::Ternary {
-                else_, ..
-            } => {
+            Expr::Ternary { else_, .. } => {
                 assert!(matches!(else_.as_ref(), Expr::Ternary { .. }));
             }
             _ => panic!("expected ternary, got {rhs:?}"),
@@ -2822,7 +2820,9 @@ mod tests {
             Stmt::If { then_, else_, .. } => {
                 assert!(else_.is_empty()); // The 'else' should belong to 'if (2)'
                 match &then_[0] {
-                    Stmt::If { else_: inner_else, .. } => {
+                    Stmt::If {
+                        else_: inner_else, ..
+                    } => {
                         assert!(!inner_else.is_empty());
                     }
                     _ => panic!("expected inner if"),
@@ -2830,6 +2830,338 @@ mod tests {
             }
             _ => panic!("expected outer if"),
         }
+    }
+
+    #[test]
+    fn parses_nested_while_v2() {
+        let p = parse_program("BEGIN { while(1) while(2) print 1 }").unwrap();
+        let Stmt::While { body, .. } = first_begin_stmt(&p) else {
+            panic!("expected while");
+        };
+        assert!(matches!(body[0], Stmt::While { .. }));
+    }
+
+    #[test]
+    fn parses_for_c_empty_v2() {
+        let p = parse_program("BEGIN { for(;;) break }").unwrap();
+        let Stmt::ForC {
+            init, cond, iter, ..
+        } = first_begin_stmt(&p)
+        else {
+            panic!("expected for");
+        };
+        assert!(init.is_none());
+        assert!(cond.is_none());
+        assert!(iter.is_none());
+    }
+
+    #[test]
+    fn parses_function_params_v2() {
+        let p = parse_program("function f(a, b, c) { return a+b+c }").unwrap();
+        let f = p.funcs.get("f").unwrap();
+        assert_eq!(f.params.len(), 3);
+    }
+
+    #[test]
+    fn parses_function_with_one_param_v2() {
+        let p = parse_program("function f(x) { return x }").unwrap();
+        assert_eq!(p.funcs.get("f").unwrap().params.len(), 1);
+    }
+
+    #[test]
+    fn parses_do_while_loop_v2() {
+        let p = parse_program("BEGIN { do { print 1 } while (1) }").unwrap();
+        match first_begin_stmt(&p) {
+            Stmt::DoWhile { .. } => {}
+            _ => panic!("expected do-while"),
+        }
+    }
+
+    #[test]
+    fn parses_exit_with_code_v2() {
+        let p = parse_program("BEGIN { exit 5 }").unwrap();
+        match first_begin_stmt(&p) {
+            Stmt::Exit(Some(e)) => match e {
+                Expr::IntegerLiteral(ref s) if s == "5" => {}
+                _ => panic!("expected exit 5, got {:?}", e),
+            },
+            _ => panic!("expected exit"),
+        }
+    }
+
+    #[test]
+    fn parses_return_expr_v2() {
+        let p = parse_program("function f() { return 42 }").unwrap();
+        let f = p.funcs.get("f").unwrap();
+        match &f.body[0] {
+            Stmt::Return(Some(e)) => match e {
+                Expr::IntegerLiteral(ref s) if s == "42" => {}
+                _ => panic!("expected return 42, got {:?}", e),
+            },
+            _ => panic!("expected return"),
+        }
+    }
+
+    #[test]
+    fn parses_unary_plus_v2() {
+        let p = parse_program("BEGIN { x = +1 }").unwrap();
+        match first_begin_stmt(&p) {
+            Stmt::Expr(Expr::Assign { rhs, .. }) => {
+                assert!(matches!(
+                    rhs.as_ref(),
+                    Expr::Unary {
+                        op: UnaryOp::Pos,
+                        ..
+                    }
+                ));
+            }
+            _ => panic!("expected assign"),
+        }
+    }
+
+    #[test]
+    fn parses_grouping_parens_v2() {
+        let p = parse_program("BEGIN { x = (1+2)*3 }").unwrap();
+        match first_begin_stmt(&p) {
+            Stmt::Expr(Expr::Assign { rhs, .. }) => {
+                assert!(matches!(rhs.as_ref(), Expr::Binary { op: BinOp::Mul, .. }));
+            }
+            _ => panic!("expected assign"),
+        }
+    }
+
+    #[test]
+    fn parses_multidim_index_v2() {
+        let p = parse_program("BEGIN { print a[1, 2, 3] }").unwrap();
+        match first_begin_stmt(&p) {
+            Stmt::Print { args, .. } => match &args[0] {
+                Expr::Index { indices, .. } => assert_eq!(indices.len(), 3),
+                _ => panic!("expected index"),
+            },
+            _ => panic!("expected print"),
+        }
+    }
+
+    #[test]
+    fn parses_if_else_if_v2() {
+        let p = parse_program("BEGIN { if(1) a; else if(2) b; else c }").unwrap();
+        match first_begin_stmt(&p) {
+            Stmt::If { else_, .. } => {
+                assert!(!else_.is_empty());
+                assert!(matches!(else_[0], Stmt::If { .. }));
+            }
+            _ => panic!("expected if"),
+        }
+    }
+
+    #[test]
+    fn parses_for_in_loop_v3() {
+        let p = parse_program("BEGIN { for (k in a) print k }").unwrap();
+        match first_begin_stmt(&p) {
+            Stmt::ForIn { .. } => {}
+            _ => panic!("expected for-in"),
+        }
+    }
+
+    #[test]
+    fn parses_delete_whole_array_v2() {
+        let p = parse_program("BEGIN { delete a }").unwrap();
+        match first_begin_stmt(&p) {
+            Stmt::Delete { indices, .. } => assert!(indices.is_none()),
+            _ => panic!("expected delete"),
+        }
+    }
+
+    #[test]
+    fn parses_delete_element_v2() {
+        let p = parse_program("BEGIN { delete a[1] }").unwrap();
+        match first_begin_stmt(&p) {
+            Stmt::Delete { indices, .. } => assert!(indices.is_some()),
+            _ => panic!("expected delete"),
+        }
+    }
+
+    #[test]
+    fn parses_indirect_call_at_literal_v2() {
+        // gawk: @("func")(1) is the form for literal string as function name
+        let p = parse_program("BEGIN { @(\"func\")(1) }").unwrap();
+        match first_begin_stmt(&p) {
+            Stmt::Expr(Expr::IndirectCall { .. }) => {}
+            _ => panic!("expected indirect call"),
+        }
+    }
+
+    #[test]
+    fn parses_getline_v3() {
+        let p = parse_program("BEGIN { getline }").unwrap();
+        match first_begin_stmt(&p) {
+            Stmt::GetLine { .. } => {}
+            _ => panic!("expected getline"),
+        }
+    }
+
+    #[test]
+    fn parses_getline_into_var_v2() {
+        let p = parse_program("BEGIN { getline x }").unwrap();
+        match first_begin_stmt(&p) {
+            Stmt::GetLine { var, .. } => assert!(var.is_some()),
+            _ => panic!("expected getline"),
+        }
+    }
+
+    #[test]
+    fn parses_next_v2() {
+        let p = parse_program("{ next }").unwrap();
+        match &p.rules[0].stmts[0] {
+            Stmt::Next => {}
+            _ => panic!("expected next"),
+        }
+    }
+
+    #[test]
+    fn parses_nextfile_v2() {
+        let p = parse_program("{ nextfile }").unwrap();
+        match &p.rules[0].stmts[0] {
+            Stmt::NextFile => {}
+            _ => panic!("expected nextfile"),
+        }
+    }
+
+    #[test]
+    fn parses_printf_v2() {
+        let p = parse_program("BEGIN { printf \"%d\", 1 }").unwrap();
+        match first_begin_stmt(&p) {
+            Stmt::Printf { .. } => {}
+            _ => panic!("expected printf"),
+        }
+    }
+
+    #[test]
+    fn parses_regex_match_v2() {
+        let p = parse_program("BEGIN { if ($0 ~ /foo/) print 1 }").unwrap();
+        match first_begin_stmt(&p) {
+            Stmt::If { cond, .. } => {
+                assert!(matches!(
+                    cond,
+                    Expr::Binary {
+                        op: BinOp::Match,
+                        ..
+                    }
+                ));
+            }
+            _ => panic!("expected if"),
+        }
+    }
+
+    #[test]
+    fn parses_concatenation_v2() {
+        let p = parse_program("BEGIN { print \"a\" \"b\" }").unwrap();
+        match first_begin_stmt(&p) {
+            Stmt::Print { args, .. } => {
+                assert!(matches!(
+                    args[0],
+                    Expr::Binary {
+                        op: BinOp::Concat,
+                        ..
+                    }
+                ));
+            }
+            _ => panic!("expected print"),
+        }
+    }
+
+    #[test]
+    fn parses_empty_block_v2() {
+        let p = parse_program("BEGIN { {} }").unwrap();
+        assert!(p.rules.len() == 1);
+    }
+
+    #[test]
+    fn parses_print_pipe_v2() {
+        let p = parse_program("BEGIN { print 1 | \"cmd\" }").unwrap();
+        match first_begin_stmt(&p) {
+            Stmt::Print { redir, .. } => {
+                assert!(matches!(redir, Some(PrintRedir::Pipe(_))));
+            }
+            _ => panic!("expected print"),
+        }
+    }
+
+    #[test]
+    fn parses_print_append_v2() {
+        let p = parse_program("BEGIN { print 1 >> \"out.txt\" }").unwrap();
+        match first_begin_stmt(&p) {
+            Stmt::Print { redir, .. } => {
+                assert!(matches!(redir, Some(PrintRedir::Append(_))));
+            }
+            _ => panic!("expected print"),
+        }
+    }
+
+    #[test]
+    fn parses_bitwise_precedence_v2() {
+        let p = parse_program("BEGIN { x = and(a, b) + or(c, d) }").unwrap();
+        assert!(p.rules.len() == 1);
+    }
+
+    #[test]
+    fn parses_ternary_nested_precedence_v3() {
+        let p = parse_program("BEGIN { x = a ? b : c ? d : e }").unwrap();
+        let Stmt::Expr(Expr::Assign { rhs, .. }) = first_begin_stmt(&p) else {
+            panic!("expected assign");
+        };
+        match rhs.as_ref() {
+            Expr::Ternary { else_, .. } => {
+                assert!(matches!(else_.as_ref(), Expr::Ternary { .. }));
+            }
+            _ => panic!("expected ternary"),
+        }
+    }
+
+    #[test]
+    fn parses_logical_precedence_v2() {
+        // a || b && c => a || (b && c)
+        let p = parse_program("BEGIN { if (a || b && c) print 1 }").unwrap();
+        let Stmt::If { cond, .. } = first_begin_stmt(&p) else {
+            panic!("expected if");
+        };
+        match cond {
+            Expr::Binary {
+                op: BinOp::Or,
+                right,
+                ..
+            } => {
+                assert!(matches!(
+                    right.as_ref(),
+                    Expr::Binary { op: BinOp::And, .. }
+                ));
+            }
+            _ => panic!("expected Or, got {cond:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_getline_file_v6() {
+        let p = parse_program("BEGIN { getline < \"f\" }").unwrap();
+        match first_begin_stmt(&p) {
+            Stmt::GetLine { redir, .. } => assert!(matches!(redir, GetlineRedir::File(_))),
+            _ => panic!("expected getline"),
+        }
+    }
+
+    #[test]
+    fn parses_getline_pipe_v6() {
+        let p = parse_program("BEGIN { \"c\" | getline }").unwrap();
+        match first_begin_stmt(&p) {
+            Stmt::Expr(Expr::GetLine { pipe_cmd, .. }) => assert!(pipe_cmd.is_some()),
+            _ => panic!("expected getline"),
+        }
+    }
+
+    #[test]
+    fn parses_function_no_params_v6() {
+        let p = parse_program("function f() { }").unwrap();
+        assert_eq!(p.funcs.get("f").unwrap().params.len(), 0);
     }
 }
 
@@ -3171,5 +3503,436 @@ mod parser_pinning {
     fn parse_error_malformed_for_in() {
         let r = parse_program("BEGIN { for (x a) print x }");
         assert!(r.is_err());
+    }
+
+    #[test]
+    fn parses_empty_function_v2() {
+        let p = parse_program("function f() {}").unwrap();
+        assert!(p.funcs.contains_key("f"));
+        assert!(p.funcs.get("f").unwrap().body.is_empty());
+    }
+
+    #[test]
+    fn parse_error_at_directive_outside_top_level_v2() {
+        // gawk: @include etc are only at top level.
+        // Our parser actually doesn't see them because expander strips them,
+        // but if they remained, it would be a parse error.
+        let r = parse_program("BEGIN { @include \"foo\" }");
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn parses_num_v13() {
+        parse_program("BEGIN { 0 }").unwrap();
+    }
+    #[test]
+    fn parses_num_v13_1() {
+        parse_program("BEGIN { 1 }").unwrap();
+    }
+    #[test]
+    fn parses_str_v13() {
+        parse_program("BEGIN { \"\" }").unwrap();
+    }
+    #[test]
+    fn parses_str_v13_1() {
+        parse_program("BEGIN { \"a\" }").unwrap();
+    }
+    #[test]
+    fn parses_var_v13() {
+        parse_program("BEGIN { x }").unwrap();
+    }
+    #[test]
+    fn parses_field_v13() {
+        parse_program("BEGIN { $0 }").unwrap();
+    }
+    #[test]
+    fn parses_field_v13_1() {
+        parse_program("BEGIN { $1 }").unwrap();
+    }
+    #[test]
+    fn parses_index_v13() {
+        parse_program("BEGIN { a[1] }").unwrap();
+    }
+    #[test]
+    fn parses_call_v13() {
+        parse_program("BEGIN { f() }").unwrap();
+    }
+    #[test]
+    fn parses_unary_v13() {
+        parse_program("BEGIN { !1 }").unwrap();
+    }
+    #[test]
+    fn parses_binary_v13() {
+        parse_program("BEGIN { 1+1 }").unwrap();
+    }
+    #[test]
+    fn parses_assign_v13() {
+        parse_program("BEGIN { x=1 }").unwrap();
+    }
+    #[test]
+    fn parses_ternary_v13() {
+        parse_program("BEGIN { 1?1:0 }").unwrap();
+    }
+    #[test]
+    fn parses_in_v13() {
+        parse_program("BEGIN { 1 in a }").unwrap();
+    }
+    #[test]
+    fn parses_if_v13() {
+        parse_program("BEGIN { if(1) 1 }").unwrap();
+    }
+    #[test]
+    fn parses_while_v13() {
+        parse_program("BEGIN { while(1) 1 }").unwrap();
+    }
+    #[test]
+    fn parses_for_v13() {
+        parse_program("BEGIN { for(;;) 1 }").unwrap();
+    }
+    #[test]
+    fn parses_forin_v13() {
+        parse_program("BEGIN { for(k in a) 1 }").unwrap();
+    }
+    #[test]
+    fn parses_block_v13() {
+        parse_program("BEGIN { {1} }").unwrap();
+    }
+    #[test]
+    fn parses_print_v13() {
+        parse_program("BEGIN { print 1 }").unwrap();
+    }
+    #[test]
+    fn parses_printf_v13() {
+        parse_program("BEGIN { printf 1 }").unwrap();
+    }
+
+    #[test]
+    fn parses_break_v17() {
+        parse_program("BEGIN { for(;;) break }").unwrap();
+    }
+    #[test]
+    fn parses_continue_v17() {
+        parse_program("BEGIN { for(;;) continue }").unwrap();
+    }
+    #[test]
+    fn parses_next_v17() {
+        parse_program("{ next }").unwrap();
+    }
+    #[test]
+    fn parses_nextfile_v17() {
+        parse_program("{ nextfile }").unwrap();
+    }
+    #[test]
+    fn parses_delete_v17() {
+        parse_program("BEGIN { delete a }").unwrap();
+    }
+    #[test]
+    fn parses_exit_v17() {
+        parse_program("BEGIN { exit }").unwrap();
+    }
+    #[test]
+    fn parses_return_v17() {
+        parse_program("function f(){return}").unwrap();
+    }
+    #[test]
+    fn parses_do_while_v17() {
+        parse_program("BEGIN { do 1; while(1) }").unwrap();
+    }
+    #[test]
+    fn parses_regex_match_v17() {
+        parse_program("BEGIN { 1 ~ /a/ }").unwrap();
+    }
+    #[test]
+    fn parses_regex_not_match_v17() {
+        parse_program("BEGIN { 1 !~ /a/ }").unwrap();
+    }
+    #[test]
+    fn parses_power_v17() {
+        parse_program("BEGIN { 1 ** 2 }").unwrap();
+    }
+
+    #[test]
+    fn parses_add_assign_v20() {
+        parse_program("BEGIN { x += 1 }").unwrap();
+    }
+    #[test]
+    fn parses_sub_assign_v20() {
+        parse_program("BEGIN { x -= 1 }").unwrap();
+    }
+    #[test]
+    fn parses_mul_assign_v20() {
+        parse_program("BEGIN { x *= 1 }").unwrap();
+    }
+    #[test]
+    fn parses_div_assign_v20() {
+        parse_program("BEGIN { x /= 1 }").unwrap();
+    }
+    #[test]
+    fn parses_mod_assign_v20() {
+        parse_program("BEGIN { x %= 1 }").unwrap();
+    }
+    #[test]
+    fn parses_pow_assign_v20() {
+        parse_program("BEGIN { x ^= 1 }").unwrap();
+    }
+    #[test]
+    fn parses_pow_assign_starstar_v20() {
+        parse_program("BEGIN { x **= 1 }").unwrap();
+    }
+
+    #[test]
+    fn parses_pre_inc_v20() {
+        parse_program("BEGIN { ++x }").unwrap();
+    }
+    #[test]
+    fn parses_post_inc_v20() {
+        parse_program("BEGIN { x++ }").unwrap();
+    }
+    #[test]
+    fn parses_pre_dec_v20() {
+        parse_program("BEGIN { --x }").unwrap();
+    }
+    #[test]
+    fn parses_post_dec_v20() {
+        parse_program("BEGIN { x-- }").unwrap();
+    }
+
+    #[test]
+    fn parses_logical_and_v20() {
+        parse_program("BEGIN { 1 && 1 }").unwrap();
+    }
+    #[test]
+    fn parses_logical_or_v20() {
+        parse_program("BEGIN { 1 || 1 }").unwrap();
+    }
+    #[test]
+    fn parses_logical_not_v20() {
+        parse_program("BEGIN { !1 }").unwrap();
+    }
+
+    #[test]
+    fn parses_cmp_eq_v20() {
+        parse_program("BEGIN { 1 == 1 }").unwrap();
+    }
+    #[test]
+    fn parses_cmp_ne_v20() {
+        parse_program("BEGIN { 1 != 1 }").unwrap();
+    }
+    #[test]
+    fn parses_cmp_lt_v20() {
+        parse_program("BEGIN { 1 < 1 }").unwrap();
+    }
+    #[test]
+    fn parses_cmp_le_v20() {
+        parse_program("BEGIN { 1 <= 1 }").unwrap();
+    }
+    #[test]
+    fn parses_cmp_gt_v20() {
+        parse_program("BEGIN { 1 > 1 }").unwrap();
+    }
+    #[test]
+    fn parses_cmp_ge_v20() {
+        parse_program("BEGIN { 1 >= 1 }").unwrap();
+    }
+
+    #[test]
+    fn parses_array_delete_elem_v20() {
+        parse_program("BEGIN { delete a[1] }").unwrap();
+    }
+    #[test]
+    fn parses_indirect_call_v20() {
+        parse_program("BEGIN { @f() }").unwrap();
+    }
+
+    #[test]
+    fn parses_switch_v32() {
+        parse_program("BEGIN { switch(x) { case 1: break; default: break } }").unwrap();
+    }
+    #[test]
+    fn parses_getline_v32() {
+        parse_program("BEGIN { getline }").unwrap();
+    }
+    #[test]
+    fn parses_getline_var_v32() {
+        parse_program("BEGIN { getline x }").unwrap();
+    }
+    #[test]
+    fn parses_getline_file_v32() {
+        parse_program("BEGIN { getline < \"f\" }").unwrap();
+    }
+    #[test]
+    fn parses_getline_pipe_v32() {
+        parse_program("BEGIN { \"c\" | getline }").unwrap();
+    }
+
+    #[test]
+    fn parses_next_v32() {
+        parse_program("{ next }").unwrap();
+    }
+    #[test]
+    fn parses_nextfile_v32() {
+        parse_program("{ nextfile }").unwrap();
+    }
+    #[test]
+    fn parses_exit_v32() {
+        parse_program("BEGIN { exit }").unwrap();
+    }
+    #[test]
+    fn parses_exit_code_v32() {
+        parse_program("BEGIN { exit 1 }").unwrap();
+    }
+    #[test]
+    fn parses_return_v32() {
+        parse_program("function f() { return }").unwrap();
+    }
+    #[test]
+    fn parses_return_val_v32() {
+        parse_program("function f() { return 1 }").unwrap();
+    }
+
+    #[test]
+    fn parses_array_in_v32() {
+        parse_program("BEGIN { 1 in a }").unwrap();
+    }
+    #[test]
+    fn parses_array_delete_v32() {
+        parse_program("BEGIN { delete a }").unwrap();
+    }
+    #[test]
+    fn parses_array_delete_elem_v32() {
+        parse_program("BEGIN { delete a[1] }").unwrap();
+    }
+
+    #[test]
+    fn parses_math_v32() {
+        parse_program("BEGIN { 1+2-3*4/5%6^7 }").unwrap();
+    }
+    #[test]
+    fn parses_logical_v32() {
+        parse_program("BEGIN { 1&&2||!3 }").unwrap();
+    }
+    #[test]
+    fn parses_cmp_v32() {
+        parse_program("BEGIN { 1<2&&2<=3||3>4&&4>=5 }").unwrap();
+    }
+    #[test]
+    fn parses_match_v32() {
+        parse_program("BEGIN { 1 ~ /a/ && 1 !~ /b/ }").unwrap();
+    }
+    #[test]
+    fn parses_ternary_v32() {
+        parse_program("BEGIN { 1?2:3 }").unwrap();
+    }
+
+    #[test]
+    fn parses_if_v36() {
+        parse_program("BEGIN { if(1) 1 }").unwrap();
+    }
+    #[test]
+    fn parses_if_else_v36() {
+        parse_program("BEGIN { if(1) 1; else 2 }").unwrap();
+    }
+    #[test]
+    fn parses_while_v36() {
+        parse_program("BEGIN { while(1) 1 }").unwrap();
+    }
+    #[test]
+    fn parses_do_while_v36() {
+        parse_program("BEGIN { do 1; while(1) }").unwrap();
+    }
+    #[test]
+    fn parses_for_v36() {
+        parse_program("BEGIN { for(;;) break }").unwrap();
+    }
+    #[test]
+    fn parses_forin_v36() {
+        parse_program("BEGIN { for(k in a) break }").unwrap();
+    }
+
+    #[test]
+    fn parses_block_v36() {
+        parse_program("BEGIN { {1} }").unwrap();
+    }
+    #[test]
+    fn parses_print_v36() {
+        parse_program("BEGIN { print 1 }").unwrap();
+    }
+    #[test]
+    fn parses_printf_v36() {
+        parse_program("BEGIN { printf 1 }").unwrap();
+    }
+
+    #[test]
+    fn parses_num_v36() {
+        parse_program("BEGIN { 0 }").unwrap();
+    }
+    #[test]
+    fn parses_str_v36() {
+        parse_program("BEGIN { \"\" }").unwrap();
+    }
+    #[test]
+    fn parses_var_v36() {
+        parse_program("BEGIN { x }").unwrap();
+    }
+    #[test]
+    fn parses_field_v36() {
+        parse_program("BEGIN { $0 }").unwrap();
+    }
+    #[test]
+    fn parses_index_v36() {
+        parse_program("BEGIN { a[1] }").unwrap();
+    }
+    #[test]
+    fn parses_call_v36() {
+        parse_program("BEGIN { f() }").unwrap();
+    }
+    #[test]
+    fn parses_unary_v36() {
+        parse_program("BEGIN { !1 }").unwrap();
+    }
+    #[test]
+    fn parses_binary_v36() {
+        parse_program("BEGIN { 1+1 }").unwrap();
+    }
+    #[test]
+    fn parses_assign_v36() {
+        parse_program("BEGIN { x=1 }").unwrap();
+    }
+    #[test]
+    fn parses_ternary_v36() {
+        parse_program("BEGIN { 1?1:0 }").unwrap();
+    }
+    #[test]
+    fn parses_in_v36() {
+        parse_program("BEGIN { 1 in a }").unwrap();
+    }
+
+    #[test]
+    fn parses_exit_v36() {
+        parse_program("BEGIN { exit }").unwrap();
+    }
+    #[test]
+    fn parses_next_v36() {
+        parse_program("{ next }").unwrap();
+    }
+    #[test]
+    fn parses_nextfile_v36() {
+        parse_program("{ nextfile }").unwrap();
+    }
+    #[test]
+    fn parses_delete_v36() {
+        parse_program("BEGIN { delete a }").unwrap();
+    }
+    #[test]
+    fn parses_break_v36() {
+        parse_program("BEGIN { while(1) break }").unwrap();
+    }
+    #[test]
+    fn parses_continue_v36() {
+        parse_program("BEGIN { while(1) continue }").unwrap();
+    }
+    #[test]
+    fn parses_return_v36() {
+        parse_program("function f(){return}").unwrap();
     }
 }
