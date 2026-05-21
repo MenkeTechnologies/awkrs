@@ -1379,4 +1379,27 @@ mod tests {
         assert_eq!(rt.array_get("a", "1").as_str(), "1");
         assert_eq!(rt.array_get("a", "2").as_str(), "22");
     }
+
+    #[test]
+    fn asort_basic_v4() {
+        let mut rt = Runtime::new();
+        rt.array_set("a", "1".into(), Value::Str("z".into()));
+        rt.array_set("a", "2".into(), Value::Str("a".into()));
+        let n = asort(&mut rt, "a", Some("b")).unwrap();
+        assert_eq!(n, 2.0);
+        assert_eq!(rt.array_get("b", "1").as_str(), "a");
+        assert_eq!(rt.array_get("b", "2").as_str(), "z");
+    }
+
+    #[test]
+    fn awk_strftime_no_args_v3() {
+        let v = awk_strftime(&[]).unwrap();
+        assert!(!v.as_str().is_empty());
+    }
+
+    #[test]
+    fn awk_strtonum_scientific_v3() {
+        assert_eq!(awk_strtonum("1e3"), 1000.0);
+        assert_eq!(awk_strtonum("0x10"), 16.0);
+    }
 }

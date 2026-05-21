@@ -8606,4 +8606,18 @@ mod tests {
 
         let _ = std::fs::remove_file(&p);
     }
+
+    #[test]
+    fn vm_ternary_nested_logic_v2() {
+        let out = run_begin_capture("BEGIN { print (1 ? 2 : 3 ? 4 : 5) }");
+        assert_eq!(out, "2\n");
+        let out2 = run_begin_capture("BEGIN { print (0 ? 2 : 0 ? 4 : 5) }");
+        assert_eq!(out2, "5\n");
+    }
+
+    #[test]
+    fn vm_delete_array_reassign_v2() {
+        let out = run_begin_capture("BEGIN { a[1]=1; delete a; a[1]=2; print a[1] }");
+        assert_eq!(out, "2\n");
+    }
 }

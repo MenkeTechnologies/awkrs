@@ -2770,6 +2770,67 @@ mod tests {
             s => panic!("expected $1++ in record rule, got {s:?}"),
         }
     }
+
+    #[test]
+    fn parses_ternary_precedence_v2() {
+        // x = a ? b : c ? d : e  => x = a ? b : (c ? d : e)
+        let p = parse_program("BEGIN { x = a ? b : c ? d : e }").unwrap();
+        let Stmt::Expr(Expr::Assign { rhs, .. }) = first_begin_stmt(&p) else {
+            panic!("expected assign");
+        };
+        match rhs.as_ref() {
+            Expr::Ternary {
+                else_, ..
+            } => {
+                assert!(matches!(else_.as_ref(), Expr::Ternary { .. }));
+            }
+            _ => panic!("expected ternary, got {rhs:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_in_operator_precedence_v2() {
+        // x = a + b in arr => x = (a + b) in arr
+        let p = parse_program("BEGIN { x = a + b in arr }").unwrap();
+        let Stmt::Expr(Expr::Assign { rhs, .. }) = first_begin_stmt(&p) else {
+            panic!("expected assign");
+        };
+        match rhs.as_ref() {
+            Expr::In { key, .. } => {
+                assert!(matches!(key.as_ref(), Expr::Binary { op: BinOp::Add, .. }));
+            }
+            _ => panic!("expected In, got {rhs:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_print_redirection_v2() {
+        let p = parse_program("BEGIN { print \"hi\" > \"out.txt\" }").unwrap();
+        match first_begin_stmt(&p) {
+            Stmt::Print { args, redir, .. } => {
+                assert_eq!(args.len(), 1);
+                assert!(matches!(redir, Some(PrintRedir::Overwrite(_))));
+            }
+            _ => panic!("expected print"),
+        }
+    }
+
+    #[test]
+    fn parses_nested_if_else_v2() {
+        let p = parse_program("BEGIN { if (1) if (2) a; else b }").unwrap();
+        match first_begin_stmt(&p) {
+            Stmt::If { then_, else_, .. } => {
+                assert!(else_.is_empty()); // The 'else' should belong to 'if (2)'
+                match &then_[0] {
+                    Stmt::If { else_: inner_else, .. } => {
+                        assert!(!inner_else.is_empty());
+                    }
+                    _ => panic!("expected inner if"),
+                }
+            }
+            _ => panic!("expected outer if"),
+        }
+    }
 }
 
 // ── Parser pinning: operator precedence, error messages, edge syntax ─────────

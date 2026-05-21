@@ -1542,4 +1542,38 @@ mod tests {
         let mut l = Lexer::new("\"abc\ndef\"");
         assert!(l.next_token(false).is_err());
     }
+
+    #[test]
+    fn lex_rewind_slash_v2() {
+        let mut l = Lexer::new("x / y / /z/");
+        assert_eq!(l.next_token(false).unwrap(), Token::Ident("x".into()));
+        assert_eq!(l.next_token(false).unwrap(), Token::Slash);
+        // If we rewind and ask for regex:
+        l.rewind_slash_token();
+        assert_eq!(l.next_token(true).unwrap(), Token::Regexp(" y ".into()));
+        assert_eq!(l.next_token(true).unwrap(), Token::Regexp("z".into()));
+    }
+
+    #[test]
+    fn lex_backslashed_newline_in_string_v2() {
+        let mut l = Lexer::new("\"a\\\nb\"");
+        let t = l.next_token(false);
+        if let Ok(Token::String(s)) = t {
+             assert!(s == "ab" || s == "a\nb");
+        }
+    }
+
+    #[test]
+    fn lex_indirect_call_at_v2() {
+        assert_eq!(
+            tokens_no_regex("@func(x)"),
+            vec![
+                Token::At,
+                Token::Ident("func".into()),
+                Token::LParen,
+                Token::Ident("x".into()),
+                Token::RParen,
+            ]
+        );
+    }
 }

@@ -1788,4 +1788,16 @@ mod tests {
         assert_eq!(awk_sprintf("%#x", &[Value::Num(0.0)]).unwrap(), "0");
         assert_eq!(awk_sprintf("%#X", &[Value::Num(0.0)]).unwrap(), "0");
     }
+
+    #[test]
+    fn format_precision_truncation_v2() {
+        assert_eq!(awk_sprintf("%.3s", &[Value::Str("foobar".into())]).unwrap(), "foo");
+        assert_eq!(awk_sprintf("%.10s", &[Value::Str("foo".into())]).unwrap(), "foo");
+    }
+
+    #[test]
+    fn format_percent_g_v2() {
+        assert_eq!(awk_sprintf("%.4g", &[Value::Num(12.3456)]).unwrap(), "12.35");
+        assert_eq!(awk_sprintf("%.2g", &[Value::Num(1234.5)]).unwrap(), "1.2e+03");
+    }
 }

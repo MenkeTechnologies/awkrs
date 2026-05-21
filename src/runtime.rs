@@ -4531,4 +4531,30 @@ mod extra_runtime_tests {
         assert_eq!(parts, vec!["a", "b", ""]);
         assert_eq!(seps, vec![",", ","]);
     }
+
+    #[test]
+    fn awk_map_insertion_lookup_deletion_v3() {
+        let mut m: super::AwkMap<String, Value> = super::AwkMap::default();
+        m.insert(String::from("key1"), Value::Num(100.0));
+        m.insert(String::from("key2"), Value::Str("val2".into()));
+
+        assert_eq!(m.get(&String::from("key1")).unwrap().as_number(), 100.0);
+        assert_eq!(m.get(&String::from("key2")).unwrap().as_str(), "val2");
+
+        m.remove(&String::from("key1"));
+        assert!(m.get(&String::from("key1")).is_none());
+    }
+
+    #[test]
+    fn runtime_set_field_edge_cases_v3() {
+        let mut rt = super::Runtime::new();
+        rt.set_field_sep_split(" ", "a b c");
+        rt.ensure_fields_split();
+        rt.set_field(5, "e").unwrap();
+        assert_eq!(rt.nf(), 5);
+        assert_eq!(rt.field(5).unwrap().as_str(), "e");
+        rt.set_field(0, "x y").unwrap();
+        assert_eq!(rt.record, "x y");
+        assert_eq!(rt.nf(), 2);
+    }
 }
