@@ -508,7 +508,9 @@ fn trim_trailing_zero_fraction(s: &str) -> String {
 /// gawk-style spelling of a non-finite float for `%f`/`%e`/`%g`/`%a` conversions.
 ///
 /// Returns `+inf`/`-inf`/`+nan`/`-nan` (`INF`/`NAN` for the uppercase variants).
-/// `+` is emitted on positive (or unsigned) values; NaN uses its IEEE sign bit.
+/// `+` is emitted on positive (or unsigned) values; the IEEE 754 sign bit is
+/// preserved for both inf and NaN. Math functions that produce NaN (sqrt, log
+/// of negatives) normalize the sign at their call sites — see [`crate::builtins`].
 fn format_non_finite(n: f64, upper: bool) -> Option<String> {
     if n.is_finite() {
         return None;

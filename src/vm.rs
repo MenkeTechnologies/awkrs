@@ -4897,7 +4897,10 @@ pub(crate) fn exec_builtin_dispatch(
                 if x < 0.0 {
                     ctx.rt.warn_builtin_negative_arg("sqrt", x);
                 }
-                Value::Num(x.sqrt())
+                // Normalize NaN sign — Linux glibc sqrt(-1) sets the sign bit
+                // (would print as `-nan`); gawk emits `+nan` regardless of platform.
+                let r = x.sqrt();
+                Value::Num(if r.is_nan() { f64::NAN } else { r })
             }
         }
         "sin" => {
@@ -4988,7 +4991,10 @@ pub(crate) fn exec_builtin_dispatch(
                 } else if x == 0.0 {
                     ctx.rt.lint_warn("log: zero argument yields -infinity");
                 }
-                Value::Num(x.ln())
+                // Normalize NaN sign — Linux glibc log(-1) sets the sign bit
+                // (would print as `-nan`); gawk emits `+nan` regardless of platform.
+                let r = x.ln();
+                Value::Num(if r.is_nan() { f64::NAN } else { r })
             }
         }
         "systime" => {
