@@ -1135,15 +1135,21 @@ fn atan2_with_nan_argument_normalizes_sign() {
 }
 
 #[test]
-fn inf_minus_inf_is_plus_nan() {
-    // inf - inf is NaN; Rust f64 arithmetic produces a NaN whose sign bit
-    // is implementation-defined. We don't currently normalize this path
-    // (it's an arithmetic expression, not a math builtin), so this test
-    // documents the current observed behavior — if it ever fails on Linux,
-    // arithmetic-path normalization is the follow-up.
+fn inf_minus_inf_is_some_nan() {
+    // `inf - inf` is NaN per IEEE 754; the sign bit is implementation-
+    // defined and gawk does NOT normalize arithmetic outputs (only math
+    // builtins like sqrt/log/sin/cos/exp/atan2 are normalized at source).
+    // On macOS libc the result is "+nan"; on Linux glibc it's "-nan".
+    // Both are acceptable — gawk produces the same divergence. This test
+    // documents that arithmetic-path NaNs are NOT normalized; if that
+    // changes, the assertion should tighten.
     let (c, o, _) = run_awkrs_stdin(r#"BEGIN { p = "+inf"+0; print p - p }"#, "");
     assert_eq!(c, 0);
-    assert_eq!(o.trim(), "+nan", "stdout={o:?}");
+    let trimmed = o.trim();
+    assert!(
+        trimmed == "+nan" || trimmed == "-nan",
+        "expected +nan or -nan (libc-dependent), got {o:?}"
+    );
 }
 
 #[test]
