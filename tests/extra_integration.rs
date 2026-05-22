@@ -82,7 +82,19 @@ fn gawk_regexp_constant_typeof_and_match() {
 
 #[test]
 fn printf_group_flag_inserts_separators() {
-    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { printf "%'d\n", 1234567 }"#, "");
+    // `%'` consults the LC_NUMERIC thousands separator. Apple's libc reports
+    // `,` in C locale; glibc reports empty (no grouping). Pin LC_NUMERIC to a
+    // locale that actually has grouping so the test passes on both platforms.
+    let env = vec![
+        (OsString::from("LC_ALL"), OsString::from("en_US.UTF-8")),
+        (OsString::from("LANG"), OsString::from("en_US.UTF-8")),
+    ];
+    let (c, o, _) = run_awkrs_stdin_args_env(
+        Vec::<&str>::new(),
+        r#"BEGIN { printf "%'d\n", 1234567 }"#,
+        "",
+        env,
+    );
     assert_eq!(c, 0);
     assert_eq!(o, "1,234,567\n");
 }
@@ -2464,9 +2476,17 @@ fn getline_statement_with_missing_file_does_not_abort() {
 #[test]
 fn printf_apostrophe_groups_float_integer_part() {
     // gawk parity: the `'` flag groups the integer portion of `%f` values too.
-    let (c, o, _) = run_awkrs_stdin(
+    // Pin LC_NUMERIC to a locale with grouping (see `printf_group_flag_inserts_separators`
+    // for why — glibc empty thousands_sep in C locale; Apple libc has `,`).
+    let env = vec![
+        (OsString::from("LC_ALL"), OsString::from("en_US.UTF-8")),
+        (OsString::from("LANG"), OsString::from("en_US.UTF-8")),
+    ];
+    let (c, o, _) = run_awkrs_stdin_args_env(
+        Vec::<&str>::new(),
         r#"BEGIN { printf "%'f|%'f|%'.2f\n", 1234567.89, 1.5, 0.5 }"#,
         "",
+        env,
     );
     assert_eq!(c, 0);
     assert_eq!(o, "1,234,567.890000|1.500000|0.50\n");
