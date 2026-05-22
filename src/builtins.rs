@@ -265,6 +265,12 @@ fn replace_all_awk(re: &Regex, s: &str, repl: &str, repl_has_special: bool) -> (
 }
 
 /// gensub-specific: replace all matches, expanding `\N` backrefs (gawk extension).
+///
+/// Note: gawk 5.4.0 has a confirmed bug here — when `gensub` is called with the `g`
+/// flag AND the replacement contains `\N` backreferences, gawk drops the captures
+/// from matches 2..N (`gensub(/(.)/, "[\\1]", "g", "abc")` produces `[a][][]` in
+/// gawk 5.4, instead of the documented `[a][b][c]`). awkrs implements the
+/// documented per-match capture expansion; do not "fix" this to match the gawk bug.
 fn replace_all_gensub(re: &Regex, s: &str, repl: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut last = 0;
@@ -1081,6 +1087,41 @@ mod tests {
     fn awk_strftime_no_args_yields_non_empty_string() {
         let v = awk_strftime(&[]).unwrap();
         assert!(!v.as_str().is_empty(), "{v:?}");
+    }
+
+    #[test]
+    fn awk_gensub_global_backref_expands_in_every_match() {
+        // Regression: gawk 5.4.0 has a bug where `gensub(/(.)/, "[\\1]", "g", "abc")`
+        // produces `[a][][]` — captures from matches 2..N are dropped when the
+        // replacement contains backreferences under the `g` flag. awkrs implements
+        // the documented per-match capture expansion: every match's groups are
+        // expanded independently. Do not regress this to "match gawk".
+        let mut rt = Runtime::new();
+        let r = super::awk_gensub(
+            &mut rt,
+            "(.)",
+            "[\\1]",
+            &Value::Str("g".into()),
+            Some("abc".into()),
+        )
+        .unwrap();
+        assert_eq!(r, "[a][b][c]");
+    }
+
+    #[test]
+    fn awk_gensub_global_backref_swap_groups_in_every_match() {
+        // Same bug class — `gensub(/(a)(b)/, "\\2\\1", "g", "abab")` should
+        // produce "baba" (each "ab" swapped to "ba"). gawk 5.4 produces "ba".
+        let mut rt = Runtime::new();
+        let r = super::awk_gensub(
+            &mut rt,
+            "(a)(b)",
+            "\\2\\1",
+            &Value::Str("g".into()),
+            Some("abab".into()),
+        )
+        .unwrap();
+        assert_eq!(r, "baba");
     }
 
     #[test]
