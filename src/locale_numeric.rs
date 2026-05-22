@@ -23,8 +23,10 @@ pub fn set_locale_numeric_from_env() {
     });
 }
 
-/// Thousands separator from `localeconv()` (gawk **`%'`** integer grouping). Empty means “no separator”
-/// in the C locale; callers may fall back to **`,`** for **`%'`** formatting.
+/// Thousands separator from `localeconv()` (gawk **`%'`** integer grouping). Falls back to
+/// **`,`** when the locale has no separator (e.g. `LC_ALL=C` on glibc) — gawk's `%'` flag
+/// always groups regardless of locale, and Apple's libc reports `,` even in C locale, so
+/// using `,` as the fallback makes both platforms behave identically.
 #[cfg(unix)]
 pub fn thousands_sep_from_locale() -> Option<char> {
     use std::ffi::CStr;
@@ -40,7 +42,7 @@ pub fn thousands_sep_from_locale() -> Option<char> {
         let s = CStr::from_ptr(p);
         let b = s.to_bytes();
         if b.is_empty() {
-            None
+            Some(',')
         } else {
             std::str::from_utf8(b).ok().and_then(|t| t.chars().next())
         }
