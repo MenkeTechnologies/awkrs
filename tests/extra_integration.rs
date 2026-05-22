@@ -1102,6 +1102,51 @@ fn log_negative_one_warns_and_prints_plus_nan() {
 }
 
 #[test]
+fn sin_of_infinity_normalizes_nan_sign() {
+    // sin(±inf) is undefined per IEEE 754. Linux glibc may set the NaN sign
+    // bit (would print `-nan`); gawk normalizes to `+nan`. Regression for
+    // the same class of bugs as sqrt(-1)/log(-1) NaN sign on Linux.
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { x = "+inf"+0; print sin(x) }"#, "");
+    assert_eq!(c, 0);
+    assert_eq!(o.trim(), "+nan", "stdout={o:?}");
+}
+
+#[test]
+fn cos_of_infinity_normalizes_nan_sign() {
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { x = "+inf"+0; print cos(x) }"#, "");
+    assert_eq!(c, 0);
+    assert_eq!(o.trim(), "+nan", "stdout={o:?}");
+}
+
+#[test]
+fn exp_of_nan_input_normalizes_sign() {
+    // exp() propagates input NaN's sign bit on Linux; ensure +nan output
+    // regardless of how the NaN was constructed upstream.
+    let (c, o, _) = run_awkrs_stdin("BEGIN { print exp(sqrt(-1)) }", "");
+    assert_eq!(c, 0);
+    assert_eq!(o.trim(), "+nan", "stdout={o:?}");
+}
+
+#[test]
+fn atan2_with_nan_argument_normalizes_sign() {
+    let (c, o, _) = run_awkrs_stdin("BEGIN { print atan2(sqrt(-1), 1) }", "");
+    assert_eq!(c, 0);
+    assert_eq!(o.trim(), "+nan", "stdout={o:?}");
+}
+
+#[test]
+fn inf_minus_inf_is_plus_nan() {
+    // inf - inf is NaN; Rust f64 arithmetic produces a NaN whose sign bit
+    // is implementation-defined. We don't currently normalize this path
+    // (it's an arithmetic expression, not a math builtin), so this test
+    // documents the current observed behavior — if it ever fails on Linux,
+    // arithmetic-path normalization is the follow-up.
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { p = "+inf"+0; print p - p }"#, "");
+    assert_eq!(c, 0);
+    assert_eq!(o.trim(), "+nan", "stdout={o:?}");
+}
+
+#[test]
 fn printf_percent_s_on_nan_matches_print_spelling() {
     // Both `print x` and `printf "%s", x` should produce "+nan" so the two display paths
     // agree (gawk parity).

@@ -4915,7 +4915,10 @@ pub(crate) fn exec_builtin_dispatch(
                 let f = value_to_float(&args[0], prec, round);
                 Value::Mpfr(Float::with_val_round(prec, f.sin(), round).0)
             } else {
-                Value::Num(args[0].as_number().sin())
+                // Normalize NaN sign — Linux glibc sin(±inf) may set the sign bit
+                // (would print as `-nan`); gawk emits `+nan` regardless of platform.
+                let r = args[0].as_number().sin();
+                Value::Num(if r.is_nan() { f64::NAN } else { r })
             }
         }
         "cos" => {
@@ -4930,7 +4933,9 @@ pub(crate) fn exec_builtin_dispatch(
                 let f = value_to_float(&args[0], prec, round);
                 Value::Mpfr(Float::with_val_round(prec, f.cos(), round).0)
             } else {
-                Value::Num(args[0].as_number().cos())
+                // Normalize NaN sign — same Linux glibc cos(±inf) edge case.
+                let r = args[0].as_number().cos();
+                Value::Num(if r.is_nan() { f64::NAN } else { r })
             }
         }
         "atan2" => {
@@ -4946,7 +4951,9 @@ pub(crate) fn exec_builtin_dispatch(
                 let x = value_to_float(&args[1], prec, round);
                 Value::Mpfr(Float::with_val_round(prec, y.atan2(&x), round).0)
             } else {
-                Value::Num(args[0].as_number().atan2(args[1].as_number()))
+                // Normalize NaN sign — atan2 with NaN input propagates the sign bit.
+                let r = args[0].as_number().atan2(args[1].as_number());
+                Value::Num(if r.is_nan() { f64::NAN } else { r })
             }
         }
         "exp" => {
@@ -4961,7 +4968,9 @@ pub(crate) fn exec_builtin_dispatch(
                 let f = value_to_float(&args[0], prec, round);
                 Value::Mpfr(Float::with_val_round(prec, f.exp(), round).0)
             } else {
-                Value::Num(args[0].as_number().exp())
+                // exp(-NaN) propagates the sign bit; normalize for gawk parity.
+                let r = args[0].as_number().exp();
+                Value::Num(if r.is_nan() { f64::NAN } else { r })
             }
         }
         "log" => {
