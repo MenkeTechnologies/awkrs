@@ -747,4 +747,235 @@ mod ast_tests {
     fn ast_stmt_default_v8() {
         let _ = SwitchArm::Default { stmts: vec![] }.clone();
     }
+
+    #[test]
+    fn ast_expr_v53_0() {
+        let _ = Expr::Number(1.0).clone();
+    }
+    #[test]
+    fn ast_expr_v53_1() {
+        let _ = Expr::Str("".into()).clone();
+    }
+    #[test]
+    fn ast_expr_v53_2() {
+        let _ = Expr::Var("x".into()).clone();
+    }
+    #[test]
+    fn ast_expr_v53_3() {
+        let _ = Expr::Field(Box::new(Expr::Number(1.0))).clone();
+    }
+    #[test]
+    fn ast_expr_v53_4() {
+        let _ = Expr::Index {
+            name: "a".into(),
+            indices: vec![Expr::Number(1.0)],
+        }
+        .clone();
+    }
+    #[test]
+    fn ast_expr_v53_5() {
+        let _ = Expr::Call {
+            name: "f".into(),
+            args: vec![],
+        }
+        .clone();
+    }
+    #[test]
+    fn ast_expr_v53_6() {
+        let _ = Expr::Unary {
+            op: UnaryOp::Not,
+            expr: Box::new(Expr::Number(1.0)),
+        }
+        .clone();
+    }
+    #[test]
+    fn ast_expr_v53_7() {
+        let _ = Expr::Binary {
+            op: BinOp::Add,
+            left: Box::new(Expr::Number(1.0)),
+            right: Box::new(Expr::Number(1.0)),
+        }
+        .clone();
+    }
+    #[test]
+    fn ast_expr_v53_8() {
+        let _ = Expr::Assign {
+            name: "x".into(),
+            op: None,
+            rhs: Box::new(Expr::Number(1.0)),
+        }
+        .clone();
+    }
+    #[test]
+    fn ast_expr_v53_9() {
+        let _ = Expr::Ternary {
+            cond: Box::new(Expr::Number(1.0)),
+            then_: Box::new(Expr::Number(1.0)),
+            else_: Box::new(Expr::Number(1.0)),
+        }
+        .clone();
+    }
+    #[test]
+    fn ast_expr_v53_10() {
+        let _ = Expr::In {
+            key: Box::new(Expr::Number(1.0)),
+            arr: "a".into(),
+        }
+        .clone();
+    }
+    #[test]
+    fn ast_expr_v53_11() {
+        let _ = Expr::GetLine {
+            pipe_cmd: None,
+            var: None,
+            redir: GetlineRedir::Primary,
+        }
+        .clone();
+    }
+    #[test]
+    fn ast_expr_v53_12() {
+        let _ = Expr::IncDec {
+            op: IncDecOp::PostInc,
+            target: IncDecTarget::Var("x".into()),
+        }
+        .clone();
+    }
+    #[test]
+    fn ast_expr_v53_13() {
+        let _ = Expr::Tuple(vec![]).clone();
+    }
+    #[test]
+    fn ast_expr_v53_14() {
+        let _ = Expr::IntegerLiteral("1".into()).clone();
+    }
+
+    #[test]
+    fn ast_stmt_v53_0() {
+        let _ = Stmt::Break.clone();
+    }
+    #[test]
+    fn ast_stmt_v53_1() {
+        let _ = Stmt::Continue.clone();
+    }
+    #[test]
+    fn ast_stmt_v53_2() {
+        let _ = Stmt::Next.clone();
+    }
+    #[test]
+    fn ast_stmt_v53_3() {
+        let _ = Stmt::NextFile.clone();
+    }
+    #[test]
+    fn ast_stmt_v53_4() {
+        let _ = Stmt::Exit(None).clone();
+    }
+    #[test]
+    fn ast_stmt_v53_5() {
+        let _ = Stmt::Return(None).clone();
+    }
+    #[test]
+    fn ast_stmt_v53_6() {
+        let _ = Stmt::If {
+            cond: Expr::Number(1.0),
+            then_: vec![],
+            else_: vec![],
+        }
+        .clone();
+    }
+    #[test]
+    fn ast_stmt_v53_7() {
+        let _ = Stmt::While {
+            cond: Expr::Number(1.0),
+            body: vec![],
+        }
+        .clone();
+    }
+    #[test]
+    fn ast_stmt_v53_8() {
+        let _ = Stmt::ForC {
+            init: None,
+            cond: None,
+            iter: None,
+            body: vec![],
+        }
+        .clone();
+    }
+    #[test]
+    fn ast_stmt_v53_9() {
+        let _ = Stmt::ForIn {
+            var: "k".into(),
+            arr: "a".into(),
+            body: vec![],
+        }
+        .clone();
+    }
+    #[test]
+    fn ast_stmt_v53_10() {
+        let _ = Stmt::Block(vec![]).clone();
+    }
+    #[test]
+    fn ast_stmt_v53_11() {
+        let _ = Stmt::Expr(Expr::Number(1.0)).clone();
+    }
+    #[test]
+    fn ast_stmt_v53_12() {
+        let _ = Stmt::Print {
+            args: vec![],
+            redir: None,
+        }
+        .clone();
+    }
+    #[test]
+    fn ast_stmt_v53_13() {
+        let _ = Stmt::Printf {
+            args: vec![],
+            redir: None,
+        }
+        .clone();
+    }
+    #[test]
+    fn ast_stmt_v53_14() {
+        let _ = Stmt::Delete {
+            name: "a".into(),
+            indices: None,
+        }
+        .clone();
+    }
+    #[test]
+    fn ast_stmt_v53_15() {
+        let _ = Stmt::Switch {
+            expr: Expr::Number(1.0),
+            arms: vec![],
+        }
+        .clone();
+    }
+
+    #[test]
+    fn ast_pattern_v53_0() {
+        let _ = Pattern::Begin.clone();
+    }
+    #[test]
+    fn ast_pattern_v53_1() {
+        let _ = Pattern::End.clone();
+    }
+    #[test]
+    fn ast_pattern_v53_2() {
+        let _ = Pattern::BeginFile.clone();
+    }
+    #[test]
+    fn ast_pattern_v53_3() {
+        let _ = Pattern::EndFile.clone();
+    }
+    #[test]
+    fn ast_pattern_v53_4() {
+        let _ = Pattern::Empty.clone();
+    }
+    #[test]
+    fn ast_pattern_v53_5() {
+        let _ = Pattern::Regexp("a".into()).clone();
+    }
+    #[test]
+    fn ast_pattern_v53_6() {
+        let _ = Pattern::Range(Box::new(Pattern::Begin), Box::new(Pattern::End)).clone();
+    }
 }

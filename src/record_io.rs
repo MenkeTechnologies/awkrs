@@ -685,6 +685,29 @@ mod tests {
     }
 
     #[test]
+    fn split_multichar_rs_boundary_v12() {
+        let d = b"abcXYZdef";
+        let r = split_input_into_records(d, "XYZ", None);
+        assert_eq!(r, vec![&b"abc"[..], &b"def"[..]]);
+    }
+
+    #[test]
+    fn split_regex_rs_no_match_v12() {
+        let d = b"abc";
+        let re = regex::bytes::Regex::new("z+").unwrap();
+        let r = split_input_into_records(d, "unused", Some(&re));
+        assert_eq!(r, vec![&b"abc"[..]]);
+    }
+
+    #[test]
+    fn split_regex_rs_start_match_v12() {
+        let d = b"123abc456";
+        let re = regex::bytes::Regex::new("[0-9]+").unwrap();
+        let r = split_input_into_records(d, "unused", Some(&re));
+        assert_eq!(r, vec![&b""[..], &b"abc"[..], &b""[..]]);
+    }
+
+    #[test]
     fn read_next_record_at_boundary_v2() {
         // RS="XY", input="aXY", buffer size might matter but here we test the logic.
         let data = b"aXYb";
@@ -736,5 +759,45 @@ mod tests {
     fn split_multiple_rs_v7() {
         let r = split_input_into_records(b"a\n\nb", "\n", None);
         assert_eq!(r, vec![&b"a"[..], &b""[..], &b"b"[..]]);
+    }
+
+    #[test]
+    fn split_paragraph_multiple_blank_lines_v10() {
+        // RS="" -> paragraph mode
+        let d = b"p1\n\n\n\np2\n\np3";
+        let r = split_input_into_records(d, "", None);
+        assert_eq!(r.len(), 3);
+        assert_eq!(r[0], b"p1");
+        assert_eq!(r[1], b"p2");
+        assert_eq!(r[2], b"p3");
+    }
+
+    #[test]
+    fn split_paragraph_with_whitespace_lines_v10() {
+        // gawk: lines with only spaces/tabs are also blank lines in paragraph mode.
+        let d = b"p1\n  \t  \np2";
+        let r = split_input_into_records(d, "", None);
+        assert_eq!(r.len(), 2);
+        assert_eq!(r[0], b"p1");
+        assert_eq!(r[1], b"p2");
+    }
+
+    #[test]
+    fn split_paragraph_leading_trailing_blank_lines_v11() {
+        let d = b"\n\np1\n\np2\n\n";
+        let r = split_input_into_records(d, "", None);
+        assert_eq!(r.len(), 2);
+        assert_eq!(r[0], b"p1");
+        assert_eq!(r[1], b"p2");
+    }
+
+    #[test]
+    fn split_paragraph_record_with_internal_blank_line_v11() {
+        // Only a line that is ENTIRELY blank (or whitespace) separates paragraphs.
+        let d = b"line1\nline2\n\nline3";
+        let r = split_input_into_records(d, "", None);
+        assert_eq!(r.len(), 2);
+        assert_eq!(r[0], b"line1\nline2");
+        assert_eq!(r[1], b"line3");
     }
 }

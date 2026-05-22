@@ -3662,4 +3662,194 @@ mod peephole_pinning {
     fn compile_exit_v15() {
         assert!(!compile_begin_ops("BEGIN{exit}").is_empty());
     }
+
+    #[test]
+    fn compile_math_v51_0() {
+        assert!(!compile_begin_ops("BEGIN{print 1+1}").is_empty());
+    }
+    #[test]
+    fn compile_math_v51_1() {
+        assert!(!compile_begin_ops("BEGIN{print 1-1}").is_empty());
+    }
+    #[test]
+    fn compile_math_v51_2() {
+        assert!(!compile_begin_ops("BEGIN{print 1*1}").is_empty());
+    }
+    #[test]
+    fn compile_math_v51_3() {
+        assert!(!compile_begin_ops("BEGIN{print 1/1}").is_empty());
+    }
+    #[test]
+    fn compile_math_v51_4() {
+        assert!(!compile_begin_ops("BEGIN{print 1%1}").is_empty());
+    }
+    #[test]
+    fn compile_math_v51_5() {
+        assert!(!compile_begin_ops("BEGIN{print 1^1}").is_empty());
+    }
+    #[test]
+    fn compile_math_v51_6() {
+        assert!(!compile_begin_ops("BEGIN{print 1**1}").is_empty());
+    }
+
+    #[test]
+    fn compile_cmp_v51_0() {
+        assert!(!compile_begin_ops("BEGIN{print 1<1}").is_empty());
+    }
+    #[test]
+    fn compile_cmp_v51_1() {
+        assert!(!compile_begin_ops("BEGIN{print 1<=1}").is_empty());
+    }
+    #[test]
+    fn compile_cmp_v51_2() {
+        assert!(!compile_begin_ops("BEGIN{print 1>1}").is_empty());
+    }
+    #[test]
+    fn compile_cmp_v51_3() {
+        assert!(!compile_begin_ops("BEGIN{print 1>=1}").is_empty());
+    }
+    #[test]
+    fn compile_cmp_v51_4() {
+        assert!(!compile_begin_ops("BEGIN{print 1==1}").is_empty());
+    }
+    #[test]
+    fn compile_cmp_v51_5() {
+        assert!(!compile_begin_ops("BEGIN{print 1!=1}").is_empty());
+    }
+
+    #[test]
+    fn compile_logic_v51_0() {
+        assert!(!compile_begin_ops("BEGIN{print 1&&1}").is_empty());
+    }
+    #[test]
+    fn compile_logic_v51_1() {
+        assert!(!compile_begin_ops("BEGIN{print 1||1}").is_empty());
+    }
+    #[test]
+    fn compile_logic_v51_2() {
+        assert!(!compile_begin_ops("BEGIN{print !1}").is_empty());
+    }
+
+    #[test]
+    fn compile_assign_v51_0() {
+        assert!(!compile_begin_ops("BEGIN{x=1}").is_empty());
+    }
+    #[test]
+    fn compile_assign_v51_1() {
+        assert!(!compile_begin_ops("BEGIN{x+=1}").is_empty());
+    }
+    #[test]
+    fn compile_assign_v51_2() {
+        assert!(!compile_begin_ops("BEGIN{x-=1}").is_empty());
+    }
+    #[test]
+    fn compile_assign_v51_3() {
+        assert!(!compile_begin_ops("BEGIN{x*=1}").is_empty());
+    }
+    #[test]
+    fn compile_assign_v51_4() {
+        assert!(!compile_begin_ops("BEGIN{x/=1}").is_empty());
+    }
+    #[test]
+    fn compile_assign_v51_5() {
+        assert!(!compile_begin_ops("BEGIN{x%=1}").is_empty());
+    }
+    #[test]
+    fn compile_assign_v51_6() {
+        assert!(!compile_begin_ops("BEGIN{x^=1}").is_empty());
+    }
+    #[test]
+    fn compile_assign_v51_7() {
+        assert!(!compile_begin_ops("BEGIN{x**=1}").is_empty());
+    }
+
+    #[test]
+    fn compile_incdec_v51_0() {
+        assert!(!compile_begin_ops("BEGIN{++x}").is_empty());
+    }
+    #[test]
+    fn compile_incdec_v51_1() {
+        assert!(!compile_begin_ops("BEGIN{x++}").is_empty());
+    }
+    #[test]
+    fn compile_incdec_v51_2() {
+        assert!(!compile_begin_ops("BEGIN{--x}").is_empty());
+    }
+    #[test]
+    fn compile_incdec_v51_3() {
+        assert!(!compile_begin_ops("BEGIN{x--}").is_empty());
+    }
+
+    #[test]
+    fn compile_builtin_v51_0() {
+        assert!(!compile_begin_ops("BEGIN{sin(1)}").is_empty());
+    }
+    #[test]
+    fn compile_builtin_v51_1() {
+        assert!(!compile_begin_ops("BEGIN{cos(1)}").is_empty());
+    }
+    #[test]
+    fn compile_builtin_v51_2() {
+        assert!(!compile_begin_ops("BEGIN{exp(1)}").is_empty());
+    }
+    #[test]
+    fn compile_builtin_v51_3() {
+        assert!(!compile_begin_ops("BEGIN{log(1)}").is_empty());
+    }
+    #[test]
+    fn compile_builtin_v51_4() {
+        assert!(!compile_begin_ops("BEGIN{sqrt(1)}").is_empty());
+    }
+    #[test]
+    fn compile_builtin_v51_5() {
+        assert!(!compile_begin_ops("BEGIN{int(1)}").is_empty());
+    }
+    #[test]
+    fn compile_builtin_v51_6() {
+        assert!(!compile_begin_ops("BEGIN{atan2(1,1)}").is_empty());
+    }
+    #[test]
+    fn compile_builtin_v51_7() {
+        assert!(!compile_begin_ops("BEGIN{rand()}").is_empty());
+    }
+    #[test]
+    fn compile_builtin_v51_8() {
+        assert!(!compile_begin_ops("BEGIN{srand()}").is_empty());
+    }
+    #[test]
+    fn compile_builtin_v51_9() {
+        assert!(!compile_begin_ops("BEGIN{length()}").is_empty());
+    }
+    #[test]
+    fn compile_builtin_v51_10() {
+        assert!(!compile_begin_ops("BEGIN{substr(1,1)}").is_empty());
+    }
+    #[test]
+    fn compile_builtin_v51_11() {
+        assert!(!compile_begin_ops("BEGIN{index(1,1)}").is_empty());
+    }
+    #[test]
+    fn compile_builtin_v51_12() {
+        assert!(!compile_begin_ops("BEGIN{match(1,1)}").is_empty());
+    }
+    #[test]
+    fn compile_builtin_v51_13() {
+        assert!(!compile_begin_ops("BEGIN{split(1,a)}").is_empty());
+    }
+    #[test]
+    fn compile_builtin_v51_14() {
+        assert!(!compile_begin_ops("BEGIN{sub(1,1)}").is_empty());
+    }
+    #[test]
+    fn compile_builtin_v51_15() {
+        assert!(!compile_begin_ops("BEGIN{gsub(1,1)}").is_empty());
+    }
+    #[test]
+    fn compile_builtin_v51_16() {
+        assert!(!compile_begin_ops("BEGIN{gensub(1,1,1)}").is_empty());
+    }
+    #[test]
+    fn compile_builtin_v51_17() {
+        assert!(!compile_begin_ops("BEGIN{sprintf(\"\")}").is_empty());
+    }
 }

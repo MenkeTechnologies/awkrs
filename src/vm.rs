@@ -9226,4 +9226,448 @@ mod tests {
             "3\n"
         );
     }
+
+    #[test]
+    fn vm_convfmt_scientific_v14() {
+        assert_eq!(
+            run_begin_capture("BEGIN { CONVFMT=\"%.2e\"; print 123.456 \"\" }"),
+            "1.23e+02\n"
+        );
+    }
+    #[test]
+    fn vm_ofmt_fixed_v14() {
+        assert_eq!(
+            run_begin_capture("BEGIN { OFMT=\"%.2f\"; print 123.456 }"),
+            "123.46\n"
+        );
+    }
+    #[test]
+    fn vm_ignorecase_index_v14() {
+        assert_eq!(
+            run_begin_capture("BEGIN { IGNORECASE=1; print index(\"ABC\", \"a\") }"),
+            "1\n"
+        );
+    }
+    #[test]
+    fn vm_ignorecase_match_v14() {
+        assert_eq!(
+            run_begin_capture("BEGIN { IGNORECASE=1; print (\"ABC\" ~ /a/) }"),
+            "1\n"
+        );
+    }
+    #[test]
+    fn vm_ignorecase_split_v14() {
+        assert_eq!(
+            run_begin_capture("BEGIN { IGNORECASE=1; n=split(\"aXb\", a, /[x]/); print n }"),
+            "2\n"
+        );
+    }
+
+    #[test]
+    fn vm_recursion_with_state_v15() {
+        let out = run_begin_capture(
+            "function f(n, s) { if(n<=0) return s; return f(n-1, s n) } BEGIN { print f(3, \"\") }",
+        );
+        assert_eq!(out, "321\n");
+    }
+
+    #[test]
+    fn vm_array_arg_is_reference_v15() {
+        let out = run_begin_capture("function f(a) { a[1]=10 } BEGIN { a[1]=1; f(a); print a[1] }");
+        assert_eq!(out, "10\n");
+    }
+
+    #[test]
+    fn vm_scalar_arg_is_value_v15() {
+        let out = run_begin_capture("function f(x) { x=10 } BEGIN { x=1; f(x); print x }");
+        assert_eq!(out, "1\n");
+    }
+
+    #[test]
+    fn vm_op_add_v16_0() {
+        assert_eq!(run_begin_capture("BEGIN{print 1+1}"), "2\n");
+    }
+    #[test]
+    fn vm_op_add_v16_1() {
+        assert_eq!(run_begin_capture("BEGIN{print \"1\"+1}"), "2\n");
+    }
+    #[test]
+    fn vm_op_add_v16_2() {
+        assert_eq!(run_begin_capture("BEGIN{print 1+\"1\"}"), "2\n");
+    }
+    #[test]
+    fn vm_op_add_v16_3() {
+        assert_eq!(run_begin_capture("BEGIN{print \"1\"+\"1\"}"), "2\n");
+    }
+
+    #[test]
+    fn vm_op_sub_v16_0() {
+        assert_eq!(run_begin_capture("BEGIN{print 2-1}"), "1\n");
+    }
+    #[test]
+    fn vm_op_sub_v16_1() {
+        assert_eq!(run_begin_capture("BEGIN{print \"2\"-1}"), "1\n");
+    }
+    #[test]
+    fn vm_op_sub_v16_2() {
+        assert_eq!(run_begin_capture("BEGIN{print 2-\"1\"}"), "1\n");
+    }
+    #[test]
+    fn vm_op_sub_v16_3() {
+        assert_eq!(run_begin_capture("BEGIN{print \"2\"-\"1\"}"), "1\n");
+    }
+
+    #[test]
+    fn vm_op_mul_v16_0() {
+        assert_eq!(run_begin_capture("BEGIN{print 2*3}"), "6\n");
+    }
+    #[test]
+    fn vm_op_mul_v16_1() {
+        assert_eq!(run_begin_capture("BEGIN{print \"2\"*3}"), "6\n");
+    }
+    #[test]
+    fn vm_op_mul_v16_2() {
+        assert_eq!(run_begin_capture("BEGIN{print 2*\"3\"}"), "6\n");
+    }
+    #[test]
+    fn vm_op_mul_v16_3() {
+        assert_eq!(run_begin_capture("BEGIN{print \"2\"*\"3\"}"), "6\n");
+    }
+
+    #[test]
+    fn vm_op_div_v16_0() {
+        assert_eq!(run_begin_capture("BEGIN{print 6/2}"), "3\n");
+    }
+    #[test]
+    fn vm_op_div_v16_1() {
+        assert_eq!(run_begin_capture("BEGIN{print \"6\"/2}"), "3\n");
+    }
+    #[test]
+    fn vm_op_div_v16_2() {
+        assert_eq!(run_begin_capture("BEGIN{print 6/\"2\"}"), "3\n");
+    }
+    #[test]
+    fn vm_op_div_v16_3() {
+        assert_eq!(run_begin_capture("BEGIN{print \"6\"/\"2\"}"), "3\n");
+    }
+
+    #[test]
+    fn vm_op_mod_v16_0() {
+        assert_eq!(run_begin_capture("BEGIN{print 5%2}"), "1\n");
+    }
+    #[test]
+    fn vm_op_mod_v16_1() {
+        assert_eq!(run_begin_capture("BEGIN{print \"5\"%2}"), "1\n");
+    }
+    #[test]
+    fn vm_op_mod_v16_2() {
+        assert_eq!(run_begin_capture("BEGIN{print 5%\"2\"}"), "1\n");
+    }
+    #[test]
+    fn vm_op_mod_v16_3() {
+        assert_eq!(run_begin_capture("BEGIN{print \"5\"%\"2\"}"), "1\n");
+    }
+
+    #[test]
+    fn vm_op_pow_v16_0() {
+        assert_eq!(run_begin_capture("BEGIN{print 2^3}"), "8\n");
+    }
+    #[test]
+    fn vm_op_pow_v16_1() {
+        assert_eq!(run_begin_capture("BEGIN{print \"2\"^3}"), "8\n");
+    }
+    #[test]
+    fn vm_op_pow_v16_2() {
+        assert_eq!(run_begin_capture("BEGIN{print 2^\"3\"}"), "8\n");
+    }
+    #[test]
+    fn vm_op_pow_v16_3() {
+        assert_eq!(run_begin_capture("BEGIN{print \"2\"^\"3\"}"), "8\n");
+    }
+
+    #[test]
+    fn vm_op_cmp_eq_v16_0() {
+        assert_eq!(run_begin_capture("BEGIN{print (1==1)}"), "1\n");
+    }
+    #[test]
+    fn vm_op_cmp_eq_v16_1() {
+        assert_eq!(run_begin_capture("BEGIN{print (\"1\"==1)}"), "1\n");
+    }
+    #[test]
+    fn vm_op_cmp_eq_v16_2() {
+        assert_eq!(run_begin_capture("BEGIN{print (1==\"1\")}"), "1\n");
+    }
+    #[test]
+    fn vm_op_cmp_eq_v16_3() {
+        assert_eq!(run_begin_capture("BEGIN{print (\"1\"==\"1\")}"), "1\n");
+    }
+
+    #[test]
+    fn vm_op_cmp_ne_v16_0() {
+        assert_eq!(run_begin_capture("BEGIN{print (1!=2)}"), "1\n");
+    }
+    #[test]
+    fn vm_op_cmp_ne_v16_1() {
+        assert_eq!(run_begin_capture("BEGIN{print (\"1\"!=2)}"), "1\n");
+    }
+    #[test]
+    fn vm_op_cmp_ne_v16_2() {
+        assert_eq!(run_begin_capture("BEGIN{print (1!=\"2\")}"), "1\n");
+    }
+    #[test]
+    fn vm_op_cmp_ne_v16_3() {
+        assert_eq!(run_begin_capture("BEGIN{print (\"1\"!=\"2\")}"), "1\n");
+    }
+
+    #[test]
+    fn vm_op_cmp_lt_v16_0() {
+        assert_eq!(run_begin_capture("BEGIN{print (1<2)}"), "1\n");
+    }
+    #[test]
+    fn vm_op_cmp_lt_v16_1() {
+        assert_eq!(run_begin_capture("BEGIN{print (\"1\"<2)}"), "1\n");
+    }
+    #[test]
+    fn vm_op_cmp_lt_v16_2() {
+        assert_eq!(run_begin_capture("BEGIN{print (1<\"2\")}"), "1\n");
+    }
+    #[test]
+    fn vm_op_cmp_lt_v16_3() {
+        assert_eq!(run_begin_capture("BEGIN{print (\"1\"<\"2\")}"), "1\n");
+    }
+
+    #[test]
+    fn vm_op_cmp_le_v16_0() {
+        assert_eq!(run_begin_capture("BEGIN{print (1<=1)}"), "1\n");
+    }
+    #[test]
+    fn vm_op_cmp_le_v16_1() {
+        assert_eq!(run_begin_capture("BEGIN{print (\"1\"<=1)}"), "1\n");
+    }
+    #[test]
+    fn vm_op_cmp_le_v16_2() {
+        assert_eq!(run_begin_capture("BEGIN{print (1<=\"1\")}"), "1\n");
+    }
+    #[test]
+    fn vm_op_cmp_le_v16_3() {
+        assert_eq!(run_begin_capture("BEGIN{print (\"1\"<=\"1\")}"), "1\n");
+    }
+
+    #[test]
+    fn vm_op_cmp_gt_v16_0() {
+        assert_eq!(run_begin_capture("BEGIN{print (2>1)}"), "1\n");
+    }
+    #[test]
+    fn vm_op_cmp_gt_v16_1() {
+        assert_eq!(run_begin_capture("BEGIN{print (\"2\">1)}"), "1\n");
+    }
+    #[test]
+    fn vm_op_cmp_gt_v16_2() {
+        assert_eq!(run_begin_capture("BEGIN{print (2>\"1\")}"), "1\n");
+    }
+    #[test]
+    fn vm_op_cmp_gt_v16_3() {
+        assert_eq!(run_begin_capture("BEGIN{print (\"2\">\"1\")}"), "1\n");
+    }
+
+    #[test]
+    fn vm_op_cmp_ge_v16_0() {
+        assert_eq!(run_begin_capture("BEGIN{print (2>=2)}"), "1\n");
+    }
+    #[test]
+    fn vm_op_cmp_ge_v16_1() {
+        assert_eq!(run_begin_capture("BEGIN{print (\"2\">=2)}"), "1\n");
+    }
+    #[test]
+    fn vm_op_cmp_ge_v16_2() {
+        assert_eq!(run_begin_capture("BEGIN{print (2>=\"2\")}"), "1\n");
+    }
+    #[test]
+    fn vm_op_cmp_ge_v16_3() {
+        assert_eq!(run_begin_capture("BEGIN{print (\"2\">=\"2\")}"), "1\n");
+    }
+
+    #[test]
+    fn vm_mixed_eq_v64_0() {
+        assert_eq!(run_begin_capture("BEGIN{print (1==\"1.0\")}"), "0\n");
+    }
+    #[test]
+    fn vm_mixed_eq_v64_1() {
+        assert_eq!(run_begin_capture("BEGIN{print (\"1\"==1.0)}"), "1\n");
+    }
+    #[test]
+    fn vm_mixed_lt_v64_0() {
+        assert_eq!(run_begin_capture("BEGIN{print (1<\"2\")}"), "1\n");
+    }
+    #[test]
+    fn vm_mixed_lt_v64_1() {
+        assert_eq!(run_begin_capture("BEGIN{print (\"1\"<2)}"), "1\n");
+    }
+
+    #[test]
+    fn vm_big_math_v64_0() {
+        assert_eq!(
+            run_begin_capture("BEGIN{print 1e20+1e20}"),
+            "200000000000000000000\n"
+        );
+    }
+    #[test]
+    fn vm_big_math_v64_1() {
+        assert_eq!(run_begin_capture("BEGIN{print 1e20-1e20}"), "0\n");
+    }
+    #[test]
+    fn vm_big_math_v64_2() {
+        assert_eq!(
+            run_begin_capture("BEGIN{print 1e20*2}"),
+            "200000000000000000000\n"
+        );
+    }
+    #[test]
+    fn vm_big_math_v64_3() {
+        assert_eq!(
+            run_begin_capture("BEGIN{print 1e20/2}"),
+            "50000000000000000000\n"
+        );
+    }
+
+    #[test]
+    fn vm_str_cat_v64_0() {
+        assert_eq!(run_begin_capture("BEGIN{print \"a\" \"b\" \"c\"}"), "abc\n");
+    }
+    #[test]
+    fn vm_str_cat_v64_1() {
+        assert_eq!(run_begin_capture("BEGIN{print 1 2 3}"), "123\n");
+    }
+
+    #[test]
+    fn vm_idx_v64_0() {
+        assert_eq!(
+            run_begin_capture("BEGIN{print index(\"abcde\",\"cd\")}"),
+            "3\n"
+        );
+    }
+    #[test]
+    fn vm_idx_v64_1() {
+        assert_eq!(
+            run_begin_capture("BEGIN{print index(\"abcde\",\"xyz\")}"),
+            "0\n"
+        );
+    }
+
+    #[test]
+    fn vm_sub_v64_0() {
+        assert_eq!(
+            run_begin_capture("BEGIN{s=\"abc\"; print substr(s,2,1)}"),
+            "b\n"
+        );
+    }
+    #[test]
+    fn vm_sub_v64_1() {
+        assert_eq!(
+            run_begin_capture("BEGIN{print substr(\"abcde\",2,3)}"),
+            "bcd\n"
+        );
+    }
+
+    #[test]
+    fn vm_split_v64_0() {
+        assert_eq!(
+            run_begin_capture("BEGIN{n=split(\"a,b,c\",a,\",\"); print n,a[1],a[2],a[3]}"),
+            "3 a b c\n"
+        );
+    }
+    #[test]
+    fn vm_split_v64_1() {
+        assert_eq!(
+            run_begin_capture("BEGIN{n=split(\"a b c\",a); print n,a[1],a[2],a[3]}"),
+            "3 a b c\n"
+        );
+    }
+
+    #[test]
+    fn vm_arr_v64_0() {
+        assert_eq!(
+            run_begin_capture("BEGIN{a[1]=1; a[1.0]=2; print a[1]}"),
+            "2\n"
+        );
+    }
+    #[test]
+    fn vm_arr_v64_1() {
+        assert_eq!(
+            run_begin_capture("BEGIN{a[\"1\"]=1; a[1]=2; print a[\"1\"]}"),
+            "2\n"
+        );
+    }
+
+    #[test]
+    fn vm_time_v67_0() {
+        assert_eq!(
+            run_begin_capture("BEGIN{print strftime(\"%Y\", 0, 1)}"),
+            "1970\n"
+        );
+    }
+    #[test]
+    fn vm_time_v67_1() {
+        assert_eq!(
+            run_begin_capture("BEGIN{print strftime(\"%m\", 0, 1)}"),
+            "01\n"
+        );
+    }
+    #[test]
+    fn vm_time_v67_2() {
+        assert_eq!(
+            run_begin_capture("BEGIN{print strftime(\"%d\", 0, 1)}"),
+            "01\n"
+        );
+    }
+    #[test]
+    fn vm_time_v67_3() {
+        assert_eq!(
+            run_begin_capture("BEGIN{print strftime(\"%H\", 0, 1)}"),
+            "00\n"
+        );
+    }
+    #[test]
+    fn vm_time_v67_4() {
+        assert_eq!(
+            run_begin_capture("BEGIN{print strftime(\"%M\", 0, 1)}"),
+            "00\n"
+        );
+    }
+    #[test]
+    fn vm_time_v67_5() {
+        assert_eq!(
+            run_begin_capture("BEGIN{print strftime(\"%S\", 0, 1)}"),
+            "00\n"
+        );
+    }
+
+    #[test]
+    fn vm_mktime_v67_0() {
+        assert_eq!(
+            run_begin_capture("BEGIN{print mktime(\"1970 01 01 00 00 00\", 1)}"),
+            "0\n"
+        );
+    }
+    #[test]
+    fn vm_mktime_v67_1() {
+        assert_eq!(
+            run_begin_capture("BEGIN{print mktime(\"2023 01 01 00 00 00\", 1)}"),
+            "1672531200\n"
+        );
+    }
+
+    #[test]
+    fn vm_systime_v67() {
+        assert!(run_begin_capture("BEGIN{print (systime() > 0)}").contains("1"));
+    }
+
+    #[test]
+    fn vm_atan2_v67() {
+        assert_eq!(run_begin_capture("BEGIN{print atan2(0, 1)}"), "0\n");
+    }
+    #[test]
+    fn vm_atan2_v67_1() {
+        assert_eq!(run_begin_capture("BEGIN{print atan2(1, 0)}"), "1.5708\n");
+    }
 }

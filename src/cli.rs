@@ -608,4 +608,153 @@ mod tests {
                 .non_decimal_data
         );
     }
+
+    #[test]
+    fn cli_f_v55_0() {
+        assert_eq!(
+            Args::try_parse_from(["awkrs", "-F", ":", "1"])
+                .unwrap()
+                .field_sep,
+            Some(":".into())
+        );
+    }
+    #[test]
+    fn cli_f_v55_1() {
+        assert_eq!(
+            Args::try_parse_from(["awkrs", "-F:", "1"])
+                .unwrap()
+                .field_sep,
+            Some(":".into())
+        );
+    }
+    #[test]
+    fn cli_v_v55_0() {
+        assert_eq!(
+            Args::try_parse_from(["awkrs", "-v", "x=1", "1"])
+                .unwrap()
+                .assigns[0],
+            "x=1"
+        );
+    }
+    #[test]
+    fn cli_v_v55_1() {
+        assert_eq!(
+            Args::try_parse_from(["awkrs", "-vx=1", "1"])
+                .unwrap()
+                .assigns[0],
+            "x=1"
+        );
+    }
+    #[test]
+    fn cli_f_file_v55() {
+        assert_eq!(
+            Args::try_parse_from(["awkrs", "-f", "a.awk", "1"])
+                .unwrap()
+                .progfiles[0]
+                .to_str()
+                .unwrap(),
+            "a.awk"
+        );
+    }
+    #[test]
+    fn cli_e_source_v55() {
+        assert_eq!(
+            Args::try_parse_from(["awkrs", "-e", "1", "1"])
+                .unwrap()
+                .source[0],
+            "1"
+        );
+    }
+
+    #[test]
+    fn cli_posix_v55() {
+        assert!(Args::try_parse_from(["awkrs", "-P", "1"]).unwrap().posix);
+    }
+    #[test]
+    fn cli_traditional_v55() {
+        assert!(
+            Args::try_parse_from(["awkrs", "-c", "1"])
+                .unwrap()
+                .traditional
+        );
+    }
+    #[test]
+    fn cli_bignum_v55() {
+        assert!(Args::try_parse_from(["awkrs", "-M", "1"]).unwrap().bignum);
+    }
+    #[test]
+    fn cli_sandbox_v55() {
+        assert!(Args::try_parse_from(["awkrs", "-S", "1"]).unwrap().sandbox);
+    }
+    #[test]
+    fn cli_lint_v55() {
+        assert!(Args::try_parse_from(["awkrs", "-L", "1"])
+            .unwrap()
+            .lint
+            .is_some());
+    }
+    #[test]
+    fn cli_lint_old_v55() {
+        assert!(Args::try_parse_from(["awkrs", "-t", "1"]).unwrap().lint_old);
+    }
+    #[test]
+    fn cli_non_decimal_v55() {
+        assert!(
+            Args::try_parse_from(["awkrs", "-n", "1"])
+                .unwrap()
+                .non_decimal_data
+        );
+    }
+    #[test]
+    fn cli_use_lc_numeric_v55() {
+        assert!(
+            Args::try_parse_from(["awkrs", "-N", "1"])
+                .unwrap()
+                .use_lc_numeric
+        );
+    }
+    #[test]
+    fn cli_re_interval_v55() {
+        assert!(
+            Args::try_parse_from(["awkrs", "-r", "1"])
+                .unwrap()
+                .re_interval
+        );
+    }
+    #[test]
+    fn cli_csv_v55() {
+        assert!(Args::try_parse_from(["awkrs", "--csv", "1"]).unwrap().csv);
+    }
+    #[test]
+    fn cli_trace_v55() {
+        assert!(
+            Args::try_parse_from(["awkrs", "--trace", "1"])
+                .unwrap()
+                .trace
+        );
+    }
+    #[test]
+    fn cli_gen_pot_v55() {
+        assert!(
+            Args::try_parse_from(["awkrs", "--gen-pot", "1"])
+                .unwrap()
+                .gen_pot
+        );
+    }
+    #[test]
+    fn cli_copyright_v55() {
+        assert!(
+            Args::try_parse_from(["awkrs", "-C", "1"])
+                .unwrap()
+                .copyright
+        );
+    }
+    #[test]
+    fn cli_version_v55() {
+        assert!(
+            Args::try_parse_from(["awkrs", "-V", "1"])
+                .unwrap()
+                .show_version
+        );
+    }
 }

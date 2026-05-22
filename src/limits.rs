@@ -21,11 +21,11 @@ mod tests {
 
     #[test]
     fn max_user_call_depth_is_positive_v7() {
-        assert!(super::MAX_USER_CALL_DEPTH > 0);
+        assert!(std::hint::black_box(super::MAX_USER_CALL_DEPTH) > 0);
     }
 
     #[test]
     fn limits_cap_is_small_v29() {
-        assert!(super::MAX_USER_CALL_DEPTH < 1000);
+        assert!(std::hint::black_box(super::MAX_USER_CALL_DEPTH) < 1000);
     }
 }

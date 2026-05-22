@@ -1,9 +1,8 @@
 # `print` of an infinity goes through OFMT (`%.6g`), which produces "+inf" — matches gawk.
 # `printf "%s"` of the same value produces the same spelling so the two paths agree.
-# (NaN behavior is identical but constructing a NaN portably requires sqrt(-1) which
-# emits a warning to stderr in both awks; this case avoids the warning by using exp.)
+# Inf is constructed via string coercion to avoid `exp(800)` warning on older gawk.
 BEGIN {
-    x = exp(800)
+    x = "+inf"+0
     print x
     printf "%s\n", x
     printf "%g\n", x

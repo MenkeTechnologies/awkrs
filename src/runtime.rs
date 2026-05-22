@@ -4634,6 +4634,61 @@ mod extra_runtime_tests {
     }
     #[test]
     fn runtime_fs_initial_v9() {
-        assert!(super::Runtime::new().vars.get("FS").is_none());
+        assert!(!super::Runtime::new().vars.contains_key("FS"));
+    }
+
+    #[test]
+    fn runtime_ors_initial_v56() {
+        assert_eq!(
+            super::Runtime::new().vars.get("ORS").unwrap().as_str(),
+            "\n"
+        );
+    }
+    #[test]
+    fn runtime_ofs_initial_v56() {
+        assert_eq!(super::Runtime::new().vars.get("OFS").unwrap().as_str(), " ");
+    }
+    #[test]
+    fn runtime_ofmt_initial_v56() {
+        assert_eq!(
+            super::Runtime::new().vars.get("OFMT").unwrap().as_str(),
+            "%.6g"
+        );
+    }
+    #[test]
+    fn runtime_convfmt_initial_v56() {
+        assert_eq!(
+            super::Runtime::new().vars.get("CONVFMT").unwrap().as_str(),
+            "%.6g"
+        );
+    }
+    #[test]
+    fn runtime_subsep_initial_v56() {
+        assert_eq!(
+            super::Runtime::new().vars.get("SUBSEP").unwrap().as_str(),
+            "\x1c"
+        );
+    }
+
+    #[test]
+    fn runtime_field_sep_v56_0() {
+        let mut rt = super::Runtime::new();
+        rt.set_field_sep_split(":", "a:b:c");
+        rt.ensure_fields_split();
+        assert_eq!(rt.nf(), 3);
+    }
+    #[test]
+    fn runtime_field_sep_v56_1() {
+        let mut rt = super::Runtime::new();
+        rt.set_field_sep_split(",", "a,b,c");
+        rt.ensure_fields_split();
+        assert_eq!(rt.nf(), 3);
+    }
+    #[test]
+    fn runtime_field_sep_v56_2() {
+        let mut rt = super::Runtime::new();
+        rt.set_field_sep_split(" ", "a b c");
+        rt.ensure_fields_split();
+        assert_eq!(rt.nf(), 3);
     }
 }

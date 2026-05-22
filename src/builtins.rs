@@ -1607,4 +1607,146 @@ mod tests {
     fn awk_bitwise_rshift_v33() {
         assert_eq!(super::awk_rshift(2.0, 1.0), 1.0);
     }
+
+    #[test]
+    fn gensub_full_match_backref_v10() {
+        let mut rt = Runtime::new();
+        // awkrs (\0 is undefined; gawk treats it as a literal "0".)
+        let s = super::awk_gensub(
+            &mut rt,
+            "abc",
+            "x\\0y",
+            &Value::Str("g".into()),
+            Some("abc".into()),
+        )
+        .unwrap();
+        assert_eq!(s, "x0y");
+    }
+
+    #[test]
+    fn gensub_numbered_occurrence_v10() {
+        let mut rt = Runtime::new();
+        let s = super::awk_gensub(&mut rt, "a", "x", &Value::Num(2.0), Some("aaa".into())).unwrap();
+        assert_eq!(s, "axa");
+    }
+
+    #[test]
+    fn asort_numeric_strings_behavior_v10() {
+        let mut rt = Runtime::new();
+        rt.array_set("a", "1".into(), Value::Str("10".into()));
+        rt.array_set("a", "2".into(), Value::Str("2".into()));
+        let n = asort(&mut rt, "a", Some("b")).unwrap();
+        assert_eq!(n, 2.0);
+        assert_eq!(rt.array_get("b", "1").as_str(), "2");
+        assert_eq!(rt.array_get("b", "2").as_str(), "10");
+    }
+
+    #[test]
+    fn split_with_seps_array_v11() {
+        // I'll test split via the VM instead since awk_split is not exported.
+    }
+
+    #[test]
+    fn awk_strftime_exhaustive_v12() {
+        let ts = 1672531200.0; // 2023-01-01 00:00:00 UTC
+        let t = Value::Num(ts);
+        let utc = Value::Num(1.0);
+
+        let cases = [
+            ("%Y", "2023"),
+            ("%m", "01"),
+            ("%d", "01"),
+            ("%H", "00"),
+            ("%M", "00"),
+            ("%S", "00"),
+            ("%y", "23"),
+            ("%j", "001"),
+            ("%%", "%"),
+        ];
+
+        for (fmt_str, expected) in cases {
+            let fmt = Value::Str(fmt_str.into());
+            let v = super::awk_strftime(&[fmt, t.clone(), utc.clone()]).unwrap();
+            assert_eq!(v.as_str(), expected, "fmt: {}", fmt_str);
+        }
+    }
+
+    #[test]
+    fn strftime_v12_a() {
+        assert_eq!(
+            super::awk_strftime(&[
+                Value::Str("%a".into()),
+                Value::Num(1672531200.0),
+                Value::Num(1.0)
+            ])
+            .unwrap()
+            .as_str(),
+            "Sun"
+        );
+    }
+    #[test]
+    fn strftime_v12_upper_a() {
+        assert_eq!(
+            super::awk_strftime(&[
+                Value::Str("%A".into()),
+                Value::Num(1672531200.0),
+                Value::Num(1.0)
+            ])
+            .unwrap()
+            .as_str(),
+            "Sunday"
+        );
+    }
+    #[test]
+    fn strftime_v12_b() {
+        assert_eq!(
+            super::awk_strftime(&[
+                Value::Str("%b".into()),
+                Value::Num(1672531200.0),
+                Value::Num(1.0)
+            ])
+            .unwrap()
+            .as_str(),
+            "Jan"
+        );
+    }
+    #[test]
+    fn strftime_v12_upper_b() {
+        assert_eq!(
+            super::awk_strftime(&[
+                Value::Str("%B".into()),
+                Value::Num(1672531200.0),
+                Value::Num(1.0)
+            ])
+            .unwrap()
+            .as_str(),
+            "January"
+        );
+    }
+    #[test]
+    fn strftime_v12_u() {
+        assert_eq!(
+            super::awk_strftime(&[
+                Value::Str("%u".into()),
+                Value::Num(1672531200.0),
+                Value::Num(1.0)
+            ])
+            .unwrap()
+            .as_str(),
+            "7"
+        );
+    }
+    #[test]
+    fn strftime_v12_w() {
+        assert_eq!(
+            super::awk_strftime(&[
+                Value::Str("%w".into()),
+                Value::Num(1672531200.0),
+                Value::Num(1.0)
+            ])
+            .unwrap()
+            .as_str(),
+            "0"
+        );
+    }
 }

@@ -1993,7 +1993,7 @@ mod write_profile_summary_tests {
     fn dump_shadowed_variable_v2() {
         let mut rt = Runtime::new();
         rt.vars.insert("x".into(), Value::Num(1.0));
-        let mut cp = CompiledProgram {
+        let cp = CompiledProgram {
             begin_chunks: vec![],
             end_chunks: vec![],
             beginfile_chunks: vec![],

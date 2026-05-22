@@ -2703,4 +2703,746 @@ mod tests {
     fn lex_caret_v38() {
         assert_eq!(tokens_no_regex("^"), vec![Token::Caret]);
     }
+
+    #[test]
+    fn lex_string_obscure_escapes_v10() {
+        assert_eq!(
+            tokens_no_regex("\"\\a\\v\\?\""),
+            vec![Token::String("\x07\x0b?".into())]
+        );
+    }
+
+    #[test]
+    fn lex_string_stray_backslash_v10() {
+        // awkrs: unknown escape (\z) drops the backslash and emits just the character
+        assert_eq!(tokens_no_regex("\"\\z\""), vec![Token::String("z".into())]);
+    }
+
+    #[test]
+    fn lex_hex_escape_fixed_length_v10() {
+        // \x followed by up to 2 hex digits in some implementations,
+        // but gawk consumes all hex digits? Let's check awkrs.
+        // Looking at lexer.rs: consumes ALL hex digits.
+        assert_eq!(
+            tokens_no_regex("\"\\x41\""),
+            vec![Token::String("A".into())]
+        );
+    }
+
+    #[test]
+    fn lex_hex_v13_00() {
+        assert_eq!(
+            tokens_no_regex("\"\\x00\""),
+            vec![Token::String("\x00".into())]
+        );
+    }
+    #[test]
+    fn lex_hex_v13_0a() {
+        assert_eq!(
+            tokens_no_regex("\"\\x0A\""),
+            vec![Token::String("\n".into())]
+        );
+    }
+    #[test]
+    fn lex_hex_v13_7f() {
+        assert_eq!(
+            tokens_no_regex("\"\\x7F\""),
+            vec![Token::String("\x7f".into())]
+        );
+    }
+    #[test]
+    fn lex_hex_v13_ff() {
+        assert_eq!(
+            tokens_no_regex("\"\\xFF\""),
+            vec![Token::String("ÿ".into())]
+        );
+    }
+
+    #[test]
+    fn lex_oct_v13_000() {
+        assert_eq!(
+            tokens_no_regex("\"\\000\""),
+            vec![Token::String("\x00".into())]
+        );
+    }
+    #[test]
+    fn lex_oct_v13_012() {
+        assert_eq!(
+            tokens_no_regex("\"\\012\""),
+            vec![Token::String("\n".into())]
+        );
+    }
+    #[test]
+    fn lex_oct_v13_101() {
+        assert_eq!(
+            tokens_no_regex("\"\\101\""),
+            vec![Token::String("A".into())]
+        );
+    }
+    #[test]
+    fn lex_oct_v13_377() {
+        assert_eq!(
+            tokens_no_regex("\"\\377\""),
+            vec![Token::String("ÿ".into())]
+        );
+    }
+
+    #[test]
+    fn lex_k_begin_v54() {
+        assert_eq!(tokens_no_regex("BEGIN"), vec![Token::Begin]);
+    }
+    #[test]
+    fn lex_k_end_v54() {
+        assert_eq!(tokens_no_regex("END"), vec![Token::End]);
+    }
+    #[test]
+    fn lex_k_if_v54() {
+        assert_eq!(tokens_no_regex("if"), vec![Token::If]);
+    }
+    #[test]
+    fn lex_k_else_v54() {
+        assert_eq!(tokens_no_regex("else"), vec![Token::Else]);
+    }
+    #[test]
+    fn lex_k_while_v54() {
+        assert_eq!(tokens_no_regex("while"), vec![Token::While]);
+    }
+    #[test]
+    fn lex_k_do_v54() {
+        assert_eq!(tokens_no_regex("do"), vec![Token::Do]);
+    }
+    #[test]
+    fn lex_k_for_v54() {
+        assert_eq!(tokens_no_regex("for"), vec![Token::For]);
+    }
+    #[test]
+    fn lex_k_break_v54() {
+        assert_eq!(tokens_no_regex("break"), vec![Token::Break]);
+    }
+    #[test]
+    fn lex_k_continue_v54() {
+        assert_eq!(tokens_no_regex("continue"), vec![Token::Continue]);
+    }
+    #[test]
+    fn lex_k_delete_v54() {
+        assert_eq!(tokens_no_regex("delete"), vec![Token::Delete]);
+    }
+    #[test]
+    fn lex_k_exit_v54() {
+        assert_eq!(tokens_no_regex("exit"), vec![Token::Exit]);
+    }
+    #[test]
+    fn lex_k_next_v54() {
+        assert_eq!(tokens_no_regex("next"), vec![Token::Next]);
+    }
+    #[test]
+    fn lex_k_nextfile_v54() {
+        assert_eq!(tokens_no_regex("nextfile"), vec![Token::NextFile]);
+    }
+    #[test]
+    fn lex_k_return_v54() {
+        assert_eq!(tokens_no_regex("return"), vec![Token::Return]);
+    }
+    #[test]
+    fn lex_k_function_v54() {
+        assert_eq!(tokens_no_regex("function"), vec![Token::Function]);
+    }
+    #[test]
+    fn lex_k_in_v54() {
+        assert_eq!(tokens_no_regex("in"), vec![Token::In]);
+    }
+    #[test]
+    fn lex_k_print_v54() {
+        assert_eq!(tokens_no_regex("print"), vec![Token::Print]);
+    }
+    #[test]
+    fn lex_k_printf_v54() {
+        assert_eq!(tokens_no_regex("printf"), vec![Token::Printf]);
+    }
+    #[test]
+    fn lex_k_getline_v54() {
+        assert_eq!(tokens_no_regex("getline"), vec![Token::Getline]);
+    }
+
+    #[test]
+    fn lex_p_lbrace_v54() {
+        assert_eq!(tokens_no_regex("{"), vec![Token::LBrace]);
+    }
+    #[test]
+    fn lex_p_rbrace_v54() {
+        assert_eq!(tokens_no_regex("}"), vec![Token::RBrace]);
+    }
+    #[test]
+    fn lex_p_lparen_v54() {
+        assert_eq!(tokens_no_regex("("), vec![Token::LParen]);
+    }
+    #[test]
+    fn lex_p_rparen_v54() {
+        assert_eq!(tokens_no_regex(")"), vec![Token::RParen]);
+    }
+    #[test]
+    fn lex_p_lbracket_v54() {
+        assert_eq!(tokens_no_regex("["), vec![Token::LBracket]);
+    }
+    #[test]
+    fn lex_p_rbracket_v54() {
+        assert_eq!(tokens_no_regex("]"), vec![Token::RBracket]);
+    }
+    #[test]
+    fn lex_p_semi_v54() {
+        assert_eq!(tokens_no_regex(";"), vec![Token::Semi]);
+    }
+    #[test]
+    fn lex_p_comma_v54() {
+        assert_eq!(tokens_no_regex(","), vec![Token::Comma]);
+    }
+    #[test]
+    fn lex_p_colon_v54() {
+        assert_eq!(tokens_no_regex(":"), vec![Token::Colon]);
+    }
+    #[test]
+    fn lex_p_question_v54() {
+        assert_eq!(tokens_no_regex("?"), vec![Token::Question]);
+    }
+    #[test]
+    fn lex_p_at_v54() {
+        assert_eq!(tokens_no_regex("@"), vec![Token::At]);
+    }
+    #[test]
+    fn lex_p_dollar_v54() {
+        assert_eq!(tokens_no_regex("$"), vec![Token::Dollar]);
+    }
+
+    #[test]
+    fn lex_o_plus_v54() {
+        assert_eq!(tokens_no_regex("+"), vec![Token::Plus]);
+    }
+    #[test]
+    fn lex_o_minus_v54() {
+        assert_eq!(tokens_no_regex("-"), vec![Token::Minus]);
+    }
+    #[test]
+    fn lex_o_star_v54() {
+        assert_eq!(tokens_no_regex("*"), vec![Token::Star]);
+    }
+    #[test]
+    fn lex_o_slash_v54() {
+        assert_eq!(tokens_no_regex("/"), vec![Token::Slash]);
+    }
+    #[test]
+    fn lex_o_percent_v54() {
+        assert_eq!(tokens_no_regex("%"), vec![Token::Percent]);
+    }
+    #[test]
+    fn lex_o_caret_v54() {
+        assert_eq!(tokens_no_regex("^"), vec![Token::Caret]);
+    }
+    #[test]
+    fn lex_o_assign_v54() {
+        assert_eq!(tokens_no_regex("="), vec![Token::Assign]);
+    }
+    #[test]
+    fn lex_o_lt_v54() {
+        assert_eq!(tokens_no_regex("<"), vec![Token::Lt]);
+    }
+    #[test]
+    fn lex_o_gt_v54() {
+        assert_eq!(tokens_no_regex(">"), vec![Token::Gt]);
+    }
+    #[test]
+    fn lex_o_bang_v54() {
+        assert_eq!(tokens_no_regex("!"), vec![Token::Bang]);
+    }
+    #[test]
+    fn lex_o_tilde_v54() {
+        assert_eq!(tokens_no_regex("~"), vec![Token::Tilde]);
+    }
+
+    #[test]
+    fn lex_m_plusplus_v54() {
+        assert_eq!(tokens_no_regex("++"), vec![Token::PlusPlus]);
+    }
+    #[test]
+    fn lex_m_minusminus_v54() {
+        assert_eq!(tokens_no_regex("--"), vec![Token::MinusMinus]);
+    }
+    #[test]
+    fn lex_m_pow_v54() {
+        assert_eq!(tokens_no_regex("**"), vec![Token::StarStar]);
+    }
+    #[test]
+    fn lex_m_eq_v54() {
+        assert_eq!(tokens_no_regex("=="), vec![Token::Eq]);
+    }
+    #[test]
+    fn lex_m_ne_v54() {
+        assert_eq!(tokens_no_regex("!="), vec![Token::Ne]);
+    }
+    #[test]
+    fn lex_m_le_v54() {
+        assert_eq!(tokens_no_regex("<="), vec![Token::Le]);
+    }
+    #[test]
+    fn lex_m_ge_v54() {
+        assert_eq!(tokens_no_regex(">="), vec![Token::Ge]);
+    }
+    #[test]
+    fn lex_m_and_v54() {
+        assert_eq!(tokens_no_regex("&&"), vec![Token::And]);
+    }
+    #[test]
+    fn lex_m_or_v54() {
+        assert_eq!(tokens_no_regex("||"), vec![Token::Or]);
+    }
+    #[test]
+    fn lex_m_notmatch_v54() {
+        assert_eq!(tokens_no_regex("!~"), vec![Token::NotTilde]);
+    }
+
+    #[test]
+    fn lex_m_add_assign_v54() {
+        assert_eq!(tokens_no_regex("+="), vec![Token::AddAssign]);
+    }
+    #[test]
+    fn lex_m_sub_assign_v54() {
+        assert_eq!(tokens_no_regex("-="), vec![Token::SubAssign]);
+    }
+    #[test]
+    fn lex_m_mul_assign_v54() {
+        assert_eq!(tokens_no_regex("*="), vec![Token::MulAssign]);
+    }
+    #[test]
+    fn lex_m_div_assign_v54() {
+        assert_eq!(tokens_no_regex("/="), vec![Token::DivAssign]);
+    }
+    #[test]
+    fn lex_m_mod_assign_v54() {
+        assert_eq!(tokens_no_regex("%="), vec![Token::ModAssign]);
+    }
+    #[test]
+    fn lex_m_pow_assign_v54() {
+        assert_eq!(tokens_no_regex("^="), vec![Token::PowAssign]);
+    }
+    #[test]
+    fn lex_m_pow_assign_starstar_v54() {
+        assert_eq!(tokens_no_regex("**="), vec![Token::PowAssign]);
+    }
+
+    #[test]
+    fn lex_v_num_v54() {
+        assert_eq!(tokens_no_regex("1.23"), vec![Token::Number(1.23)]);
+    }
+    #[test]
+    fn lex_v_str_v54() {
+        assert_eq!(tokens_no_regex("\"a\""), vec![Token::String("a".into())]);
+    }
+    #[test]
+    fn lex_v_ident_v54() {
+        assert_eq!(tokens_no_regex("x"), vec![Token::Ident("x".into())]);
+    }
+
+    #[test]
+    fn lex_v_num_v59_0() {
+        assert_eq!(
+            tokens_no_regex("0"),
+            vec![Token::IntegerLiteral("0".into())]
+        );
+    }
+    #[test]
+    fn lex_v_num_v59_1() {
+        assert_eq!(
+            tokens_no_regex("123"),
+            vec![Token::IntegerLiteral("123".into())]
+        );
+    }
+    #[test]
+    fn lex_v_num_v59_2() {
+        assert_eq!(tokens_no_regex("1.23"), vec![Token::Number(1.23)]);
+    }
+    #[test]
+    fn lex_v_num_v59_3() {
+        assert_eq!(tokens_no_regex(".23"), vec![Token::Number(0.23)]);
+    }
+    #[test]
+    fn lex_v_num_v59_4() {
+        assert_eq!(tokens_no_regex("1."), vec![Token::Number(1.0)]);
+    }
+    #[test]
+    fn lex_v_num_v59_5() {
+        assert_eq!(tokens_no_regex("1e2"), vec![Token::Number(100.0)]);
+    }
+    #[test]
+    fn lex_v_num_v59_6() {
+        assert_eq!(tokens_no_regex("1E2"), vec![Token::Number(100.0)]);
+    }
+    #[test]
+    fn lex_v_num_v59_7() {
+        assert_eq!(tokens_no_regex("1.2e2"), vec![Token::Number(120.0)]);
+    }
+    #[test]
+    fn lex_v_num_v59_8() {
+        assert_eq!(tokens_no_regex("1.2e-2"), vec![Token::Number(0.012)]);
+    }
+
+    #[test]
+    fn lex_v_str_v59_0() {
+        assert_eq!(tokens_no_regex("\"\""), vec![Token::String("".into())]);
+    }
+    #[test]
+    fn lex_v_str_v59_1() {
+        assert_eq!(tokens_no_regex("\"a\""), vec![Token::String("a".into())]);
+    }
+    #[test]
+    fn lex_v_str_v59_2() {
+        assert_eq!(
+            tokens_no_regex("\"\\\"\""),
+            vec![Token::String("\"".into())]
+        );
+    }
+    #[test]
+    fn lex_v_str_v59_3() {
+        assert_eq!(
+            tokens_no_regex("\"\\\\\""),
+            vec![Token::String("\\".into())]
+        );
+    }
+
+    #[test]
+    fn lex_v_ident_v59_0() {
+        assert_eq!(tokens_no_regex("a"), vec![Token::Ident("a".into())]);
+    }
+    #[test]
+    fn lex_v_ident_v59_1() {
+        assert_eq!(tokens_no_regex("_"), vec![Token::Ident("_".into())]);
+    }
+    #[test]
+    fn lex_v_ident_v59_2() {
+        assert_eq!(tokens_no_regex("a1"), vec![Token::Ident("a1".into())]);
+    }
+    #[test]
+    fn lex_v_ident_v59_3() {
+        assert_eq!(tokens_no_regex("_1"), vec![Token::Ident("_1".into())]);
+    }
+
+    #[test]
+    fn lex_p_semi_v59() {
+        assert_eq!(tokens_no_regex(";;"), vec![Token::Semi, Token::Semi]);
+    }
+    #[test]
+    fn lex_p_nl_v59() {
+        assert_eq!(
+            tokens_no_regex("\n\n"),
+            vec![Token::Newline, Token::Newline]
+        );
+    }
+
+    #[test]
+    fn lex_lc_begin_v62() {
+        assert_eq!(tokens_no_regex("begin"), vec![Token::Ident("begin".into())]);
+    }
+    #[test]
+    fn lex_lc_end_v62() {
+        assert_eq!(tokens_no_regex("end"), vec![Token::Ident("end".into())]);
+    }
+    #[test]
+    fn lex_lc_if_v62() {
+        assert_eq!(tokens_no_regex("IF"), vec![Token::Ident("IF".into())]);
+    }
+    #[test]
+    fn lex_lc_else_v62() {
+        assert_eq!(tokens_no_regex("ELSE"), vec![Token::Ident("ELSE".into())]);
+    }
+    #[test]
+    fn lex_lc_while_v62() {
+        assert_eq!(tokens_no_regex("WHILE"), vec![Token::Ident("WHILE".into())]);
+    }
+    #[test]
+    fn lex_lc_do_v62() {
+        assert_eq!(tokens_no_regex("DO"), vec![Token::Ident("DO".into())]);
+    }
+    #[test]
+    fn lex_lc_for_v62() {
+        assert_eq!(tokens_no_regex("FOR"), vec![Token::Ident("FOR".into())]);
+    }
+    #[test]
+    fn lex_lc_break_v62() {
+        assert_eq!(tokens_no_regex("BREAK"), vec![Token::Ident("BREAK".into())]);
+    }
+    #[test]
+    fn lex_lc_continue_v62() {
+        assert_eq!(
+            tokens_no_regex("CONTINUE"),
+            vec![Token::Ident("CONTINUE".into())]
+        );
+    }
+    #[test]
+    fn lex_lc_delete_v62() {
+        assert_eq!(
+            tokens_no_regex("DELETE"),
+            vec![Token::Ident("DELETE".into())]
+        );
+    }
+    #[test]
+    fn lex_lc_exit_v62() {
+        assert_eq!(tokens_no_regex("EXIT"), vec![Token::Ident("EXIT".into())]);
+    }
+    #[test]
+    fn lex_lc_next_v62() {
+        assert_eq!(tokens_no_regex("NEXT"), vec![Token::Ident("NEXT".into())]);
+    }
+    #[test]
+    fn lex_lc_nextfile_v62() {
+        assert_eq!(
+            tokens_no_regex("NEXTFILE"),
+            vec![Token::Ident("NEXTFILE".into())]
+        );
+    }
+    #[test]
+    fn lex_lc_return_v62() {
+        assert_eq!(
+            tokens_no_regex("RETURN"),
+            vec![Token::Ident("RETURN".into())]
+        );
+    }
+    #[test]
+    fn lex_lc_function_v62() {
+        assert_eq!(
+            tokens_no_regex("FUNCTION"),
+            vec![Token::Ident("FUNCTION".into())]
+        );
+    }
+    #[test]
+    fn lex_lc_in_v62() {
+        assert_eq!(tokens_no_regex("IN"), vec![Token::Ident("IN".into())]);
+    }
+    #[test]
+    fn lex_lc_print_v62() {
+        assert_eq!(tokens_no_regex("PRINT"), vec![Token::Ident("PRINT".into())]);
+    }
+    #[test]
+    fn lex_lc_printf_v62() {
+        assert_eq!(
+            tokens_no_regex("PRINTF"),
+            vec![Token::Ident("PRINTF".into())]
+        );
+    }
+    #[test]
+    fn lex_lc_getline_v62() {
+        assert_eq!(
+            tokens_no_regex("GETLINE"),
+            vec![Token::Ident("GETLINE".into())]
+        );
+    }
+
+    #[test]
+    fn lex_k_begin_v70() {
+        assert_eq!(tokens_no_regex("BEGIN"), vec![Token::Begin]);
+    }
+    #[test]
+    fn lex_k_end_v70() {
+        assert_eq!(tokens_no_regex("END"), vec![Token::End]);
+    }
+    #[test]
+    fn lex_k_if_v70() {
+        assert_eq!(tokens_no_regex("if"), vec![Token::If]);
+    }
+    #[test]
+    fn lex_k_else_v70() {
+        assert_eq!(tokens_no_regex("else"), vec![Token::Else]);
+    }
+    #[test]
+    fn lex_k_while_v70() {
+        assert_eq!(tokens_no_regex("while"), vec![Token::While]);
+    }
+    #[test]
+    fn lex_k_do_v70() {
+        assert_eq!(tokens_no_regex("do"), vec![Token::Do]);
+    }
+    #[test]
+    fn lex_k_for_v70() {
+        assert_eq!(tokens_no_regex("for"), vec![Token::For]);
+    }
+    #[test]
+    fn lex_k_break_v70() {
+        assert_eq!(tokens_no_regex("break"), vec![Token::Break]);
+    }
+    #[test]
+    fn lex_k_continue_v70() {
+        assert_eq!(tokens_no_regex("continue"), vec![Token::Continue]);
+    }
+    #[test]
+    fn lex_k_delete_v70() {
+        assert_eq!(tokens_no_regex("delete"), vec![Token::Delete]);
+    }
+    #[test]
+    fn lex_k_exit_v70() {
+        assert_eq!(tokens_no_regex("exit"), vec![Token::Exit]);
+    }
+    #[test]
+    fn lex_k_next_v70() {
+        assert_eq!(tokens_no_regex("next"), vec![Token::Next]);
+    }
+    #[test]
+    fn lex_k_nextfile_v70() {
+        assert_eq!(tokens_no_regex("nextfile"), vec![Token::NextFile]);
+    }
+    #[test]
+    fn lex_k_return_v70() {
+        assert_eq!(tokens_no_regex("return"), vec![Token::Return]);
+    }
+    #[test]
+    fn lex_k_function_v70() {
+        assert_eq!(tokens_no_regex("function"), vec![Token::Function]);
+    }
+    #[test]
+    fn lex_k_in_v70() {
+        assert_eq!(tokens_no_regex("in"), vec![Token::In]);
+    }
+    #[test]
+    fn lex_k_print_v70() {
+        assert_eq!(tokens_no_regex("print"), vec![Token::Print]);
+    }
+    #[test]
+    fn lex_k_printf_v70() {
+        assert_eq!(tokens_no_regex("printf"), vec![Token::Printf]);
+    }
+    #[test]
+    fn lex_k_getline_v70() {
+        assert_eq!(tokens_no_regex("getline"), vec![Token::Getline]);
+    }
+
+    #[test]
+    fn lex_p_v65_0() {
+        assert_eq!(tokens_no_regex("{"), vec![Token::LBrace]);
+    }
+    #[test]
+    fn lex_p_v65_1() {
+        assert_eq!(tokens_no_regex("}"), vec![Token::RBrace]);
+    }
+    #[test]
+    fn lex_p_v65_2() {
+        assert_eq!(tokens_no_regex("("), vec![Token::LParen]);
+    }
+    #[test]
+    fn lex_p_v65_3() {
+        assert_eq!(tokens_no_regex(")"), vec![Token::RParen]);
+    }
+    #[test]
+    fn lex_p_v65_4() {
+        assert_eq!(tokens_no_regex("["), vec![Token::LBracket]);
+    }
+    #[test]
+    fn lex_p_v65_5() {
+        assert_eq!(tokens_no_regex("]"), vec![Token::RBracket]);
+    }
+    #[test]
+    fn lex_p_v65_6() {
+        assert_eq!(tokens_no_regex(";"), vec![Token::Semi]);
+    }
+    #[test]
+    fn lex_p_v65_7() {
+        assert_eq!(tokens_no_regex(","), vec![Token::Comma]);
+    }
+    #[test]
+    fn lex_p_v65_8() {
+        assert_eq!(tokens_no_regex(":"), vec![Token::Colon]);
+    }
+    #[test]
+    fn lex_p_v65_9() {
+        assert_eq!(tokens_no_regex("?"), vec![Token::Question]);
+    }
+    #[test]
+    fn lex_p_v65_10() {
+        assert_eq!(tokens_no_regex("@"), vec![Token::At]);
+    }
+    #[test]
+    fn lex_p_v65_11() {
+        assert_eq!(tokens_no_regex("$"), vec![Token::Dollar]);
+    }
+
+    #[test]
+    fn lex_o_v65_0() {
+        assert_eq!(tokens_no_regex("+"), vec![Token::Plus]);
+    }
+    #[test]
+    fn lex_o_v65_1() {
+        assert_eq!(tokens_no_regex("-"), vec![Token::Minus]);
+    }
+    #[test]
+    fn lex_o_v65_2() {
+        assert_eq!(tokens_no_regex("*"), vec![Token::Star]);
+    }
+    #[test]
+    fn lex_o_v65_3() {
+        assert_eq!(tokens_no_regex("/"), vec![Token::Slash]);
+    }
+    #[test]
+    fn lex_o_v65_4() {
+        assert_eq!(tokens_no_regex("%"), vec![Token::Percent]);
+    }
+    #[test]
+    fn lex_o_v65_5() {
+        assert_eq!(tokens_no_regex("^"), vec![Token::Caret]);
+    }
+    #[test]
+    fn lex_o_v65_6() {
+        assert_eq!(tokens_no_regex("="), vec![Token::Assign]);
+    }
+    #[test]
+    fn lex_o_v65_7() {
+        assert_eq!(tokens_no_regex("<"), vec![Token::Lt]);
+    }
+    #[test]
+    fn lex_o_v65_8() {
+        assert_eq!(tokens_no_regex(">"), vec![Token::Gt]);
+    }
+    #[test]
+    fn lex_o_v65_9() {
+        assert_eq!(tokens_no_regex("!"), vec![Token::Bang]);
+    }
+    #[test]
+    fn lex_o_v65_10() {
+        assert_eq!(tokens_no_regex("~"), vec![Token::Tilde]);
+    }
+
+    #[test]
+    fn lex_m_v65_0() {
+        assert_eq!(tokens_no_regex("++"), vec![Token::PlusPlus]);
+    }
+    #[test]
+    fn lex_m_v65_1() {
+        assert_eq!(tokens_no_regex("--"), vec![Token::MinusMinus]);
+    }
+    #[test]
+    fn lex_m_v65_2() {
+        assert_eq!(tokens_no_regex("**"), vec![Token::StarStar]);
+    }
+    #[test]
+    fn lex_m_v65_3() {
+        assert_eq!(tokens_no_regex("=="), vec![Token::Eq]);
+    }
+    #[test]
+    fn lex_m_v65_4() {
+        assert_eq!(tokens_no_regex("!="), vec![Token::Ne]);
+    }
+    #[test]
+    fn lex_m_v65_5() {
+        assert_eq!(tokens_no_regex("<="), vec![Token::Le]);
+    }
+    #[test]
+    fn lex_m_v65_6() {
+        assert_eq!(tokens_no_regex(">="), vec![Token::Ge]);
+    }
+    #[test]
+    fn lex_m_v65_7() {
+        assert_eq!(tokens_no_regex("&&"), vec![Token::And]);
+    }
+    #[test]
+    fn lex_m_v65_8() {
+        assert_eq!(tokens_no_regex("||"), vec![Token::Or]);
+    }
+    #[test]
+    fn lex_m_v65_9() {
+        assert_eq!(tokens_no_regex("!~"), vec![Token::NotTilde]);
+    }
 }

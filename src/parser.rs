@@ -3935,4 +3935,1085 @@ mod parser_pinning {
     fn parses_return_v36() {
         parse_program("function f(){return}").unwrap();
     }
+
+    #[test]
+    fn parses_stmt_if_v48_0() {
+        parse_program("BEGIN{if(1){}}").unwrap();
+    }
+    #[test]
+    fn parses_stmt_if_v48_1() {
+        parse_program("BEGIN{if(1){}else{}}").unwrap();
+    }
+    #[test]
+    fn parses_stmt_while_v48() {
+        parse_program("BEGIN{while(1){}}").unwrap();
+    }
+    #[test]
+    fn parses_stmt_do_v48() {
+        parse_program("BEGIN{do{}while(1)}").unwrap();
+    }
+    #[test]
+    fn parses_stmt_for_v48() {
+        parse_program("BEGIN{for(;;){}}").unwrap();
+    }
+    #[test]
+    fn parses_stmt_forin_v48() {
+        parse_program("BEGIN{for(k in a){}}").unwrap();
+    }
+    #[test]
+    fn parses_stmt_break_v48() {
+        parse_program("BEGIN{while(1)break}").unwrap();
+    }
+    #[test]
+    fn parses_stmt_continue_v48() {
+        parse_program("BEGIN{while(1)continue}").unwrap();
+    }
+    #[test]
+    fn parses_stmt_next_v48() {
+        parse_program("{next}").unwrap();
+    }
+    #[test]
+    fn parses_stmt_nextfile_v48() {
+        parse_program("{nextfile}").unwrap();
+    }
+    #[test]
+    fn parses_stmt_exit_v48() {
+        parse_program("BEGIN{exit}").unwrap();
+    }
+    #[test]
+    fn parses_stmt_exit_val_v48() {
+        parse_program("BEGIN{exit 1}").unwrap();
+    }
+    #[test]
+    fn parses_stmt_delete_v48() {
+        parse_program("BEGIN{delete a[1]}").unwrap();
+    }
+    #[test]
+    fn parses_stmt_delete_all_v48() {
+        parse_program("BEGIN{delete a}").unwrap();
+    }
+    #[test]
+    fn parses_stmt_print_v48() {
+        parse_program("BEGIN{print}").unwrap();
+    }
+    #[test]
+    fn parses_stmt_print_val_v48() {
+        parse_program("BEGIN{print 1}").unwrap();
+    }
+    #[test]
+    fn parses_stmt_printf_v48() {
+        parse_program("BEGIN{printf \"\"}").unwrap();
+    }
+    #[test]
+    fn parses_stmt_printf_val_v48() {
+        parse_program("BEGIN{printf \"\",1}").unwrap();
+    }
+    #[test]
+    fn parses_stmt_getline_v48() {
+        parse_program("BEGIN{getline}").unwrap();
+    }
+    #[test]
+    fn parses_stmt_getline_var_v48() {
+        parse_program("BEGIN{getline x}").unwrap();
+    }
+    #[test]
+    fn parses_stmt_getline_file_v48() {
+        parse_program("BEGIN{getline <\"f\"}").unwrap();
+    }
+    #[test]
+    fn parses_stmt_getline_pipe_v48() {
+        parse_program("BEGIN{\"c\"|getline}").unwrap();
+    }
+
+    #[test]
+    fn parses_expr_num_v48() {
+        parse_program("BEGIN{1}").unwrap();
+    }
+    #[test]
+    fn parses_expr_str_v48() {
+        parse_program("BEGIN{\"\"}").unwrap();
+    }
+    #[test]
+    fn parses_expr_var_v48() {
+        parse_program("BEGIN{x}").unwrap();
+    }
+    #[test]
+    fn parses_expr_field_v48() {
+        parse_program("BEGIN{$1}").unwrap();
+    }
+    #[test]
+    fn parses_expr_index_v48() {
+        parse_program("BEGIN{a[1]}").unwrap();
+    }
+    #[test]
+    fn parses_expr_index_multi_v48() {
+        parse_program("BEGIN{a[1,2]}").unwrap();
+    }
+    #[test]
+    fn parses_expr_call_v48() {
+        parse_program("BEGIN{f()}").unwrap();
+    }
+    #[test]
+    fn parses_expr_call_arg_v48() {
+        parse_program("BEGIN{f(1)}").unwrap();
+    }
+    #[test]
+    fn parses_expr_call_args_v48() {
+        parse_program("BEGIN{f(1,2)}").unwrap();
+    }
+    #[test]
+    fn parses_expr_unary_v48_0() {
+        parse_program("BEGIN{+1}").unwrap();
+    }
+    #[test]
+    fn parses_expr_unary_v48_1() {
+        parse_program("BEGIN{-1}").unwrap();
+    }
+    #[test]
+    fn parses_expr_unary_v48_2() {
+        parse_program("BEGIN{!1}").unwrap();
+    }
+    #[test]
+    fn parses_expr_binary_v48_0() {
+        parse_program("BEGIN{1+1}").unwrap();
+    }
+    #[test]
+    fn parses_expr_binary_v48_1() {
+        parse_program("BEGIN{1-1}").unwrap();
+    }
+    #[test]
+    fn parses_expr_binary_v48_2() {
+        parse_program("BEGIN{1*1}").unwrap();
+    }
+    #[test]
+    fn parses_expr_binary_v48_3() {
+        parse_program("BEGIN{1/1}").unwrap();
+    }
+    #[test]
+    fn parses_expr_binary_v48_4() {
+        parse_program("BEGIN{1%1}").unwrap();
+    }
+    #[test]
+    fn parses_expr_binary_v48_5() {
+        parse_program("BEGIN{1^1}").unwrap();
+    }
+    #[test]
+    fn parses_expr_binary_v48_6() {
+        parse_program("BEGIN{1**1}").unwrap();
+    }
+    #[test]
+    fn parses_expr_binary_v48_7() {
+        parse_program("BEGIN{1<1}").unwrap();
+    }
+    #[test]
+    fn parses_expr_binary_v48_8() {
+        parse_program("BEGIN{1<=1}").unwrap();
+    }
+    #[test]
+    fn parses_expr_binary_v48_9() {
+        parse_program("BEGIN{1>1}").unwrap();
+    }
+    #[test]
+    fn parses_expr_binary_v48_10() {
+        parse_program("BEGIN{1>=1}").unwrap();
+    }
+    #[test]
+    fn parses_expr_binary_v48_11() {
+        parse_program("BEGIN{1==1}").unwrap();
+    }
+    #[test]
+    fn parses_expr_binary_v48_12() {
+        parse_program("BEGIN{1!=1}").unwrap();
+    }
+    #[test]
+    fn parses_expr_binary_v48_13() {
+        parse_program("BEGIN{1~\"\"}").unwrap();
+    }
+    #[test]
+    fn parses_expr_binary_v48_14() {
+        parse_program("BEGIN{1!~\"\"}").unwrap();
+    }
+    #[test]
+    fn parses_expr_binary_v48_15() {
+        parse_program("BEGIN{1&&1}").unwrap();
+    }
+    #[test]
+    fn parses_expr_binary_v48_16() {
+        parse_program("BEGIN{1||1}").unwrap();
+    }
+    #[test]
+    fn parses_expr_assign_v48_0() {
+        parse_program("BEGIN{x=1}").unwrap();
+    }
+    #[test]
+    fn parses_expr_assign_v48_1() {
+        parse_program("BEGIN{x+=1}").unwrap();
+    }
+    #[test]
+    fn parses_expr_assign_v48_2() {
+        parse_program("BEGIN{x-=1}").unwrap();
+    }
+    #[test]
+    fn parses_expr_assign_v48_3() {
+        parse_program("BEGIN{x*=1}").unwrap();
+    }
+    #[test]
+    fn parses_expr_assign_v48_4() {
+        parse_program("BEGIN{x/=1}").unwrap();
+    }
+    #[test]
+    fn parses_expr_assign_v48_5() {
+        parse_program("BEGIN{x%=1}").unwrap();
+    }
+    #[test]
+    fn parses_expr_assign_v48_6() {
+        parse_program("BEGIN{x^=1}").unwrap();
+    }
+    #[test]
+    fn parses_expr_assign_v48_7() {
+        parse_program("BEGIN{x**=1}").unwrap();
+    }
+    #[test]
+    fn parses_expr_incdec_v48_0() {
+        parse_program("BEGIN{++x}").unwrap();
+    }
+    #[test]
+    fn parses_expr_incdec_v48_1() {
+        parse_program("BEGIN{x++}").unwrap();
+    }
+    #[test]
+    fn parses_expr_incdec_v48_2() {
+        parse_program("BEGIN{--x}").unwrap();
+    }
+    #[test]
+    fn parses_expr_incdec_v48_3() {
+        parse_program("BEGIN{x--}").unwrap();
+    }
+    #[test]
+    fn parses_expr_ternary_v48() {
+        parse_program("BEGIN{1?1:1}").unwrap();
+    }
+    #[test]
+    fn parses_expr_in_v48() {
+        parse_program("BEGIN{1 in a}").unwrap();
+    }
+
+    #[test]
+    fn parses_builtin_sin_v48() {
+        parse_program("BEGIN{sin(1)}").unwrap();
+    }
+    #[test]
+    fn parses_builtin_cos_v48() {
+        parse_program("BEGIN{cos(1)}").unwrap();
+    }
+    #[test]
+    fn parses_builtin_exp_v48() {
+        parse_program("BEGIN{exp(1)}").unwrap();
+    }
+    #[test]
+    fn parses_builtin_log_v48() {
+        parse_program("BEGIN{log(1)}").unwrap();
+    }
+    #[test]
+    fn parses_builtin_sqrt_v48() {
+        parse_program("BEGIN{sqrt(1)}").unwrap();
+    }
+    #[test]
+    fn parses_builtin_int_v48() {
+        parse_program("BEGIN{int(1)}").unwrap();
+    }
+    #[test]
+    fn parses_builtin_atan2_v48() {
+        parse_program("BEGIN{atan2(1,1)}").unwrap();
+    }
+    #[test]
+    fn parses_builtin_rand_v48() {
+        parse_program("BEGIN{rand()}").unwrap();
+    }
+    #[test]
+    fn parses_builtin_srand_v48_0() {
+        parse_program("BEGIN{srand()}").unwrap();
+    }
+    #[test]
+    fn parses_builtin_srand_v48_1() {
+        parse_program("BEGIN{srand(1)}").unwrap();
+    }
+    #[test]
+    fn parses_builtin_length_v48_0() {
+        parse_program("BEGIN{length()}").unwrap();
+    }
+    #[test]
+    fn parses_builtin_length_v48_1() {
+        parse_program("BEGIN{length(1)}").unwrap();
+    }
+    #[test]
+    fn parses_builtin_substr_v48_0() {
+        parse_program("BEGIN{substr(1,1)}").unwrap();
+    }
+    #[test]
+    fn parses_builtin_substr_v48_1() {
+        parse_program("BEGIN{substr(1,1,1)}").unwrap();
+    }
+    #[test]
+    fn parses_builtin_index_v48() {
+        parse_program("BEGIN{index(1,1)}").unwrap();
+    }
+    #[test]
+    fn parses_builtin_match_v48_0() {
+        parse_program("BEGIN{match(1,1)}").unwrap();
+    }
+    #[test]
+    fn parses_builtin_match_v48_1() {
+        parse_program("BEGIN{match(1,1,a)}").unwrap();
+    }
+    #[test]
+    fn parses_builtin_split_v48_0() {
+        parse_program("BEGIN{split(1,a)}").unwrap();
+    }
+    #[test]
+    fn parses_builtin_split_v48_1() {
+        parse_program("BEGIN{split(1,a,1)}").unwrap();
+    }
+    #[test]
+    fn parses_builtin_split_v48_2() {
+        parse_program("BEGIN{split(1,a,1,a)}").unwrap();
+    }
+    #[test]
+    fn parses_builtin_sub_v48_0() {
+        parse_program("BEGIN{sub(1,1)}").unwrap();
+    }
+    #[test]
+    fn parses_builtin_sub_v48_1() {
+        parse_program("BEGIN{sub(1,1,1)}").unwrap();
+    }
+    #[test]
+    fn parses_builtin_gsub_v48_0() {
+        parse_program("BEGIN{gsub(1,1)}").unwrap();
+    }
+    #[test]
+    fn parses_builtin_gsub_v48_1() {
+        parse_program("BEGIN{gsub(1,1,1)}").unwrap();
+    }
+    #[test]
+    fn parses_builtin_gensub_v48_0() {
+        parse_program("BEGIN{gensub(1,1,1)}").unwrap();
+    }
+    #[test]
+    fn parses_builtin_gensub_v48_1() {
+        parse_program("BEGIN{gensub(1,1,1,1)}").unwrap();
+    }
+    #[test]
+    fn parses_builtin_sprintf_v48() {
+        parse_program("BEGIN{sprintf(\"\")}").unwrap();
+    }
+    #[test]
+    fn parses_builtin_strftime_v48_0() {
+        parse_program("BEGIN{strftime()}").unwrap();
+    }
+    #[test]
+    fn parses_builtin_strftime_v48_1() {
+        parse_program("BEGIN{strftime(1)}").unwrap();
+    }
+    #[test]
+    fn parses_builtin_strftime_v48_2() {
+        parse_program("BEGIN{strftime(1,1)}").unwrap();
+    }
+    #[test]
+    fn parses_builtin_strftime_v48_3() {
+        parse_program("BEGIN{strftime(1,1,1)}").unwrap();
+    }
+    #[test]
+    fn parses_builtin_mktime_v48_0() {
+        parse_program("BEGIN{mktime(1)}").unwrap();
+    }
+    #[test]
+    fn parses_builtin_mktime_v48_1() {
+        parse_program("BEGIN{mktime(1,1)}").unwrap();
+    }
+    #[test]
+    fn parses_builtin_systime_v48() {
+        parse_program("BEGIN{systime()}").unwrap();
+    }
+    #[test]
+    fn parses_builtin_tolower_v48() {
+        parse_program("BEGIN{tolower(1)}").unwrap();
+    }
+    #[test]
+    fn parses_builtin_toupper_v48() {
+        parse_program("BEGIN{toupper(1)}").unwrap();
+    }
+
+    #[test]
+    fn parses_k_begin_v58() {
+        parse_program("BEGIN{}").unwrap();
+    }
+    #[test]
+    fn parses_k_end_v58() {
+        parse_program("END{}").unwrap();
+    }
+    #[test]
+    fn parses_k_beginfile_v58() {
+        parse_program("BEGINFILE{}").unwrap();
+    }
+    #[test]
+    fn parses_k_endfile_v58() {
+        parse_program("ENDFILE{}").unwrap();
+    }
+    #[test]
+    fn parses_k_if_v58() {
+        parse_program("BEGIN{if(1){}}").unwrap();
+    }
+    #[test]
+    fn parses_k_else_v58() {
+        parse_program("BEGIN{if(1){}else{}}").unwrap();
+    }
+    #[test]
+    fn parses_k_while_v58() {
+        parse_program("BEGIN{while(1){}}").unwrap();
+    }
+    #[test]
+    fn parses_k_do_v58() {
+        parse_program("BEGIN{do{}while(1)}").unwrap();
+    }
+    #[test]
+    fn parses_k_for_v58() {
+        parse_program("BEGIN{for(;;){}}").unwrap();
+    }
+    #[test]
+    fn parses_k_forin_v58() {
+        parse_program("BEGIN{for(k in a){}}").unwrap();
+    }
+    #[test]
+    fn parses_k_break_v58() {
+        parse_program("BEGIN{while(1)break}").unwrap();
+    }
+    #[test]
+    fn parses_k_continue_v58() {
+        parse_program("BEGIN{while(1)continue}").unwrap();
+    }
+    #[test]
+    fn parses_k_delete_v58() {
+        parse_program("BEGIN{delete a}").unwrap();
+    }
+    #[test]
+    fn parses_k_exit_v58() {
+        parse_program("BEGIN{exit}").unwrap();
+    }
+    #[test]
+    fn parses_k_next_v58() {
+        parse_program("{next}").unwrap();
+    }
+    #[test]
+    fn parses_k_nextfile_v58() {
+        parse_program("{nextfile}").unwrap();
+    }
+    #[test]
+    fn parses_k_return_v58() {
+        parse_program("function f(){return}").unwrap();
+    }
+    #[test]
+    fn parses_k_function_v58() {
+        parse_program("function f(){}").unwrap();
+    }
+    #[test]
+    fn parses_k_print_v58() {
+        parse_program("BEGIN{print}").unwrap();
+    }
+    #[test]
+    fn parses_k_printf_v58() {
+        parse_program("BEGIN{printf \"\"}").unwrap();
+    }
+    #[test]
+    fn parses_k_getline_v58() {
+        parse_program("BEGIN{getline}").unwrap();
+    }
+    #[test]
+    fn parses_k_in_v58() {
+        parse_program("BEGIN{print (1 in a)}").unwrap();
+    }
+
+    #[test]
+    fn parses_p_lbrace_v58() {
+        parse_program("BEGIN{{}}").unwrap();
+    }
+    #[test]
+    fn parses_p_rbrace_v58() {
+        parse_program("BEGIN{{}}").unwrap();
+    }
+    #[test]
+    fn parses_p_lparen_v58() {
+        parse_program("BEGIN{print(1)}").unwrap();
+    }
+    #[test]
+    fn parses_p_rparen_v58() {
+        parse_program("BEGIN{print(1)}").unwrap();
+    }
+    #[test]
+    fn parses_p_lbracket_v58() {
+        parse_program("BEGIN{a[1]=1}").unwrap();
+    }
+    #[test]
+    fn parses_p_rbracket_v58() {
+        parse_program("BEGIN{a[1]=1}").unwrap();
+    }
+    #[test]
+    fn parses_p_semi_v58() {
+        parse_program("BEGIN{;}").unwrap();
+    }
+    #[test]
+    fn parses_p_comma_v58() {
+        parse_program("BEGIN{f(1,2)}").unwrap();
+    }
+    #[test]
+    fn parses_p_colon_v58() {
+        parse_program("BEGIN{1?1:1}").unwrap();
+    }
+    #[test]
+    fn parses_p_question_v58() {
+        parse_program("BEGIN{1?1:1}").unwrap();
+    }
+    #[test]
+    fn parses_p_at_v58() {
+        parse_program("BEGIN{@f()}").unwrap();
+    }
+    #[test]
+    fn parses_p_dollar_v58() {
+        parse_program("BEGIN{print $1}").unwrap();
+    }
+
+    #[test]
+    fn parses_o_plus_v58() {
+        parse_program("BEGIN{1+1}").unwrap();
+    }
+    #[test]
+    fn parses_o_minus_v58() {
+        parse_program("BEGIN{1-1}").unwrap();
+    }
+    #[test]
+    fn parses_o_star_v58() {
+        parse_program("BEGIN{1*1}").unwrap();
+    }
+    #[test]
+    fn parses_o_slash_v58() {
+        parse_program("BEGIN{1/1}").unwrap();
+    }
+    #[test]
+    fn parses_o_percent_v58() {
+        parse_program("BEGIN{1%1}").unwrap();
+    }
+    #[test]
+    fn parses_o_caret_v58() {
+        parse_program("BEGIN{1^1}").unwrap();
+    }
+    #[test]
+    fn parses_o_assign_v58() {
+        parse_program("BEGIN{x=1}").unwrap();
+    }
+    #[test]
+    fn parses_o_lt_v58() {
+        parse_program("BEGIN{1<1}").unwrap();
+    }
+    #[test]
+    fn parses_o_gt_v58() {
+        parse_program("BEGIN{1>1}").unwrap();
+    }
+    #[test]
+    fn parses_o_bang_v58() {
+        parse_program("BEGIN{!1}").unwrap();
+    }
+    #[test]
+    fn parses_o_tilde_v58() {
+        parse_program("BEGIN{1~1}").unwrap();
+    }
+
+    #[test]
+    fn parses_m_plusplus_v58() {
+        parse_program("BEGIN{++x}").unwrap();
+    }
+    #[test]
+    fn parses_m_minusminus_v58() {
+        parse_program("BEGIN{--x}").unwrap();
+    }
+    #[test]
+    fn parses_m_pow_v58() {
+        parse_program("BEGIN{1**1}").unwrap();
+    }
+    #[test]
+    fn parses_m_eq_v58() {
+        parse_program("BEGIN{1==1}").unwrap();
+    }
+    #[test]
+    fn parses_m_ne_v58() {
+        parse_program("BEGIN{1!=1}").unwrap();
+    }
+    #[test]
+    fn parses_m_le_v58() {
+        parse_program("BEGIN{1<=1}").unwrap();
+    }
+    #[test]
+    fn parses_m_ge_v58() {
+        parse_program("BEGIN{1>=1}").unwrap();
+    }
+    #[test]
+    fn parses_m_and_v58() {
+        parse_program("BEGIN{1&&1}").unwrap();
+    }
+    #[test]
+    fn parses_m_or_v58() {
+        parse_program("BEGIN{1||1}").unwrap();
+    }
+    #[test]
+    fn parses_m_notmatch_v58() {
+        parse_program("BEGIN{1!~1}").unwrap();
+    }
+
+    #[test]
+    fn parses_m_add_assign_v58() {
+        parse_program("BEGIN{x+=1}").unwrap();
+    }
+    #[test]
+    fn parses_m_sub_assign_v58() {
+        parse_program("BEGIN{x-=1}").unwrap();
+    }
+    #[test]
+    fn parses_m_mul_assign_v58() {
+        parse_program("BEGIN{x*=1}").unwrap();
+    }
+    #[test]
+    fn parses_m_div_assign_v58() {
+        parse_program("BEGIN{x/=1}").unwrap();
+    }
+    #[test]
+    fn parses_m_mod_assign_v58() {
+        parse_program("BEGIN{x%=1}").unwrap();
+    }
+    #[test]
+    fn parses_m_pow_assign_v58() {
+        parse_program("BEGIN{x^=1}").unwrap();
+    }
+    #[test]
+    fn parses_m_pow_assign_starstar_v58() {
+        parse_program("BEGIN{x**=1}").unwrap();
+    }
+
+    #[test]
+    fn parses_ba_sin_v60() {
+        parse_program("BEGIN{sin(1)}").unwrap();
+    }
+    #[test]
+    fn parses_ba_cos_v60() {
+        parse_program("BEGIN{cos(1)}").unwrap();
+    }
+    #[test]
+    fn parses_ba_exp_v60() {
+        parse_program("BEGIN{exp(1)}").unwrap();
+    }
+    #[test]
+    fn parses_ba_log_v60() {
+        parse_program("BEGIN{log(1)}").unwrap();
+    }
+    #[test]
+    fn parses_ba_sqrt_v60() {
+        parse_program("BEGIN{sqrt(1)}").unwrap();
+    }
+    #[test]
+    fn parses_ba_int_v60() {
+        parse_program("BEGIN{int(1)}").unwrap();
+    }
+    #[test]
+    fn parses_ba_atan2_v60() {
+        parse_program("BEGIN{atan2(1,1)}").unwrap();
+    }
+    #[test]
+    fn parses_ba_rand_v60() {
+        parse_program("BEGIN{rand()}").unwrap();
+    }
+    #[test]
+    fn parses_ba_srand_v60_0() {
+        parse_program("BEGIN{srand()}").unwrap();
+    }
+    #[test]
+    fn parses_ba_srand_v60_1() {
+        parse_program("BEGIN{srand(1)}").unwrap();
+    }
+    #[test]
+    fn parses_ba_length_v60_0() {
+        parse_program("BEGIN{length()}").unwrap();
+    }
+    #[test]
+    fn parses_ba_length_v60_1() {
+        parse_program("BEGIN{length(1)}").unwrap();
+    }
+    #[test]
+    fn parses_ba_substr_v60_0() {
+        parse_program("BEGIN{substr(1,1)}").unwrap();
+    }
+    #[test]
+    fn parses_ba_substr_v60_1() {
+        parse_program("BEGIN{substr(1,1,1)}").unwrap();
+    }
+    #[test]
+    fn parses_ba_index_v60() {
+        parse_program("BEGIN{index(1,1)}").unwrap();
+    }
+    #[test]
+    fn parses_ba_match_v60_0() {
+        parse_program("BEGIN{match(1,1)}").unwrap();
+    }
+    #[test]
+    fn parses_ba_match_v60_1() {
+        parse_program("BEGIN{match(1,1,a)}").unwrap();
+    }
+    #[test]
+    fn parses_ba_split_v60_0() {
+        parse_program("BEGIN{split(1,a)}").unwrap();
+    }
+    #[test]
+    fn parses_ba_split_v60_1() {
+        parse_program("BEGIN{split(1,a,1)}").unwrap();
+    }
+    #[test]
+    fn parses_ba_split_v60_2() {
+        parse_program("BEGIN{split(1,a,1,a)}").unwrap();
+    }
+    #[test]
+    fn parses_ba_sub_v60_0() {
+        parse_program("BEGIN{sub(1,1)}").unwrap();
+    }
+    #[test]
+    fn parses_ba_sub_v60_1() {
+        parse_program("BEGIN{sub(1,1,1)}").unwrap();
+    }
+    #[test]
+    fn parses_ba_gsub_v60_0() {
+        parse_program("BEGIN{gsub(1,1)}").unwrap();
+    }
+    #[test]
+    fn parses_ba_gsub_v60_1() {
+        parse_program("BEGIN{gsub(1,1,1)}").unwrap();
+    }
+    #[test]
+    fn parses_ba_gensub_v60_0() {
+        parse_program("BEGIN{gensub(1,1,1)}").unwrap();
+    }
+    #[test]
+    fn parses_ba_gensub_v60_1() {
+        parse_program("BEGIN{gensub(1,1,1,1)}").unwrap();
+    }
+    #[test]
+    fn parses_ba_sprintf_v60() {
+        parse_program("BEGIN{sprintf(\"\")}").unwrap();
+    }
+    #[test]
+    fn parses_ba_strftime_v60_0() {
+        parse_program("BEGIN{strftime()}").unwrap();
+    }
+    #[test]
+    fn parses_ba_strftime_v60_1() {
+        parse_program("BEGIN{strftime(1)}").unwrap();
+    }
+    #[test]
+    fn parses_ba_strftime_v60_2() {
+        parse_program("BEGIN{strftime(1,1)}").unwrap();
+    }
+    #[test]
+    fn parses_ba_strftime_v60_3() {
+        parse_program("BEGIN{strftime(1,1,1)}").unwrap();
+    }
+    #[test]
+    fn parses_ba_mktime_v60_0() {
+        parse_program("BEGIN{mktime(1)}").unwrap();
+    }
+    #[test]
+    fn parses_ba_mktime_v60_1() {
+        parse_program("BEGIN{mktime(1,1)}").unwrap();
+    }
+    #[test]
+    fn parses_ba_systime_v60() {
+        parse_program("BEGIN{systime()}").unwrap();
+    }
+    #[test]
+    fn parses_ba_tolower_v60() {
+        parse_program("BEGIN{tolower(1)}").unwrap();
+    }
+    #[test]
+    fn parses_ba_toupper_v60() {
+        parse_program("BEGIN{toupper(1)}").unwrap();
+    }
+
+    #[test]
+    fn parses_ex_sin_v61() {
+        parse_program("BEGIN{sin(1+1)}").unwrap();
+    }
+    #[test]
+    fn parses_ex_cos_v61() {
+        parse_program("BEGIN{cos(1+1)}").unwrap();
+    }
+    #[test]
+    fn parses_ex_exp_v61() {
+        parse_program("BEGIN{exp(1+1)}").unwrap();
+    }
+    #[test]
+    fn parses_ex_log_v61() {
+        parse_program("BEGIN{log(1+1)}").unwrap();
+    }
+    #[test]
+    fn parses_ex_sqrt_v61() {
+        parse_program("BEGIN{sqrt(1+1)}").unwrap();
+    }
+    #[test]
+    fn parses_ex_int_v61() {
+        parse_program("BEGIN{int(1+1)}").unwrap();
+    }
+    #[test]
+    fn parses_ex_atan2_v61() {
+        parse_program("BEGIN{atan2(1+1,1+1)}").unwrap();
+    }
+    #[test]
+    fn parses_ex_rand_v61() {
+        parse_program("BEGIN{rand()}").unwrap();
+    }
+    #[test]
+    fn parses_ex_srand_v61() {
+        parse_program("BEGIN{srand(1+1)}").unwrap();
+    }
+    #[test]
+    fn parses_ex_length_v61() {
+        parse_program("BEGIN{length(1+1)}").unwrap();
+    }
+    #[test]
+    fn parses_ex_substr_v61() {
+        parse_program("BEGIN{substr(1+1,1+1,1+1)}").unwrap();
+    }
+    #[test]
+    fn parses_ex_index_v61() {
+        parse_program("BEGIN{index(1+1,1+1)}").unwrap();
+    }
+    #[test]
+    fn parses_ex_match_v61() {
+        parse_program("BEGIN{match(1+1,1+1)}").unwrap();
+    }
+    #[test]
+    fn parses_ex_sprintf_v61() {
+        parse_program("BEGIN{sprintf(\"\",1+1)}").unwrap();
+    }
+    #[test]
+    fn parses_ex_strftime_v61() {
+        parse_program("BEGIN{strftime(\"\",1+1)}").unwrap();
+    }
+    #[test]
+    fn parses_ex_mktime_v61() {
+        parse_program("BEGIN{mktime(\"\",1+1)}").unwrap();
+    }
+    #[test]
+    fn parses_ex_tolower_v61() {
+        parse_program("BEGIN{tolower(1+1)}").unwrap();
+    }
+    #[test]
+    fn parses_ex_toupper_v61() {
+        parse_program("BEGIN{toupper(1+1)}").unwrap();
+    }
+
+    #[test]
+    fn parses_b_sin_v68_0() {
+        parse_program("BEGIN{sin(1)}").unwrap();
+    }
+    #[test]
+    fn parses_b_sin_v68_1() {
+        parse_program("BEGIN{sin(x)}").unwrap();
+    }
+    #[test]
+    fn parses_b_cos_v68_0() {
+        parse_program("BEGIN{cos(1)}").unwrap();
+    }
+    #[test]
+    fn parses_b_cos_v68_1() {
+        parse_program("BEGIN{cos(x)}").unwrap();
+    }
+    #[test]
+    fn parses_b_exp_v68_0() {
+        parse_program("BEGIN{exp(1)}").unwrap();
+    }
+    #[test]
+    fn parses_b_exp_v68_1() {
+        parse_program("BEGIN{exp(x)}").unwrap();
+    }
+    #[test]
+    fn parses_b_log_v68_0() {
+        parse_program("BEGIN{log(1)}").unwrap();
+    }
+    #[test]
+    fn parses_b_log_v68_1() {
+        parse_program("BEGIN{log(x)}").unwrap();
+    }
+    #[test]
+    fn parses_b_sqrt_v68_0() {
+        parse_program("BEGIN{sqrt(1)}").unwrap();
+    }
+    #[test]
+    fn parses_b_sqrt_v68_1() {
+        parse_program("BEGIN{sqrt(x)}").unwrap();
+    }
+    #[test]
+    fn parses_b_int_v68_0() {
+        parse_program("BEGIN{int(1)}").unwrap();
+    }
+    #[test]
+    fn parses_b_int_v68_1() {
+        parse_program("BEGIN{int(x)}").unwrap();
+    }
+    #[test]
+    fn parses_b_atan2_v68_0() {
+        parse_program("BEGIN{atan2(1,1)}").unwrap();
+    }
+    #[test]
+    fn parses_b_atan2_v68_1() {
+        parse_program("BEGIN{atan2(x,y)}").unwrap();
+    }
+    #[test]
+    fn parses_b_rand_v68_0() {
+        parse_program("BEGIN{rand()}").unwrap();
+    }
+    #[test]
+    fn parses_b_srand_v68_0() {
+        parse_program("BEGIN{srand()}").unwrap();
+    }
+    #[test]
+    fn parses_b_srand_v68_1() {
+        parse_program("BEGIN{srand(x)}").unwrap();
+    }
+    #[test]
+    fn parses_b_length_v68_0() {
+        parse_program("BEGIN{length()}").unwrap();
+    }
+    #[test]
+    fn parses_b_length_v68_1() {
+        parse_program("BEGIN{length(x)}").unwrap();
+    }
+    #[test]
+    fn parses_b_substr_v68_0() {
+        parse_program("BEGIN{substr(x,1)}").unwrap();
+    }
+    #[test]
+    fn parses_b_substr_v68_1() {
+        parse_program("BEGIN{substr(x,1,1)}").unwrap();
+    }
+    #[test]
+    fn parses_b_index_v68_0() {
+        parse_program("BEGIN{index(x,y)}").unwrap();
+    }
+    #[test]
+    fn parses_b_match_v68_0() {
+        parse_program("BEGIN{match(x,y)}").unwrap();
+    }
+    #[test]
+    fn parses_b_match_v68_1() {
+        parse_program("BEGIN{match(x,y,a)}").unwrap();
+    }
+    #[test]
+    fn parses_b_split_v68_0() {
+        parse_program("BEGIN{split(x,a)}").unwrap();
+    }
+    #[test]
+    fn parses_b_split_v68_1() {
+        parse_program("BEGIN{split(x,a,y)}").unwrap();
+    }
+    #[test]
+    fn parses_b_split_v68_2() {
+        parse_program("BEGIN{split(x,a,y,seps)}").unwrap();
+    }
+    #[test]
+    fn parses_b_sub_v68_0() {
+        parse_program("BEGIN{sub(x,y)}").unwrap();
+    }
+    #[test]
+    fn parses_b_sub_v68_1() {
+        parse_program("BEGIN{sub(x,y,z)}").unwrap();
+    }
+    #[test]
+    fn parses_b_gsub_v68_0() {
+        parse_program("BEGIN{gsub(x,y)}").unwrap();
+    }
+    #[test]
+    fn parses_b_gsub_v68_1() {
+        parse_program("BEGIN{gsub(x,y,z)}").unwrap();
+    }
+    #[test]
+    fn parses_b_gensub_v68_0() {
+        parse_program("BEGIN{gensub(x,y,z)}").unwrap();
+    }
+    #[test]
+    fn parses_b_gensub_v68_1() {
+        parse_program("BEGIN{gensub(x,y,z,w)}").unwrap();
+    }
+    #[test]
+    fn parses_b_sprintf_v68_0() {
+        parse_program("BEGIN{sprintf(x)}").unwrap();
+    }
+    #[test]
+    fn parses_b_sprintf_v68_1() {
+        parse_program("BEGIN{sprintf(x,y)}").unwrap();
+    }
+    #[test]
+    fn parses_b_strftime_v68_0() {
+        parse_program("BEGIN{strftime()}").unwrap();
+    }
+    #[test]
+    fn parses_b_strftime_v68_1() {
+        parse_program("BEGIN{strftime(x)}").unwrap();
+    }
+    #[test]
+    fn parses_b_strftime_v68_2() {
+        parse_program("BEGIN{strftime(x,y)}").unwrap();
+    }
+    #[test]
+    fn parses_b_strftime_v68_3() {
+        parse_program("BEGIN{strftime(x,y,z)}").unwrap();
+    }
+    #[test]
+    fn parses_b_mktime_v68_0() {
+        parse_program("BEGIN{mktime(x)}").unwrap();
+    }
+    #[test]
+    fn parses_b_mktime_v68_1() {
+        parse_program("BEGIN{mktime(x,y)}").unwrap();
+    }
+    #[test]
+    fn parses_b_systime_v68_0() {
+        parse_program("BEGIN{systime()}").unwrap();
+    }
+    #[test]
+    fn parses_b_tolower_v68_0() {
+        parse_program("BEGIN{tolower(x)}").unwrap();
+    }
+    #[test]
+    fn parses_b_toupper_v68_0() {
+        parse_program("BEGIN{toupper(x)}").unwrap();
+    }
+
+    #[test]
+    fn parses_nested_if_v69() {
+        parse_program("BEGIN{if(1){if(1){if(1){print 1}}}}").unwrap();
+    }
+    #[test]
+    fn parses_nested_while_v69() {
+        parse_program("BEGIN{while(1){while(1){while(1){print 1}}}}").unwrap();
+    }
+    #[test]
+    fn parses_nested_for_v69() {
+        parse_program("BEGIN{for(;;){for(;;){for(;;){print 1}}}}").unwrap();
+    }
+    #[test]
+    fn parses_nested_block_v69() {
+        parse_program("BEGIN{{{{print 1}}}}").unwrap();
+    }
+
+    #[test]
+    fn parses_stmt_print_multi_v69() {
+        parse_program("BEGIN{print 1, 2, 3, 4, 5}").unwrap();
+    }
+    #[test]
+    fn parses_stmt_printf_multi_v69() {
+        parse_program("BEGIN{printf \"%d %d %d\", 1, 2, 3}").unwrap();
+    }
 }

@@ -633,4 +633,25 @@ mod tests {
         let res = super::awk_compl_values(&Value::Num(-1.0), &rt);
         assert_eq!(res.as_number(), 0.0);
     }
+
+    #[test]
+    fn awk_lshift_bignum_v15() {
+        let rt = Runtime::new();
+        let res = super::awk_lshift_values(&Value::Num(1.0), &Value::Num(10.0), &rt);
+        assert_eq!(res.as_number(), 1024.0);
+    }
+
+    #[test]
+    fn awk_rshift_bignum_v15() {
+        let rt = Runtime::new();
+        let res = super::awk_rshift_values(&Value::Num(1024.0), &Value::Num(10.0), &rt);
+        assert_eq!(res.as_number(), 1.0);
+    }
+
+    #[test]
+    fn bignum_to_f64_precision_v15() {
+        let big = Value::Str("1234567890123456789".into());
+        let f = big.as_number();
+        assert!(f > 1e18);
+    }
 }
