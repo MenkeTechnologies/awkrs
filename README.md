@@ -11,35 +11,37 @@
 [![Crates.io](https://img.shields.io/crates/v/awkrs.svg)](https://crates.io/crates/awkrs)
 [![Downloads](https://img.shields.io/crates/d/awkrs.svg)](https://crates.io/crates/awkrs)
 [![Docs.rs](https://docs.rs/awkrs/badge.svg)](https://docs.rs/awkrs)
-[![Docs](https://img.shields.io/badge/docs-online-blue.svg)](https://menketechnologies.github.io/awkrs/)
+ [![Docs](https://img.shields.io/badge/docs-online-blue.svg)](https://menketechnologies.github.io/awkrs/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ### `[WORLDS FASTEST AWK BYTECODE ENGINE // PARALLEL RECORD PROCESSOR // RUST CORE]`
-
- ┌──────────────────────────────────────────────────────────────┐
- │ STATUS: ONLINE &nbsp;&nbsp; THREAT LEVEL: NEON &nbsp;&nbsp; SIGNAL: ████████░░ │
- └──────────────────────────────────────────────────────────────┘
 
 > *"Pattern. Action. Domination."*
 
 `awkrs` runs **pattern → action** programs over input records like POSIX `awk` / GNU `gawk` / `mawk`, with a Cranelift-JIT bytecode VM, parallel record processing, and a CLI that accepts the union of POSIX, gawk, and mawk options.
 
+ ┌──────────────────────────────────────────────────────────────┐
+ │ STATUS: ONLINE &nbsp;&nbsp; THREAT LEVEL: NEON &nbsp;&nbsp; SIGNAL: ████████░░ │
+ └──────────────────────────────────────────────────────────────┘
+
+### [`Read the Docs`](https://menketechnologies.github.io/awkrs/) &middot; [`Engineering Report`](https://menketechnologies.github.io/awkrs/report.html) · [`strykelang`](https://github.com/MenkeTechnologies/strykelang) · [`zshrs`](https://github.com/MenkeTechnologies/zshrs) · [`fusevm`](https://github.com/MenkeTechnologies/fusevm)
+
 ---
 
-## TABLE OF CONTENTS
+## Table of Contents
 
-- [\[0x00\] SYSTEM SCAN](#0x00-system-scan)
-- [\[0x01\] SYSTEM REQUIREMENTS](#0x01-system-requirements)
-- [\[0x02\] INSTALLATION](#0x02-installation)
-- [\[0x03\] LANGUAGE COVERAGE](#0x03-language-coverage)
+- [\[0x00\] System Scan](#0x00-system-scan)
+- [\[0x01\] System Requirements](#0x01-system-requirements)
+- [\[0x02\] Installation](#0x02-installation)
+- [\[0x03\] Language Coverage](#0x03-language-coverage)
   - [Compatibility matrix (BSD awk / mawk / gawk)](docs/COMPATIBILITY.md)
-- [\[0x04\] MULTITHREADING](#0x04-multithreading--parallel-execution-grid)
-- [\[0x05\] BYTECODE VM](#0x05-bytecode-vm--execution-core)
-- [\[0x06\] BENCHMARKS](#0x06-benchmarks--combat-metrics-vs-awk--gawk--mawk)
-- [\[0x07\] BUILD](#0x07-build--compile-the-payload)
-- [\[0x08\] TEST](#0x08-test--integrity-verification)
-- [\[0x09\] DOCUMENTATION](#0x09-documentation--rendered-html--markdown)
-- [\[0xFF\] LICENSE](#0xff-license)
+- [\[0x04\] Multithreading](#0x04-multithreading--parallel-execution-grid)
+- [\[0x05\] Bytecode VM](#0x05-bytecode-vm--execution-core)
+- [\[0x06\] Benchmarks](#0x06-benchmarks--combat-metrics-vs-awk--gawk--mawk)
+- [\[0x07\] Build](#0x07-build--compile-the-payload)
+- [\[0x08\] Test](#0x08-test--integrity-verification)
+- [\[0x09\] Documentation](#0x09-documentation--rendered-html--markdown)
+- [\[0xFF\] License](#0xff-license)
 
 ---
 
