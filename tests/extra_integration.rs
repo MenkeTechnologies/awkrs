@@ -3410,3 +3410,22 @@ fn length_split_match_sub_extra_args_error() {
         );
     }
 }
+
+#[test]
+fn regex_backslash_d_treated_as_literal_d_like_gawk() {
+    // gawk parity: gawk does NOT support `\d` as a digit class (POSIX ERE has
+    // no digit-class escape). gawk emits a warning and treats `\d` as the
+    // literal letter `d`. Rust regex would interpret `\d` as a digit class;
+    // the regex translator strips the `\` to make `\d` ≡ `d`.
+    //
+    // Note: gawk DOES support `\w`/`\W`/`\s`/`\S` as char-class extensions —
+    // only `\d`/`\D` get the literal treatment.
+    // Note: gsub's 3rd arg must be an lvalue, so we use a variable.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { s = "abc123def"; print gsub(/\d/, "X", s) }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    // Pattern is literal `d`, so it matches the single 'd' in "abc123def".
+    assert_eq!(o.trim(), "1", "stdout={o:?}");
+}

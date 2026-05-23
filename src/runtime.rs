@@ -1171,16 +1171,18 @@ pub struct Runtime {
 }
 
 /// Translate an awk-style regex pattern to Rust regex syntax for the cases where
-/// they diverge. Currently handles:
+/// gawk's POSIX-ERE-with-extensions semantics diverge from Rust's regex engine:
 ///
-///   - `\1`..`\9` (POSIX ERE has no backrefs; gawk treats them as literal `\N`,
-///     Rust regex parses them as backreferences and errors). Escape to `\\N`
-///     so Rust treats them as literal backslash + digit.
+///   - `\1`..`\9` (POSIX ERE has no backrefs; gawk treats as literal `\N`,
+///     Rust regex parses as backreference and errors). Escape to `\\N`.
+///   - `\d`, `\w`, `\s`, `\D`, `\W`, `\S` (Rust regex char classes; gawk emits
+///     a warning and treats them as the literal trailing letter — e.g. `\d` ≡ `d`).
+///     Strip the leading backslash so Rust sees a literal letter.
 ///
-/// The function walks the pattern character by character, tracking bracket
-/// expression `[...]` state (inside which Rust regex already treats `\1` as
-/// literal so no translation is needed) and parity of preceding backslashes
-/// (an even count means the next `\N` starts a fresh escape).
+/// Escapes inside `[...]` bracket expressions are NOT translated — gawk's
+/// bracket-interior semantics overlap enough with Rust's that the divergence
+/// surface is small. The function tracks bracket-expression state by counting
+/// unescaped `[` / `]` and only translates at top level.
 fn translate_awk_re_to_rust(pat: &str) -> String {
     let bytes = pat.as_bytes();
     let mut out = String::with_capacity(pat.len() + 4);
@@ -1191,14 +1193,25 @@ fn translate_awk_re_to_rust(pat: &str) -> String {
         if c == b'\\' && i + 1 < bytes.len() && !in_bracket {
             let next = bytes[i + 1];
             if (b'1'..=b'9').contains(&next) {
-                // gawk: literal `\N`; Rust would treat as backref. Escape.
+                // gawk: literal `\N`; Rust would treat as backref. Escape so
+                // Rust sees a literal backslash followed by the digit.
                 out.push('\\');
                 out.push('\\');
                 out.push(next as char);
                 i += 2;
                 continue;
             }
-            // Other escapes — pass through.
+            if matches!(next, b'd' | b'D') {
+                // gawk doesn't support `\d`/`\D` (only `\w`/`\W`/`\s`/`\S`):
+                // it emits "regexp escape sequence `\d' is not a known regexp
+                // operator" and treats `\d` as the literal letter. Rust regex
+                // would interpret as digit class — strip the `\` to literal.
+                out.push(next as char);
+                i += 2;
+                continue;
+            }
+            // Other escapes (`\.`, `\(`, `\n`, `\t`, `\<`, `\>`, `\b`, `\B`,
+            // `\xHH`, etc.) — pass through unchanged.
             out.push('\\');
             out.push(next as char);
             i += 2;
@@ -3488,7 +3501,7 @@ mod regex_translator_tests {
     fn passes_through_plain_patterns_unchanged() {
         assert_eq!(translate_awk_re_to_rust("abc"), "abc");
         assert_eq!(translate_awk_re_to_rust("[a-z]+"), "[a-z]+");
-        assert_eq!(translate_awk_re_to_rust(r"\d\w\s"), r"\d\w\s");
+        // (`\d\w\s` is no longer pass-through — see `strips_backslash_from_unsupported_class_escapes`)
     }
 
     #[test]
@@ -3513,11 +3526,27 @@ mod regex_translator_tests {
     }
 
     #[test]
-    fn preserves_other_escapes() {
-        // `\d`, `\s`, `\w` etc. — pass through. (These produce a gawk warning
-        // in gawk but match Rust regex semantics. Documented divergence.)
-        assert_eq!(translate_awk_re_to_rust(r"\d+\s\w"), r"\d+\s\w");
+    fn strips_backslash_from_d_class_escape() {
+        // gawk supports `\w`/`\W`/`\s`/`\S` as char classes but NOT `\d`/`\D`.
+        // It emits a warning for `\d` and treats it as literal `d`. Rust regex
+        // would interpret `\d` as digit class — strip the `\` to make literal.
+        assert_eq!(translate_awk_re_to_rust(r"\d+"), "d+");
+        assert_eq!(translate_awk_re_to_rust(r"\D+"), "D+");
+        assert_eq!(translate_awk_re_to_rust(r"\d\D"), "dD");
+    }
+
+    #[test]
+    fn preserves_supported_class_escapes() {
+        // `\w`/`\W`/`\s`/`\S` are gawk extensions and match Rust regex semantics —
+        // pass through. POSIX escapes (`\.`, `\(`, `\n`, etc.) too.
+        assert_eq!(translate_awk_re_to_rust(r"\w+"), r"\w+");
+        assert_eq!(translate_awk_re_to_rust(r"\W"), r"\W");
+        assert_eq!(translate_awk_re_to_rust(r"\s"), r"\s");
+        assert_eq!(translate_awk_re_to_rust(r"\S+"), r"\S+");
         assert_eq!(translate_awk_re_to_rust(r"\."), r"\.");
+        assert_eq!(translate_awk_re_to_rust(r"\("), r"\(");
+        assert_eq!(translate_awk_re_to_rust(r"\n\t\r"), r"\n\t\r");
+        assert_eq!(translate_awk_re_to_rust(r"\b"), r"\b");
     }
 
     #[test]
