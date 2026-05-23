@@ -3429,3 +3429,49 @@ fn regex_backslash_d_treated_as_literal_d_like_gawk() {
     // Pattern is literal `d`, so it matches the single 'd' in "abc123def".
     assert_eq!(o.trim(), "1", "stdout={o:?}");
 }
+
+#[test]
+fn gsub_with_non_lvalue_third_arg_still_returns_match_count() {
+    // gawk parity bug: gsub/sub with a non-lvalue 3rd arg (string literal,
+    // function call, sprintf result, etc.) used to silently fall through to
+    // `$0` in awkrs — returning 0 instead of the actual match count.
+    // Fix: compile non-lvalue 3rd args to a synthetic temp variable so the
+    // substitution count is correct (the modified result is discarded, since
+    // there's no lvalue to write back to).
+    let cases = &[
+        // string literal target
+        (
+            r#"BEGIN { print gsub(/d/, "X", "abc123def") }"#,
+            "1",
+        ),
+        // multiple matches
+        (
+            r#"BEGIN { print gsub(/X/, "Y", "XXX") }"#,
+            "3",
+        ),
+        // sub (single-match) variant
+        (
+            r#"BEGIN { print sub(/d/, "X", "abc123def") }"#,
+            "1",
+        ),
+        // function-call result as 3rd arg
+        (
+            r#"BEGIN { print gsub(/x/, "y", sprintf("xxx")) }"#,
+            "3",
+        ),
+        // expression as 3rd arg
+        (
+            r#"BEGIN { print gsub(/a/, "X", "aa" "bb" "aa") }"#,
+            "4",
+        ),
+    ];
+    for (program, expected) in cases {
+        let (c, o, e) = run_awkrs_stdin(program, "");
+        assert_eq!(c, 0, "exit failure on {program:?}; stderr={e:?}");
+        assert_eq!(
+            o.trim(),
+            *expected,
+            "mismatch on {program:?}; stdout={o:?}"
+        );
+    }
+}

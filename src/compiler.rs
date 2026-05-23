@@ -1035,7 +1035,27 @@ impl Compiler {
                     self.compile_array_key(indices, ops);
                     SubTarget::Index(arr_idx)
                 }
-                _ => SubTarget::Record,
+                other => {
+                    // gawk parity: when the 3rd arg is a non-lvalue (string literal,
+                    // function call, sprintf result, etc.), gawk evaluates the
+                    // expression, runs the substitution on a temporary, returns the
+                    // correct count, and discards the modified result. awkrs's
+                    // previous behavior silently fell through to `Record` (i.e., $0)
+                    // and ignored the actual argument — returning 0 instead of the
+                    // real match count.
+                    //
+                    // Emit code to assign the expression to a synthetic temp var,
+                    // then use that var as the lvalue target. `Op::SetVar` peeks
+                    // (leaves the value on stack to support chained assignment),
+                    // so we must `Pop` after to keep [re, repl] on top for the
+                    // GsubFn/SubFn call.
+                    self.compile_expr(other, ops);
+                    let temp_name = format!("__sub_target_temp_{}", ops.len());
+                    let temp_idx = self.strings.intern(&temp_name);
+                    ops.push(Op::SetVar(temp_idx));
+                    ops.push(Op::Pop);
+                    SubTarget::Var(temp_idx)
+                }
             }
         } else {
             SubTarget::Record
