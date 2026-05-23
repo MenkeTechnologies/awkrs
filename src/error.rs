@@ -11,6 +11,11 @@ pub enum Error {
     Runtime(String),
     #[error("cannot read program file {0:?}: {1}")]
     ProgramFile(PathBuf, std::io::Error),
+    /// Failure opening an input data file (positional arg after the program).
+    /// Phrased like gawk's "cannot open file ... for reading" to keep error
+    /// messages consistent across implementations.
+    #[error("cannot open file {0:?} for reading: {1}")]
+    InputFile(PathBuf, std::io::Error),
     /// `exit` was evaluated (propagated from functions / expressions).
     #[error("exit {0}")]
     Exit(i32),

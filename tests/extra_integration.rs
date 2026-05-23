@@ -3525,3 +3525,31 @@ fn coproc_pipe_getline_parser_accepts_pipeampersand() {
     assert_eq!(c, 0);
     assert_eq!(o.trim(), "HELLO");
 }
+
+#[test]
+fn missing_input_file_error_message_distinguishes_from_program_file() {
+    // Bug: awkrs used to print "cannot read program file" for missing input
+    // files (positional args after the program), because the file-opening
+    // helper used `Error::ProgramFile` regardless of context. The message was
+    // misleading and inconsistent with gawk's "cannot open file ... for reading".
+    //
+    // Two paths now: `Error::ProgramFile` for `-f` loads (and inline -e),
+    // `Error::InputFile` for positional input files.
+    let bin = env!("CARGO_BIN_EXE_awkrs");
+    let out = std::process::Command::new(bin)
+        .arg("BEGIN { print \"ok\" } { print }")
+        .arg("/nonexistent/awkrs/input/file/xyz12345")
+        .output()
+        .expect("spawn awkrs");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(stdout.trim(), "ok", "BEGIN should still run; stdout={stdout:?}");
+    assert!(
+        stderr.contains("cannot open file"),
+        "expected gawk-style 'cannot open file' message; stderr={stderr:?}"
+    );
+    assert!(
+        !stderr.contains("cannot read program file"),
+        "should NOT call positional input a 'program file'; stderr={stderr:?}"
+    );
+}

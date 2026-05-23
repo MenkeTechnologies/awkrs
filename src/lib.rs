@@ -587,6 +587,11 @@ fn process_stdin_parallel(
 }
 
 fn mmap_file_readonly(path: &Path, rt: &mut Runtime) -> Result<Mmap> {
+    // Called only from input-file processing paths (`process_file` /
+    // `process_file_slurp`). The `-f PROGRAM` loading path uses
+    // `std::fs::read_to_string` further down. Use `Error::InputFile` so a
+    // missing positional arg produces "cannot open file ..." (gawk-style)
+    // instead of the misleading "cannot read program file ...".
     let file = match File::open(path) {
         Ok(f) => {
             rt.clear_errno();
@@ -594,14 +599,14 @@ fn mmap_file_readonly(path: &Path, rt: &mut Runtime) -> Result<Mmap> {
         }
         Err(e) => {
             rt.set_errno_io(&e);
-            return Err(Error::ProgramFile(path.to_path_buf(), e));
+            return Err(Error::InputFile(path.to_path_buf(), e));
         }
     };
     // SAFETY: read-only map of a file we opened; no concurrent writes assumed (same as `fs::read`).
     unsafe {
         memmap2::MmapOptions::new().map(&file).map_err(|e| {
             rt.set_errno_io(&e);
-            Error::ProgramFile(path.to_path_buf(), e)
+            Error::InputFile(path.to_path_buf(), e)
         })
     }
 }
@@ -801,7 +806,7 @@ fn attach_primary_input_before_begin_for_getline(
         }
         Err(e) => {
             rt.set_errno_io(&e);
-            Err(Error::ProgramFile(files[0].clone(), e))
+            Err(Error::InputFile(files[0].clone(), e))
         }
     }
 }
@@ -842,7 +847,7 @@ fn process_file(
             }
             Err(e) => {
                 rt.set_errno_io(&e);
-                return Err(Error::ProgramFile(p.to_path_buf(), e));
+                return Err(Error::InputFile(p.to_path_buf(), e));
             }
         }
     } else {
