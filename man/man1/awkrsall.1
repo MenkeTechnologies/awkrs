@@ -1,0 +1,1021 @@
+.\" awkrsall(1) — comprehensive all-in-one man page for awkrs
+.\" Modeled after zshall(1): every man page in one document.
+.\" Render with:  man -l man/man1/awkrsall.1
+.\" Install:      cp man/man1/awkrsall.1 /usr/local/share/man/man1/
+.TH AWKRSALL 1 "May 2026" "awkrs 0.4.5" "User Commands"
+.SH NAME
+awkrsall \- the awkrs comprehensive reference (invocation, language,
+bytecode VM, Cranelift JIT, persistent bytecode cache, parallel records,
+gawk/mawk parity)
+.SH OVERVIEW
+This is the all-in-one
+.B awkrs
+manual, modeled on
+.BR zshall (1).
+It concatenates the major sections of the awkrs reference into a single
+page so you can grep with `/`:
+.RS 2
+.PP
+.B 1.  INVOCATION
+.RB "\(em " "POSIX, GNU, gawk, mawk -W flags"
+.br
+.B 2.  PROGRAM TEXT
+.RB "\(em " "rules, patterns, statements, getline, operators"
+.br
+.B 3.  DATA MODEL
+.RB "\(em " "fields, arrays, records, FS/FPAT/RS, special vars"
+.br
+.B 4.  BUILTINS
+.RB "\(em " "every string/numeric/I/O/bit builtin"
+.br
+.B 5.  GAWK EXTENSIONS
+.RB "\(em " "@include, @load, @namespace, /inet/, indirect calls"
+.br
+.B 6.  BYTECODE VM
+.RB "\(em " "stack VM, opcodes, peephole fusion, inline fast paths"
+.br
+.B 7.  CRANELIFT JIT
+.RB "\(em " "tiered compilation, ABI, eligible ops, NaN-boxing"
+.br
+.B 8.  BYTECODE CACHE
+.RB "\(em " "rkyv, mmap, atomic rename, mtime invalidation"
+.br
+.B 9.  PARALLEL RECORDS
+.RB "\(em " "static safety check, rayon, deterministic reorder"
+.br
+.B 10. BENCHMARKS
+.RB "\(em " "vs gawk / mawk / BSD awk / frawk / goawk"
+.br
+.B 11. ENVIRONMENT
+.br
+.B 12. EXIT STATUS
+.br
+.B 13. FILES
+.br
+.B 14. EXAMPLES
+.RB "\(em " "throughput, CSV, parallel, JIT-friendly, regex"
+.br
+.B 15. PARITY GAPS
+.RE
+.PP
+For a shorter quick-reference page see
+.BR awkrs (1).
+.SH NAME
+awkrs \- pattern-directed scanning and processing language with
+bytecode VM, Cranelift JIT, persistent rkyv bytecode cache, and parallel
+record processing (Rust awk implementation)
+.SH SYNOPSIS
+.B awkrs
+.RI [ OPTIONS ]
+.RB [ \-f
+.IR PROGFILE
+.RB |
+.B \-e
+.IR PROGRAM
+.RB |
+.IR PROGRAM ]
+.RB [ \-\- ]
+.RI [ file ...]
+.SH DESCRIPTION
+.B awkrs
+runs
+.B pattern \(-> action
+programs over input records like POSIX
+.BR awk ,
+GNU
+.BR gawk ,
+and
+.BR mawk .
+The CLI accepts the union of POSIX, gawk, and mawk
+.RB ( "\-W" )
+options.
+.PP
+Execution flows through a Cranelift-JIT bytecode VM with a parallel
+record processor that activates automatically when the program is
+parallel-safe and
+.B \-j
+selects more than one thread; otherwise execution is sequential.
+.PP
+Source survey claim: among the major public awk implementations
+(BWK awk, gawk, mawk, goawk, frawk, zawk),
+.B awkrs is the first to combine a bytecode VM, a JIT compiler, and a
+.B persistent on-disk bytecode cache.
+frawk has VM + Cranelift/LLVM JIT but recompiles every invocation;
+gawk's
+.B pm-gawk
+persists script-defined variables, not compiled bytecode.
+.SH "1.  INVOCATION"
+The program text is taken from the first non-option argument unless
+.B \-f
+or
+.B \-e
+is given.  Remaining non-option arguments are input files; if none are
+given, standard input is read.
+.SS POSIX
+.TP
+.BR \-f " \fIPROGFILE\fR, " \-\-file =\fIPROGFILE\fR
+Read program source from
+.IR PROGFILE .
+Repeatable; sources concatenated.
+.TP
+.BR \-F " \fIFS\fR, " \-\-field-separator =\fIFS\fR
+Set input field separator
+.RB ( FS ).
+.TP
+.BR \-v " \fIvar=val\fR, " \-\-assign =\fIvar=val\fR
+Assign
+.I val
+to
+.I var
+before
+.B BEGIN
+runs.  Repeatable.
+.SS GNU program sources
+.TP
+.BR \-e " \fIPROGRAM\fR, " \-\-source =\fIPROGRAM\fR
+Inline program text.  Repeatable; sources concatenated.
+.TP
+.BR \-i " \fIFILE\fR, " \-\-include =\fIFILE\fR
+Include awk source file (gawk
+.B @include
+behavior).  Repeatable.
+.SS gawk extensions
+.TP
+.BR \-b ", " \-\-characters-as-bytes
+Use byte length for
+.BR length ,
+.BR substr ,
+.BR index .
+.TP
+.BR \-c ", " \-\-traditional
+Traditional POSIX awk mode.
+.TP
+.BR \-C ", " \-\-copyright
+Print copyright information.
+.TP
+.BR \-d "[\fIFILE\fR], " \-\-dump-variables [=\fIFILE\fR]
+Dump globals after the program runs.
+.TP
+.BR \-D "[\fIFILE\fR], " \-\-debug [=\fIFILE\fR]
+Static rule/function listing.  Not gawk's interactive debugger.
+.TP
+.BR \-E " \fIFILE\fR, " \-\-exec =\fIFILE\fR
+Execute program from
+.I FILE
+then exit.
+.TP
+.BR \-g ", " \-\-gen-pot
+Generate gettext
+.B .pot
+output and exit.
+.TP
+.BR \-I ", " \-\-trace
+Trace execution.
+.TP
+.BR \-k ", " \-\-csv
+CSV mode.  Sets
+.B FS / FPAT
+and uses a parser aligned with
+.BR "gawk --csv" .
+.TP
+.BR \-l " \fILIB\fR, " \-\-load =\fILIB\fR
+Load extension library (gawk
+.BR @load
+behavior).  Repeatable.
+.TP
+.BR \-L "[\fIVAL\fR], " \-\-lint [=\fIVAL\fR]
+Lint checks.
+.TP
+.BR \-M ", " \-\-bignum
+MPFR arbitrary-precision arithmetic.
+.TP
+.BR \-n ", " \-\-non-decimal-data
+Accept hex (\fB0x\fP) and octal (leading \fB0\fP) input numbers.
+.TP
+.BR \-N ", " \-\-use-lc-numeric
+Respect
+.B LC_NUMERIC
+for
+.BR sprintf / printf .
+.TP
+.BR \-o "[\fIFILE\fR], " \-\-pretty-print [=\fIFILE\fR]
+Pretty-print parsed program text.
+.TP
+.BR \-O ", " \-\-optimize
+Bytecode optimizations on (default).
+.TP
+.BR \-p "[\fIFILE\fR], " \-\-profile [=\fIFILE\fR]
+Profile execution.
+.TP
+.BR \-P ", " \-\-posix
+Strict POSIX mode.
+.TP
+.BR \-r ", " \-\-re-interval
+Enable interval expressions in regex.
+.TP
+.BR \-s ", " \-\-no-optimize
+Disable bytecode optimizations.
+.TP
+.BR \-S ", " \-\-sandbox
+Disable
+.BR system ,
+.BR getline " | cmd" ,
+and other shell-out features.
+.TP
+.BR \-t ", " \-\-lint-old
+Lint against historical awk dialects.
+.SS mawk
+.TP
+.BR \-W " \fIspec\fR"
+Mawk-style options forwarded to the runtime
+.RB ( "compat" ,
+.BR "interactive" ,
+.BR "sprintf=N" ,
+.BR "exec=FILE" ,
+.BR "posix_space" ,
+.BR "dump" ,
+etc.).
+.SS awkrs-specific
+.TP
+.BR \-j " \fIN\fR, " \-\-threads =\fIN\fR
+Worker thread count.  Default 1.  Activates parallel record processing
+when the program is parallel-safe (see
+.B "9. PARALLEL RECORDS" ).
+.TP
+.BR \-\-read-ahead " \fILINES\fR"
+Stdin parallel batch size.  Default 1024.
+.TP
+.B \-\-no-jit
+Force the bytecode interpreter even when JIT is available.
+.TP
+.B \-\-no-cache
+Disable bytecode cache for this invocation.
+.SH "2.  PROGRAM TEXT"
+.SS Rules
+.BR BEGIN ,
+.BR END ,
+.BR BEGINFILE ,
+.BR ENDFILE ,
+empty pattern,
+.BR /regex/ ,
+expression patterns, range patterns
+.RB ( /a/,/b/
+or
+.BR "NR==1,NR==5" ).
+The four special patterns
+.B must
+use
+.BR { \ ...\ } ;
+record rules may omit braces for the default
+.BR "{ print $0 }" .
+.SS Statements
+.BR if ,
+.BR while ,
+.B do\-while ,
+.B for
+(C-style and
+.BR "for (i in arr)" ),
+.BR switch / case / default
+(gawk-style: no fall-through, regex
+.BR "case /re/" ),
+.BR print / printf
+with
+.BR > ,
+.BR >> ,
+.BR | ,
+.B |&
+redirection,
+.BR break ,
+.BR continue ,
+.BR next ,
+.BR nextfile ,
+.BR exit ,
+.BR delete ,
+.BR return ,
+.BR getline .
+.SS getline as expression
+Returns
+.B 1
+(read),
+.B 0
+(EOF),
+.B \-1
+(error),
+.B \-2
+(gawk retryable I/O when
+.BR PROCINFO[input,"RETRY"]
+is set).  JIT
+.B getline
+failures abort the JIT chunk instead of returning
+.BR \-1 / \-2 .
+.SS Operators
+arithmetic, comparison, string concat, ternary,
+.BR in ,
+.BR ~ / !~ ,
+.BR ++ / \-\-
+(prefix/postfix on vars,
+.BR $n ,
+.BR a[k] ),
+.BR ^ / **
+(right-associative; unary
+.BR + / \- / !
+bind looser, so
+.B \-2^2
+=
+.BR \-(2^2) ).
+.B Division by zero
+.RB ( / ,
+compound
+.BR /= )
+is a
+.B fatal error
+.RB ( "division by zero attempted" ),
+not infinity.
+.SS Primary /
+The lexer may emit
+.B /
+as division when
+.B regex_mode
+is false (e.g. after
+.BR = ).
+At a
+.B primary
+position
+.B /
+cannot start division, so the parser re-reads as
+.BR /regex/ .
+In
+.B expression
+context a bare
+.B /re/
+means
+.B $0 ~ /re/
+(POSIX), so
+.BR "!/foo/" ,
+.BR "if (/foo/)" ,
+.BR "x = /foo/"
+use a match against the current record.
+.SS gawk regexp constants
+.B @/pattern/
+yields a
+.B regexp
+value
+.RB ( typeof
+reports
+.BR regexp );
+.B ~
+uses the pattern as a regex.
+.SH "3.  DATA MODEL"
+Fields, scalars, associative arrays
+.RB ( a[k] ,
+.B a[i,j]
+with
+.BR SUBSEP ),
+.BR ARGC / ARGV
+(set before
+.B BEGIN
+\(em
+.B ARGV[0]
+is the executable,
+.B ARGV[1..]
+are file paths).
+.PP
+.BR FS
+is a regex when multi-char.
+.B FPAT
+(gawk-style): non-empty splits by regex match.
+.BR split / patsplit
+accept regex as 3rd arg;
+.B patsplit
+4-arg form populates
+.BR seps .
+.PP
+.B POSIX record model:
+.B NF = n
+truncates or extends fields and rebuilds
+.B $0
+with
+.BR OFS ;
+.B "$0 = ..."
+re-splits and updates
+.BR NF .
+.PP
+.B FS/FPAT from literals:
+bytecode may store source
+.B "..."
+as an internal literal string, but
+.B cached_fs
+sync on read still tracks those assignments.
+.PP
+.B Whole array in a scalar context
+.RB ( "print a" ,
+string concat,
+.B printf
+args,
+.B ~
+operands, etc.) is a
+.B fatal runtime error
+(gawk-style), not a silent empty string.
+.PP
+.B Scalars:
+uninitialized variables compare like numeric
+.B 0
+where POSIX expects dual
+.B 0 / ""
+.
+.PP
+.B String constants vs input:
+program string literals are not
+.I numeric strings
+for
+.BR < / <= / > / >=
+the way
+.B $n
+can be; arithmetic still uses longest-prefix string\(->number
+.RB ( "\"3.14abc\"+0"
+=
+.BR 3.14 ).
+.PP
+.B split("", arr, fs)
+returns
+.B 0
+(no empty pseudo-field).
+.SS Records & env
+.B RS
+is newline by default; one (UTF-8) char is a literal delimiter;
+.B RS=""
+is paragraph mode; multi-char is a gawk regex
+.RB ( RT
+holds the matched text).
+.B FIELDWIDTHS
+selects fixed-width when non-empty.
+.PP
+.BR ENVIRON ,
+.BR CONVFMT ,
+.BR OFMT ,
+.BR FIELDWIDTHS ,
+.B IGNORECASE
+(case-insensitive regex +
+.BR == / !=
+ordering via
+.BR strcoll ),
+.BR ARGIND ,
+.BR ERRNO ,
+.BR LINT ,
+.BR TEXTDOMAIN ,
+.BR BINMODE .
+.BR PROCINFO ,
+.BR FUNCTAB ,
+.B SYMTAB
+populated in gawk-compatible form.
+.SH "4.  BUILTINS"
+.B length ,
+.B index
+(empty needle =
+.BR 1 ,
+matching gawk),
+.B substr
+.RB ( "gawk rule" ,
+not POSIX: if
+.B "start < 1"
+clamp to
+.B 1
+and leave
+.B length
+unchanged),
+.BR intdiv ,
+.BR mkbool ,
+.BR split ,
+.BR sprintf ,
+.BR printf
+(flags,
+.B *
+and
+.B %n$
+positional, gawk
+.BR %' ,
+conversions
+.BR "%s %d %i %u %o %x %X %f %e %E %g %G %c %%"
+\(em
+.BR %e / %E
+use signed two-digit exponents;
+.B %c
+uses a string's first character),
+.BR gsub ,
+.BR sub ,
+.BR match ,
+.BR gensub ,
+.BR isarray ,
+.BR tolower ,
+.BR toupper ,
+.BR int .
+.PP
+Math:
+.BR sin ,
+.BR cos ,
+.BR atan2 ,
+.BR exp ,
+.BR log ,
+.BR sqrt .
+.PP
+.BR rand ,
+.BR srand ,
+.BR systime ,
+.BR strftime
+(0\(en3 args),
+.BR mktime ,
+.BR system ,
+.BR close ,
+.BR fflush ,
+bit ops
+.RB ( and ,
+.BR or ,
+.BR xor ,
+.BR lshift ,
+.BR rshift ,
+.BR compl ),
+.BR strtonum ,
+.BR asort ,
+.BR asorti .
+.PP
+User-defined
+.B function
+with parameter locals.  Recursion is capped (256 nested calls in
+release builds; lower in unit tests) so pathological self-calls fail
+with an error instead of overflowing the host stack.
+.SH "5.  GAWK EXTENSIONS"
+.BR @include ,
+.B @load "*.awk" ,
+.B @namespace "..."
+(default identifier prefixing; built-ins exempt), indirect calls
+.RB ( @name(...) ,
+.BR @(expr)(...) ),
+.B /inet/tcp/...
+and
+.B /inet/udp/...
+client sockets, gettext builtins
+.RB ( bindtextdomain ,
+.BR dcgettext ,
+.B dcngettext
+with
+.B .mo
+catalogs via the
+.B gettext
+crate),
+.BR \-M / \-\-bignum
+MPFR.
+.SH "6.  BYTECODE VM"
+.B awkrs
+compiles AWK programs into a flat bytecode instruction stream and runs
+them on a
+.B stack VM.
+Short-circuit
+.BR && / || ,
+control flow, and range patterns resolve to jump-patched offsets at
+compile time.  The
+.B string pool
+interns variable names and string constants for cheap
+.B u32
+indexing.
+.SS Peephole fusion
+Common sequences combine into single opcodes:
+.PP
+.TS
+tab(|);
+l l.
+.B Source pattern|.B Fused opcode
+\fBprint $N\fR|\fBPrintFieldStdout\fR (zero-alloc field write)
+\fBs += $N\fR|\fBAddFieldToSlot\fR (in-place numeric parse)
+\fBi = i + 1\fR / \fBi++\fR / \fB++i\fR|\fBIncrSlot\fR (one numeric add, no stack traffic)
+\fBs += i\fR between slots|\fBAddSlotToSlot\fR
+\fB$1 "," $2\fR literal concat|\fBConcatPoolStr\fR
+\fBNR++\fR HashMap-path|\fBIncrVar\fR
+.TE
+.SS Inline fast paths
+Single-rule programs with one fused opcode
+.RB ( "{ print $1 }" ,
+.BR "{ s += $1 }" )
+bypass
+.B VmCtx
+entirely.
+.PP
+Memory-mapped files also recognize
+.B "{ gsub(\"lit\", \"repl\"); print }"
+with literal pattern: when the needle is absent, the loop writes each
+line from the mapped buffer with
+.B ORS
+and skips the VM.
+.SH "7.  CRANELIFT JIT"
+The
+.B jit
+module compiles eligible bytecode chunks to native code using Cranelift
+with
+.BR "opt_level=speed" .
+.SS ABI
+.B "(vmctx, slots, field_fn, array_field_add, var_dispatch, field_dispatch, io_dispatch, val_dispatch) -> f64"
+\(em opaque
+.B vmctx
+plus seven
+.B "extern \"C\""
+callbacks (no thread-local lookups).
+.SS Tiered compilation
+Chunks count entries and only compile after
+.B AWKRS_JIT_MIN_INVOCATIONS
+(default 3; set
+.B 1
+for first-entry compile).  Set
+.B AWKRS_JIT=0
+to force the bytecode interpreter.
+.SS Eligible JIT ops
+Constants, arithmetic/comparisons, jumps and fused loop tests, slot and
+HashMap-path scalar ops, field reads (including dynamic
+.B $i
+writes in mixed mode),
+.BR for-in ,
+.BR asort ,
+.BR asorti ,
+.BR match ,
+.BR sub ,
+.BR gsub ,
+.BR split ,
+.BR patsplit ,
+.B getline
+(primary, file, coproc),
+.BR CallUser ,
+fused print opcodes (including redirects),
+.BR typeof ,
+and a whitelist of builtins (math,
+.BR sprintf ,
+.BR printf ,
+.BR strftime ,
+.BR fflush ,
+.BR close ,
+.BR system ).
+.SS Value representation
+Mixed-mode chunks NaN-box
+.B Value
+in slots; non-mixed chunks keep slots in Cranelift SSA.  Unsupported
+opcodes fall back to the bytecode loop.
+.SH "8.  BYTECODE CACHE"
+.B "\-f script.awk"
+invocations memoize the compiled
+.B CompiledProgram
+to
+.B ~/.awkrs/scripts.rkyv
+\(em an rkyv-archived shard with
+.B mmap
++ zero-copy
+.B ArchivedHashMap
+lookup on the read path
+.RB ( "check_archived_root"
+validation) and
+.BR flock -serialized
+atomic-rename writes.
+.PP
+Each entry's inner
+.B CompiledProgram
+blob is bincode (rkyv outer, bincode inner \(em same architecture as
+.BR zshrs
+and
+.BR strykelang ).  Repeat runs skip lex/parse/compile entirely \(em
+only the matched entry's blob is decoded.
+.PP
+.B Invalidation:
+entries are invalidated on source-file mtime change or when the running
+.B awkrs
+binary is newer than the cached entry.  Any rebuild silently rebuilds
+the cache.
+.PP
+.B Disable
+with
+.BR "AWKRS_CACHE=0" .
+The cache only engages for the simple
+.B "\-f script.awk"
+form \(em inline
+.BR \-e / \-\-source ,
+.BR \-E ,
+.BR \-i / \-\-include ,
+.BR \-l / \-\-load ,
+.BR \-\-debug ,
+.BR \-\-lint ,
+.BR \-\-pretty-print ,
+.B \-\-gen-pot
+skip the cache because they need the AST.
+.SH "9.  PARALLEL RECORDS"
+.PP
+.RS 2
+.nf
+ ┌─────────────────────────────────────────────┐
+ │  WORKER 0  ░░  CHUNK 0   ██ REORDER QUEUE  │
+ │  WORKER 1  ░░  CHUNK 1   ██ ──────────────>│
+ │  WORKER 2  ░░  CHUNK 2   ██  DETERMINISTIC │
+ │  WORKER N  ░░  CHUNK N   ██  OUTPUT STREAM  │
+ └─────────────────────────────────────────────┘
+.fi
+.RE
+.PP
+Default
+.B "\-j / \-\-threads"
+is
+.BR 1 .
+Pass a higher value when the program is
+.B parallel-safe
+\(em static check:
+.RS 2
+.PP
+no range patterns
+.br
+no
+.BR exit ,
+.BR nextfile ,
+.B delete
+.br
+no primary
+.B getline
+.br
+no pipe/coproc
+.B getline
+.br
+no
+.BR asort / asorti
+.br
+no indirect calls
+.br
+no
+.BR print / printf
+redirection
+.br
+no cross-record assignments
+.RE
+.PP
+Records are processed in parallel via
+.B rayon
+and output is
+.B reordered to input order
+within each batch so pipelines stay deterministic.
+.SS File input
+.B Regular files
+are memory-mapped
+.RB ( memmap2 )
+and scanned with the same
+.B RS
+rules as the sequential path \(em no
+.BR read()
+copy of the whole file.
+.SS Stdin
+.B Stdin parallel
+chunks up to
+.B \-\-read-ahead
+lines (default 1024) per batch, dispatches to workers, emits in order,
+then refills.
+.SS Worker model
+Workers run the same bytecode VM as the sequential path.  The compiled
+program is shared via
+.B "Arc<CompiledProgram>"
+(one compile, cheap refcount per worker) with per-worker runtime state.
+.SS Fallback
+Non-parallel-safe programs run sequentially with a warning when
+.BR "\-j > 1" .
+Programs that use primary
+.B getline
+(including in
+.BR BEGIN )
+also run sequentially for file input.
+.B END
+only sees post-
+.B BEGIN
+global state \(em record-rule mutations from parallel workers are not
+merged.
+.SH "10. BENCHMARKS"
+Combat metrics on representative workloads (1 million lines unless
+noted).
+.B awkrs
+ties or beats every other awk implementation surveyed on most
+workloads.  See README
+.B "[0x06] BENCHMARKS"
+for the full table with timings.  Highlights:
+.PP
+.TS
+tab(|);
+l l.
+.B Benchmark|.B Winner
+\fB{ print $1 }\fR throughput|awkrs (fused PrintFieldStdout)
+CPU-bound \fBBEGIN\fR (no input)|awkrs / frawk near-tie
+Sum first column|awkrs (AddFieldToSlot)
+Regex filter (no matches)|awkrs / mawk
+Associative array build|awkrs / gawk
+\fBgsub\fR no-match (mmap fast path)|awkrs (mapped-buffer write, VM skipped)
+.TE
+.SH "11. ENVIRONMENT"
+.TP
+.B AWKPATH
+Search path for
+.B \-l
+and
+.BR @include .
+Default
+.BR . .
+.TP
+.B AWKLIBPATH
+Search path for
+.BR @load .
+.TP
+.B AWKRS_CACHE
+Set to
+.B 0
+to disable the bytecode cache.
+.TP
+.B AWKRS_JIT
+Set to
+.B 0
+to force the bytecode interpreter.
+.TP
+.B AWKRS_JIT_MIN_INVOCATIONS
+JIT tier-up threshold (default
+.BR 3 ).
+.TP
+.B GAWK_READ_TIMEOUT
+Default read timeout (ms) used as the fallback for
+.BR PROCINFO[input,"READ_TIMEOUT"] .
+.TP
+.B LC_NUMERIC
+Locale decimal radix and thousands grouping when
+.B \-N
+is set; affects
+.BR sprintf / printf / print
+output only, not
+.BR $n / $0
+parsing.
+.SH "12. EXIT STATUS"
+.TP
+.B 0
+Successful completion.
+.TP
+.B 1
+Error during program execution or invalid usage.  Errors are written to
+stderr as
+.BR "awkrs: <command>: <reason>" .
+.TP
+.I n
+The program may exit with any status by calling
+.BR "exit n" .
+.SH "13. FILES"
+.TP
+.I ~/.awkrs/scripts.rkyv
+Persistent bytecode cache shard.  rkyv outer + bincode inner;
+mmap+validate on read,
+.BR flock -serialized
+atomic rename on write.
+.TP
+.I /usr/local/share/man/man1/awkrs.1
+Short reference man page.
+.TP
+.I /usr/local/share/man/man1/awkrsall.1
+This man page.
+.SH "14. EXAMPLES"
+.PP
+Print the second whitespace-separated field:
+.RS
+.nf
+awkrs '{ print $2 }' input.txt
+.fi
+.RE
+.PP
+Sum a CSV column with quoted-field handling and four worker threads:
+.RS
+.nf
+awkrs -k -j4 '{ s += $3 } END { print s }' data.csv
+.fi
+.RE
+.PP
+Memoize compiled bytecode on disk:
+.RS
+.nf
+awkrs -f myscript.awk input.txt
+# second invocation skips lex / parse / compile entirely
+.fi
+.RE
+.PP
+Force the bytecode interpreter (no JIT):
+.RS
+.nf
+AWKRS_JIT=0 awkrs '{ print $2 }' input.txt
+.fi
+.RE
+.PP
+First-entry JIT (tier-up threshold = 1):
+.RS
+.nf
+AWKRS_JIT_MIN_INVOCATIONS=1 awkrs -f hot.awk huge.log
+.fi
+.RE
+.PP
+CSV mode with named fields:
+.RS
+.nf
+awkrs -k '{ print $1, $5 }' data.csv
+.fi
+.RE
+.PP
+TCP client socket:
+.RS
+.nf
+awkrs 'BEGIN { "/inet/tcp/0/example.com/80" |& getline line; print line }'
+.fi
+.RE
+.PP
+Indirect function call:
+.RS
+.nf
+awkrs 'function f(x) { return x*2 } BEGIN { name = "f"; print @name(21) }'
+.fi
+.RE
+.PP
+gawk regexp constant:
+.RS
+.nf
+awkrs 'BEGIN { r = @/^[0-9]+$/; print typeof(r) }'
+.fi
+.RE
+.PP
+Parallel-safe sum across 8 threads:
+.RS
+.nf
+awkrs -j8 '{ s += $1 } END { print s }' big.log
+.fi
+.RE
+.PP
+.B BEGINFILE
+hook:
+.RS
+.nf
+awkrs 'BEGINFILE { print "opening", FILENAME } /pattern/ { print }' *.log
+.fi
+.RE
+.PP
+.B \-\-debug
+static listing:
+.RS
+.nf
+awkrs --debug=program.lst -f myscript.awk
+.fi
+.RE
+.PP
+MPFR arbitrary precision:
+.RS
+.nf
+awkrs -M 'BEGIN { PREC = 200; print 1 / 7 }'
+.fi
+.RE
+.PP
+Locale-aware printf:
+.RS
+.nf
+LC_NUMERIC=fr_FR.UTF-8 awkrs -N 'BEGIN { printf("%.2f\\n", 1234.5) }'
+.fi
+.RE
+.SH "15. PARITY GAPS"
+.B awkrs
+implements the union of POSIX, gawk, and mawk.  Remaining gaps are
+documented in the project compatibility matrix
+.RB ( docs/COMPATIBILITY.md ).
+Notable items:
+.IP \[bu] 2
+.B \-D
+.BR \-\-debug
+emits a static rule/function listing; it is
+.B not
+gawk's interactive debugger (no breakpoints, no step / next).
+.IP \[bu] 2
+.B \-c
+.BR \-\-traditional
+is stored on the runtime; effect today is minimal.
+.IP \[bu] 2
+Some
+.B PROCINFO[input,...]
+keys (e.g.
+.BR RETRY ,
+.BR READ_TIMEOUT )
+are honored only on retryable I/O paths.
+.IP \[bu] 2
+Cross-record state mutations in parallel mode are not merged into
+.BR END ;
+the static safety check refuses such programs unless
+.B "\-j 1"
+is used.
+.SH SEE ALSO
+.BR awkrs (1),
+.BR awk (1),
+.BR gawk (1),
+.BR mawk (1),
+.BR strykeall (1),
+.BR zshrsall (1),
+.BR lsofrsall (1),
+.BR temprsall (1)
+.SH AUTHOR
+.B Jacob Menke
+.RI < https://github.com/MenkeTechnologies >
+.SH BUGS
+Report bugs at
+.UR https://github.com/MenkeTechnologies/awkrs/issues
+.UE .
