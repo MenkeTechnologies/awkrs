@@ -989,28 +989,34 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_expr_pipe_getline_suffix(&mut self, e: Expr) -> Result<Expr> {
-        // `expr | getline [var]` — `|` must be followed by `getline` (not `print | cmd`).
-        if self.cur == Token::Pipe {
-            let mut peek = self.lexer.clone();
-            if peek.next_token(false)? != Token::Getline {
-                return Ok(e);
-            }
-            self.bump(false)?;
-            self.bump(false)?;
-            let var = if let Token::Ident(name) = &self.cur.clone() {
-                let n = name.clone();
-                self.bump(false)?;
-                Some(n)
-            } else {
-                None
-            };
-            return Ok(Expr::GetLine {
-                pipe_cmd: Some(Box::new(e)),
-                var,
-                redir: GetlineRedir::Primary,
-            });
+        // `expr | getline [var]` — pipe must be followed by `getline`.
+        // `expr |& getline [var]` — gawk coprocess-read variant. awkrs's
+        // current runtime treats `|&` as ordinary `|` for this expression form
+        // (the bidirectional pipe with both write-from-print and read-from-
+        // getline on the same coproc isn't implemented yet). At minimum the
+        // parser must accept the syntax — otherwise scripts that use it error
+        // before any work happens.
+        if !matches!(self.cur, Token::Pipe | Token::PipeCoproc) {
+            return Ok(e);
         }
-        Ok(e)
+        let mut peek = self.lexer.clone();
+        if peek.next_token(false)? != Token::Getline {
+            return Ok(e);
+        }
+        self.bump(false)?;
+        self.bump(false)?;
+        let var = if let Token::Ident(name) = &self.cur.clone() {
+            let n = name.clone();
+            self.bump(false)?;
+            Some(n)
+        } else {
+            None
+        };
+        Ok(Expr::GetLine {
+            pipe_cmd: Some(Box::new(e)),
+            var,
+            redir: GetlineRedir::Primary,
+        })
     }
 
     fn parse_assign(&mut self, regex_mode: bool, re_pat: bool) -> Result<Expr> {

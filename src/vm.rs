@@ -5086,7 +5086,11 @@ pub(crate) fn exec_builtin_dispatch(
             Value::Num(st.code().unwrap_or(-1) as f64)
         }
         "close" => {
-            if argc != 1 {
+            // gawk: `close(cmd)` closes the stream; `close(cmd, "to"|"from")`
+            // closes one direction of a coprocess. awkrs doesn't (yet) implement
+            // bidirectional coprocesses with directional close — accept the 2-arg
+            // form and treat it as a plain close so user scripts don't error.
+            if argc != 1 && argc != 2 {
                 return Err(Error::Runtime(format!(
                     "{argc} is invalid as number of arguments for close"
                 )));

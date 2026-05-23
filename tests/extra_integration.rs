@@ -3499,3 +3499,29 @@ fn fs_equals_space_string_comparison_true_by_default() {
     assert_eq!(c, 0);
     assert_eq!(o.trim(), "ok", "stdout={o:?}");
 }
+
+#[test]
+fn close_accepts_2_arg_for_coproc_direction() {
+    // gawk: `close(cmd, "to")` / `close(cmd, "from")` close one direction of a
+    // coprocess pipe. awkrs's runtime doesn't (yet) implement bidirectional
+    // coprocesses, but the builtin must accept 2 args so user scripts that
+    // call it don't runtime-error before doing useful work.
+    let (c, o, e) = run_awkrs_stdin(r#"BEGIN { close("x", "to"); print "ok" }"#, "");
+    assert_eq!(c, 0, "stderr={e:?}");
+    assert_eq!(o.trim(), "ok");
+}
+
+#[test]
+fn coproc_pipe_getline_parser_accepts_pipeampersand() {
+    // gawk: `cmd |& getline var` reads from a coprocess. awkrs's parser used
+    // to reject `|&` in expression-form getline ("expected `;`, newline, or
+    // `}`"). The minimum fix parses `|&` the same as `|` for this form (the
+    // bidirectional-pipe runtime semantics aren't wired yet, but at least
+    // scripts that read from a command this way work).
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { cmd = "echo HELLO"; cmd |& getline line; print line }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o.trim(), "HELLO");
+}
