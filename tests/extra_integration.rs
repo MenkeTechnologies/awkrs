@@ -1102,6 +1102,22 @@ fn log_negative_one_warns_and_prints_plus_nan() {
 }
 
 #[test]
+fn regex_numeric_backref_does_not_crash() {
+    // Bug: awkrs used to hard-error on `(.)\1` because Rust's regex crate
+    // parses `\1` as a backreference (unsupported feature) and rejects the
+    // pattern. gawk silently compiles it (POSIX ERE has no backrefs) and
+    // produces 0 matches against ordinary input. Pattern preprocessor in
+    // `ensure_regex` now escapes `\N` to literal `\\N` before compilation.
+    let (c, o, e) = run_awkrs_stdin(
+        r#"BEGIN { print gsub(/(.)\1/, "X", "abc aa bb ccc dd") }"#,
+        "",
+    );
+    assert_eq!(c, 0, "must not error; stderr={e:?}");
+    // gsub returns 0 — pattern looks for literal `\1` after a char, input has none.
+    assert_eq!(o.trim(), "0", "stdout={o:?}");
+}
+
+#[test]
 fn sin_of_infinity_normalizes_nan_sign() {
     // sin(±inf) is undefined per IEEE 754. Linux glibc may set the NaN sign
     // bit (would print `-nan`); gawk normalizes to `+nan`. Regression for

@@ -1170,6 +1170,51 @@ pub struct Runtime {
     pub primary_input_poll_fd: Option<std::os::unix::io::RawFd>,
 }
 
+/// Translate an awk-style regex pattern to Rust regex syntax for the cases where
+/// they diverge. Currently handles:
+///
+///   - `\1`..`\9` (POSIX ERE has no backrefs; gawk treats them as literal `\N`,
+///     Rust regex parses them as backreferences and errors). Escape to `\\N`
+///     so Rust treats them as literal backslash + digit.
+///
+/// The function walks the pattern character by character, tracking bracket
+/// expression `[...]` state (inside which Rust regex already treats `\1` as
+/// literal so no translation is needed) and parity of preceding backslashes
+/// (an even count means the next `\N` starts a fresh escape).
+fn translate_awk_re_to_rust(pat: &str) -> String {
+    let bytes = pat.as_bytes();
+    let mut out = String::with_capacity(pat.len() + 4);
+    let mut i = 0;
+    let mut in_bracket = false;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if c == b'\\' && i + 1 < bytes.len() && !in_bracket {
+            let next = bytes[i + 1];
+            if (b'1'..=b'9').contains(&next) {
+                // gawk: literal `\N`; Rust would treat as backref. Escape.
+                out.push('\\');
+                out.push('\\');
+                out.push(next as char);
+                i += 2;
+                continue;
+            }
+            // Other escapes — pass through.
+            out.push('\\');
+            out.push(next as char);
+            i += 2;
+            continue;
+        }
+        if c == b'[' && !in_bracket {
+            in_bracket = true;
+        } else if c == b']' && in_bracket {
+            in_bracket = false;
+        }
+        out.push(c as char);
+        i += 1;
+    }
+    out
+}
+
 impl Runtime {
     pub fn new() -> Self {
         // gawk parity: `printf "%'d"` consults the locale's `thousands_sep`
@@ -1726,7 +1771,14 @@ impl Runtime {
         if cache.contains_key(pat) {
             return Ok(());
         }
-        let mut b = RegexBuilder::new(pat);
+        // gawk parity: POSIX ERE does not define `\1`..`\9` as backreferences.
+        // gawk treats them as literal `\N` (the regex parser issues a warning
+        // for unknown escape but compiles and matches the literal sequence).
+        // Rust's regex crate parses `\1` as a backreference and errors out.
+        // Escape numeric backrefs to literal before compilation so the cache
+        // key (original `pat`) is preserved but the engine sees the literal form.
+        let translated = translate_awk_re_to_rust(pat);
+        let mut b = RegexBuilder::new(&translated);
         b.case_insensitive(ic);
         // gawk: in ERE, `.` matches any byte INCLUDING newline. Rust regex defaults
         // to `dot_matches_new_line(false)`. Enable it so `/a.*d/` on "ab\ncd"
@@ -3425,6 +3477,61 @@ impl Drop for Runtime {
         for (_, mut ch) in self.pipe_input_children.drain() {
             let _ = ch.wait();
         }
+    }
+}
+
+#[cfg(test)]
+mod regex_translator_tests {
+    use super::translate_awk_re_to_rust;
+
+    #[test]
+    fn passes_through_plain_patterns_unchanged() {
+        assert_eq!(translate_awk_re_to_rust("abc"), "abc");
+        assert_eq!(translate_awk_re_to_rust("[a-z]+"), "[a-z]+");
+        assert_eq!(translate_awk_re_to_rust(r"\d\w\s"), r"\d\w\s");
+    }
+
+    #[test]
+    fn escapes_numeric_backref_to_literal() {
+        // Rust regex would parse `\1` as a backref and error. gawk treats it
+        // as literal `\1`. Escape to `\\1` so Rust matches the literal sequence.
+        assert_eq!(translate_awk_re_to_rust(r"(.)\1"), r"(.)\\1");
+        assert_eq!(translate_awk_re_to_rust(r"a\2b"), r"a\\2b");
+        assert_eq!(translate_awk_re_to_rust(r"\9"), r"\\9");
+    }
+
+    #[test]
+    fn handles_multiple_backrefs_in_one_pattern() {
+        assert_eq!(translate_awk_re_to_rust(r"(.)(.)\1\2"), r"(.)(.)\\1\\2");
+    }
+
+    #[test]
+    fn does_not_escape_backref_inside_character_class() {
+        // Inside `[...]`, Rust regex already treats `\1` as literal. Don't
+        // double-escape or we'd match literal `\\1` instead of `\1`.
+        assert_eq!(translate_awk_re_to_rust(r"[\1\2]"), r"[\1\2]");
+    }
+
+    #[test]
+    fn preserves_other_escapes() {
+        // `\d`, `\s`, `\w` etc. — pass through. (These produce a gawk warning
+        // in gawk but match Rust regex semantics. Documented divergence.)
+        assert_eq!(translate_awk_re_to_rust(r"\d+\s\w"), r"\d+\s\w");
+        assert_eq!(translate_awk_re_to_rust(r"\."), r"\.");
+    }
+
+    #[test]
+    fn backref_compiles_after_translation() {
+        // End-to-end: a pattern that would have crashed `ensure_regex` now
+        // compiles and matches the literal `\1` sequence.
+        use regex::Regex;
+        let translated = translate_awk_re_to_rust(r"(.)\1");
+        let re = Regex::new(&translated).expect("should compile after translation");
+        assert!(
+            !re.is_match("aa"),
+            "repeated-char should NOT match (no real backref)"
+        );
+        assert!(re.is_match("a\\1"), "literal `\\1` sequence SHOULD match");
     }
 }
 
