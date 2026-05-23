@@ -4778,7 +4778,10 @@ mod extra_runtime_tests {
         // POSIX/gawk default: FS = " " (single space, special-cased to mean
         // "split on whitespace runs").
         let rt = super::Runtime::new();
-        let fs = rt.vars.get("FS").expect("FS must be initialized to gawk default");
+        let fs = rt
+            .vars
+            .get("FS")
+            .expect("FS must be initialized to gawk default");
         assert_eq!(fs.as_str(), " ", "FS default should be single space");
     }
 

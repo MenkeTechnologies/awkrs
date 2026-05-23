@@ -3421,10 +3421,7 @@ fn regex_backslash_d_treated_as_literal_d_like_gawk() {
     // Note: gawk DOES support `\w`/`\W`/`\s`/`\S` as char-class extensions —
     // only `\d`/`\D` get the literal treatment.
     // Note: gsub's 3rd arg must be an lvalue, so we use a variable.
-    let (c, o, _) = run_awkrs_stdin(
-        r#"BEGIN { s = "abc123def"; print gsub(/\d/, "X", s) }"#,
-        "",
-    );
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { s = "abc123def"; print gsub(/\d/, "X", s) }"#, "");
     assert_eq!(c, 0);
     // Pattern is literal `d`, so it matches the single 'd' in "abc123def".
     assert_eq!(o.trim(), "1", "stdout={o:?}");
@@ -3440,39 +3437,20 @@ fn gsub_with_non_lvalue_third_arg_still_returns_match_count() {
     // there's no lvalue to write back to).
     let cases = &[
         // string literal target
-        (
-            r#"BEGIN { print gsub(/d/, "X", "abc123def") }"#,
-            "1",
-        ),
+        (r#"BEGIN { print gsub(/d/, "X", "abc123def") }"#, "1"),
         // multiple matches
-        (
-            r#"BEGIN { print gsub(/X/, "Y", "XXX") }"#,
-            "3",
-        ),
+        (r#"BEGIN { print gsub(/X/, "Y", "XXX") }"#, "3"),
         // sub (single-match) variant
-        (
-            r#"BEGIN { print sub(/d/, "X", "abc123def") }"#,
-            "1",
-        ),
+        (r#"BEGIN { print sub(/d/, "X", "abc123def") }"#, "1"),
         // function-call result as 3rd arg
-        (
-            r#"BEGIN { print gsub(/x/, "y", sprintf("xxx")) }"#,
-            "3",
-        ),
+        (r#"BEGIN { print gsub(/x/, "y", sprintf("xxx")) }"#, "3"),
         // expression as 3rd arg
-        (
-            r#"BEGIN { print gsub(/a/, "X", "aa" "bb" "aa") }"#,
-            "4",
-        ),
+        (r#"BEGIN { print gsub(/a/, "X", "aa" "bb" "aa") }"#, "4"),
     ];
     for (program, expected) in cases {
         let (c, o, e) = run_awkrs_stdin(program, "");
         assert_eq!(c, 0, "exit failure on {program:?}; stderr={e:?}");
-        assert_eq!(
-            o.trim(),
-            *expected,
-            "mismatch on {program:?}; stdout={o:?}"
-        );
+        assert_eq!(o.trim(), *expected, "mismatch on {program:?}; stdout={o:?}");
     }
 }
 
@@ -3482,10 +3460,7 @@ fn fs_default_is_single_space_like_gawk() {
     // splitting). awkrs previously left FS uninitialized (empty string) which
     // broke user code testing `if (FS == " ")`. Splitting behavior was correct
     // either way; only the visible variable value was wrong.
-    let (c, o, _) = run_awkrs_stdin(
-        r#"BEGIN { printf "[%s]/%d\n", FS, length(FS) }"#,
-        "",
-    );
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { printf "[%s]/%d\n", FS, length(FS) }"#, "");
     assert_eq!(c, 0);
     assert_eq!(o.trim(), "[ ]/1", "stdout={o:?}");
 }
@@ -3543,7 +3518,11 @@ fn missing_input_file_error_message_distinguishes_from_program_file() {
         .expect("spawn awkrs");
     let stderr = String::from_utf8_lossy(&out.stderr);
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert_eq!(stdout.trim(), "ok", "BEGIN should still run; stdout={stdout:?}");
+    assert_eq!(
+        stdout.trim(),
+        "ok",
+        "BEGIN should still run; stdout={stdout:?}"
+    );
     assert!(
         stderr.contains("cannot open file"),
         "expected gawk-style 'cannot open file' message; stderr={stderr:?}"
