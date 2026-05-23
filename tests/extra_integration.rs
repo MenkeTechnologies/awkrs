@@ -3475,3 +3475,27 @@ fn gsub_with_non_lvalue_third_arg_still_returns_match_count() {
         );
     }
 }
+
+#[test]
+fn fs_default_is_single_space_like_gawk() {
+    // POSIX/gawk default: FS = " " (single space, special-cased for whitespace
+    // splitting). awkrs previously left FS uninitialized (empty string) which
+    // broke user code testing `if (FS == " ")`. Splitting behavior was correct
+    // either way; only the visible variable value was wrong.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { printf "[%s]/%d\n", FS, length(FS) }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o.trim(), "[ ]/1", "stdout={o:?}");
+}
+
+#[test]
+fn fs_equals_space_string_comparison_true_by_default() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { if (FS == " ") print "ok"; else print "fail FS=[" FS "]" }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o.trim(), "ok", "stdout={o:?}");
+}

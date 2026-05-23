@@ -1238,6 +1238,11 @@ impl Runtime {
         // behavior).
         crate::locale_numeric::set_locale_numeric_from_env();
         let mut vars = AwkMap::default();
+        // POSIX/gawk: FS defaults to " " (single space — special-cased to mean
+        // "split on runs of whitespace"). awkrs's splitter behavior matches this
+        // even when FS is "", but exposing FS as "" makes user code like
+        // `if (FS == " ")` fail unnecessarily.
+        vars.insert("FS".into(), Value::Str(" ".into()));
         vars.insert("OFS".into(), Value::Str(" ".into()));
         vars.insert("ORS".into(), Value::Str("\n".into()));
         vars.insert("OFMT".into(), Value::Str("%.6g".into()));
@@ -4770,7 +4775,11 @@ mod extra_runtime_tests {
     }
     #[test]
     fn runtime_fs_initial_v9() {
-        assert!(!super::Runtime::new().vars.contains_key("FS"));
+        // POSIX/gawk default: FS = " " (single space, special-cased to mean
+        // "split on whitespace runs").
+        let rt = super::Runtime::new();
+        let fs = rt.vars.get("FS").expect("FS must be initialized to gawk default");
+        assert_eq!(fs.as_str(), " ", "FS default should be single space");
     }
 
     #[test]
