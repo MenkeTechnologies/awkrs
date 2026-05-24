@@ -21,12 +21,9 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-          # Both darwin targets build on macos-latest (aarch64).
-          # gmp-mpfr-sys has the `force-cross` feature enabled in Cargo.toml
-          # so the x86_64 build cross-compiles from the aarch64 runner —
-          # macos-13 free-runner queue was hours long, this dodges it.
-          - os: macos-latest
-            target: x86_64-apple-darwin
+          # x86_64-apple-darwin dropped: GMP assembly won't assemble from
+          # an aarch64 host, and macos-13 free-runner queue is hours long.
+          # Apple Silicon-only macOS support.
           - os: macos-latest
             target: aarch64-apple-darwin
     steps:
@@ -127,10 +124,7 @@ jobs:
               url "https://github.com/MenkeTechnologies/awkrs/releases/download/v${VERSION}/awkrs-v${VERSION}-aarch64-apple-darwin.tar.gz"
               sha256 "${{ steps.sha.outputs.aarch64_apple_darwin }}"
             end
-            on_intel do
-              url "https://github.com/MenkeTechnologies/awkrs/releases/download/v${VERSION}/awkrs-v${VERSION}-x86_64-apple-darwin.tar.gz"
-              sha256 "${{ steps.sha.outputs.x86_64_apple_darwin }}"
-            end
+            # x86_64 macOS not supported — see release.yml matrix.
             end
 
             on_linux do

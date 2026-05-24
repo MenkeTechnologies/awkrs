@@ -1,6 +1,6 @@
 [package]
 name = "awkrs"
-version = "0.4.7"
+version = "0.4.8"
 edition = "2021"
 # `parity/` stays in the git repo for local/CI testing vs gawk; omit from `cargo package` / crates.io tarball.
 exclude = ["/parity/", "/.github/", "/tests/", "/docs/"]
@@ -42,7 +42,7 @@ nix = { version = "0.29", features = ["fs"] }
 once_cell = "1"
 parking_lot = "0.12"
 rayon = "1.10"
-gmp-mpfr-sys = { version = "1.7", features = ["force-cross"] }
+gmp-mpfr-sys = "1.7"
 regex = "1.10"
 rkyv = { version = "0.7", features = ["validation", "archive_le", "size_32"] }
 serde = { version = "1", features = ["derive"] }
