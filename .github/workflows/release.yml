@@ -21,7 +21,10 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-          - os: macos-latest
+          # macos-13 (Intel) for x86_64-apple-darwin native build —
+          # macos-latest is now aarch64, and gmp-mpfr-sys (transitive
+          # via rug) refuses to cross-compile without `force-cross`.
+          - os: macos-13
             target: x86_64-apple-darwin
           - os: macos-latest
             target: aarch64-apple-darwin
