@@ -14,8 +14,11 @@ use std::process::{Command, Stdio};
 #[test]
 fn csv_mode_keeps_quoted_comma_field_intact_across_records() {
     // Multi-record CSV with embedded commas — earlier records must not poison NF for later ones.
-    let (c, o, _) =
-        run_awkrs_stdin_args(["-k"], r#"{ print NR, NF, $2 }"#, "a,\"b,c\",d\np,\"q,r,s\",t\n");
+    let (c, o, _) = run_awkrs_stdin_args(
+        ["-k"],
+        r#"{ print NR, NF, $2 }"#,
+        "a,\"b,c\",d\np,\"q,r,s\",t\n",
+    );
     assert_eq!(c, 0);
     assert_eq!(o, "1 3 b,c\n2 3 q,r,s\n");
 }
@@ -23,8 +26,7 @@ fn csv_mode_keeps_quoted_comma_field_intact_across_records() {
 #[test]
 fn csv_mode_with_escaped_quote_inside_field_keeps_quote() {
     // gawk-style `""` escapes a literal quote inside the quoted field.
-    let (c, o, _) =
-        run_awkrs_stdin_args(["-k"], r#"{ print $2 }"#, "x,\"he said \"\"hi\"\"\",y\n");
+    let (c, o, _) = run_awkrs_stdin_args(["-k"], r#"{ print $2 }"#, "x,\"he said \"\"hi\"\"\",y\n");
     assert_eq!(c, 0);
     assert_eq!(o.trim(), "he said \"hi\"");
 }
@@ -75,10 +77,7 @@ fn paragraph_mode_strips_leading_and_trailing_blank_runs() {
 #[test]
 fn paragraph_mode_default_fs_splits_on_newline_or_whitespace() {
     // In RS="" mode, FS still defaults to whitespace (incl. newlines).
-    let (c, o, _) = run_awkrs_stdin(
-        r#"BEGIN { RS = "" } { print NR, NF }"#,
-        "a b\nc\n\nd e f\n",
-    );
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { RS = "" } { print NR, NF }"#, "a b\nc\n\nd e f\n");
     assert_eq!(c, 0);
     let lines: Vec<&str> = o.lines().collect();
     assert_eq!(lines, vec!["1 3", "2 3"]);
@@ -97,7 +96,7 @@ fn rs_regex_records_emit_each_separator_via_rt() {
     assert_eq!(lines[0], "1 [a] <XX>");
     assert_eq!(lines[1], "2 [b] <YYY>");
     assert_eq!(lines[2], "3 [c] <X>");
-    assert_eq!(lines[3].starts_with("4 [d"), true);
+    assert!(lines[3].starts_with("4 [d"));
 }
 
 // ── Field rebuild semantics ────────────────────────────────────────────────
@@ -160,10 +159,7 @@ fn comparison_of_two_string_literals_is_lexical_even_when_both_look_numeric() {
 #[test]
 fn comparison_of_numeric_strnum_input_uses_numeric_order() {
     // Input fields ARE strnum; "10" > "9" must hold numerically here.
-    let (c, o, _) = run_awkrs_stdin(
-        r#"{ if ($1 > $2) print "GT"; else print "LT" }"#,
-        "10 9\n",
-    );
+    let (c, o, _) = run_awkrs_stdin(r#"{ if ($1 > $2) print "GT"; else print "LT" }"#, "10 9\n");
     assert_eq!(c, 0);
     assert_eq!(o.trim(), "GT");
 }
@@ -172,40 +168,28 @@ fn comparison_of_numeric_strnum_input_uses_numeric_order() {
 
 #[test]
 fn substr_with_negative_start_clamps_to_one() {
-    let (c, o, _) = run_awkrs_stdin(
-        r#"BEGIN { print "[" substr("hello", -1, 3) "]" }"#,
-        "",
-    );
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { print "[" substr("hello", -1, 3) "]" }"#, "");
     assert_eq!(c, 0);
     assert_eq!(o.trim(), "[hel]");
 }
 
 #[test]
 fn substr_with_zero_length_returns_empty_string() {
-    let (c, o, _) = run_awkrs_stdin(
-        r#"BEGIN { print "[" substr("hello", 2, 0) "]" }"#,
-        "",
-    );
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { print "[" substr("hello", 2, 0) "]" }"#, "");
     assert_eq!(c, 0);
     assert_eq!(o.trim(), "[]");
 }
 
 #[test]
 fn substr_negative_length_returns_empty_string() {
-    let (c, o, _) = run_awkrs_stdin(
-        r#"BEGIN { print "[" substr("hello", 2, -3) "]" }"#,
-        "",
-    );
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { print "[" substr("hello", 2, -3) "]" }"#, "");
     assert_eq!(c, 0);
     assert_eq!(o.trim(), "[]");
 }
 
 #[test]
 fn substr_start_past_end_returns_empty_string() {
-    let (c, o, _) = run_awkrs_stdin(
-        r#"BEGIN { print "[" substr("hello", 99) "]" }"#,
-        "",
-    );
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { print "[" substr("hello", 99) "]" }"#, "");
     assert_eq!(c, 0);
     assert_eq!(o.trim(), "[]");
 }
@@ -448,10 +432,7 @@ fn range_pattern_includes_both_endpoints_inclusive() {
 
 #[test]
 fn range_pattern_reactivates_after_close() {
-    let (c, o, _) = run_awkrs_stdin(
-        r#"/a/,/b/ { print NR ":" $0 }"#,
-        "x\na\nm\nb\ny\na\nz\nb\n",
-    );
+    let (c, o, _) = run_awkrs_stdin(r#"/a/,/b/ { print NR ":" $0 }"#, "x\na\nm\nb\ny\na\nz\nb\n");
     assert_eq!(c, 0);
     // First range NR=2..4, second NR=6..8.
     let lines: Vec<&str> = o.lines().collect();
@@ -462,8 +443,7 @@ fn range_pattern_reactivates_after_close() {
 
 #[test]
 fn printf_positional_argument_specifier_reorders_args() {
-    let (c, o, _) =
-        run_awkrs_stdin(r#"BEGIN { printf "%2$s %1$s\n", "world", "hello" }"#, "");
+    let (c, o, _) = run_awkrs_stdin(r#"BEGIN { printf "%2$s %1$s\n", "world", "hello" }"#, "");
     assert_eq!(c, 0);
     assert_eq!(o, "hello world\n");
 }
@@ -503,10 +483,7 @@ fn typeof_distinguishes_number_string_array_and_untyped() {
 
 #[test]
 fn line_continuation_with_backslash_joins_expression() {
-    let (c, o, _) = run_awkrs_stdin(
-        "BEGIN { x = 1 + \\\n2 + \\\n3 + \\\n4; print x }",
-        "",
-    );
+    let (c, o, _) = run_awkrs_stdin("BEGIN { x = 1 + \\\n2 + \\\n3 + \\\n4; print x }", "");
     assert_eq!(c, 0);
     assert_eq!(o.trim(), "10");
 }
@@ -645,10 +622,7 @@ fn exit_with_explicit_code_propagates_to_process_status() {
 
 #[test]
 fn end_rule_can_override_exit_code_set_by_main_block() {
-    let (c, _, _) = run_awkrs_stdin(
-        r#"{ exit 5 } END { exit 7 }"#,
-        "a\n",
-    );
+    let (c, _, _) = run_awkrs_stdin(r#"{ exit 5 } END { exit 7 }"#, "a\n");
     assert_eq!(c, 7);
 }
 
