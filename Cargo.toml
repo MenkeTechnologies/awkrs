@@ -29,7 +29,7 @@ chrono = "0.4"
 clap = { version = "4.5", features = ["derive", "cargo", "env"] }
 dirs = "5"
 gettext = "0.4"
-fusevm = { version = "0.12.1", features = ["jit"] }
+fusevm = { version = "0.12.2", features = ["jit"] }
 cranelift-codegen = "0.130.0"
 cranelift-frontend = "0.130.0"
 cranelift-jit = "0.130.0"
