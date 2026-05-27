@@ -333,6 +333,21 @@ AWKRS_BENCH_LINES=5000000 ./scripts/benchmark-vs-awk.sh    # 5 M line sweep
 ./scripts/benchmark-readme-jit-vs-vm.sh                    # awkrs-only JIT vs bytecode A/B
 ```
 
+### Demo scripts
+
+Quick tours over the feature surface — runnable against the debug build (`cargo build`); each script auto-builds if the binary is missing.
+
+```bash
+./scripts/demo-quickstart.sh        # 16-section feature tour (CSV, FIELDWIDTHS, FPAT, RS regex,
+                                    # gensub, match() capture, pipes, getline, parallel, JIT toggle)
+./scripts/demo-log-parsing.sh       # applied: access log → status dist, CSV → per-host stats,
+                                    # ps → top RSS, /etc/passwd → shell histogram
+LINES=200000 ./scripts/demo-parallel-jit.sh   # /usr/bin/time -p sweep of -j 1 vs -j N and
+                                              # JIT default vs AWKRS_JIT=0 bytecode
+```
+
+`NO_COLOR=1` strips ANSI from the demo output. The applied demo writes its inputs to `$TMPDIR` and cleans up on exit.
+
 ---
 
 ## [0x07] BUILD // COMPILE THE PAYLOAD
@@ -355,7 +370,7 @@ cargo test
 
 CI runs on pushes and pull requests to `main` via [GitHub Actions](.github/workflows/ci.yml): one Ubuntu lint job (`cargo fmt --check`, `cargo clippy -D warnings`, `cargo doc` with `RUSTDOCFLAGS=-D warnings`) plus a build/test matrix on Ubuntu and macOS.
 
-Coverage spans library unit tests for every module (lexer, parser, format, builtins, interp, vm, jit, compiler, runtime, locale, cli, cyber_help) and integration suites under `tests/` that exercise the gawk-style additions, the slurped-input path, parallel record behavior, and the full CLI surface.
+Coverage spans library unit tests for every module (lexer, parser, format, builtins, interp, vm, jit, compiler, runtime, locale, cli, cyber_help) and integration suites under `tests/` that exercise the gawk-style additions, the slurped-input path, parallel record behavior, and the full CLI surface. Cross-feature combinations (CSV + ENDFILE, paragraph `RS=""` + getline, `FIELDWIDTHS` + NF reassignment, ...) live in [`tests/cross_feature_integration.rs`](tests/cross_feature_integration.rs).
 
 ---
 
