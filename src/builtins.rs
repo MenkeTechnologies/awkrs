@@ -687,7 +687,7 @@ pub fn awk_strtonum(s: &str) -> f64 {
     0.0
 }
 
-fn locale_str_cmp_sort(a: &str, b: &str) -> Ordering {
+pub(crate) fn locale_str_cmp_sort(a: &str, b: &str) -> Ordering {
     #[cfg(unix)]
     {
         use std::ffi::CString;

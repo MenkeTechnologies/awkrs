@@ -154,6 +154,56 @@ impl<'a> VmCtx<'a> {
         self.rt.array_get(name, key)
     }
 
+    /// Frame-aware snapshot of an array's `(key, value)` pairs for the
+    /// sort builtins (`asort` / `asorti`). Walks the locals stack innermost-out
+    /// so an array passed by reference into a user function is found in the
+    /// frame rather than falling through to the (empty) global by that name.
+    ///
+    /// Returns `Ok(Vec::new())` for unassigned names (gawk parity); a scalar
+    /// at the same name is a fatal "`{name}` is not an array".
+    fn array_pairs_for_sort(&self, name: &str, fn_name: &str) -> Result<Vec<(String, Value)>> {
+        for frame in self.locals.iter().rev() {
+            match frame.get(name) {
+                Some(Value::Array(a)) => {
+                    return Ok(a.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
+                }
+                Some(Value::Uninit) | None => {}
+                Some(_) => {
+                    return Err(Error::Runtime(format!(
+                        "{fn_name}: `{name}` is not an array"
+                    )));
+                }
+            }
+        }
+        match self.rt.get_global_var(name) {
+            Some(Value::Array(a)) => Ok(a.iter().map(|(k, v)| (k.clone(), v.clone())).collect()),
+            None => Ok(Vec::new()),
+            _ => Err(Error::Runtime(format!(
+                "{fn_name}: `{name}` is not an array"
+            ))),
+        }
+    }
+
+    /// Frame-aware array replace. The new array contents replace whatever
+    /// lives at `name` — if `name` is bound in a local frame (function array
+    /// param) the frame's slot is overwritten; otherwise the global var map
+    /// receives the array. Mirrors the lookup order used by
+    /// [`Self::array_pairs_for_sort`] so `asort` / `asorti` writeback hits the
+    /// caller's storage.
+    fn array_replace(&mut self, name: &str, pairs: Vec<(String, Value)>) {
+        let mut new_map = AwkMap::default();
+        for (k, v) in pairs {
+            new_map.insert(k, v);
+        }
+        for frame in self.locals.iter_mut().rev() {
+            if let Some(slot) = frame.get_mut(name) {
+                *slot = Value::Array(new_map);
+                return;
+            }
+        }
+        self.rt.vars.insert(name.to_string(), Value::Array(new_map));
+    }
+
     fn array_elem_set(&mut self, name: &str, key: String, val: Value) {
         if name == "SYMTAB" {
             self.rt.symtab_elem_set(&key, val);
@@ -3943,15 +3993,52 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 ctx.push(v);
             }
             Op::Asort { src, dest } => {
-                let s = ctx.cp.strings.get(src);
-                let d = dest.map(|i| ctx.cp.strings.get(i));
-                let n = builtins::asort(ctx.rt, s, d)?;
+                let src_name = ctx.cp.strings.get(src).to_string();
+                let dest_name = dest.map(|i| ctx.cp.strings.get(i).to_string());
+                if src_name.is_empty() {
+                    return Err(Error::Runtime(
+                        "0 is invalid as number of arguments for asort".into(),
+                    ));
+                }
+                let mut pairs = ctx.array_pairs_for_sort(&src_name, "asort")?;
+                let ic = ctx.rt.ignore_case_flag();
+                pairs
+                    .sort_by(|(_, va), (_, vb)| builtins::awk_value_sort_cmp_with_case(va, vb, ic));
+                let n = pairs.len() as f64;
+                let reindexed: Vec<(String, Value)> = pairs
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, (_, v))| (format!("{}", i + 1), v))
+                    .collect();
+                let target = dest_name.as_deref().unwrap_or(&src_name);
+                ctx.array_replace(target, reindexed);
                 ctx.push(Value::Num(n));
             }
             Op::Asorti { src, dest } => {
-                let s = ctx.cp.strings.get(src);
-                let d = dest.map(|i| ctx.cp.strings.get(i));
-                let n = builtins::asorti(ctx.rt, s, d)?;
+                let src_name = ctx.cp.strings.get(src).to_string();
+                let dest_name = dest.map(|i| ctx.cp.strings.get(i).to_string());
+                if src_name.is_empty() {
+                    return Err(Error::Runtime(
+                        "0 is invalid as number of arguments for asorti".into(),
+                    ));
+                }
+                let mut pairs = ctx.array_pairs_for_sort(&src_name, "asorti")?;
+                let ic = ctx.rt.ignore_case_flag();
+                pairs.sort_by(|(ka, _), (kb, _)| {
+                    if ic {
+                        builtins::locale_str_cmp_sort(&ka.to_lowercase(), &kb.to_lowercase())
+                    } else {
+                        builtins::locale_str_cmp_sort(ka, kb)
+                    }
+                });
+                let n = pairs.len() as f64;
+                let reindexed: Vec<(String, Value)> = pairs
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, (k, _))| (format!("{}", i + 1), Value::Str(k)))
+                    .collect();
+                let target = dest_name.as_deref().unwrap_or(&src_name);
+                ctx.array_replace(target, reindexed);
                 ctx.push(Value::Num(n));
             }
 
