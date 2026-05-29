@@ -1801,19 +1801,6 @@ fn sync_jit_slot_if_scalar(ctx: &mut VmCtx<'_>, name: &str) {
     buf[us] = v;
 }
 
-/// During mixed JIT, `SetSlot` writes only the scratch buffer; `rt.slots` is refreshed at chunk end.
-/// Callbacks that read a slotted scalar before mutating must use this instead of `rt.slots` alone.
-fn slot_value_live_for_jit(ctx: &VmCtx<'_>, slot: u16) -> Value {
-    let us = slot as usize;
-    let buf = &ctx.rt.jit_slot_buf;
-    if us < buf.len() {
-        let raw = buf[us];
-        jit_f64_to_value(ctx, raw)
-    } else {
-        ctx.rt.slots[us].clone()
-    }
-}
-
 /// After interpreter/callback code mutates `rt.slots[slot]` (e.g. string loop vars),
 /// mirror `Value` into the JIT scratch buffer so `GetSlot` / `MIXED_GET_SLOT` see it.
 fn sync_jit_slot_value(ctx: &mut VmCtx<'_>, slot: u16) {
@@ -4680,7 +4667,14 @@ pub(crate) fn exec_sub_from_values(
             n
         }
         SubTarget::SlotVar(slot) => {
-            let mut s = slot_value_live_for_jit(ctx, slot).as_str();
+            // Read from rt.slots (the authoritative bytecode store) rather than
+            // jit_slot_buf. After a JIT chunk runs and a subsequent bytecode
+            // chunk does `raw = "abc"` via Op::SetSlot, rt.slots is updated but
+            // jit_slot_buf still holds the stale (often Uninit) value from
+            // chunk-entry prep. Reading via slot_value_live_for_jit would then
+            // decode Uninit and run sub on an empty string, silently zeroing
+            // out the variable.
+            let mut s = ctx.rt.slots[slot as usize].as_str();
             let n = if is_global {
                 builtins::gsub(ctx.rt, re.as_ref(), repl.as_ref(), Some(&mut s))?
             } else {
