@@ -1,0 +1,8 @@
+https://example.com
+https://www.example.com:8080/path/to/page?q=hello&lang=en#section
+ftp://user:pass@files.example.com:21/dir/file.txt
+http://localhost:3000/
+file:///etc/passwd
+git+ssh://git@github.com:22/owner/repo.git
+mailto:alice@example.com
+custom-scheme://h?only=query

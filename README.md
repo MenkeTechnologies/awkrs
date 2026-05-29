@@ -402,6 +402,18 @@ Substantive standalone awk programs that exercise recursion, multidim arrays via
 | `tsp_dp.awk` | Held-Karp bitmask DP for travelling salesman (≤15 cities) |
 | `anagrams.awk` | Group anagrams by sorted-letter signature |
 | `rule30.awk` | Wolfram Rule 30 elementary 1D cellular automaton |
+| `aho_corasick.awk` | Aho-Corasick multi-pattern search (goto/fail/output trie) |
+| `z_function.awk` | Z-array — linear-time prefix-match table + pattern search |
+| `rabin_karp.awk` | Rolling-hash substring search (Rabin-Karp) |
+| `shunting_yard.awk` | Dijkstra's shunting-yard infix → postfix → evaluate |
+| `modexp.awk` | Modular exponentiation + deterministic Miller-Rabin primality |
+| `gcd_extended.awk` | Extended Euclidean algorithm + modular inverse |
+| `mandelbrot.awk` | ASCII Mandelbrot escape-time render |
+| `ini_parser.awk` | INI config parser with sections / comments / globals |
+| `url_parser.awk` | URL decomposer (scheme / user / pass / host / port / path / query / fragment) |
+| `tictactoe.awk` | Minimax tic-tac-toe solver — best move + outcome from any position |
+| `coin_change.awk` | Min-coins DP + reconstruction of one optimal combination |
+| `prim_mst.awk` | Prim's MST via lazy linear frontier scan |
 
 Run any example directly:
 

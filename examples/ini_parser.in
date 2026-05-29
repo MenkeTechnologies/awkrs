@@ -1,0 +1,20 @@
+; sample INI
+
+global_key = hello
+debug = true
+
+[database]
+host = localhost
+port = 5432
+user = admin
+# this is a comment
+password = secret
+
+[logging]
+level = info
+file = /var/log/app.log
+
+[features]
+flag_a = on
+flag_b = off
+flag_c = on
