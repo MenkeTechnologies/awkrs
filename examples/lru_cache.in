@@ -1,0 +1,16 @@
+CAP 3
+PUT a 1
+PUT b 2
+PUT c 3
+DUMP
+GET a
+DUMP
+PUT d 4
+DUMP
+GET b
+PUT e 5
+DUMP
+PUT a 99
+DUMP
+GET c
+DUMP

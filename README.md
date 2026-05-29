@@ -390,6 +390,18 @@ Substantive standalone awk programs that exercise recursion, multidim arrays via
 | `rle.awk` | Run-length encode + decode (whitespace preserved) |
 | `vigenere.awk` | Vigenère cipher (encrypt + decrypt; case preserved) |
 | `bigint_mul.awk` | Arbitrary-precision multiplication via schoolbook on digit arrays |
+| `lru_cache.awk` | LRU cache: O(1) get + put via doubly-linked list + hash map |
+| `segment_tree.awk` | Iterative segment tree (point update + range-sum query) |
+| `fenwick.awk` | Fenwick / Binary Indexed Tree (prefix + range sums) |
+| `convex_hull.awk` | Convex hull via Andrew's monotone chain + shoelace area |
+| `lis.awk` | Longest increasing subsequence in O(n log n) with traceback |
+| `huffman.awk` | Huffman coding — build prefix tree, encode + round-trip decode |
+| `manacher.awk` | Manacher's longest palindromic substring in O(n) |
+| `subset_sum.awk` | Subset-sum DP + reconstruction of one valid subset |
+| `permutations.awk` | Heap's algorithm — enumerate all n! permutations |
+| `tsp_dp.awk` | Held-Karp bitmask DP for travelling salesman (≤15 cities) |
+| `anagrams.awk` | Group anagrams by sorted-letter signature |
+| `rule30.awk` | Wolfram Rule 30 elementary 1D cellular automaton |
 
 Run any example directly:
 

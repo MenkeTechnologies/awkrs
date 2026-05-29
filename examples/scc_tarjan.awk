@@ -13,7 +13,7 @@ function add_edge(u, v,   k) {
   adj[u, k] = v
 }
 
-function strongconnect(v,   k, w, smallest, members, line, n, arr, i, j, key, m) {
+function strongconnect(v,   k, w, smallest, members, sorted, line, n, arr, i, m) {
   idx[v] = idx_counter
   low[v] = idx_counter
   idx_counter++
@@ -41,19 +41,12 @@ function strongconnect(v,   k, w, smallest, members, line, n, arr, i, j, key, m)
       if (smallest == "" || w < smallest) smallest = w
       if (w == v) break
     }
-    # Build "{ a b c }" with members in lex order via insertion sort.
-    # (awkrs `asort` on a function-local array is currently buggy — sees only
-    # the global by that name — so we hand-sort here to keep the example
-    # self-contained.)
+    # Lex-sort members for deterministic output.
     delete arr; n = 0
     for (m in members) { n++; arr[n] = m }
-    for (i = 2; i <= n; i++) {
-      key = arr[i]; j = i - 1
-      while (j >= 1 && arr[j] > key) { arr[j + 1] = arr[j]; j-- }
-      arr[j + 1] = key
-    }
+    n = asort(arr, sorted)
     line = "{"
-    for (i = 1; i <= n; i++) line = line " " arr[i]
+    for (i = 1; i <= n; i++) line = line " " sorted[i]
     line = line " }"
     scc_keys[smallest] = line
   }
