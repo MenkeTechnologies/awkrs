@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="awkrs — Engineering report. AWK implementation in Rust: ~51k Rust lines, 3,780 tests (2,874 lib + 906 integration), 2,137 parity files vs gawk/mawk/BSD-awk, Cranelift JIT, rkyv-backed bytecode cache, 95 opcodes, 61 builtins, parallel record processing via rayon. 60+ POSIX/gawk divergences fixed.">
+  <meta name="description" content="awkrs — Engineering report. AWK implementation in Rust: ~51k Rust lines, 3,788 tests (2,874 lib + 906 integration), 2,137 parity files vs gawk/mawk/BSD-awk, Cranelift JIT, rkyv-backed bytecode cache, 95 opcodes, 61 builtins, parallel record processing via rayon. 60+ POSIX/gawk divergences fixed.">
   <title>awkrs &mdash; Engineering Report</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -126,7 +126,7 @@
 
       <div class="stat-grid">
         <div class="stat-card"><div class="stat-val">51,389</div><div class="stat-label">Rust Lines</div></div>
-        <div class="stat-card"><div class="stat-val accent">3,780</div><div class="stat-label">Tests (Total)</div></div>
+        <div class="stat-card"><div class="stat-val accent">3,788</div><div class="stat-label">Tests (Total)</div></div>
         <div class="stat-card"><div class="stat-val green">2,874</div><div class="stat-label">Unit Tests (Lib)</div></div>
         <div class="stat-card"><div class="stat-val">95</div><div class="stat-label">VM Opcodes</div></div>
         <div class="stat-card"><div class="stat-val">61</div><div class="stat-label">Builtin Functions</div></div>
@@ -219,7 +219,7 @@
       <!-- SECTION 4: TESTING                     -->
       <!-- ═══════════════════════════════════════ -->
       <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>TESTING</h2>
-      <p class="tutorial-subtitle">3,780 tests, 0 failures. The unit suite is the catcher for behavioral regressions; the parity suite (2,137 files) cross-checks against gawk + mawk + BSD awk. Test-driven divergence hunting has now closed 60+ POSIX/gawk gaps &mdash; each was first surfaced by a pinning test, then fixed, then the FIXME marker removed.</p>
+      <p class="tutorial-subtitle">3,788 tests, 0 failures. The unit suite is the catcher for behavioral regressions; the parity suite (2,137 files) cross-checks against gawk + mawk + BSD awk. Test-driven divergence hunting has now closed 60+ POSIX/gawk gaps &mdash; each was first surfaced by a pinning test, then fixed, then the FIXME marker removed.</p>
 
       <table class="file-table">
         <thead>
