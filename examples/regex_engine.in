@@ -1,0 +1,19 @@
+a.c abc
+a.c axc
+a.c ab
+a*b aaab
+a*b b
+a+b aaab
+a+b b
+a?b ab
+a?b b
+^abc abcdef
+^abc xabcdef
+abc$ xyzabc
+abc$ abcde
+[abc]+x bcax
+[abc]+x dx
+hello hello world
+\.+ ...
+^a.c$ abc
+^a.c$ abcd

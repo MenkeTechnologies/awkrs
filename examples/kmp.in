@@ -1,0 +1,10 @@
+PAT abab
+TXT abababcab
+TXT ab ab abab
+TXT no match here
+TXT abab
+PAT a
+TXT aaaaa
+TXT zzz
+PAT mississippi
+TXT my mississippi river is mississippi

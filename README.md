@@ -368,6 +368,17 @@ Substantive standalone awk programs that exercise recursion, multidim arrays via
 | `graph_bfs.awk` | Undirected BFS from a source + path reconstruction |
 | `markov.awk` | Bigram model → top-3 continuations + deterministic 12-step walk |
 | `sql_like.awk` | Mini-SQL on CSV: `SELECT … WHERE … GROUP BY … SUM/AVG/COUNT … ORDER BY …` |
+| `sudoku.awk` | 9×9 Sudoku solver via recursive backtracking (row/col/box witness sets) |
+| `regex_engine.awk` | Recursive regex matcher (`. * + ? ^ $ [...] \`) written *in* awk |
+| `dijkstra.awk` | Single-source shortest paths with a binary min-heap PQ |
+| `kruskal.awk` | MST via union-find (path halving + union-by-rank) |
+| `maze_bfs.awk` | BFS shortest path through an ASCII maze; path overlaid with `*` |
+| `diff_lcs.awk` | LCS-based unified diff with recursive traceback |
+| `n_queens.awk` | N-queens backtracking with col / diag1 / diag2 constant-time witnesses |
+| `kmp.awk` | Knuth-Morris-Pratt substring search (failure function + scan) |
+| `intervals.awk` | Merge overlapping closed intervals; report total covered length |
+| `roman.awk` | Roman numerals ↔ integers, subtractive form, range 1..3999 |
+| `knapsack.awk` | 0/1 knapsack DP table + traceback to recover chosen items |
 
 Run any example directly:
 

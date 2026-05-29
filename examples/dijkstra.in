@@ -1,0 +1,11 @@
+SRC a
+a b 4
+a c 2
+b c 1
+b d 5
+c b 1
+c d 8
+c e 10
+d e 2
+d z 6
+e z 3
