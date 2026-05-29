@@ -950,6 +950,28 @@ pub fn is_jit_eligible(ops: &[Op]) -> bool {
     if has_match && has_branch {
         return false;
     }
+    // Conservative bail-out: chunks that combine a forward `Op::Jump` (the
+    // canonical compile-shape for a ternary's then→merge edge) with an
+    // `Op::ReturnVal` would need the stack value from the then-arm to flow
+    // through the merge block into the return — but our JIT clears the value
+    // stack on every block entry (line 1734), so the ReturnVal codegen pops
+    // an empty stack and panics.  Examples include
+    //   `function dist(u,v) { return ((u,v) in d) ? d[u,v] : INF }`
+    // when called from a comparison context (`if (cand < dist(...))`).  Until
+    // the join-block handling models block parameters for the SSA value, fall
+    // back to the bytecode interpreter for any such chunk.
+    let mut has_forward_jump = false;
+    let mut has_return_val = false;
+    for (i, op) in ops.iter().enumerate() {
+        match op {
+            Op::Jump(target) if *target > i => has_forward_jump = true,
+            Op::ReturnVal => has_return_val = true,
+            _ => {}
+        }
+    }
+    if has_forward_jump && has_return_val {
+        return false;
+    }
     let mut depth: i32 = 0;
     for op in ops {
         match op {
