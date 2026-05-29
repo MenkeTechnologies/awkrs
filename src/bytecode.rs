@@ -453,7 +453,6 @@ impl StringPool {
         idx
     }
     /// `get` — see implementation for the contract.
-
     pub fn get(&self, idx: u32) -> &str {
         &self.strings[idx as usize]
     }

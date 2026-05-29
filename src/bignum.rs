@@ -69,7 +69,6 @@ pub fn float_trunc_u64(f: &Float) -> u64 {
     float_trunc_integer(f).to_u64_wrapping()
 }
 /// `awk_int_value` — see implementation for the contract.
-
 pub fn awk_int_value(v: &Value, rt: &Runtime) -> Value {
     if !rt.bignum {
         return Value::Num(v.as_number().trunc());
@@ -80,7 +79,6 @@ pub fn awk_int_value(v: &Value, rt: &Runtime) -> Value {
     Value::Mpfr(Float::with_val_round(prec, f.trunc(), round).0)
 }
 /// `awk_intdiv_values` — see implementation for the contract.
-
 pub fn awk_intdiv_values(a: &Value, b: &Value, rt: &Runtime) -> Result<Value> {
     if !rt.bignum {
         let bf = b.as_number();
@@ -107,7 +105,6 @@ pub fn awk_intdiv_values(a: &Value, b: &Value, rt: &Runtime) -> Result<Value> {
     Ok(Value::Mpfr(Float::with_val_round(prec, q, round).0))
 }
 /// `awk_strtonum_value` — see implementation for the contract.
-
 pub fn awk_strtonum_value(s: &str, rt: &Runtime) -> Value {
     if !rt.bignum {
         return Value::Num(crate::builtins::awk_strtonum(s));
@@ -117,7 +114,6 @@ pub fn awk_strtonum_value(s: &str, rt: &Runtime) -> Value {
     Value::Mpfr(numeric_string_to_mpfr(s, prec, round))
 }
 /// `awk_and_values` — see implementation for the contract.
-
 pub fn awk_and_values(a: &Value, b: &Value, rt: &Runtime) -> Value {
     if !rt.bignum {
         return Value::Num(crate::builtins::awk_and(a.as_number(), b.as_number()));
@@ -130,7 +126,6 @@ pub fn awk_and_values(a: &Value, b: &Value, rt: &Runtime) -> Value {
     Value::Mpfr(Float::with_val_round(prec, Integer::from(r), round).0)
 }
 /// `awk_or_values` — see implementation for the contract.
-
 pub fn awk_or_values(a: &Value, b: &Value, rt: &Runtime) -> Value {
     if !rt.bignum {
         return Value::Num(crate::builtins::awk_or(a.as_number(), b.as_number()));
@@ -143,7 +138,6 @@ pub fn awk_or_values(a: &Value, b: &Value, rt: &Runtime) -> Value {
     Value::Mpfr(Float::with_val_round(prec, Integer::from(r), round).0)
 }
 /// `awk_xor_values` — see implementation for the contract.
-
 pub fn awk_xor_values(a: &Value, b: &Value, rt: &Runtime) -> Value {
     if !rt.bignum {
         return Value::Num(crate::builtins::awk_xor(a.as_number(), b.as_number()));
@@ -156,7 +150,6 @@ pub fn awk_xor_values(a: &Value, b: &Value, rt: &Runtime) -> Value {
     Value::Mpfr(Float::with_val_round(prec, Integer::from(r), round).0)
 }
 /// `awk_lshift_values` — see implementation for the contract.
-
 pub fn awk_lshift_values(a: &Value, b: &Value, rt: &Runtime) -> Value {
     if !rt.bignum {
         return Value::Num(crate::builtins::awk_lshift(a.as_number(), b.as_number()));
@@ -169,7 +162,6 @@ pub fn awk_lshift_values(a: &Value, b: &Value, rt: &Runtime) -> Value {
     Value::Mpfr(Float::with_val_round(prec, Integer::from(r), round).0)
 }
 /// `awk_rshift_values` — see implementation for the contract.
-
 pub fn awk_rshift_values(a: &Value, b: &Value, rt: &Runtime) -> Value {
     if !rt.bignum {
         return Value::Num(crate::builtins::awk_rshift(a.as_number(), b.as_number()));
@@ -182,7 +174,6 @@ pub fn awk_rshift_values(a: &Value, b: &Value, rt: &Runtime) -> Value {
     Value::Mpfr(Float::with_val_round(prec, Integer::from(r), round).0)
 }
 /// `awk_compl_values` — see implementation for the contract.
-
 pub fn awk_compl_values(a: &Value, rt: &Runtime) -> Value {
     if !rt.bignum {
         return Value::Num(crate::builtins::awk_compl(a.as_number()));
@@ -238,7 +229,6 @@ mod tests {
             "%d",
             &[Value::Mpfr(f)],
             '.',
-            /// `Some` variant.
             Some(','),
             Some((rt.mpfr_prec_bits(), Round::Nearest)),
         )
@@ -270,7 +260,6 @@ mod tests {
             "%d",
             &[Value::Mpfr(sum)],
             '.',
-            /// `Some` variant.
             Some(','),
             Some((prec, round)),
         )
@@ -320,7 +309,6 @@ mod tests {
             "%d",
             &[q],
             '.',
-            /// `Some` variant.
             Some(','),
             Some((rt.mpfr_prec_bits(), Round::Nearest)),
         )
@@ -427,7 +415,6 @@ mod tests {
             "%d",
             std::slice::from_ref(v),
             '.',
-            /// `Some` variant.
             Some(','),
             Some((rt.mpfr_prec_bits(), rt.mpfr_round())),
         )

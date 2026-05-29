@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 use thiserror::Error;
 /// `Error` — see variants for the choices.
-
 #[derive(Debug, Error)]
 pub enum Error {
     /// `Io` variant.
@@ -31,7 +30,6 @@ pub enum Error {
     Exit(i32),
 }
 /// `Result` type alias.
-
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[cfg(test)]

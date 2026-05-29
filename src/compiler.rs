@@ -56,7 +56,6 @@ enum StructuralKind {
     },
 }
 /// `Compiler` — see fields for the structure layout.
-
 pub struct Compiler {
     /// `strings` field.
     pub strings: StringPool,

@@ -52,7 +52,6 @@ pub const SHARD_FORMAT_VERSION: u32 = 2;
 
 // ── rkyv archived types ──────────────────────────────────────────────────────
 /// `ShardHeader` — see fields for the structure layout.
-
 #[derive(Archive, RkyvDeserialize, RkyvSerialize, Debug, Clone)]
 #[archive(check_bytes)]
 pub struct ShardHeader {
@@ -68,7 +67,6 @@ pub struct ShardHeader {
     pub built_at_secs: u64,
 }
 /// `ScriptEntry` — see fields for the structure layout.
-
 #[derive(Archive, RkyvDeserialize, RkyvSerialize, Debug, Clone)]
 #[archive(check_bytes)]
 pub struct ScriptEntry {
@@ -84,7 +82,6 @@ pub struct ScriptEntry {
     pub cp_blob: Vec<u8>,
 }
 /// `ScriptShard` — see fields for the structure layout.
-
 #[derive(Archive, RkyvDeserialize, RkyvSerialize, Debug, Clone)]
 #[archive(check_bytes)]
 pub struct ScriptShard {
@@ -155,7 +152,6 @@ impl MmappedShard {
 
 // ── ScriptCache: per-instance handle ─────────────────────────────────────────
 /// `ScriptCache` — see fields for the structure layout.
-
 pub struct ScriptCache {
     path: PathBuf,
     lock_path: PathBuf,

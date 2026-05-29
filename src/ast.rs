@@ -3,7 +3,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 /// `Program` — see fields for the structure layout.
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct Program {
     /// `rules` field.
@@ -12,7 +11,6 @@ pub struct Program {
     pub funcs: HashMap<String, FunctionDef>,
 }
 /// `FunctionDef` — see fields for the structure layout.
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct FunctionDef {
     /// `name` field.
@@ -23,7 +21,6 @@ pub struct FunctionDef {
     pub body: Vec<Stmt>,
 }
 /// `Rule` — see fields for the structure layout.
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct Rule {
     /// `pattern` field.
@@ -32,7 +29,6 @@ pub struct Rule {
     pub stmts: Vec<Stmt>,
 }
 /// `Pattern` — see variants for the choices.
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum Pattern {
     /// `Begin` variant.
@@ -53,7 +49,6 @@ pub enum Pattern {
     Empty,
 }
 /// `Stmt` — see variants for the choices.
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum Stmt {
     If {
@@ -160,7 +155,6 @@ pub enum PrintRedir {
     Coproc(Box<Expr>),
 }
 /// `GetlineRedir` — see variants for the choices.
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum GetlineRedir {
     /// Same stream as main input (or stdin).
@@ -171,7 +165,6 @@ pub enum GetlineRedir {
     Coproc(Box<Expr>),
 }
 /// `Expr` — see variants for the choices.
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     /// `Number` variant.
@@ -271,10 +264,12 @@ pub enum IncDecTarget {
     Var(String),
     /// `Field` variant.
     Field(Box<Expr>),
-    Index { name: String, indices: Vec<Expr> },
+    Index {
+        name: String,
+        indices: Vec<Expr>,
+    },
 }
 /// `BinOp` — see variants for the choices.
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BinOp {
     /// `Add` variant.
@@ -313,7 +308,6 @@ pub enum BinOp {
     Or,
 }
 /// `UnaryOp` — see variants for the choices.
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnaryOp {
     /// `Neg` variant.
@@ -324,7 +318,6 @@ pub enum UnaryOp {
     Not,
 }
 /// `parallel` submodule.
-
 pub mod parallel;
 
 #[cfg(test)]

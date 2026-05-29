@@ -178,7 +178,6 @@ pub const AWK_JUMP_IF_SLOT_GE_NUM: u16 = 1213;
 
 // ── BinOp encoding ──
 /// `binop_to_u8` — see implementation for the contract.
-
 pub fn binop_to_u8(op: BinOp) -> u8 {
     match op {
         BinOp::Add => 0,
@@ -203,7 +202,6 @@ pub fn binop_to_u8(op: BinOp) -> u8 {
 
 // ── RedirKind encoding ──
 /// `redir_to_u8` — see implementation for the contract.
-
 pub fn redir_to_u8(redir: RedirKind) -> u8 {
     match redir {
         RedirKind::Stdout => 0,
@@ -216,7 +214,6 @@ pub fn redir_to_u8(redir: RedirKind) -> u8 {
 
 // ── GetlineSource encoding ──
 /// `getline_source_to_u8` — see implementation for the contract.
-
 pub fn getline_source_to_u8(source: GetlineSource) -> u8 {
     match source {
         GetlineSource::Primary => 0,

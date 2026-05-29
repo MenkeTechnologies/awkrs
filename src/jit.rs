@@ -182,7 +182,6 @@ pub const JIT_IO_PRINT_RECORD: u32 = 3;
 
 // ── `jit_val_dispatch` opcodes (array, match, signals) ───────────────────
 /// `JIT_VAL_MATCH_REGEXP` constant.
-
 pub const JIT_VAL_MATCH_REGEXP: u32 = 0;
 /// `JIT_VAL_SIGNAL_NEXT` constant.
 pub const JIT_VAL_SIGNAL_NEXT: u32 = 1;
@@ -309,13 +308,11 @@ pub const NAN_UNINIT_HI32: u32 = 0x7FFD_0000;
 /// Full bit pattern for [`nan_uninit`].
 pub const NAN_UNINIT_TAG: u64 = (NAN_UNINIT_HI32 as u64) << 32;
 /// `nan_uninit` — see implementation for the contract.
-
 #[inline]
 pub fn nan_uninit() -> f64 {
     f64::from_bits(NAN_UNINIT_TAG)
 }
 /// `is_nan_uninit` — see implementation for the contract.
-
 #[inline]
 pub fn is_nan_uninit(bits: u64) -> bool {
     bits == NAN_UNINIT_TAG
@@ -354,7 +351,6 @@ pub fn mixed_encode_array_incdec(arr: u32, kind: IncDecOp) -> u32 {
 // are coerced / compared correctly.  The callbacks receive raw f64 values
 // (which may be NaN-boxed) in a2/a3 and return f64 (possibly NaN-boxed).
 /// `MIXED_ADD` constant.
-
 pub const MIXED_ADD: u32 = 100;
 /// `MIXED_SUB` constant.
 pub const MIXED_SUB: u32 = 101;
@@ -556,7 +552,6 @@ fn mixed_encode_field_compound_binop(bop: BinOp) -> u32 {
     }
 }
 /// `mixed_encode_slot_incdec` — see implementation for the contract.
-
 #[inline]
 pub fn mixed_encode_slot_incdec(slot: u16, kind: IncDecOp) -> u32 {
     let k: u32 = match kind {
@@ -568,13 +563,11 @@ pub fn mixed_encode_slot_incdec(slot: u16, kind: IncDecOp) -> u32 {
     u32::from(slot) | (k << 16)
 }
 /// `mixed_encode_slot_pair` — see implementation for the contract.
-
 #[inline]
 pub fn mixed_encode_slot_pair(src: u16, dst: u16) -> u32 {
     u32::from(src) | (u32::from(dst) << 16)
 }
 /// `mixed_encode_field_slot` — see implementation for the contract.
-
 #[inline]
 pub fn mixed_encode_field_slot(field: u16, slot: u16) -> u32 {
     u32::from(field) | (u32::from(slot) << 16)
@@ -933,7 +926,6 @@ fn empty_compiled_program() -> CompiledProgram {
     }
 }
 /// `is_jit_eligible` — see implementation for the contract.
-
 pub fn is_jit_eligible(ops: &[Op]) -> bool {
     if ops.is_empty() {
         return false;

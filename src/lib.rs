@@ -957,10 +957,7 @@ enum InlinePattern {
     /// `LiteralContains` variant.
     LiteralContains(String),
     /// `NR % modulus` compared to `eq_val` (numeric `==`), e.g. `NR % 2 == 0`.
-    NrModEq {
-        modulus: f64,
-        eq_val: f64,
-    },
+    NrModEq { modulus: f64, eq_val: f64 },
 }
 
 fn match_nr_mod_eq_pattern(ops: &[Op]) -> Option<(f64, f64)> {

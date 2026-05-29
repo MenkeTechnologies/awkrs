@@ -1,7 +1,6 @@
 use crate::error::{Error, Result};
 use rug::Integer;
 /// `Token` — see variants for the choices.
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
     /// `Begin` variant.
@@ -63,7 +62,6 @@ pub enum Token {
     /// `Regexp` variant.
     Regexp(String),
     /// `Plus` variant.
-
     Plus,
     /// `++` (single token).
     PlusPlus,
@@ -155,7 +153,6 @@ pub enum Token {
     Eof,
 }
 /// `Lexer` — see fields for the structure layout.
-
 #[derive(Clone)]
 pub struct Lexer<'a> {
     input: &'a str,
@@ -173,7 +170,6 @@ impl<'a> Lexer<'a> {
         }
     }
     /// `line` — see implementation for the contract.
-
     pub fn line(&self) -> usize {
         self.line
     }

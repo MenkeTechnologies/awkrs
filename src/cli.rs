@@ -31,11 +31,9 @@ pub struct Args {
     #[arg(short = 'f', long = "file", value_name = "PROGFILE", action = ArgAction::Append, value_hint = ValueHint::FilePath)]
     pub progfiles: Vec<PathBuf>,
     /// `field_sep` field.
-
     #[arg(short = 'F', long = "field-separator", value_name = "FS")]
     pub field_sep: Option<String>,
     /// `assigns` field.
-
     #[arg(short = 'v', long = "assign", value_name = "var=val", action = ArgAction::Append)]
     pub assigns: Vec<String>,
 
@@ -44,7 +42,6 @@ pub struct Args {
     #[arg(short = 'e', long = "source", value_name = "PROGRAM", action = ArgAction::Append)]
     pub source: Vec<String>,
     /// `include` field.
-
     #[arg(short = 'i', long = "include", value_name = "FILE", action = ArgAction::Append, value_hint = ValueHint::FilePath)]
     pub include: Vec<PathBuf>,
 
@@ -53,11 +50,9 @@ pub struct Args {
     #[arg(short = 'b', long = "characters-as-bytes")]
     pub characters_as_bytes: bool,
     /// `traditional` field.
-
     #[arg(short = 'c', long = "traditional")]
     pub traditional: bool,
     /// `copyright` field.
-
     #[arg(short = 'C', long = "copyright")]
     pub copyright: bool,
 
@@ -82,15 +77,12 @@ pub struct Args {
     /// `debug` field.
     pub debug: Option<String>,
     /// `exec_file` field.
-
     #[arg(short = 'E', long = "exec", value_name = "FILE", value_hint = ValueHint::FilePath)]
     pub exec_file: Option<PathBuf>,
     /// `gen_pot` field.
-
     #[arg(short = 'g', long = "gen-pot")]
     pub gen_pot: bool,
     /// `trace` field.
-
     #[arg(short = 'I', long = "trace")]
     pub trace: bool,
 
@@ -98,15 +90,12 @@ pub struct Args {
     #[arg(short = 'k', long = "csv")]
     pub csv: bool,
     /// `load` field.
-
     #[arg(short = 'l', long = "load", value_name = "LIB", action = ArgAction::Append)]
     pub load: Vec<String>,
     /// `lint` field.
-
     #[arg(short = 'L', long = "lint", value_name = "fatal|invalid|no-ext")]
     pub lint: Option<String>,
     /// `bignum` field.
-
     #[arg(short = 'M', long = "bignum")]
     pub bignum: bool,
 
@@ -114,7 +103,6 @@ pub struct Args {
     #[arg(short = 'N', long = "use-lc-numeric")]
     pub use_lc_numeric: bool,
     /// `non_decimal_data` field.
-
     #[arg(short = 'n', long = "non-decimal-data")]
     pub non_decimal_data: bool,
 
@@ -129,7 +117,6 @@ pub struct Args {
     /// `pretty_print` field.
     pub pretty_print: Option<String>,
     /// `optimize` field.
-
     #[arg(short = 'O', long = "optimize")]
     pub optimize: bool,
 
@@ -144,7 +131,6 @@ pub struct Args {
     /// `profile` field.
     pub profile: Option<String>,
     /// `posix` field.
-
     #[arg(short = 'P', long = "posix")]
     pub posix: bool,
 
@@ -152,15 +138,12 @@ pub struct Args {
     #[arg(short = 'r', long = "re-interval")]
     pub re_interval: bool,
     /// `no_optimize` field.
-
     #[arg(short = 's', long = "no-optimize")]
     pub no_optimize: bool,
     /// `sandbox` field.
-
     #[arg(short = 'S', long = "sandbox")]
     pub sandbox: bool,
     /// `lint_old` field.
-
     #[arg(short = 't', long = "lint-old")]
     pub lint_old: bool,
 
@@ -226,7 +209,6 @@ impl Args {
     }
 }
 /// `MawkWAction` — see variants for the choices.
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MawkWAction {
     /// `Help` variant.

@@ -42,7 +42,6 @@ fn builtin_regex_pattern_arg(fname: &str, arg_index: usize) -> bool {
     }
 }
 /// `parse_program` — see implementation for the contract.
-
 pub fn parse_program(src: &str) -> Result<Program> {
     let expanded = crate::source_expand::expand_source_directives(src)?;
     let mut p = Parser::new(&expanded.text);

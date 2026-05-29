@@ -388,7 +388,6 @@ pub struct CoprocHandle {
     pub stdout: BufReader<ChildStdout>,
 }
 /// `Value` — see variants for the choices.
-
 #[derive(Debug, Clone)]
 pub enum Value {
     /// Never assigned (missing global, missing function argument, or fresh slot).
@@ -420,7 +419,6 @@ fn mpfr_value_default_display(f: &Float) -> String {
         "%.6g",
         &[Value::Mpfr(f.clone())],
         '.',
-        /// `Some` variant.
         Some(','),
         Some((prec, Round::Nearest)),
     )
@@ -494,7 +492,6 @@ impl Value {
         Ok(())
     }
     /// `as_str` — see implementation for the contract.
-
     pub fn as_str(&self) -> String {
         match self {
             Value::Uninit => String::new(),
@@ -551,7 +548,6 @@ impl Value {
         }
     }
     /// `as_number` — see implementation for the contract.
-
     pub fn as_number(&self) -> f64 {
         match self {
             Value::Uninit => 0.0,
@@ -563,7 +559,6 @@ impl Value {
         }
     }
     /// `truthy` — see implementation for the contract.
-
     pub fn truthy(&self) -> bool {
         match self {
             Value::Uninit => false,
@@ -1082,7 +1077,6 @@ fn split_fields_into(
     }
 }
 /// `Runtime` — see fields for the structure layout.
-
 pub struct Runtime {
     /// `vars` field.
     pub vars: AwkMap<String, Value>,
@@ -1858,13 +1852,11 @@ impl Runtime {
             .unwrap_or(false)
     }
     /// `clear_errno` — see implementation for the contract.
-
     pub fn clear_errno(&mut self) {
         self.errno_code = 0;
         self.vars.insert("ERRNO".into(), Value::Str(String::new()));
     }
     /// `set_errno_io` — see implementation for the contract.
-
     pub fn set_errno_io(&mut self, e: &std::io::Error) {
         self.errno_code = e.raw_os_error().unwrap_or(0);
         // gawk's ERRNO is the strerror string ("No such file or directory"),
@@ -1878,13 +1870,11 @@ impl Runtime {
         self.vars.insert("ERRNO".into(), Value::Str(cleaned));
     }
     /// `set_errno_str` — see implementation for the contract.
-
     pub fn set_errno_str(&mut self, msg: impl Into<String>) {
         self.errno_code = 0;
         self.vars.insert("ERRNO".into(), Value::Str(msg.into()));
     }
     /// `ensure_rs_regex_bytes` — see implementation for the contract.
-
     pub fn ensure_rs_regex_bytes(&mut self) -> Result<()> {
         let rs = self.rs_string();
         if self.rs_pattern_for_regex == rs {
@@ -1906,7 +1896,6 @@ impl Runtime {
         Ok(())
     }
     /// `set_rt_from_bytes` — see implementation for the contract.
-
     pub fn set_rt_from_bytes(&mut self, sep: &[u8]) {
         let t = if sep.is_empty() {
             String::new()
@@ -2150,7 +2139,6 @@ impl Runtime {
         )))
     }
     /// `attach_input_reader` — see implementation for the contract.
-
     #[cfg_attr(unix, allow(dead_code))]
     pub fn attach_input_reader(&mut self, r: SharedInputReader) {
         self.attach_input_reader_with_poll_fd(r, None);
@@ -2170,7 +2158,6 @@ impl Runtime {
         }
     }
     /// `detach_input_reader` — see implementation for the contract.
-
     pub fn detach_input_reader(&mut self) {
         self.input_reader = None;
         #[cfg(unix)]
@@ -2248,7 +2235,6 @@ impl Runtime {
             &[Value::Num(n)],
             self.numeric_decimal,
             self.numeric_thousands_sep,
-            /// `None` variant.
             None,
         )
         .unwrap_or_else(|_| format_number(n))
@@ -2275,7 +2261,6 @@ impl Runtime {
             &[Value::Num(n)],
             self.numeric_decimal,
             self.numeric_thousands_sep,
-            /// `None` variant.
             None,
         )
         .unwrap_or_else(|_| format_number(n))
@@ -2515,7 +2500,6 @@ impl Runtime {
         }
     }
     /// `close_handle` — see implementation for the contract.
-
     pub fn close_handle(&mut self, path: &str) -> f64 {
         let mut exit_status: f64 = 0.0;
         let mut had_any = false;
@@ -2606,7 +2590,6 @@ impl Runtime {
         exit_status
     }
     /// `rand` — see implementation for the contract.
-
     pub fn rand(&mut self) -> f64 {
         self.rand_seed = self.rand_seed.wrapping_mul(1103515245).wrapping_add(12345);
         f64::from((self.rand_seed >> 16) as u32 & 0x7fff) / 32768.0
@@ -2624,7 +2607,6 @@ impl Runtime {
         (prev & 0xffff_ffff) as f64
     }
     /// `set_field_sep_split` — see implementation for the contract.
-
     pub fn set_field_sep_split(&mut self, fs: &str, line: &str) {
         self.record.clear();
         self.record.push_str(line);
@@ -2769,7 +2751,6 @@ impl Runtime {
         }
     }
     /// `field` — see implementation for the contract.
-
     pub fn field(&mut self, i: i32) -> crate::error::Result<Value> {
         if i < 0 {
             return Err(crate::error::Error::Runtime(
@@ -2920,7 +2901,6 @@ impl Runtime {
         Ok(())
     }
     /// `set_field` — see implementation for the contract.
-
     pub fn set_field(&mut self, i: i32, val: &str) -> crate::error::Result<()> {
         if i == 0 {
             self.set_record_str(val);
@@ -3004,7 +2984,6 @@ impl Runtime {
         self.record = self.fields.join(&ofs);
     }
     /// `set_record_from_line` — see implementation for the contract.
-
     pub fn set_record_from_line(&mut self, line: &str) {
         let trimmed = line.trim_end_matches(['\n', '\r']);
         let fs = self
@@ -3152,7 +3131,6 @@ impl Runtime {
         self.vars.insert(key.to_string(), val);
     }
     /// `array_get` — see implementation for the contract.
-
     #[inline]
     pub fn array_get(&self, name: &str, key: &str) -> Value {
         if name == "SYMTAB" {
@@ -3168,7 +3146,6 @@ impl Runtime {
         }
     }
     /// `array_set` — see implementation for the contract.
-
     pub fn array_set(&mut self, name: &str, key: String, val: Value) {
         if name == "SYMTAB" {
             self.symtab_elem_set(&key, val);
@@ -3284,7 +3261,6 @@ impl Runtime {
         }
     }
     /// `array_delete` — see implementation for the contract.
-
     pub fn array_delete(&mut self, name: &str, key: Option<&str>) {
         if let Some(k) = key {
             if let Some(Value::Array(a)) = self.vars.get_mut(name) {
@@ -3356,7 +3332,6 @@ impl Runtime {
         }
     }
     /// `split_into_array` — see implementation for the contract.
-
     pub fn split_into_array(&mut self, arr_name: &str, parts: &[String]) {
         self.array_delete(arr_name, None);
         for (i, p) in parts.iter().enumerate() {
