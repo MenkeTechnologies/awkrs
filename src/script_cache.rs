@@ -51,37 +51,53 @@ pub const SHARD_MAGIC: u32 = 0x41574B52; // "AWKR"
 pub const SHARD_FORMAT_VERSION: u32 = 2;
 
 // ── rkyv archived types ──────────────────────────────────────────────────────
+/// `ShardHeader` — see fields for the structure layout.
 
 #[derive(Archive, RkyvDeserialize, RkyvSerialize, Debug, Clone)]
 #[archive(check_bytes)]
 pub struct ShardHeader {
+    /// `magic` field.
     pub magic: u32,
+    /// `format_version` field.
     pub format_version: u32,
+    /// `awkrs_version` field.
     pub awkrs_version: String,
+    /// `pointer_width` field.
     pub pointer_width: u32,
+    /// `built_at_secs` field.
     pub built_at_secs: u64,
 }
+/// `ScriptEntry` — see fields for the structure layout.
 
 #[derive(Archive, RkyvDeserialize, RkyvSerialize, Debug, Clone)]
 #[archive(check_bytes)]
 pub struct ScriptEntry {
+    /// `mtime_secs` field.
     pub mtime_secs: i64,
+    /// `mtime_nsecs` field.
     pub mtime_nsecs: i64,
+    /// `binary_mtime_at_cache` field.
     pub binary_mtime_at_cache: i64,
+    /// `cached_at_secs` field.
     pub cached_at_secs: i64,
+    /// `cp_blob` field.
     pub cp_blob: Vec<u8>,
 }
+/// `ScriptShard` — see fields for the structure layout.
 
 #[derive(Archive, RkyvDeserialize, RkyvSerialize, Debug, Clone)]
 #[archive(check_bytes)]
 pub struct ScriptShard {
+    /// `header` field.
     pub header: ShardHeader,
+    /// `entries` field.
     pub entries: HashMap<String, ScriptEntry>,
 }
 
 /// Owned bundle handed back from `try_load` / `ScriptCache::get`.
 #[derive(Debug, Clone)]
 pub struct CachedScript {
+    /// `cp` field.
     pub cp: CompiledProgram,
 }
 
@@ -100,6 +116,7 @@ unsafe impl Send for MmappedShard {}
 unsafe impl Sync for MmappedShard {}
 
 impl MmappedShard {
+    /// `open` — see implementation for the contract.
     pub fn open(path: &Path) -> Option<Self> {
         let file = File::open(path).ok()?;
         let mmap = unsafe { Mmap::map(&file).ok()? };
@@ -137,6 +154,7 @@ impl MmappedShard {
 }
 
 // ── ScriptCache: per-instance handle ─────────────────────────────────────────
+/// `ScriptCache` — see fields for the structure layout.
 
 pub struct ScriptCache {
     path: PathBuf,
@@ -146,6 +164,7 @@ pub struct ScriptCache {
 
 #[allow(dead_code)]
 impl ScriptCache {
+    /// `open` — see implementation for the contract.
     pub fn open(path: &Path) -> std::io::Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;

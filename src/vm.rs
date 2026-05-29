@@ -29,9 +29,12 @@ struct ForInState {
     keys: Vec<String>,
     index: usize,
 }
+/// `VmCtx` — see fields for the structure layout.
 
 pub struct VmCtx<'a> {
+    /// `cp` field.
     pub cp: &'a CompiledProgram,
+    /// `rt` field.
     pub rt: &'a mut Runtime,
     locals: Vec<AwkMap<String, Value>>,
     in_function: bool,
@@ -41,6 +44,7 @@ pub struct VmCtx<'a> {
 }
 
 impl<'a> VmCtx<'a> {
+    /// `new` — see implementation for the contract.
     pub fn new(cp: &'a CompiledProgram, rt: &'a mut Runtime) -> Self {
         // Take the pre-allocated stack from Runtime to avoid per-call malloc.
         let mut stack = std::mem::take(&mut rt.vm_stack);
@@ -55,6 +59,7 @@ impl<'a> VmCtx<'a> {
             stack,
         }
     }
+    /// `with_print_capture` — see implementation for the contract.
 
     pub fn with_print_capture(
         cp: &'a CompiledProgram,
@@ -362,14 +367,20 @@ static EMPTY_STR: Value = Value::Str(String::new());
 // ── Signal from VM execution ────────────────────────────────────────────────
 
 enum VmSignal {
+    /// `Normal` variant.
     Normal,
+    /// `Next` variant.
     Next,
+    /// `NextFile` variant.
     NextFile,
+    /// `Return` variant.
     Return(Value),
+    /// `ExitPending` variant.
     ExitPending,
 }
 
 // ── Public API ──────────────────────────────────────────────────────────────
+/// `vm_run_begin` — see implementation for the contract.
 
 pub fn vm_run_begin(cp: &CompiledProgram, rt: &mut Runtime) -> Result<()> {
     let mut ctx = VmCtx::new(cp, rt);
@@ -390,6 +401,7 @@ pub fn vm_run_begin(cp: &CompiledProgram, rt: &mut Runtime) -> Result<()> {
     ctx.recycle();
     Ok(())
 }
+/// `vm_run_end` — see implementation for the contract.
 
 pub fn vm_run_end(cp: &CompiledProgram, rt: &mut Runtime) -> Result<()> {
     let mut ctx = VmCtx::new(cp, rt);
@@ -410,6 +422,7 @@ pub fn vm_run_end(cp: &CompiledProgram, rt: &mut Runtime) -> Result<()> {
     ctx.recycle();
     Ok(())
 }
+/// `vm_run_beginfile` — see implementation for the contract.
 
 pub fn vm_run_beginfile(cp: &CompiledProgram, rt: &mut Runtime) -> Result<()> {
     let mut ctx = VmCtx::new(cp, rt);
@@ -430,6 +443,7 @@ pub fn vm_run_beginfile(cp: &CompiledProgram, rt: &mut Runtime) -> Result<()> {
     ctx.recycle();
     Ok(())
 }
+/// `vm_run_endfile` — see implementation for the contract.
 
 pub fn vm_run_endfile(cp: &CompiledProgram, rt: &mut Runtime) -> Result<()> {
     let mut ctx = VmCtx::new(cp, rt);
@@ -1603,7 +1617,9 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
                 false,
                 re_v,
                 repl_v,
+                /// `None` variant.
                 None,
+                /// `None` variant.
                 None,
             ) {
                 Ok(n) => n,
@@ -1622,7 +1638,9 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
                 true,
                 re_v,
                 repl_v,
+                /// `None` variant.
                 None,
+                /// `None` variant.
                 None,
             ) {
                 Ok(n) => n,
@@ -1642,7 +1660,9 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
                 false,
                 re_v,
                 repl_v,
+                /// `None` variant.
                 None,
+                /// `Some` variant.
                 Some(field_i),
             ) {
                 Ok(n) => n,
@@ -1662,7 +1682,9 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
                 true,
                 re_v,
                 repl_v,
+                /// `None` variant.
                 None,
+                /// `Some` variant.
                 Some(field_i),
             ) {
                 Ok(n) => n,
@@ -1694,7 +1716,9 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
                 false,
                 re_v,
                 repl_v,
+                /// `Some` variant.
                 Some(key),
+                /// `None` variant.
                 None,
             ) {
                 Ok(n) => n,
@@ -1716,7 +1740,9 @@ fn jit_mixed_op_dispatch(ctx: &mut VmCtx<'_>, op: u32, a1: u32, a2: f64, a3: f64
                 true,
                 re_v,
                 repl_v,
+                /// `Some` variant.
                 Some(key),
+                /// `None` variant.
                 None,
             ) {
                 Ok(n) => n,

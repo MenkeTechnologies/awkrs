@@ -11,6 +11,7 @@ mod compiler;
 mod cyber_help;
 mod error;
 mod format;
+/// `jit` submodule.
 pub mod jit;
 pub use jit::{
     is_jit_eligible, is_numeric_stack_eligible, jit_call_builtins_ok,
@@ -19,6 +20,7 @@ pub use jit::{
     try_jit_execute, JitChunk, JitCompileOptions, JitNumericChunk, JitRuntimeState,
 };
 mod flow;
+/// `fusevm_bridge` submodule.
 pub mod fusevm_bridge;
 mod gawk_extensions;
 mod gettext_util;
@@ -909,6 +911,7 @@ fn process_file(
 /// Returns `Some(action)` for single Always-pattern rules with a single fused opcode body.
 #[derive(Clone, Copy)]
 enum InlineAction {
+    /// `PrintFieldStdout` variant.
     PrintFieldStdout(u16),
     AddFieldToSlot {
         field: u16,
@@ -949,7 +952,9 @@ enum InlineAction {
 /// Pattern for inline fast path.
 #[derive(Clone)]
 enum InlinePattern {
+    /// `Always` variant.
     Always,
+    /// `LiteralContains` variant.
     LiteralContains(String),
     /// `NR % modulus` compared to `eq_val` (numeric `==`), e.g. `NR % 2 == 0`.
     NrModEq {

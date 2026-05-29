@@ -197,6 +197,7 @@ pub fn awk_sprintf_with_convfmt(
     let vals = convfmt_preprocess_for_percent_s(fmt, vals, convfmt);
     awk_sprintf_with_decimal(fmt, &vals, decimal, thousands_sep, mpfr_mode)
 }
+/// `awk_sprintf_with_decimal` — see implementation for the contract.
 
 pub fn awk_sprintf_with_decimal(
     fmt: &str,
@@ -897,7 +898,9 @@ fn format_one(
                         "%.6g",
                         &[Value::Num(n)],
                         '.',
+                        /// `None` variant.
                         None,
+                        /// `None` variant.
                         None,
                     )
                     .unwrap_or_else(|_| format!("{}", u64::MAX))

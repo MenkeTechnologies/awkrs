@@ -68,6 +68,7 @@ pub fn float_trunc_integer(f: &Float) -> Integer {
 pub fn float_trunc_u64(f: &Float) -> u64 {
     float_trunc_integer(f).to_u64_wrapping()
 }
+/// `awk_int_value` — see implementation for the contract.
 
 pub fn awk_int_value(v: &Value, rt: &Runtime) -> Value {
     if !rt.bignum {
@@ -78,6 +79,7 @@ pub fn awk_int_value(v: &Value, rt: &Runtime) -> Value {
     let f = value_to_mpfr(v, prec, round);
     Value::Mpfr(Float::with_val_round(prec, f.trunc(), round).0)
 }
+/// `awk_intdiv_values` — see implementation for the contract.
 
 pub fn awk_intdiv_values(a: &Value, b: &Value, rt: &Runtime) -> Result<Value> {
     if !rt.bignum {
@@ -104,6 +106,7 @@ pub fn awk_intdiv_values(a: &Value, b: &Value, rt: &Runtime) -> Result<Value> {
     let q = ia / ib;
     Ok(Value::Mpfr(Float::with_val_round(prec, q, round).0))
 }
+/// `awk_strtonum_value` — see implementation for the contract.
 
 pub fn awk_strtonum_value(s: &str, rt: &Runtime) -> Value {
     if !rt.bignum {
@@ -113,6 +116,7 @@ pub fn awk_strtonum_value(s: &str, rt: &Runtime) -> Value {
     let round = rt.mpfr_round();
     Value::Mpfr(numeric_string_to_mpfr(s, prec, round))
 }
+/// `awk_and_values` — see implementation for the contract.
 
 pub fn awk_and_values(a: &Value, b: &Value, rt: &Runtime) -> Value {
     if !rt.bignum {
@@ -125,6 +129,7 @@ pub fn awk_and_values(a: &Value, b: &Value, rt: &Runtime) -> Value {
     let r = ua & ub;
     Value::Mpfr(Float::with_val_round(prec, Integer::from(r), round).0)
 }
+/// `awk_or_values` — see implementation for the contract.
 
 pub fn awk_or_values(a: &Value, b: &Value, rt: &Runtime) -> Value {
     if !rt.bignum {
@@ -137,6 +142,7 @@ pub fn awk_or_values(a: &Value, b: &Value, rt: &Runtime) -> Value {
     let r = ua | ub;
     Value::Mpfr(Float::with_val_round(prec, Integer::from(r), round).0)
 }
+/// `awk_xor_values` — see implementation for the contract.
 
 pub fn awk_xor_values(a: &Value, b: &Value, rt: &Runtime) -> Value {
     if !rt.bignum {
@@ -149,6 +155,7 @@ pub fn awk_xor_values(a: &Value, b: &Value, rt: &Runtime) -> Value {
     let r = ua ^ ub;
     Value::Mpfr(Float::with_val_round(prec, Integer::from(r), round).0)
 }
+/// `awk_lshift_values` — see implementation for the contract.
 
 pub fn awk_lshift_values(a: &Value, b: &Value, rt: &Runtime) -> Value {
     if !rt.bignum {
@@ -161,6 +168,7 @@ pub fn awk_lshift_values(a: &Value, b: &Value, rt: &Runtime) -> Value {
     let r = x << n;
     Value::Mpfr(Float::with_val_round(prec, Integer::from(r), round).0)
 }
+/// `awk_rshift_values` — see implementation for the contract.
 
 pub fn awk_rshift_values(a: &Value, b: &Value, rt: &Runtime) -> Value {
     if !rt.bignum {
@@ -173,6 +181,7 @@ pub fn awk_rshift_values(a: &Value, b: &Value, rt: &Runtime) -> Value {
     let r = x >> n;
     Value::Mpfr(Float::with_val_round(prec, Integer::from(r), round).0)
 }
+/// `awk_compl_values` — see implementation for the contract.
 
 pub fn awk_compl_values(a: &Value, rt: &Runtime) -> Value {
     if !rt.bignum {
@@ -229,6 +238,7 @@ mod tests {
             "%d",
             &[Value::Mpfr(f)],
             '.',
+            /// `Some` variant.
             Some(','),
             Some((rt.mpfr_prec_bits(), Round::Nearest)),
         )
@@ -260,6 +270,7 @@ mod tests {
             "%d",
             &[Value::Mpfr(sum)],
             '.',
+            /// `Some` variant.
             Some(','),
             Some((prec, round)),
         )
@@ -309,6 +320,7 @@ mod tests {
             "%d",
             &[q],
             '.',
+            /// `Some` variant.
             Some(','),
             Some((rt.mpfr_prec_bits(), Round::Nearest)),
         )
@@ -415,6 +427,7 @@ mod tests {
             "%d",
             std::slice::from_ref(v),
             '.',
+            /// `Some` variant.
             Some(','),
             Some((rt.mpfr_prec_bits(), rt.mpfr_round())),
         )

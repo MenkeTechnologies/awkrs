@@ -24,30 +24,39 @@ use std::path::PathBuf;
     disable_help_flag = true,
     disable_version_flag = true
 )]
+/// `Args` — see fields for the structure layout.
 pub struct Args {
     // --- POSIX ---
+    /// `progfiles` field.
     #[arg(short = 'f', long = "file", value_name = "PROGFILE", action = ArgAction::Append, value_hint = ValueHint::FilePath)]
     pub progfiles: Vec<PathBuf>,
+    /// `field_sep` field.
 
     #[arg(short = 'F', long = "field-separator", value_name = "FS")]
     pub field_sep: Option<String>,
+    /// `assigns` field.
 
     #[arg(short = 'v', long = "assign", value_name = "var=val", action = ArgAction::Append)]
     pub assigns: Vec<String>,
 
     // --- GNU: program sources ---
+    /// `source` field.
     #[arg(short = 'e', long = "source", value_name = "PROGRAM", action = ArgAction::Append)]
     pub source: Vec<String>,
+    /// `include` field.
 
     #[arg(short = 'i', long = "include", value_name = "FILE", action = ArgAction::Append, value_hint = ValueHint::FilePath)]
     pub include: Vec<PathBuf>,
 
     // --- gawk extensions ---
+    /// `characters_as_bytes` field.
     #[arg(short = 'b', long = "characters-as-bytes")]
     pub characters_as_bytes: bool,
+    /// `traditional` field.
 
     #[arg(short = 'c', long = "traditional")]
     pub traditional: bool,
+    /// `copyright` field.
 
     #[arg(short = 'C', long = "copyright")]
     pub copyright: bool,
@@ -60,6 +69,7 @@ pub struct Args {
         num_args = 0..=1,
         default_missing_value = ""
     )]
+    /// `dump_variables` field.
     pub dump_variables: Option<String>,
 
     #[arg(
@@ -69,13 +79,17 @@ pub struct Args {
         num_args = 0..=1,
         default_missing_value = ""
     )]
+    /// `debug` field.
     pub debug: Option<String>,
+    /// `exec_file` field.
 
     #[arg(short = 'E', long = "exec", value_name = "FILE", value_hint = ValueHint::FilePath)]
     pub exec_file: Option<PathBuf>,
+    /// `gen_pot` field.
 
     #[arg(short = 'g', long = "gen-pot")]
     pub gen_pot: bool,
+    /// `trace` field.
 
     #[arg(short = 'I', long = "trace")]
     pub trace: bool,
@@ -83,12 +97,15 @@ pub struct Args {
     /// CSV mode (gawk-style): set `FS` to comma and `FPAT` for quoted fields (`""` escape).
     #[arg(short = 'k', long = "csv")]
     pub csv: bool,
+    /// `load` field.
 
     #[arg(short = 'l', long = "load", value_name = "LIB", action = ArgAction::Append)]
     pub load: Vec<String>,
+    /// `lint` field.
 
     #[arg(short = 'L', long = "lint", value_name = "fatal|invalid|no-ext")]
     pub lint: Option<String>,
+    /// `bignum` field.
 
     #[arg(short = 'M', long = "bignum")]
     pub bignum: bool,
@@ -96,6 +113,7 @@ pub struct Args {
     /// Apply `LC_NUMERIC` to `sprintf`/`printf`/`print` and `%'` grouping; `$n` / `$0` string→number still uses `.`.
     #[arg(short = 'N', long = "use-lc-numeric")]
     pub use_lc_numeric: bool,
+    /// `non_decimal_data` field.
 
     #[arg(short = 'n', long = "non-decimal-data")]
     pub non_decimal_data: bool,
@@ -108,7 +126,9 @@ pub struct Args {
         num_args = 0..=1,
         default_missing_value = ""
     )]
+    /// `pretty_print` field.
     pub pretty_print: Option<String>,
+    /// `optimize` field.
 
     #[arg(short = 'O', long = "optimize")]
     pub optimize: bool,
@@ -121,7 +141,9 @@ pub struct Args {
         num_args = 0..=1,
         default_missing_value = ""
     )]
+    /// `profile` field.
     pub profile: Option<String>,
+    /// `posix` field.
 
     #[arg(short = 'P', long = "posix")]
     pub posix: bool,
@@ -129,17 +151,21 @@ pub struct Args {
     /// Accepted for script compatibility; no-op (`{m,n}` intervals are always enabled).
     #[arg(short = 'r', long = "re-interval")]
     pub re_interval: bool,
+    /// `no_optimize` field.
 
     #[arg(short = 's', long = "no-optimize")]
     pub no_optimize: bool,
+    /// `sandbox` field.
 
     #[arg(short = 'S', long = "sandbox")]
     pub sandbox: bool,
+    /// `lint_old` field.
 
     #[arg(short = 't', long = "lint-old")]
     pub lint_old: bool,
 
     // --- mawk / BusyBox `-W` ---
+    /// `mawk_w` field.
     #[arg(short = 'W', value_name = "OPT", action = ArgAction::Append)]
     pub mawk_w: Vec<String>,
 
@@ -199,11 +225,15 @@ impl Args {
         Ok(())
     }
 }
+/// `MawkWAction` — see variants for the choices.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MawkWAction {
+    /// `Help` variant.
     Help,
+    /// `Version` variant.
     Version,
+    /// `Dump` variant.
     Dump,
 }
 

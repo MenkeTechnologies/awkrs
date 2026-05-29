@@ -142,11 +142,17 @@ pub const JIT_VAR_OP_GET: u32 = 0;
 pub const JIT_VAR_OP_SET: u32 = 1;
 /// Statement `name++` fused (`IncrVar`).
 pub const JIT_VAR_OP_INCR: u32 = 2;
+/// `JIT_VAR_OP_DECR` constant.
 pub const JIT_VAR_OP_DECR: u32 = 3;
+/// `JIT_VAR_OP_COMPOUND_ADD` constant.
 pub const JIT_VAR_OP_COMPOUND_ADD: u32 = 4;
+/// `JIT_VAR_OP_COMPOUND_SUB` constant.
 pub const JIT_VAR_OP_COMPOUND_SUB: u32 = 5;
+/// `JIT_VAR_OP_COMPOUND_MUL` constant.
 pub const JIT_VAR_OP_COMPOUND_MUL: u32 = 6;
+/// `JIT_VAR_OP_COMPOUND_DIV` constant.
 pub const JIT_VAR_OP_COMPOUND_DIV: u32 = 7;
+/// `JIT_VAR_OP_COMPOUND_MOD` constant.
 pub const JIT_VAR_OP_COMPOUND_MOD: u32 = 8;
 /// Expression `++name` / `--name` (prefix) on HashMap-path names — `arg` ignored.
 ///
@@ -154,8 +160,11 @@ pub const JIT_VAR_OP_COMPOUND_MOD: u32 = 8;
 /// **inc/dec** (`CompoundAssignField`, `IncDecField`); plain assignment uses
 /// [`JIT_FIELD_OP_SET_NUM`].
 pub const JIT_VAR_OP_INCDEC_PRE_INC: u32 = 9;
+/// `JIT_VAR_OP_INCDEC_POST_INC` constant.
 pub const JIT_VAR_OP_INCDEC_POST_INC: u32 = 10;
+/// `JIT_VAR_OP_INCDEC_PRE_DEC` constant.
 pub const JIT_VAR_OP_INCDEC_PRE_DEC: u32 = 11;
+/// `JIT_VAR_OP_INCDEC_POST_DEC` constant.
 pub const JIT_VAR_OP_INCDEC_POST_DEC: u32 = 12;
 /// `$idx = val` (numeric) — **`field_dispatch` only** (not used by `var_dispatch`).
 pub const JIT_FIELD_OP_SET_NUM: u32 = 13;
@@ -172,39 +181,64 @@ pub const JIT_IO_PRINT_THREE_FIELDS: u32 = 2;
 pub const JIT_IO_PRINT_RECORD: u32 = 3;
 
 // ── `jit_val_dispatch` opcodes (array, match, signals) ───────────────────
+/// `JIT_VAL_MATCH_REGEXP` constant.
 
 pub const JIT_VAL_MATCH_REGEXP: u32 = 0;
+/// `JIT_VAL_SIGNAL_NEXT` constant.
 pub const JIT_VAL_SIGNAL_NEXT: u32 = 1;
+/// `JIT_VAL_SIGNAL_NEXT_FILE` constant.
 pub const JIT_VAL_SIGNAL_NEXT_FILE: u32 = 2;
+/// `JIT_VAL_SIGNAL_EXIT_DEFAULT` constant.
 pub const JIT_VAL_SIGNAL_EXIT_DEFAULT: u32 = 3;
+/// `JIT_VAL_SIGNAL_EXIT_CODE` constant.
 pub const JIT_VAL_SIGNAL_EXIT_CODE: u32 = 4;
+/// `JIT_VAL_ARRAY_GET` constant.
 pub const JIT_VAL_ARRAY_GET: u32 = 5;
+/// `JIT_VAL_ARRAY_SET` constant.
 pub const JIT_VAL_ARRAY_SET: u32 = 6;
+/// `JIT_VAL_ARRAY_IN` constant.
 pub const JIT_VAL_ARRAY_IN: u32 = 7;
+/// `JIT_VAL_ARRAY_DELETE_ELEM` constant.
 pub const JIT_VAL_ARRAY_DELETE_ELEM: u32 = 8;
+/// `JIT_VAL_ARRAY_DELETE_ALL` constant.
 pub const JIT_VAL_ARRAY_DELETE_ALL: u32 = 9;
+/// `JIT_VAL_ARRAY_COMPOUND_ADD` constant.
 pub const JIT_VAL_ARRAY_COMPOUND_ADD: u32 = 10;
+/// `JIT_VAL_ARRAY_COMPOUND_SUB` constant.
 pub const JIT_VAL_ARRAY_COMPOUND_SUB: u32 = 11;
+/// `JIT_VAL_ARRAY_COMPOUND_MUL` constant.
 pub const JIT_VAL_ARRAY_COMPOUND_MUL: u32 = 12;
+/// `JIT_VAL_ARRAY_COMPOUND_DIV` constant.
 pub const JIT_VAL_ARRAY_COMPOUND_DIV: u32 = 13;
+/// `JIT_VAL_ARRAY_COMPOUND_MOD` constant.
 pub const JIT_VAL_ARRAY_COMPOUND_MOD: u32 = 14;
+/// `JIT_VAL_ARRAY_INCDEC_PRE_INC` constant.
 pub const JIT_VAL_ARRAY_INCDEC_PRE_INC: u32 = 15;
+/// `JIT_VAL_ARRAY_INCDEC_POST_INC` constant.
 pub const JIT_VAL_ARRAY_INCDEC_POST_INC: u32 = 16;
+/// `JIT_VAL_ARRAY_INCDEC_PRE_DEC` constant.
 pub const JIT_VAL_ARRAY_INCDEC_PRE_DEC: u32 = 17;
+/// `JIT_VAL_ARRAY_INCDEC_POST_DEC` constant.
 pub const JIT_VAL_ARRAY_INCDEC_POST_DEC: u32 = 18;
 
 // ── Return signals ───────────────────────────────────────────────────────
+/// `JIT_VAL_SIGNAL_RETURN_VAL` constant.
 pub const JIT_VAL_SIGNAL_RETURN_VAL: u32 = 19;
+/// `JIT_VAL_SIGNAL_RETURN_EMPTY` constant.
 pub const JIT_VAL_SIGNAL_RETURN_EMPTY: u32 = 20;
 
 // ── ForIn iteration ──────────────────────────────────────────────────────
+/// `JIT_VAL_FORIN_START` constant.
 pub const JIT_VAL_FORIN_START: u32 = 21;
 /// Returns 1.0 (has next key, stored in var) or 0.0 (exhausted).
 pub const JIT_VAL_FORIN_NEXT: u32 = 22;
+/// `JIT_VAL_FORIN_END` constant.
 pub const JIT_VAL_FORIN_END: u32 = 23;
 
 // ── Array sorting ────────────────────────────────────────────────────────
+/// `JIT_VAL_ASORT` constant.
 pub const JIT_VAL_ASORT: u32 = 24;
+/// `JIT_VAL_ASORTI` constant.
 pub const JIT_VAL_ASORTI: u32 = 25;
 /// Pure `a2 / a3` with gawk-style fatal on divisor **0.0** (non–mixed-mode JIT).
 pub const JIT_VAL_FDIV_CHECKED: u32 = 26;
@@ -274,11 +308,13 @@ pub fn decode_nan_str_bits(bits: u64) -> Option<(bool, u32)> {
 pub const NAN_UNINIT_HI32: u32 = 0x7FFD_0000;
 /// Full bit pattern for [`nan_uninit`].
 pub const NAN_UNINIT_TAG: u64 = (NAN_UNINIT_HI32 as u64) << 32;
+/// `nan_uninit` — see implementation for the contract.
 
 #[inline]
 pub fn nan_uninit() -> f64 {
     f64::from_bits(NAN_UNINIT_TAG)
 }
+/// `is_nan_uninit` — see implementation for the contract.
 
 #[inline]
 pub fn is_nan_uninit(bits: u64) -> bool {
@@ -317,23 +353,38 @@ pub fn mixed_encode_array_incdec(arr: u32, kind: IncDecOp) -> u32 {
 // dispatched through val_dispatch callbacks so NaN-boxed string handles
 // are coerced / compared correctly.  The callbacks receive raw f64 values
 // (which may be NaN-boxed) in a2/a3 and return f64 (possibly NaN-boxed).
+/// `MIXED_ADD` constant.
 
 pub const MIXED_ADD: u32 = 100;
+/// `MIXED_SUB` constant.
 pub const MIXED_SUB: u32 = 101;
+/// `MIXED_MUL` constant.
 pub const MIXED_MUL: u32 = 102;
+/// `MIXED_DIV` constant.
 pub const MIXED_DIV: u32 = 103;
+/// `MIXED_MOD` constant.
 pub const MIXED_MOD: u32 = 104;
+/// `MIXED_NEG` constant.
 pub const MIXED_NEG: u32 = 105;
+/// `MIXED_POS` constant.
 pub const MIXED_POS: u32 = 106;
+/// `MIXED_NOT` constant.
 pub const MIXED_NOT: u32 = 107;
+/// `MIXED_TO_BOOL` constant.
 pub const MIXED_TO_BOOL: u32 = 108;
 /// `^` / `**` — `a2`/`a3` are NaN-boxed operands.
 pub const MIXED_POW: u32 = 109;
+/// `MIXED_CMP_EQ` constant.
 pub const MIXED_CMP_EQ: u32 = 110;
+/// `MIXED_CMP_NE` constant.
 pub const MIXED_CMP_NE: u32 = 111;
+/// `MIXED_CMP_LT` constant.
 pub const MIXED_CMP_LT: u32 = 112;
+/// `MIXED_CMP_LE` constant.
 pub const MIXED_CMP_LE: u32 = 113;
+/// `MIXED_CMP_GT` constant.
 pub const MIXED_CMP_GT: u32 = 114;
+/// `MIXED_CMP_GE` constant.
 pub const MIXED_CMP_GE: u32 = 115;
 /// Returns 1.0 if truthy, 0.0 if falsy (for JumpIfFalsePop/JumpIfTruePop).
 pub const MIXED_TRUTHINESS: u32 = 116;
@@ -449,18 +500,29 @@ pub const MIXED_GETLINE_INTO_RECORD: u32 = u32::MAX;
 pub const MIXED_CALL_USER_ARG: u32 = 190;
 /// `a1` = function name pool index, `a2` = argc as `f64`.
 pub const MIXED_CALL_USER_CALL: u32 = 191;
+/// `MIXED_SUB_RECORD` constant.
 pub const MIXED_SUB_RECORD: u32 = 192;
+/// `MIXED_GSUB_RECORD` constant.
 pub const MIXED_GSUB_RECORD: u32 = 193;
+/// `MIXED_SUB_VAR` constant.
 pub const MIXED_SUB_VAR: u32 = 194;
+/// `MIXED_GSUB_VAR` constant.
 pub const MIXED_GSUB_VAR: u32 = 195;
+/// `MIXED_SUB_SLOT` constant.
 pub const MIXED_SUB_SLOT: u32 = 196;
+/// `MIXED_GSUB_SLOT` constant.
 pub const MIXED_GSUB_SLOT: u32 = 197;
+/// `MIXED_SUB_FIELD` constant.
 pub const MIXED_SUB_FIELD: u32 = 198;
+/// `MIXED_GSUB_FIELD` constant.
 pub const MIXED_GSUB_FIELD: u32 = 199;
 /// Stash array key (NaN-boxed) before [`MIXED_SUB_INDEX`] / [`MIXED_GSUB_INDEX`].
 pub const MIXED_SUB_INDEX_STASH: u32 = 200;
+/// `MIXED_SUB_INDEX` constant.
 pub const MIXED_SUB_INDEX: u32 = 201;
+/// `MIXED_GSUB_INDEX_STASH` constant.
 pub const MIXED_GSUB_INDEX_STASH: u32 = 202;
+/// `MIXED_GSUB_INDEX` constant.
 pub const MIXED_GSUB_INDEX: u32 = 203;
 /// `slot += $field` fused (mixed): field numeric value already in **a2** (JIT emits a field
 /// callback first); **a1** = slot index. Avoids re-reading the field inside `val_dispatch` (cf.
@@ -493,6 +555,7 @@ fn mixed_encode_field_compound_binop(bop: BinOp) -> u32 {
         _ => 0,
     }
 }
+/// `mixed_encode_slot_incdec` — see implementation for the contract.
 
 #[inline]
 pub fn mixed_encode_slot_incdec(slot: u16, kind: IncDecOp) -> u32 {
@@ -504,11 +567,13 @@ pub fn mixed_encode_slot_incdec(slot: u16, kind: IncDecOp) -> u32 {
     };
     u32::from(slot) | (k << 16)
 }
+/// `mixed_encode_slot_pair` — see implementation for the contract.
 
 #[inline]
 pub fn mixed_encode_slot_pair(src: u16, dst: u16) -> u32 {
     u32::from(src) | (u32::from(dst) << 16)
 }
+/// `mixed_encode_field_slot` — see implementation for the contract.
 
 #[inline]
 pub fn mixed_encode_field_slot(field: u16, slot: u16) -> u32 {
@@ -618,7 +683,9 @@ fn ops_hash(ops: &[Op]) -> u64 {
 pub struct JitRuntimeState<'a> {
     /// Opaque `*mut VmCtx` for JIT callbacks (null for unit tests that use stub callbacks only).
     pub vmctx: *mut c_void,
+    /// `slots` field.
     pub slots: &'a mut [f64],
+    /// `field_fn` field.
     pub field_fn: extern "C" fn(*mut c_void, i32) -> f64,
     /// Fused `a[$field] += delta` — interned array name index, constant field
     /// number, delta (see VM).
@@ -865,6 +932,7 @@ fn empty_compiled_program() -> CompiledProgram {
         prog_rules_len: 0,
     }
 }
+/// `is_jit_eligible` — see implementation for the contract.
 
 pub fn is_jit_eligible(ops: &[Op]) -> bool {
     if ops.is_empty() {

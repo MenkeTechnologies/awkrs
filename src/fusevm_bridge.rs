@@ -13,105 +13,171 @@ use crate::bytecode::{self, GetlineSource, RedirKind};
 // ── AWK extension op IDs for fusevm::Op::Extended(id, arg) ──
 
 // Fields
+/// `AWK_GET_FIELD` constant.
 pub const AWK_GET_FIELD: u16 = 1000;
+/// `AWK_SET_FIELD` constant.
 pub const AWK_SET_FIELD: u16 = 1001;
+/// `AWK_COMPOUND_ASSIGN_FIELD` constant.
 pub const AWK_COMPOUND_ASSIGN_FIELD: u16 = 1002;
+/// `AWK_INCDEC_FIELD` constant.
 pub const AWK_INCDEC_FIELD: u16 = 1003;
 
 // Variables (HashMap path, not slotted)
+/// `AWK_COMPOUND_ASSIGN_VAR` constant.
 pub const AWK_COMPOUND_ASSIGN_VAR: u16 = 1010;
+/// `AWK_INCDEC_VAR` constant.
 pub const AWK_INCDEC_VAR: u16 = 1011;
+/// `AWK_INCR_VAR` constant.
 pub const AWK_INCR_VAR: u16 = 1012;
+/// `AWK_DECR_VAR` constant.
 pub const AWK_DECR_VAR: u16 = 1013;
 
 // Slot compound/incdec
+/// `AWK_COMPOUND_ASSIGN_SLOT` constant.
 pub const AWK_COMPOUND_ASSIGN_SLOT: u16 = 1020;
+/// `AWK_INCDEC_SLOT` constant.
 pub const AWK_INCDEC_SLOT: u16 = 1021;
 
 // Array compound/incdec
+/// `AWK_COMPOUND_ASSIGN_INDEX` constant.
 pub const AWK_COMPOUND_ASSIGN_INDEX: u16 = 1030;
+/// `AWK_INCDEC_INDEX` constant.
 pub const AWK_INCDEC_INDEX: u16 = 1031;
 
 // Regex
+/// `AWK_PUSH_REGEXP` constant.
 pub const AWK_PUSH_REGEXP: u16 = 1040;
+/// `AWK_REGEX_MATCH` constant.
 pub const AWK_REGEX_MATCH: u16 = 1041;
+/// `AWK_REGEX_NOT_MATCH` constant.
 pub const AWK_REGEX_NOT_MATCH: u16 = 1042;
+/// `AWK_MATCH_REGEXP` constant.
 pub const AWK_MATCH_REGEXP: u16 = 1043;
 
 // Coercion
+/// `AWK_POS` constant.
 pub const AWK_POS: u16 = 1050;
+/// `AWK_TO_BOOL` constant.
 pub const AWK_TO_BOOL: u16 = 1051;
 
 // Print/Printf
+/// `AWK_PRINT` constant.
 pub const AWK_PRINT: u16 = 1060;
+/// `AWK_PRINTF` constant.
 pub const AWK_PRINTF: u16 = 1061;
 
 // Flow signals
+/// `AWK_NEXT` constant.
 pub const AWK_NEXT: u16 = 1070;
+/// `AWK_NEXT_FILE` constant.
 pub const AWK_NEXT_FILE: u16 = 1071;
+/// `AWK_EXIT_CODE` constant.
 pub const AWK_EXIT_CODE: u16 = 1072;
+/// `AWK_EXIT_DEFAULT` constant.
 pub const AWK_EXIT_DEFAULT: u16 = 1073;
+/// `AWK_RETURN_EMPTY` constant.
 pub const AWK_RETURN_EMPTY: u16 = 1074;
 
 // Function calls
+/// `AWK_CALL_BUILTIN` constant.
 pub const AWK_CALL_BUILTIN: u16 = 1080;
+/// `AWK_CALL_USER` constant.
 pub const AWK_CALL_USER: u16 = 1081;
+/// `AWK_CALL_INDIRECT` constant.
 pub const AWK_CALL_INDIRECT: u16 = 1082;
 
 // typeof
+/// `AWK_TYPEOF_VAR` constant.
 pub const AWK_TYPEOF_VAR: u16 = 1090;
+/// `AWK_TYPEOF_SLOT` constant.
 pub const AWK_TYPEOF_SLOT: u16 = 1091;
+/// `AWK_TYPEOF_ARRAY_ELEM` constant.
 pub const AWK_TYPEOF_ARRAY_ELEM: u16 = 1092;
+/// `AWK_TYPEOF_FIELD` constant.
 pub const AWK_TYPEOF_FIELD: u16 = 1093;
+/// `AWK_TYPEOF_VALUE` constant.
 pub const AWK_TYPEOF_VALUE: u16 = 1094;
 
 // Arrays
+/// `AWK_GET_ARRAY_ELEM` constant.
 pub const AWK_GET_ARRAY_ELEM: u16 = 1100;
+/// `AWK_SET_ARRAY_ELEM` constant.
 pub const AWK_SET_ARRAY_ELEM: u16 = 1101;
+/// `AWK_IN_ARRAY` constant.
 pub const AWK_IN_ARRAY: u16 = 1102;
+/// `AWK_DELETE_ARRAY` constant.
 pub const AWK_DELETE_ARRAY: u16 = 1103;
+/// `AWK_DELETE_ELEM` constant.
 pub const AWK_DELETE_ELEM: u16 = 1104;
+/// `AWK_JOIN_ARRAY_KEY` constant.
 pub const AWK_JOIN_ARRAY_KEY: u16 = 1105;
+/// `AWK_SYMTAB_KEY_COUNT` constant.
 pub const AWK_SYMTAB_KEY_COUNT: u16 = 1106;
 
 // ForIn
+/// `AWK_FORIN_START` constant.
 pub const AWK_FORIN_START: u16 = 1110;
+/// `AWK_FORIN_NEXT` constant.
 pub const AWK_FORIN_NEXT: u16 = 1111;
+/// `AWK_FORIN_END` constant.
 pub const AWK_FORIN_END: u16 = 1112;
 
 // Getline
+/// `AWK_GETLINE` constant.
 pub const AWK_GETLINE: u16 = 1120;
 
 // Sub/Gsub
+/// `AWK_SUB_FN` constant.
 pub const AWK_SUB_FN: u16 = 1130;
+/// `AWK_GSUB_FN` constant.
 pub const AWK_GSUB_FN: u16 = 1131;
 
 // Split/Patsplit/Match
+/// `AWK_SPLIT` constant.
 pub const AWK_SPLIT: u16 = 1140;
+/// `AWK_PATSPLIT` constant.
 pub const AWK_PATSPLIT: u16 = 1141;
+/// `AWK_MATCH_BUILTIN` constant.
 pub const AWK_MATCH_BUILTIN: u16 = 1142;
 
 // Sort
+/// `AWK_ASORT` constant.
 pub const AWK_ASORT: u16 = 1150;
+/// `AWK_ASORTI` constant.
 pub const AWK_ASORTI: u16 = 1151;
 
 // Fused peephole ops
+/// `AWK_ADD_FIELD_TO_SLOT` constant.
 pub const AWK_ADD_FIELD_TO_SLOT: u16 = 1200;
+/// `AWK_ADD_MUL_FIELDS_TO_SLOT` constant.
 pub const AWK_ADD_MUL_FIELDS_TO_SLOT: u16 = 1201;
+/// `AWK_CONCAT_POOL_STR` constant.
 pub const AWK_CONCAT_POOL_STR: u16 = 1202;
+/// `AWK_PRINT_FIELD_STDOUT` constant.
 pub const AWK_PRINT_FIELD_STDOUT: u16 = 1203;
+/// `AWK_PRINT_FIELD_SEP_FIELD` constant.
 pub const AWK_PRINT_FIELD_SEP_FIELD: u16 = 1204;
+/// `AWK_PRINT_THREE_FIELDS` constant.
 pub const AWK_PRINT_THREE_FIELDS: u16 = 1205;
+/// `AWK_PUSH_FIELD_NUM` constant.
 pub const AWK_PUSH_FIELD_NUM: u16 = 1206;
+/// `AWK_GET_NR` constant.
 pub const AWK_GET_NR: u16 = 1207;
+/// `AWK_GET_FNR` constant.
 pub const AWK_GET_FNR: u16 = 1208;
+/// `AWK_GET_NF` constant.
 pub const AWK_GET_NF: u16 = 1209;
+/// `AWK_ARRAY_FIELD_ADD_CONST` constant.
 pub const AWK_ARRAY_FIELD_ADD_CONST: u16 = 1210;
+/// `AWK_PUSH_NUM_DECIMAL_STR` constant.
 pub const AWK_PUSH_NUM_DECIMAL_STR: u16 = 1211;
+/// `AWK_ADD_SLOT_TO_SLOT` constant.
 pub const AWK_ADD_SLOT_TO_SLOT: u16 = 1212;
+/// `AWK_JUMP_IF_SLOT_GE_NUM` constant.
 pub const AWK_JUMP_IF_SLOT_GE_NUM: u16 = 1213;
 
 // ── BinOp encoding ──
+/// `binop_to_u8` — see implementation for the contract.
 
 pub fn binop_to_u8(op: BinOp) -> u8 {
     match op {
@@ -136,6 +202,7 @@ pub fn binop_to_u8(op: BinOp) -> u8 {
 }
 
 // ── RedirKind encoding ──
+/// `redir_to_u8` — see implementation for the contract.
 
 pub fn redir_to_u8(redir: RedirKind) -> u8 {
     match redir {
@@ -148,6 +215,7 @@ pub fn redir_to_u8(redir: RedirKind) -> u8 {
 }
 
 // ── GetlineSource encoding ──
+/// `getline_source_to_u8` — see implementation for the contract.
 
 pub fn getline_source_to_u8(source: GetlineSource) -> u8 {
     match source {

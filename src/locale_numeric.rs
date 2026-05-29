@@ -49,11 +49,13 @@ pub fn thousands_sep_from_locale() -> Option<char> {
         }
     }
 }
+/// `thousands_sep_from_locale` — see implementation for the contract.
 
 #[cfg(not(unix))]
 pub fn thousands_sep_from_locale() -> Option<char> {
     Some(',')
 }
+/// `decimal_point_from_locale` — see implementation for the contract.
 
 #[cfg(unix)]
 pub fn decimal_point_from_locale() -> char {
@@ -78,9 +80,11 @@ pub fn decimal_point_from_locale() -> char {
             .unwrap_or('.')
     }
 }
+/// `set_locale_numeric_from_env` — see implementation for the contract.
 
 #[cfg(not(unix))]
 pub fn set_locale_numeric_from_env() {}
+/// `decimal_point_from_locale` — see implementation for the contract.
 
 #[cfg(not(unix))]
 pub fn decimal_point_from_locale() -> char {

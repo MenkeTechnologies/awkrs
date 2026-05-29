@@ -87,7 +87,9 @@ fn take_bare_ident(rest: &str) -> Option<(String, &str)> {
 /// Expanded program text plus `@namespace` default (gawk-style).
 #[derive(Debug, Clone)]
 pub struct ExpandedSource {
+    /// `text` field.
     pub text: String,
+    /// `default_namespace` field.
     pub default_namespace: Option<String>,
 }
 

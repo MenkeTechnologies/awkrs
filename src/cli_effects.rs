@@ -1921,6 +1921,7 @@ mod write_profile_summary_tests {
         write_profile_summary(
             &path_str,
             Duration::from_millis(1500),
+            /// `Some` variant.
             Some(10),
             &[0; 0],
             false,
@@ -1959,6 +1960,7 @@ mod write_profile_summary_tests {
         write_profile_summary(
             &p,
             Duration::from_secs(1),
+            /// `Some` variant.
             Some(5),
             &[3u64, 7u64, 0u64],
             false,

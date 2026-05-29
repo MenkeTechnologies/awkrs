@@ -18,18 +18,26 @@ use std::sync::{Arc, Mutex};
 /// Print/printf output target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RedirKind {
+    /// `Stdout` variant.
     Stdout,
+    /// `Overwrite` variant.
     Overwrite,
+    /// `Append` variant.
     Append,
+    /// `Pipe` variant.
     Pipe,
+    /// `Coproc` variant.
     Coproc,
 }
 
 /// Source for `getline`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GetlineSource {
+    /// `Primary` variant.
     Primary,
+    /// `File` variant.
     File,
+    /// `Coproc` variant.
     Coproc,
     /// `expr | getline` — one line from `sh -c` with the command string.
     Pipe,
@@ -58,6 +66,7 @@ pub enum SubTarget {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum Op {
     // ── Constants ────────────────────────────────────────────────────────
+    /// `PushNum` variant.
     PushNum(f64),
     /// Decimal integer literal (source had no `.`) — pool index of digit string; exact in **`-M`**.
     PushNumDecimalStr(u32),
@@ -110,30 +119,47 @@ pub enum Op {
     IncDecIndex(u32, IncDecOp),
 
     // ── Arithmetic (pop 2, push 1) ──────────────────────────────────────
+    /// `Add` variant.
     Add,
+    /// `Sub` variant.
     Sub,
+    /// `Mul` variant.
     Mul,
+    /// `Div` variant.
     Div,
+    /// `Mod` variant.
     Mod,
     /// Exponentiation (`^` / `**`); pop exponent, pop base, push `pow(base, exp)` (right-assoc in parser).
     Pow,
 
     // ── Comparison (pop 2, push Num 0/1) — POSIX-aware ──────────────────
+    /// `CmpEq` variant.
     CmpEq,
+    /// `CmpNe` variant.
     CmpNe,
+    /// `CmpLt` variant.
     CmpLt,
+    /// `CmpLe` variant.
     CmpLe,
+    /// `CmpGt` variant.
     CmpGt,
+    /// `CmpGe` variant.
     CmpGe,
 
     // ── String / regex (pop 2, push result) ─────────────────────────────
+    /// `Concat` variant.
     Concat,
+    /// `RegexMatch` variant.
     RegexMatch,
+    /// `RegexNotMatch` variant.
     RegexNotMatch,
 
     // ── Unary (pop 1, push 1) ───────────────────────────────────────────
+    /// `Neg` variant.
     Neg,
+    /// `Pos` variant.
     Pos,
+    /// `Not` variant.
     Not,
 
     /// Convert TOS to `Num(0.0)` or `Num(1.0)`.
@@ -159,6 +185,7 @@ pub enum Op {
     },
 
     // ── Flow signals (cause VM to return) ───────────────────────────────
+    /// `Next` variant.
     Next,
     /// Skip remaining records in the current file; run `ENDFILE` then open the next file.
     NextFile,
@@ -220,6 +247,7 @@ pub enum Op {
     // ── Sub / Gsub with lvalue info ─────────────────────────────────────
     /// Pop re, pop repl [, pop field_idx/key]; push substitution count.
     SubFn(SubTarget),
+    /// `GsubFn` variant.
     GsubFn(SubTarget),
 
     // ── Split / Patsplit / Match ────────────────────────────────────────
@@ -254,6 +282,7 @@ pub enum Op {
     ForInEnd,
 
     // ── Stack manipulation ──────────────────────────────────────────────
+    /// `Pop` variant.
     Pop,
     /// Duplicate top of stack (for `switch` / multi-branch compare).
     Dup,
@@ -355,6 +384,7 @@ type JitChunkCache = Mutex<Option<Result<Arc<crate::jit::JitChunk>, ()>>>;
 /// avoiding compile cost on cold paths (e.g. one-shot `BEGIN` blocks).
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Chunk {
+    /// `ops` field.
     pub ops: Vec<Op>,
     #[serde(skip, default = "default_jit_lock")]
     pub(crate) jit_lock: Arc<JitChunkCache>,
@@ -394,6 +424,7 @@ impl fmt::Debug for Chunk {
 }
 
 impl Chunk {
+    /// `from_ops` — see implementation for the contract.
     pub fn from_ops(ops: Vec<Op>) -> Self {
         Self {
             ops,
@@ -411,6 +442,7 @@ pub struct StringPool {
 }
 
 impl StringPool {
+    /// `intern` — see implementation for the contract.
     pub fn intern(&mut self, s: &str) -> u32 {
         if let Some(&idx) = self.index.get(s) {
             return idx;
@@ -420,6 +452,7 @@ impl StringPool {
         self.index.insert(s.to_string(), idx);
         idx
     }
+    /// `get` — see implementation for the contract.
 
     pub fn get(&self, idx: u32) -> &str {
         &self.strings[idx as usize]
@@ -429,12 +462,19 @@ impl StringPool {
 /// A fully compiled awk program, ready for VM execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompiledProgram {
+    /// `begin_chunks` field.
     pub begin_chunks: Vec<Chunk>,
+    /// `end_chunks` field.
     pub end_chunks: Vec<Chunk>,
+    /// `beginfile_chunks` field.
     pub beginfile_chunks: Vec<Chunk>,
+    /// `endfile_chunks` field.
     pub endfile_chunks: Vec<Chunk>,
+    /// `record_rules` field.
     pub record_rules: Vec<CompiledRule>,
+    /// `functions` field.
     pub functions: HashMap<String, CompiledFunc>,
+    /// `strings` field.
     pub strings: StringPool,
     /// Number of variable slots (size of the `Runtime::slots` Vec).
     pub slot_count: u16,
@@ -470,7 +510,9 @@ impl CompiledProgram {
 /// One compiled record-processing rule (pattern + action body).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompiledRule {
+    /// `pattern` field.
     pub pattern: CompiledPattern,
+    /// `body` field.
     pub body: Chunk,
     /// Index into the original `Program.rules` vec (used for range-state tracking).
     pub original_index: usize,
@@ -514,7 +556,9 @@ pub enum CompiledPattern {
 /// A compiled user-defined function.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompiledFunc {
+    /// `params` field.
     pub params: Vec<String>,
+    /// `body` field.
     pub body: Chunk,
 }
 

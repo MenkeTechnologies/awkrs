@@ -619,26 +619,31 @@ fn num_to_u64(n: f64) -> u64 {
 pub fn awk_and(a: f64, b: f64) -> f64 {
     (num_to_u64(a) & num_to_u64(b)) as i64 as f64
 }
+/// `awk_or` — see implementation for the contract.
 
 pub fn awk_or(a: f64, b: f64) -> f64 {
     (num_to_u64(a) | num_to_u64(b)) as i64 as f64
 }
+/// `awk_xor` — see implementation for the contract.
 
 pub fn awk_xor(a: f64, b: f64) -> f64 {
     (num_to_u64(a) ^ num_to_u64(b)) as i64 as f64
 }
+/// `awk_lshift` — see implementation for the contract.
 
 pub fn awk_lshift(a: f64, b: f64) -> f64 {
     let x = num_to_u64(a);
     let n = (num_to_u64(b) & 0x3f) as u32;
     (x << n) as i64 as f64
 }
+/// `awk_rshift` — see implementation for the contract.
 
 pub fn awk_rshift(a: f64, b: f64) -> f64 {
     let x = num_to_u64(a);
     let n = (num_to_u64(b) & 0x3f) as u32;
     (x >> n) as i64 as f64
 }
+/// `awk_compl` — see implementation for the contract.
 
 pub fn awk_compl(a: f64) -> f64 {
     (!num_to_u64(a)) as i64 as f64

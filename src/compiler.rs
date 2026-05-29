@@ -55,8 +55,10 @@ enum StructuralKind {
         break_patches: Vec<usize>,
     },
 }
+/// `Compiler` — see fields for the structure layout.
 
 pub struct Compiler {
+    /// `strings` field.
     pub strings: StringPool,
     structural_stack: Vec<StructuralKind>,
     /// Variable name → slot index (only non-special, non-array scalars).
@@ -73,6 +75,7 @@ pub struct Compiler {
 }
 
 impl Compiler {
+    /// `compile_program` — see implementation for the contract.
     pub fn compile_program(prog: &Program) -> Result<CompiledProgram> {
         validate_program(prog)?;
         // Pre-pass: collect all names used in array contexts.

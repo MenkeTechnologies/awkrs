@@ -2,40 +2,57 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+/// `Program` — see fields for the structure layout.
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Program {
+    /// `rules` field.
     pub rules: Vec<Rule>,
+    /// `funcs` field.
     pub funcs: HashMap<String, FunctionDef>,
 }
+/// `FunctionDef` — see fields for the structure layout.
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct FunctionDef {
+    /// `name` field.
     pub name: String,
+    /// `params` field.
     pub params: Vec<String>,
+    /// `body` field.
     pub body: Vec<Stmt>,
 }
+/// `Rule` — see fields for the structure layout.
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Rule {
+    /// `pattern` field.
     pub pattern: Pattern,
+    /// `stmts` field.
     pub stmts: Vec<Stmt>,
 }
+/// `Pattern` — see variants for the choices.
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Pattern {
+    /// `Begin` variant.
     Begin,
+    /// `End` variant.
     End,
     /// gawk-style: run before each input file (after `BEGIN`).
     BeginFile,
     /// gawk-style: run after each input file (before `END`).
     EndFile,
+    /// `Expr` variant.
     Expr(Expr),
+    /// `Regexp` variant.
     Regexp(String),
     /// Inclusive range: two patterns (`/a/,/b/` or `NR==1,NR==5`).
     Range(Box<Pattern>, Box<Pattern>),
+    /// `Empty` variant.
     Empty,
 }
+/// `Stmt` — see variants for the choices.
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Stmt {
@@ -64,7 +81,9 @@ pub enum Stmt {
         arr: String,
         body: Vec<Stmt>,
     },
+    /// `Block` variant.
     Block(Vec<Stmt>),
+    /// `Expr` variant.
     Expr(Expr),
     /// `print` / `print expr-list` with optional `> file` or `>> file`.
     Print {
@@ -76,17 +95,22 @@ pub enum Stmt {
         args: Vec<Expr>,
         redir: Option<PrintRedir>,
     },
+    /// `Break` variant.
     Break,
+    /// `Continue` variant.
     Continue,
+    /// `Next` variant.
     Next,
     /// Skip remaining records in the current input file (POSIX / gawk).
     NextFile,
+    /// `Exit` variant.
     Exit(Option<Expr>),
     Delete {
         name: String,
         /// `None` = delete entire array; `Some(vec)` = delete one key (possibly multidimensional).
         indices: Option<Vec<Expr>>,
     },
+    /// `Return` variant.
     Return(Option<Expr>),
     /// `getline` / `getline var` / `getline < file` / `expr | getline [var]` / …
     GetLine {
@@ -117,7 +141,9 @@ pub enum SwitchArm {
 /// `case` label: expression equality or regex match (`case /re/`).
 #[derive(Debug, Clone, PartialEq)]
 pub enum SwitchLabel {
+    /// `Expr` variant.
     Expr(Expr),
+    /// `Regexp` variant.
     Regexp(String),
 }
 
@@ -133,6 +159,7 @@ pub enum PrintRedir {
     /// Two-way pipe: `|& expr` — same shell command model; stdin and stdout are both connected.
     Coproc(Box<Expr>),
 }
+/// `GetlineRedir` — see variants for the choices.
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum GetlineRedir {
@@ -143,16 +170,21 @@ pub enum GetlineRedir {
     /// `getline ... <& expr` — read from the stdout of the coprocess (same command string as `|&`).
     Coproc(Box<Expr>),
 }
+/// `Expr` — see variants for the choices.
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
+    /// `Number` variant.
     Number(f64),
     /// Decimal integer from source with no `.` — preserved as digits for **`-M`** (see [`crate::bytecode::Op::PushNumDecimalStr`]).
     IntegerLiteral(String),
+    /// `Str` variant.
     Str(String),
     /// gawk-style regexp constant: `@/pattern/` — value type is **regexp**, not string (`typeof` is **`"regexp"`**).
     RegexpLiteral(String),
+    /// `Var` variant.
     Var(String),
+    /// `Field` variant.
     Field(Box<Expr>),
     Index {
         name: String,
@@ -222,48 +254,76 @@ pub enum Expr {
 /// Prefix or postfix `++` / `--`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum IncDecOp {
+    /// `PreInc` variant.
     PreInc,
+    /// `PostInc` variant.
     PostInc,
+    /// `PreDec` variant.
     PreDec,
+    /// `PostDec` variant.
     PostDec,
 }
 
 /// Lvalue for `++` / `--` only.
 #[derive(Debug, Clone, PartialEq)]
 pub enum IncDecTarget {
+    /// `Var` variant.
     Var(String),
+    /// `Field` variant.
     Field(Box<Expr>),
     Index { name: String, indices: Vec<Expr> },
 }
+/// `BinOp` — see variants for the choices.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BinOp {
+    /// `Add` variant.
     Add,
+    /// `Sub` variant.
     Sub,
+    /// `Mul` variant.
     Mul,
+    /// `Div` variant.
     Div,
+    /// `Mod` variant.
     Mod,
     /// `^` / `**` — right-associative exponentiation (POSIX awk).
     Pow,
+    /// `Eq` variant.
     Eq,
+    /// `Ne` variant.
     Ne,
+    /// `Lt` variant.
     Lt,
+    /// `Le` variant.
     Le,
+    /// `Gt` variant.
     Gt,
+    /// `Ge` variant.
     Ge,
+    /// `Match` variant.
     Match,
+    /// `NotMatch` variant.
     NotMatch,
+    /// `Concat` variant.
     Concat,
+    /// `And` variant.
     And,
+    /// `Or` variant.
     Or,
 }
+/// `UnaryOp` — see variants for the choices.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnaryOp {
+    /// `Neg` variant.
     Neg,
+    /// `Pos` variant.
     Pos,
+    /// `Not` variant.
     Not,
 }
+/// `parallel` submodule.
 
 pub mod parallel;
 

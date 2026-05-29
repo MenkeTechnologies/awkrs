@@ -1,14 +1,24 @@
 use std::path::PathBuf;
 use thiserror::Error;
+/// `Error` — see variants for the choices.
 
 #[derive(Debug, Error)]
 pub enum Error {
+    /// `Io` variant.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
+    /// Parse-time error with source-line context.
     #[error("parse error at line {line}: {msg}")]
-    Parse { line: usize, msg: String },
+    Parse {
+        /// 1-based source line number where the parse fault was hit.
+        line: usize,
+        /// Human-readable diagnostic ("expected `}`, found `;`" etc.).
+        msg: String,
+    },
+    /// `Runtime` variant.
     #[error("runtime error: {0}")]
     Runtime(String),
+    /// `ProgramFile` variant.
     #[error("cannot read program file {0:?}: {1}")]
     ProgramFile(PathBuf, std::io::Error),
     /// Failure opening an input data file (positional arg after the program).
@@ -20,6 +30,7 @@ pub enum Error {
     #[error("exit {0}")]
     Exit(i32),
 }
+/// `Result` type alias.
 
 pub type Result<T> = std::result::Result<T, Error>;
 

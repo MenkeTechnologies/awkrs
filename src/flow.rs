@@ -3,7 +3,9 @@
 /// Result of running a rule body until a control-flow effect visible to the record loop.
 #[derive(Debug)]
 pub enum Flow {
+    /// `Normal` variant.
     Normal,
+    /// `Next` variant.
     Next,
     /// Skip to the next input file (invalid in `BEGIN`/`END`/`BEGINFILE`/`ENDFILE`).
     NextFile,

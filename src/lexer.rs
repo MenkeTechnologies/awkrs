@@ -1,94 +1,160 @@
 use crate::error::{Error, Result};
 use rug::Integer;
+/// `Token` — see variants for the choices.
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
+    /// `Begin` variant.
     Begin,
+    /// `End` variant.
     End,
+    /// `BeginFile` variant.
     BeginFile,
+    /// `EndFile` variant.
     EndFile,
+    /// `Print` variant.
     Print,
+    /// `Printf` variant.
     Printf,
+    /// `If` variant.
     If,
+    /// `Else` variant.
     Else,
+    /// `While` variant.
     While,
+    /// `For` variant.
     For,
+    /// `Do` variant.
     Do,
+    /// `Break` variant.
     Break,
+    /// `Continue` variant.
     Continue,
+    /// `Next` variant.
     Next,
+    /// `NextFile` variant.
     NextFile,
+    /// `Exit` variant.
     Exit,
+    /// `In` variant.
     In,
+    /// `Function` variant.
     Function,
+    /// `Return` variant.
     Return,
+    /// `Delete` variant.
     Delete,
+    /// `Getline` variant.
     Getline,
+    /// `Switch` variant.
     Switch,
+    /// `Case` variant.
     Case,
+    /// `Default` variant.
     Default,
+    /// `Ident` variant.
     Ident(String),
+    /// `Number` variant.
     Number(f64),
     /// Decimal integer with no `.` in source — exact under **`-M`** (not rounded through `f64`).
     IntegerLiteral(String),
+    /// `String` variant.
     String(String),
+    /// `Regexp` variant.
     Regexp(String),
+    /// `Plus` variant.
 
     Plus,
     /// `++` (single token).
     PlusPlus,
+    /// `Minus` variant.
     Minus,
     /// `--` (single token).
     MinusMinus,
+    /// `Star` variant.
     Star,
     /// `**` (exponentiation; distinct from `*`).
     StarStar,
     /// `^` (exponentiation).
     Caret,
+    /// `Slash` variant.
     Slash,
+    /// `Percent` variant.
     Percent,
+    /// `AddAssign` variant.
     AddAssign,
+    /// `SubAssign` variant.
     SubAssign,
+    /// `MulAssign` variant.
     MulAssign,
+    /// `DivAssign` variant.
     DivAssign,
+    /// `ModAssign` variant.
     ModAssign,
     /// `^=` / `**=` — compound exponentiation assignment.
     PowAssign,
+    /// `Eq` variant.
     Eq,
+    /// `Ne` variant.
     Ne,
+    /// `Lt` variant.
     Lt,
     /// `<&` (gawk-style coprocess read redirect).
     LtAmp,
+    /// `Le` variant.
     Le,
+    /// `Gt` variant.
     Gt,
     /// `>>` (append redirect; distinct from two `>` tokens).
     GtGt,
     /// `|&` (gawk coprocess / two-way pipe).
     PipeCoproc,
+    /// `Ge` variant.
     Ge,
+    /// `Assign` variant.
     Assign,
+    /// `Pipe` variant.
     Pipe,
+    /// `And` variant.
     And,
+    /// `Or` variant.
     Or,
+    /// `Bang` variant.
     Bang,
+    /// `Tilde` variant.
     Tilde,
+    /// `NotTilde` variant.
     NotTilde,
+    /// `Question` variant.
     Question,
+    /// `Colon` variant.
     Colon,
+    /// `Semi` variant.
     Semi,
+    /// `Comma` variant.
     Comma,
+    /// `LParen` variant.
     LParen,
+    /// `RParen` variant.
     RParen,
+    /// `LBrace` variant.
     LBrace,
+    /// `RBrace` variant.
     RBrace,
+    /// `LBracket` variant.
     LBracket,
+    /// `RBracket` variant.
     RBracket,
+    /// `Dollar` variant.
     Dollar,
     /// `@` — indirect function calls (`@expr(...)`) and distinct from directives handled in preprocessing.
     At,
+    /// `Newline` variant.
     Newline,
+    /// `Eof` variant.
     Eof,
 }
+/// `Lexer` — see fields for the structure layout.
 
 #[derive(Clone)]
 pub struct Lexer<'a> {
@@ -98,6 +164,7 @@ pub struct Lexer<'a> {
 }
 
 impl<'a> Lexer<'a> {
+    /// `new` — see implementation for the contract.
     pub fn new(input: &'a str) -> Self {
         Self {
             input,
@@ -105,6 +172,7 @@ impl<'a> Lexer<'a> {
             line: 1,
         }
     }
+    /// `line` — see implementation for the contract.
 
     pub fn line(&self) -> usize {
         self.line

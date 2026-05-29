@@ -9,6 +9,7 @@
 /// that.
 #[cfg(test)]
 pub const MAX_USER_CALL_DEPTH: usize = 32;
+/// `MAX_USER_CALL_DEPTH` constant.
 #[cfg(not(test))]
 pub const MAX_USER_CALL_DEPTH: usize = 150;
 
