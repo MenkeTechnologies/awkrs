@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="awkrs — Engineering report. AWK implementation in Rust: ~51k Rust lines, 3,788 tests (2,874 lib + 906 integration), 2,137 parity files vs gawk/mawk/BSD-awk, Cranelift JIT, rkyv-backed bytecode cache, 95 opcodes, 61 builtins, parallel record processing via rayon. 60+ POSIX/gawk divergences fixed.">
+  <meta name="description" content="awkrs — Engineering report. AWK implementation in Rust: ~52k Rust lines, 3,788 tests (2,882 lib + 906 integration), 2,137 parity files vs gawk/mawk/BSD-awk, Cranelift JIT, rkyv-backed bytecode cache, 95 opcodes, 61 builtins, parallel record processing via rayon. 60+ POSIX/gawk divergences fixed.">
   <title>awkrs &mdash; Engineering Report</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -125,9 +125,9 @@
       <p class="tutorial-subtitle">awkrs is a single-binary AWK implementation written in Rust. The interpreter compiles AWK source to a 95-opcode bytecode, runs it on a stack VM with peephole-fused instructions, and JITs hot chunks via Cranelift to native code with tiered compilation. Parallel record processing rides on rayon work-stealing. <strong>First AWK implementation to combine bytecode VM + Cranelift JIT + persistent on-disk bytecode cache</strong> (rkyv-backed at <code>~/.awkrs/scripts.rkyv</code>) &mdash; repeat <code>-f script.awk</code> runs skip lex/parse/compile entirely. 2,137 parity files cross-check byte-for-byte against gawk, mawk, and BSD awk; CI runs full corpus against all three references on every push.</p>
 
       <div class="stat-grid">
-        <div class="stat-card"><div class="stat-val">51,389</div><div class="stat-label">Rust Lines</div></div>
+        <div class="stat-card"><div class="stat-val">52,031</div><div class="stat-label">Rust Lines</div></div>
         <div class="stat-card"><div class="stat-val accent">3,788</div><div class="stat-label">Tests (Total)</div></div>
-        <div class="stat-card"><div class="stat-val green">2,874</div><div class="stat-label">Unit Tests (Lib)</div></div>
+        <div class="stat-card"><div class="stat-val green">2,882</div><div class="stat-label">Unit Tests (Lib)</div></div>
         <div class="stat-card"><div class="stat-val">95</div><div class="stat-label">VM Opcodes</div></div>
         <div class="stat-card"><div class="stat-val">61</div><div class="stat-label">Builtin Functions</div></div>
         <div class="stat-card"><div class="stat-val accent">0</div><div class="stat-label">Test Failures</div></div>
@@ -149,22 +149,22 @@
           <tr><th>Module</th><th class="num">LOC</th><th class="num">Tests</th><th>Role</th></tr>
         </thead>
         <tbody>
-          <tr><td>vm.rs</td><td class="num">9,692</td><td class="num">512</td><td>Stack VM main loop, opcode dispatch, fused fast paths, array call-by-reference</td></tr>
-          <tr><td>jit.rs</td><td class="num">5,779</td><td class="num">122</td><td>Cranelift JIT, tiered compilation, mixed-mode NaN-boxing</td></tr>
-          <tr><td>parser.rs</td><td class="num">5,025</td><td class="num">507</td><td>Recursive-descent parser, gawk extensions, ^= / **= compound, <code>cmd |&amp; getline</code></td></tr>
-          <tr><td>runtime.rs</td><td class="num">4,842</td><td class="num">147</td><td>Field/record state, FS default " ", MPFR (-M) integration, CONVFMT/OFMT</td></tr>
-          <tr><td>compiler.rs</td><td class="num">3,875</td><td class="num">170</td><td>AST &rarr; bytecode, slot allocation, peephole fusion, user-function tracking</td></tr>
-          <tr><td>lexer.rs</td><td class="num">3,448</td><td class="num">437</td><td>POSIX + gawk tokens, string escapes (\a \b \f \v \xHH \NNN), scientific notation</td></tr>
-          <tr><td>lib.rs</td><td class="num">2,277</td><td class="num">57</td><td>CLI entry, parallel record driver, file plumbing</td></tr>
+          <tr><td>vm.rs</td><td class="num">9,781</td><td class="num">512</td><td>Stack VM main loop, opcode dispatch, fused fast paths, array call-by-reference</td></tr>
+          <tr><td>jit.rs</td><td class="num">5,861</td><td class="num">122</td><td>Cranelift JIT, tiered compilation, mixed-mode NaN-boxing</td></tr>
+          <tr><td>parser.rs</td><td class="num">5,107</td><td class="num">510</td><td>Recursive-descent parser, gawk extensions, ^= / **= compound, <code>cmd |&amp; getline</code></td></tr>
+          <tr><td>runtime.rs</td><td class="num">4,869</td><td class="num">147</td><td>Field/record state, FS default " ", MPFR (-M) integration, CONVFMT/OFMT</td></tr>
+          <tr><td>compiler.rs</td><td class="num">3,877</td><td class="num">170</td><td>AST &rarr; bytecode, slot allocation, peephole fusion, user-function tracking</td></tr>
+          <tr><td>lexer.rs</td><td class="num">3,598</td><td class="num">442</td><td>POSIX + gawk tokens, string escapes (\a \b \f \v \xHH \NNN), scientific notation</td></tr>
+          <tr><td>lib.rs</td><td class="num">2,285</td><td class="num">57</td><td>CLI entry, parallel record driver, file plumbing</td></tr>
           <tr><td>format.rs</td><td class="num">2,248</td><td class="num">149</td><td>sprintf / printf formatting (all POSIX specifiers, locale-aware %' grouping, %u 2^64 fallback)</td></tr>
           <tr><td>cli_effects.rs</td><td class="num">2,029</td><td class="num">37</td><td>--debug / --lint / --pretty-print / --gen-pot output</td></tr>
           <tr><td>builtins.rs</td><td class="num">1,793</td><td class="num">111</td><td>gsub/sub/match/split/asort/strftime/strtonum/gensub (with \N backrefs), unified arity messages</td></tr>
           <tr><td>namespace.rs</td><td class="num">1,103</td><td class="num">32</td><td>gawk-style @namespace + qualified identifiers, 61 builtin name table</td></tr>
-          <tr><td>script_cache.rs</td><td class="num">1,000</td><td class="num">26</td><td>rkyv shard at ~/.awkrs/scripts.rkyv, flock-serialized writes</td></tr>
-          <tr><td>bytecode.rs</td><td class="num">762</td><td class="num">21</td><td>Op enum (95 variants), Chunk, CompiledProgram</td></tr>
+          <tr><td>script_cache.rs</td><td class="num">1,015</td><td class="num">26</td><td>rkyv shard at ~/.awkrs/scripts.rkyv, flock-serialized writes</td></tr>
+          <tr><td>bytecode.rs</td><td class="num">805</td><td class="num">21</td><td>Op enum (95 variants), Chunk, CompiledProgram</td></tr>
           <tr><td>gawk_extensions.rs</td><td class="num">674</td><td class="num">22</td><td>ord/chr/intdiv/readdir/stat/readfile/writea/reada, sleep, statvfs, fts</td></tr>
-          <tr><td>(other modules)</td><td class="num">6,826</td><td class="num">521</td><td>ast (167), ast_fmt (78), cli (72), record_io (42), bignum (42), error (31), source_expand (28), procinfo (25), ast/parallel, fusevm_bridge, cyber_help, gettext_util, locale_numeric, flow, limits, main, bin/ars</td></tr>
-          <tr class="total-row"><td>TOTAL</td><td class="num">51,389</td><td class="num">2,874</td><td>+906 integration tests = 3,780 total</td></tr>
+          <tr><td>(other modules)</td><td class="num">6,986</td><td class="num">524</td><td>ast (1,034), ast_fmt (979), record_io (803), cli (772), bignum (657), source_expand (531), ast/parallel (515), fusevm_bridge (476), procinfo (362), error (256), cyber_help (226), gettext_util (129), locale_numeric (124), flow (58), limits (32), main (16), bin/ars (16)</td></tr>
+          <tr class="total-row"><td>TOTAL</td><td class="num">52,031</td><td class="num">2,882</td><td>+906 integration tests = 3,788 total</td></tr>
         </tbody>
       </table>
 
@@ -226,7 +226,7 @@
           <tr><th>Layer</th><th class="num">Count</th><th>Style</th><th>Catches</th></tr>
         </thead>
         <tbody>
-          <tr><td>Lib unit tests</td><td class="num">2,874</td><td>Per-function pinning</td><td>Function-level contracts, POSIX semantics, opcode dispatch shapes</td></tr>
+          <tr><td>Lib unit tests</td><td class="num">2,882</td><td>Per-function pinning</td><td>Function-level contracts, POSIX semantics, opcode dispatch shapes</td></tr>
           <tr><td>Integration tests</td><td class="num">906</td><td>Subprocess via <code>run_awkrs_stdin</code></td><td>End-to-end CLI behavior, exit codes, stdin/stdout/stderr</td></tr>
           <tr><td>Parity files (cases/ + cases_portable/)</td><td class="num">2,067</td><td>Diff vs gawk, mawk, BSD awk</td><td>Cross-reference compatibility across the awk language surface</td></tr>
           <tr><td>Parity files (cases_gawk/)</td><td class="num">66</td><td>Diff vs gawk only</td><td>gawk-only extensions (FPAT, typeof, gensub, **=, namespaces, strftime, bit-op arity)</td></tr>
