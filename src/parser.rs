@@ -1,6 +1,7 @@
 use crate::ast::{GetlineRedir, IncDecOp, IncDecTarget, *};
 use crate::error::{Error, Result};
 use crate::lexer::{Lexer, Token};
+use crate::namespace::BUILTIN_NAMES;
 use std::collections::HashMap;
 
 fn assign_expr(lhs: Expr, op: Option<BinOp>, rhs: Expr, line: usize) -> Result<Expr> {
@@ -158,7 +159,7 @@ impl<'a> Parser<'a> {
         };
         let name = name.clone();
         self.bump(false)?;
-        if self.cur != Token::LParen {
+        if !matches!(self.cur, Token::LParen | Token::TightLParen) {
             return Err(Error::Parse {
                 line: self.line,
                 msg: "expected `(` after function name".into(),
@@ -380,10 +381,21 @@ impl<'a> Parser<'a> {
                 }
                 self.bump(false)?;
                 let then_ = self.parse_stmt_block()?;
+                // POSIX / gawk / BSD awk all allow an `else` on a fresh line after
+                // a braced then-block (`}` <NL> `else { ... }`). Skip any
+                // separators between the then-block and the `else` keyword so the
+                // common formatting style parses.
+                let cp = self.checkpoint();
+                while matches!(self.cur, Token::Newline | Token::Semi) {
+                    self.bump(true)?;
+                }
                 let else_ = if matches!(self.cur, Token::Else) {
                     self.bump(false)?;
                     self.parse_stmt_block()?
                 } else {
+                    // No `else` follows — leave the separator tokens for the
+                    // surrounding statement list to consume.
+                    self.restore(cp);
                     vec![]
                 };
                 Ok(Stmt::If { cond, then_, else_ })
@@ -411,6 +423,12 @@ impl<'a> Parser<'a> {
             Token::Do => {
                 self.bump(false)?;
                 let body = self.parse_stmt_block()?;
+                // gawk / BSD awk allow a newline (or `;`) between the body and
+                // the trailing `while`. Skip them so `do { ... }` on its own
+                // line followed by `while (...)` on the next parses.
+                while matches!(self.cur, Token::Newline | Token::Semi) {
+                    self.bump(true)?;
+                }
                 if self.cur != Token::While {
                     return Err(Error::Parse {
                         line: self.line,
@@ -1561,7 +1579,7 @@ impl<'a> Parser<'a> {
                         });
                     }
                 };
-                if self.cur != Token::LParen {
+                if !matches!(self.cur, Token::LParen | Token::TightLParen) {
                     return Err(Error::Parse {
                         line: self.line,
                         msg: "expected `(` after `@` expression for indirect call".into(),
@@ -1605,8 +1623,19 @@ impl<'a> Parser<'a> {
                         });
                     }
                     self.bump(false)?;
-                    Ok(Expr::Index { name, indices })
-                } else if self.cur == Token::LParen {
+                    return Ok(Expr::Index { name, indices });
+                }
+                // POSIX call-vs-concat: `name(` (no space → `TightLParen`) is
+                // always a function call. `name (` (whitespace → `LParen`) is a
+                // call only when `name` is a known builtin (gawk parity:
+                // `length (x)` / `gsub (re, r, s)` still call). For
+                // user-defined names with a space, it's concatenation with a
+                // parenthesized expression — leave the `LParen` for the outer
+                // primary parser to consume.
+                let is_builtin = BUILTIN_NAMES.contains(&name.as_str());
+                let is_call = matches!(self.cur, Token::TightLParen)
+                    || (is_builtin && self.cur == Token::LParen);
+                if is_call {
                     self.bump(true)?;
                     let mut args = Vec::new();
                     if self.cur != Token::RParen {

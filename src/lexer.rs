@@ -133,6 +133,12 @@ pub enum Token {
     Comma,
     /// `LParen` variant.
     LParen,
+    /// `(` that *directly* follows an identifier with no intervening
+    /// whitespace — i.e. the awk function-call form `name(`. POSIX awk
+    /// distinguishes `name(arg)` (call) from `name (arg)` (concatenation with a
+    /// parenthesized expression). All other places that accept `(` after a
+    /// keyword or operator continue to receive plain [`Token::LParen`].
+    TightLParen,
     /// `RParen` variant.
     RParen,
     /// `LBrace` variant.
@@ -158,6 +164,11 @@ pub struct Lexer<'a> {
     input: &'a str,
     pos: usize,
     line: usize,
+    /// True iff the previously emitted token was an [`Token::Ident`].
+    /// Drives the [`Token::TightLParen`] disambiguation: `name(` (no
+    /// whitespace) is a function call, `name (` (whitespace) is concatenation
+    /// with a parenthesized expression.
+    prev_was_ident: bool,
 }
 
 impl<'a> Lexer<'a> {
@@ -167,6 +178,7 @@ impl<'a> Lexer<'a> {
             input,
             pos: 0,
             line: 1,
+            prev_was_ident: false,
         }
     }
     /// `line` — see implementation for the contract.
@@ -241,7 +253,27 @@ impl<'a> Lexer<'a> {
 
     /// When `regex_mode` is true, `/` begins a `/regex/` literal; otherwise `/` is division.
     pub fn next_token(&mut self, regex_mode: bool) -> Result<Token> {
+        let pre_skip = self.pos;
         self.skip_ws();
+        let no_ws_before = self.pos == pre_skip;
+        let prev_was_ident = std::mem::replace(&mut self.prev_was_ident, false);
+        let tok = self.next_token_after_ws(regex_mode)?;
+        // POSIX disambiguation: `name(` (no whitespace) is a function call;
+        // `name (` (whitespace) is concatenation with a parenthesized expr.
+        // Only a paren *directly* following an identifier gets `TightLParen`;
+        // all other `(` (after keywords, operators, etc.) stay `LParen` since
+        // the call-vs-concat distinction does not apply.
+        let tok = match tok {
+            Token::LParen if prev_was_ident && no_ws_before => Token::TightLParen,
+            other => other,
+        };
+        if matches!(tok, Token::Ident(_)) {
+            self.prev_was_ident = true;
+        }
+        Ok(tok)
+    }
+
+    fn next_token_after_ws(&mut self, regex_mode: bool) -> Result<Token> {
         let Some(c) = self.peek() else {
             return Ok(Token::Eof);
         };
@@ -1779,12 +1811,15 @@ mod tests {
 
     #[test]
     fn lex_indirect_call_at_v2() {
+        // `func(` (no whitespace between ident and paren) → TightLParen, the
+        // call form. Used by the parser to distinguish `name(args)` (call)
+        // from `name (args)` (concat with parenthesized expression).
         assert_eq!(
             tokens_no_regex("@func(x)"),
             vec![
                 Token::At,
                 Token::Ident("func".into()),
-                Token::LParen,
+                Token::TightLParen,
                 Token::Ident("x".into()),
                 Token::RParen,
             ]
