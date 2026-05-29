@@ -1,0 +1,12 @@
+SELECT host,cpu_sec WHERE cpu_sec > 30 ORDER BY cpu_sec DESC
+timestamp,host,cpu_sec,mem_kb
+1681120800,host-a,42.5,1024
+1681120860,host-b,15.0,512
+1681120920,host-a,58.3,1100
+1681120980,host-c,90.1,2048
+1681121040,host-b,22.7,520
+1681121100,host-a,61.0,1150
+1681121160,host-c,88.5,2100
+1681121220,host-b,18.4,505
+1681121280,host-c,92.0,2150
+1681121340,host-a,49.7,1080

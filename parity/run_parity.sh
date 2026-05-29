@@ -165,9 +165,15 @@ run_mode() {
     ;;
   esac
   cases=( "$ROOT"/parity/cases/*.awk "$ROOT"/parity/cases_portable/*.awk )
-  # Include gawk-only extension tests only when testing against gawk
+  # Include gawk-only extension tests only when testing against gawk.
+  # The `examples/` directory holds substantive showcase programs (BST, heap,
+  # trie, Levenshtein, RD parser, topo sort, Brainfuck, RPN, JSON pretty,
+  # hexdump, CSV pivot, BFS, Markov, mini-SQL) — they lean on PROCINFO
+  # sorted_in, three-arg match, asort, SUBSEP multidim arrays, bit ops, so
+  # they only parity against gawk.
   if [[ "$mode" == "gawk" ]]; then
     cases+=( "$ROOT"/parity/cases_gawk/*.awk )
+    cases+=( "$ROOT"/examples/*.awk )
   fi
   eval "$_ng"
 

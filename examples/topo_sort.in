@@ -1,0 +1,7 @@
+build link
+compile build
+parse compile
+lex parse
+test link
+package test
+release package

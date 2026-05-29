@@ -348,6 +348,34 @@ LINES=200000 ./scripts/demo-parallel-jit.sh   # /usr/bin/time -p sweep of -j 1 v
 
 `NO_COLOR=1` strips ANSI from the demo output. The applied demo writes its inputs to `$TMPDIR` and cleans up on exit.
 
+### Deep examples (`examples/*.awk`)
+
+Substantive standalone awk programs that exercise recursion, multidim arrays via `SUBSEP`, `PROCINFO["sorted_in"]`, three-arg `match()`, `asort`, and bit ops. Each `<name>.awk` ships with `<name>.in` (stdin input). Every example is byte-for-byte verified against gawk by the parity job in CI (`bash parity/run_parity.sh gawk`), so they double as gawk-extension regression tests.
+
+| File | What it shows |
+| --- | --- |
+| `bst.awk` | BST insert + inorder / preorder / postorder traversals via recursion |
+| `heap_sort.awk` | Min-heap push / pop → heapsort |
+| `trie.awk` | Trie membership + prefix-count using `SUBSEP` two-level keys |
+| `levenshtein.awk` | O(la·lb) edit-distance DP table held in a `SUBSEP` 2D array |
+| `calc_rd.awk` | Recursive-descent arithmetic parser (`+ - * / % ^` unary `( )`, right-assoc `^`) |
+| `topo_sort.awk` | Kahn's algorithm topological sort + cycle detection |
+| `brainfuck.awk` | Brainfuck interpreter (precomputed bracket map, modulo-256 cells) |
+| `rpn.awk` | Postfix calculator (dup / swap / drop / neg + arith) on an explicit stack |
+| `json_pretty.awk` | JSON tokeniser → 2-space indented pretty-printer |
+| `hexdump.awk` | `xxd`-style hex + ASCII dump (16-byte rows with offset, hex, gutter, ascii) |
+| `csv_pivot.awk` | CSV → per-group min / max / mean / total aggregation |
+| `graph_bfs.awk` | Undirected BFS from a source + path reconstruction |
+| `markov.awk` | Bigram model → top-3 continuations + deterministic 12-step walk |
+| `sql_like.awk` | Mini-SQL on CSV: `SELECT … WHERE … GROUP BY … SUM/AVG/COUNT … ORDER BY …` |
+
+Run any example directly:
+
+```bash
+./target/release/awkrs -f examples/calc_rd.awk <examples/calc_rd.in
+./target/release/awkrs -f examples/brainfuck.awk <examples/brainfuck.in
+```
+
 ---
 
 ## [0x07] BUILD // COMPILE THE PAYLOAD
