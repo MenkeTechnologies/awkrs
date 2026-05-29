@@ -1,0 +1,14 @@
+ENC Hello
+ENC Hello, world!
+ENC any carnal pleasure.
+ENC any carnal pleasure
+ENC any carnal pleasur
+ENC a
+ENC ab
+ENC abc
+DEC SGVsbG8=
+DEC SGVsbG8sIHdvcmxkIQ==
+DEC YW55IGNhcm5hbCBwbGVhc3VyZS4=
+DEC YQ==
+DEC YWI=
+DEC YWJj

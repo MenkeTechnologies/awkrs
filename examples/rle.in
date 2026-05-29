@@ -1,0 +1,12 @@
+ENC aaabbc
+ENC abcabc
+ENC aaaaaaaaaab
+ENC zzzz   yyy
+ENC a
+ENC abracadabra
+DEC 3a2bc
+DEC abcabc
+DEC 10ab
+DEC 4z3 3y
+DEC a
+DEC abr2acad2abra

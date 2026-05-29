@@ -379,6 +379,17 @@ Substantive standalone awk programs that exercise recursion, multidim arrays via
 | `intervals.awk` | Merge overlapping closed intervals; report total covered length |
 | `roman.awk` | Roman numerals ↔ integers, subtractive form, range 1..3999 |
 | `knapsack.awk` | 0/1 knapsack DP table + traceback to recover chosen items |
+| `prime_sieve.awk` | Sieve of Eratosthenes up to N + ten-per-row pretty printing |
+| `floyd_warshall.awk` | All-pairs shortest paths (negative weights allowed) |
+| `bellman_ford.awk` | Single-source shortest paths + negative-cycle detection |
+| `scc_tarjan.awk` | Tarjan's strongly connected components (recursion + lowlink) |
+| `conway.awk` | Conway's Game of Life — fixed-grid evolution for N generations |
+| `a_star.awk` | A* on an ASCII grid (Manhattan heuristic, tuple-keyed min-heap PQ) |
+| `base64.awk` | RFC-4648 base64 encode + decode (no external tools) |
+| `base_conv.awk` | Integer base conversion 2..36 in either direction |
+| `rle.awk` | Run-length encode + decode (whitespace preserved) |
+| `vigenere.awk` | Vigenère cipher (encrypt + decrypt; case preserved) |
+| `bigint_mul.awk` | Arbitrary-precision multiplication via schoolbook on digit arrays |
 
 Run any example directly:
 
