@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="awkrs — Engineering report. AWK implementation in Rust: ~52k Rust lines, 3,796 tests (2,882 lib + 914 integration), 2,137 parity files vs gawk/mawk/BSD-awk, Cranelift JIT, rkyv-backed bytecode cache, 95 opcodes, 61 builtins, parallel record processing via rayon. 60+ POSIX/gawk divergences fixed.">
+  <meta name="description" content="awkrs — Engineering report. AWK implementation in Rust: ~52k Rust lines, 3,804 tests (2,882 lib + 922 integration), 2,137 parity files vs gawk/mawk/BSD-awk, Cranelift JIT, rkyv-backed bytecode cache, 95 opcodes, 61 builtins, parallel record processing via rayon. 60+ POSIX/gawk divergences fixed.">
   <title>awkrs &mdash; Engineering Report</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -126,7 +126,7 @@
 
       <div class="stat-grid">
         <div class="stat-card"><div class="stat-val">52,031</div><div class="stat-label">Rust Lines</div></div>
-        <div class="stat-card"><div class="stat-val accent">3,796</div><div class="stat-label">Tests (Total)</div></div>
+        <div class="stat-card"><div class="stat-val accent">3,804</div><div class="stat-label">Tests (Total)</div></div>
         <div class="stat-card"><div class="stat-val green">2,882</div><div class="stat-label">Unit Tests (Lib)</div></div>
         <div class="stat-card"><div class="stat-val">95</div><div class="stat-label">VM Opcodes</div></div>
         <div class="stat-card"><div class="stat-val">61</div><div class="stat-label">Builtin Functions</div></div>
@@ -164,7 +164,7 @@
           <tr><td>bytecode.rs</td><td class="num">805</td><td class="num">21</td><td>Op enum (95 variants), Chunk, CompiledProgram</td></tr>
           <tr><td>gawk_extensions.rs</td><td class="num">674</td><td class="num">22</td><td>ord/chr/intdiv/readdir/stat/readfile/writea/reada, sleep, statvfs, fts</td></tr>
           <tr><td>(other modules)</td><td class="num">6,986</td><td class="num">524</td><td>ast (1,034), ast_fmt (979), record_io (803), cli (772), bignum (657), source_expand (531), ast/parallel (515), fusevm_bridge (476), procinfo (362), error (256), cyber_help (226), gettext_util (129), locale_numeric (124), flow (58), limits (32), main (16), bin/ars (16)</td></tr>
-          <tr class="total-row"><td>TOTAL</td><td class="num">52,031</td><td class="num">2,882</td><td>+914 integration tests = 3,796 total</td></tr>
+          <tr class="total-row"><td>TOTAL</td><td class="num">52,031</td><td class="num">2,882</td><td>+922 integration tests = 3,804 total</td></tr>
         </tbody>
       </table>
 
@@ -219,7 +219,7 @@
       <!-- SECTION 4: TESTING                     -->
       <!-- ═══════════════════════════════════════ -->
       <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>TESTING</h2>
-      <p class="tutorial-subtitle">3,796 tests, 0 failures. The unit suite is the catcher for behavioral regressions; the parity suite (2,137 files) cross-checks against gawk + mawk + BSD awk. Test-driven divergence hunting has now closed 60+ POSIX/gawk gaps &mdash; each was first surfaced by a pinning test, then fixed, then the FIXME marker removed.</p>
+      <p class="tutorial-subtitle">3,804 tests, 0 failures. The unit suite is the catcher for behavioral regressions; the parity suite (2,137 files) cross-checks against gawk + mawk + BSD awk. Test-driven divergence hunting has now closed 60+ POSIX/gawk gaps &mdash; each was first surfaced by a pinning test, then fixed, then the FIXME marker removed.</p>
 
       <table class="file-table">
         <thead>
@@ -227,7 +227,7 @@
         </thead>
         <tbody>
           <tr><td>Lib unit tests</td><td class="num">2,882</td><td>Per-function pinning</td><td>Function-level contracts, POSIX semantics, opcode dispatch shapes</td></tr>
-          <tr><td>Integration tests</td><td class="num">914</td><td>Subprocess via <code>run_awkrs_stdin</code></td><td>End-to-end CLI behavior, exit codes, stdin/stdout/stderr</td></tr>
+          <tr><td>Integration tests</td><td class="num">922</td><td>Subprocess via <code>run_awkrs_stdin</code></td><td>End-to-end CLI behavior, exit codes, stdin/stdout/stderr</td></tr>
           <tr><td>Parity files (cases/ + cases_portable/)</td><td class="num">2,067</td><td>Diff vs gawk, mawk, BSD awk</td><td>Cross-reference compatibility across the awk language surface</td></tr>
           <tr><td>Parity files (cases_gawk/)</td><td class="num">66</td><td>Diff vs gawk only</td><td>gawk-only extensions (FPAT, typeof, gensub, **=, namespaces, strftime, bit-op arity)</td></tr>
           <tr><td>cargo fmt</td><td class="num">&mdash;</td><td>rustfmt --check</td><td>Style drift</td></tr>
