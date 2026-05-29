@@ -3544,4 +3544,58 @@ mod tests {
     fn lex_m_v65_9() {
         assert_eq!(tokens_no_regex("!~"), vec![Token::NotTilde]);
     }
+
+    // ─── is_ident_start / is_ident_continue contract pins ────────────
+    //
+    // gawk's identifier grammar is ASCII-only and excludes digit
+    // starts. Pin both sides exhaustively so a Unicode-friendly
+    // refactor doesn't silently start accepting `ñame` (which gawk
+    // would reject at lex time).
+
+    #[test]
+    fn is_ident_start_accepts_ascii_alpha_and_underscore() {
+        for c in 'a'..='z' {
+            assert!(is_ident_start(c), "lowercase `{c}` should start ident");
+        }
+        for c in 'A'..='Z' {
+            assert!(is_ident_start(c), "uppercase `{c}` should start ident");
+        }
+        assert!(is_ident_start('_'), "underscore must start ident");
+    }
+
+    #[test]
+    fn is_ident_start_rejects_digits() {
+        for c in '0'..='9' {
+            assert!(!is_ident_start(c), "digit `{c}` must NOT start ident");
+        }
+    }
+
+    #[test]
+    fn is_ident_start_rejects_unicode_alpha() {
+        // gawk's ident grammar is ASCII-only; pin the rejection so
+        // a future feature wave doesn't silently widen identifiers
+        // and break compatibility with awk scripts that depend on
+        // non-ASCII chars being lex breaks.
+        assert!(!is_ident_start('ñ'));
+        assert!(!is_ident_start('日'));
+        assert!(!is_ident_start('ß'));
+    }
+
+    #[test]
+    fn is_ident_continue_accepts_digits_after_alpha() {
+        // `foo123` is valid; digits CAN follow.
+        for c in '0'..='9' {
+            assert!(is_ident_continue(c));
+        }
+    }
+
+    #[test]
+    fn is_ident_continue_rejects_punct_and_whitespace() {
+        for c in ['-', '+', '.', '/', ' ', '\t', '\n', '$', '@', '#'] {
+            assert!(
+                !is_ident_continue(c),
+                "char `{c}` must NOT continue ident"
+            );
+        }
+    }
 }
