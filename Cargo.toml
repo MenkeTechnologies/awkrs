@@ -1,6 +1,6 @@
 [package]
 name = "awkrs"
-version = "0.4.8"
+version = "0.4.9"
 edition = "2021"
 # `parity/` stays in the git repo for local/CI testing vs gawk; omit from `cargo package` / crates.io tarball.
 exclude = ["/parity/", "/.github/", "/tests/", "/docs/"]
