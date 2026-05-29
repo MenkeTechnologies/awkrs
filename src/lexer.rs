@@ -3592,10 +3592,7 @@ mod tests {
     #[test]
     fn is_ident_continue_rejects_punct_and_whitespace() {
         for c in ['-', '+', '.', '/', ' ', '\t', '\n', '$', '@', '#'] {
-            assert!(
-                !is_ident_continue(c),
-                "char `{c}` must NOT continue ident"
-            );
+            assert!(!is_ident_continue(c), "char `{c}` must NOT continue ident");
         }
     }
 }
