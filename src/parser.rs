@@ -3211,7 +3211,7 @@ mod tests {
 
 #[cfg(test)]
 mod parser_pinning {
-    use super::parse_program;
+    use super::{builtin_regex_pattern_arg, parse_program};
     use crate::ast::{BinOp, Expr, Pattern, Stmt};
 
     fn first_begin_expr_stmt(src: &str) -> Expr {
@@ -5050,5 +5050,58 @@ mod parser_pinning {
     #[test]
     fn parses_stmt_printf_multi_v69() {
         parse_program("BEGIN{printf \"%d %d %d\", 1, 2, 3}").unwrap();
+    }
+
+    // ─── builtin_regex_pattern_arg table pin ─────────────────────────
+    //
+    // The string-vs-regex disambiguation for gawk builtins lives in
+    // one place — `builtin_regex_pattern_arg`. A missing entry
+    // silently changes whether `gsub(/x/, ...)` is parsed as a regex
+    // literal or as a string. Pin every documented (fname, idx) pair.
+
+    #[test]
+    fn builtin_regex_pattern_arg_table_pin() {
+        // Positive: arg index that IS the regex pattern arg.
+        assert!(builtin_regex_pattern_arg("gsub", 0));
+        assert!(builtin_regex_pattern_arg("sub", 0));
+        assert!(builtin_regex_pattern_arg("gensub", 0));
+        assert!(builtin_regex_pattern_arg("match", 1));
+        assert!(builtin_regex_pattern_arg("split", 2));
+        assert!(builtin_regex_pattern_arg("patsplit", 2));
+        // Negative: same fname, wrong arg index.
+        assert!(!builtin_regex_pattern_arg("gsub", 1));
+        assert!(!builtin_regex_pattern_arg("match", 0));
+        assert!(!builtin_regex_pattern_arg("match", 2));
+        assert!(!builtin_regex_pattern_arg("split", 0));
+        assert!(!builtin_regex_pattern_arg("split", 1));
+        // Negative: unknown builtins must not classify ANY arg as
+        // regex — would break user fns named `length`, `printf`, etc.
+        assert!(!builtin_regex_pattern_arg("printf", 0));
+        assert!(!builtin_regex_pattern_arg("length", 0));
+        assert!(!builtin_regex_pattern_arg("user_defined", 0));
+    }
+
+    #[test]
+    fn builtin_regex_pattern_arg_unknown_name_never_true() {
+        // Quick fuzzing: 0..16 arg indices on an unknown fname must
+        // all be false (no accidental fall-through).
+        for i in 0..16 {
+            assert!(
+                !builtin_regex_pattern_arg("nonexistent_builtin", i),
+                "unknown builtin claimed arg {i} is regex"
+            );
+        }
+    }
+
+    // ─── parse_program top-level error-shape ─────────────────────────
+
+    #[test]
+    fn parse_program_empty_input_is_valid_empty_program() {
+        // gawk accepts empty programs and exits 0; parse_program
+        // must mirror that — not error on empty input.
+        let prog = parse_program("").unwrap();
+        // Cheap sanity: program parsed (further structure depends on
+        // internal types; we just assert no error).
+        let _ = prog;
     }
 }
