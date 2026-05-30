@@ -220,7 +220,7 @@ Based on a survey of the major public awk implementations (BWK awk, gawk, mawk, 
  │ HARDWARE: APPLE M5 MAX &nbsp;&nbsp; OS: macOS &nbsp;&nbsp; ARCH: arm64         │
  └──────────────────────────────────────────────────────────────┘
 
-Measured with [hyperfine](https://github.com/sharkdp/hyperfine). BSD awk (`/usr/bin/awk`), GNU gawk 5.4.0, mawk 1.3.4, awkrs **0.1.26**. **Relative** = mean ÷ fastest mean in that table. awkrs has two rows: default (JIT attempted) vs `AWKRS_JIT=0` (bytecode only). Each table is one `hyperfine` invocation across all five commands on the same 1 M-line input, generated 2026-04-10 UTC by `./scripts/benchmark-vs-awk.sh` and copied verbatim from [`benchmarks/benchmark-results.md`](benchmarks/benchmark-results.md). For the awkrs-only JIT-vs-bytecode A/B see [`benchmarks/benchmark-readme-jit.md`](benchmarks/benchmark-readme-jit.md).
+Measured with [hyperfine](https://github.com/sharkdp/hyperfine). BSD awk (`/usr/bin/awk`), GNU gawk 5.4.0, mawk 1.3.4, awkrs (see [`Cargo.toml`](Cargo.toml) for current version). **Relative** = mean ÷ fastest mean in that table. awkrs has two rows: default (JIT attempted) vs `AWKRS_JIT=0` (bytecode only). Each table is one `hyperfine` invocation across all five commands on the same 1 M-line input, generated 2026-04-10 UTC by `./scripts/benchmark-vs-awk.sh` and copied verbatim from [`benchmarks/benchmark-results.md`](benchmarks/benchmark-results.md). For the awkrs-only JIT-vs-bytecode A/B see [`benchmarks/benchmark-readme-jit.md`](benchmarks/benchmark-readme-jit.md).
 
 ### 1. Throughput: `{ print $1 }` over 1 M lines
 
