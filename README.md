@@ -95,6 +95,9 @@
 ## [0x02] INSTALLATION
 
 ```sh
+brew tap MenkeTechnologies/menketech                   # one-time
+brew install awkrs                                     # via Homebrew tap
+
 cargo install awkrs                                    # from crates.io
 
 git clone https://github.com/MenkeTechnologies/awkrs   # from source
