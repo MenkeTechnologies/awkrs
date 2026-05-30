@@ -8,6 +8,7 @@ exclude = ["/parity/", "/.github/", "/tests/", "/docs/"]
 description = "Awk implementation in Rust with broad CLI compatibility, parallel records, and experimental Cranelift JIT"
 license = "MIT"
 repository = "https://github.com/MenkeTechnologies/awkrs"
+homepage = "https://menketechnologies.github.io/awkrs/"
 readme = "README.md"
 keywords = ["awk", "cli", "text-processing"]
 categories = ["command-line-utilities", "parser-implementations"]
