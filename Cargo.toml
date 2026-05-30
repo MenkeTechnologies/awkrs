@@ -9,6 +9,7 @@ description = "Awk implementation in Rust with broad CLI compatibility, parallel
 license = "MIT"
 repository = "https://github.com/MenkeTechnologies/awkrs"
 homepage = "https://menketechnologies.github.io/awkrs/"
+documentation = "https://docs.rs/awkrs"
 readme = "README.md"
 keywords = ["awk", "cli", "text-processing"]
 categories = ["command-line-utilities", "parser-implementations"]
