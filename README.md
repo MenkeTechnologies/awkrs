@@ -414,6 +414,18 @@ Substantive standalone awk programs that exercise recursion, multidim arrays via
 | `tictactoe.awk` | Minimax tic-tac-toe solver — best move + outcome from any position |
 | `coin_change.awk` | Min-coins DP + reconstruction of one optimal combination |
 | `prim_mst.awk` | Prim's MST via lazy linear frontier scan |
+| `boyer_moore.awk` | Boyer-Moore substring search (bad-character heuristic) |
+| `suffix_array.awk` | Suffix array + LCP (lex-sort-based) for each input line |
+| `avl_tree.awk` | AVL self-balancing BST with insert, inorder, height, balance-check |
+| `quickselect.awk` | Kth smallest element via Hoare partitioning |
+| `horner.awk` | Horner's method: evaluate, derivative, synthetic division |
+| `pollard_rho.awk` | Pollard's rho integer factorization + Miller-Rabin |
+| `lzw.awk` | LZW compression encode + decode (256-byte dictionary start) |
+| `markdown_basic.awk` | Markdown → HTML for a subset (headings, lists, code, links) |
+| `date_calc.awk` | Day-of-week (Zeller), calendar generator, date difference |
+| `gauss_elim.awk` | Gaussian elimination with partial pivoting (Ax = b) |
+| `twenty48.awk` | 2048 board: apply L/R/U/D moves, merge tiles, track score |
+| `email_extract.awk` | Find emails in free text + sorted unique tally |
 
 Run any example directly:
 

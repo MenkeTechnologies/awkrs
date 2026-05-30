@@ -1,0 +1,12 @@
+PAT abc
+TXT abcabcabc
+TXT xxxabcyyyabczzz
+TXT no match here
+PAT a
+TXT aaaaa
+PAT mississippi
+TXT my mississippi river is mississippi long
+PAT longpattern
+TXT short
+PAT abab
+TXT abababcab

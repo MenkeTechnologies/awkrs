@@ -1,0 +1,19 @@
+# Hello, world!
+
+This is a *small* example of **markdown** rendered to HTML by awk.
+
+## Lists work too
+
+- first item
+- second item with `inline code`
+- third with a [link](https://example.com)
+
+## Code block
+
+```
+def hello():
+    print("hi")
+```
+
+A final paragraph that spans
+two lines.

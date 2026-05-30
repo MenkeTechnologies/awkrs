@@ -1,0 +1,6 @@
+Contact alice@example.com or bob@example.org for details.
+Send an email to alice@example.com (preferred) or to support@acme.co.uk.
+This line has nothing interesting.
+Multiple in one: a@b.com, c@d.io, eve.user+tag@sub.domain.example
+Tricky stuff like @invalid or no-at.com should not match.
+Repeat alice@example.com once more for the tally.
