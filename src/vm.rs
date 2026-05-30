@@ -3781,7 +3781,23 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 let b = if name == "SYMTAB" {
                     ctx.symtab_has(k.as_ref())
                 } else {
-                    ctx.rt.array_has(&name, k.as_ref())
+                    // Frame-aware: a function array parameter lives in
+                    // `ctx.locals`, not the global var map. Walk frames first
+                    // so `(key in arr)` inside a user function sees the
+                    // caller's data; fall through to the global lookup
+                    // otherwise.
+                    let mut found = None;
+                    for frame in ctx.locals.iter().rev() {
+                        match frame.get(name.as_str()) {
+                            Some(Value::Array(a)) => {
+                                found = Some(a.contains_key(k.as_ref()));
+                                break;
+                            }
+                            Some(Value::Uninit) | None => {}
+                            Some(_) => break,
+                        }
+                    }
+                    found.unwrap_or_else(|| ctx.rt.array_has(&name, k.as_ref()))
                 };
                 ctx.push(Value::Num(if b { 1.0 } else { 0.0 }));
             }
