@@ -42,14 +42,15 @@ jobs:
           # --- Linux glibc native ---
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-          - os: ubuntu-latest
+          - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
-            # Cross-compile from ubuntu-latest x86_64 via cross-rs
-            # Docker container — more reliable than ubuntu-24.04-arm
-            # native runners which occasionally evict mid-build.
-            # No allow_failure: this target must succeed so the
-            # Homebrew formula's on_linux/on_arm block emits.
-            use_cross: true
+            # Native aarch64 runner. cross-rs's old Docker base image
+            # lacks libgmp-dev / libmpfr-dev / m4 cross-headers, so the
+            # gmp-mpfr-sys build script can't bootstrap inside it.
+            # Apt-installing those deps natively on ubuntu-24.04-arm
+            # is the reliable path. No allow_failure: this target must
+            # succeed so the Homebrew formula's on_linux/on_arm block
+            # emits.
           # --- Linux musl static (portable across glibc/musl distros) ---
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
@@ -69,6 +70,12 @@ jobs:
       - name: Install musl tools
         if: contains(matrix.target, 'musl') && !matrix.use_cross
         run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Install native deps for aarch64-linux-gnu (gmp, mpfr)
+        if: matrix.target == 'aarch64-unknown-linux-gnu' && !matrix.use_cross
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgmp-dev libmpfr-dev m4
 
       - name: Install cross
         if: matrix.use_cross
