@@ -36,7 +36,7 @@ jobs:
           # won't assemble from an aarch64 host, and macos-13 free-runner
           # queue is hours long. Kept in matrix as allow_failure so it
           # builds when capacity exists without gating the release.
-          - os: macos-13
+          - os: macos-latest
             target: x86_64-apple-darwin
             allow_failure: true
           # --- Linux glibc native ---
