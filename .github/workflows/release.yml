@@ -32,13 +32,14 @@ jobs:
           # --- macOS native ---
           - os: macos-latest
             target: aarch64-apple-darwin
-          # x86_64-apple-darwin dropped from required set: GMP assembly
-          # won't assemble from an aarch64 host, and macos-13 free-runner
-          # queue is hours long. Kept in matrix as allow_failure so it
-          # builds when capacity exists without gating the release.
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            allow_failure: true
+          # x86_64-apple-darwin REMOVED from matrix entirely: gmp-mpfr-sys's
+          # GMP assembly stage can't cross-compile from aarch64 host (the
+          # only macos runners available with reasonable queue latency).
+          # macos-13 Intel runners would work but their free-tier queue is
+          # multi-hour. Until GHA reinstates Intel macos capacity or
+          # awkrs swaps GMP for a pure-Rust bignum, x86_64-darwin is not
+          # a shippable target. Removed from the matrix so the meta-repo
+          # formula↔release-matrix gate stays green.
           # --- Linux glibc native ---
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
