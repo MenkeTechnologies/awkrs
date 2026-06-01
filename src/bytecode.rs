@@ -10,8 +10,6 @@ use crate::runtime::{AwkMap, Value};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
 
 // ── Instruction set ──────────────────────────────────────────────────────────
 
@@ -372,65 +370,29 @@ pub enum Op {
 
 // ── Compiled structures ─────────────────────────────────────────────────────
 
-type JitChunkCache = Mutex<Option<Result<Arc<crate::jit::JitChunk>, ()>>>;
-
 /// A flat sequence of bytecode instructions.
-///
-/// [`Self::jit_lock`] caches the result of the first JIT attempt for this chunk:
-/// `None` = not yet tried, `Some(Err(()))` = use interpreter, `Some(Ok(arc))` = native code.
-///
-/// [`Self::jit_invocation_count`] supports tiered JIT: the VM runs the interpreter until this
-/// chunk has been entered enough times (see [`crate::jit::jit_min_invocations_before_compile`]),
-/// avoiding compile cost on cold paths (e.g. one-shot `BEGIN` blocks).
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Chunk {
     /// `ops` field.
     pub ops: Vec<Op>,
-    #[serde(skip, default = "default_jit_lock")]
-    pub(crate) jit_lock: Arc<JitChunkCache>,
-    #[serde(skip, default = "default_jit_invocation_count")]
-    pub(crate) jit_invocation_count: Arc<AtomicU32>,
-}
-
-fn default_jit_lock() -> Arc<JitChunkCache> {
-    Arc::new(Mutex::new(None))
-}
-
-fn default_jit_invocation_count() -> Arc<AtomicU32> {
-    Arc::new(AtomicU32::new(0))
 }
 
 impl Default for Chunk {
     fn default() -> Self {
-        Self {
-            ops: Vec::new(),
-            jit_lock: default_jit_lock(),
-            jit_invocation_count: default_jit_invocation_count(),
-        }
+        Self { ops: Vec::new() }
     }
 }
 
 impl fmt::Debug for Chunk {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Chunk")
-            .field("ops", &self.ops)
-            .field("jit_lock", &"<cached JIT>")
-            .field(
-                "jit_invocation_count",
-                &self.jit_invocation_count.load(Ordering::Relaxed),
-            )
-            .finish()
+        f.debug_struct("Chunk").field("ops", &self.ops).finish()
     }
 }
 
 impl Chunk {
     /// `from_ops` — see implementation for the contract.
     pub fn from_ops(ops: Vec<Op>) -> Self {
-        Self {
-            ops,
-            jit_lock: Arc::new(Mutex::new(None)),
-            jit_invocation_count: Arc::new(AtomicU32::new(0)),
-        }
+        Self { ops }
     }
 }
 

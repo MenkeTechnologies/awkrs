@@ -17,14 +17,6 @@ mod compiler;
 mod cyber_help;
 mod error;
 mod format;
-/// `jit` submodule.
-pub mod jit;
-pub use jit::{
-    is_jit_eligible, is_numeric_stack_eligible, jit_call_builtins_ok,
-    jit_min_invocations_before_compile, numeric_stack_slot_words, try_compile,
-    try_compile_numeric_expr, try_compile_with_options, try_jit_dispatch_numeric_chunk,
-    try_jit_execute, JitChunk, JitCompileOptions, JitNumericChunk, JitRuntimeState,
-};
 mod flow;
 /// `fusevm_bridge` submodule.
 pub mod fusevm_bridge;
@@ -179,7 +171,8 @@ pub fn run(bin_name: &str) -> Result<()> {
     rt.characters_as_bytes = args.characters_as_bytes;
     rt.posix = args.posix;
     rt.traditional = args.traditional;
-    rt.jit_enabled = !args.no_optimize;
+    rt.jit_enabled = !args.no_optimize
+        && std::env::var("AWKRS_JIT").map(|v| v != "0").unwrap_or(true);
     if args.use_lc_numeric {
         locale_numeric::set_locale_numeric_from_env();
         rt.numeric_decimal = locale_numeric::decimal_point_from_locale();

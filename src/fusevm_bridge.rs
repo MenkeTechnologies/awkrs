@@ -384,6 +384,273 @@ pub fn translate_op(op: &bytecode::Op, line: u32) -> Vec<(fusevm::Op, u32)> {
     }
 }
 
+/// Whether every op in `ops` is part of the universal numeric subset that
+/// fusevm's interpreter + JIT can execute directly (no AWK extension
+/// handler required). Returns `false` for bignum mode or an empty chunk.
+///
+/// This is the gate for [`build_numeric_chunk`]; the two must stay in sync.
+pub fn is_fusevm_eligible(ops: &[bytecode::Op], bignum: bool) -> bool {
+    use bytecode::Op;
+    if bignum || ops.is_empty() {
+        return false;
+    }
+    for op in ops {
+        match op {
+            Op::PushNum(_)
+            | Op::Add
+            | Op::Sub
+            | Op::Mul
+            | Op::Div
+            | Op::Mod
+            | Op::Pow
+            | Op::Neg
+            | Op::Not
+            | Op::Pos
+            | Op::ToBool
+            | Op::Pop
+            | Op::Dup
+            | Op::GetSlot(_)
+            | Op::SetSlot(_)
+            | Op::CmpEq
+            | Op::CmpNe
+            | Op::CmpLt
+            | Op::CmpLe
+            | Op::CmpGt
+            | Op::CmpGe
+            | Op::Jump(_)
+            | Op::JumpIfFalsePop(_)
+            | Op::JumpIfTruePop(_)
+            | Op::IncrSlot(_)
+            | Op::DecrSlot(_)
+            | Op::CompoundAssignSlot(_, BinOp::Add)
+            | Op::CompoundAssignSlot(_, BinOp::Sub)
+            | Op::CompoundAssignSlot(_, BinOp::Mul)
+            | Op::CompoundAssignSlot(_, BinOp::Div)
+            | Op::CompoundAssignSlot(_, BinOp::Mod)
+            | Op::CompoundAssignSlot(_, BinOp::Pow)
+            | Op::AddSlotToSlot { .. }
+            | Op::JumpIfSlotGeNum { .. }
+            | Op::IncDecSlot(_, _) => continue,
+            _ => return false,
+        }
+    }
+    true
+}
+
+/// Translate an eligible awkrs numeric chunk into a runnable `fusevm::Chunk`,
+/// emitting a `PushFrame` + per-slot initialization preamble seeded from
+/// `slot_init` (the awkrs runtime slot values coerced to `f64`).
+///
+/// Returns `None` when the chunk is not [`is_fusevm_eligible`] or contains an
+/// op the translator does not handle. Multi-op expansions (incr/decr,
+/// compound-assign) shift jump targets, so a two-pass ip-remap is performed.
+///
+/// Single source of truth for awkrs's numeric fusevm tier; `vm.rs`'s
+/// `try_fusevm_dispatch` marshals slots in/out around this builder.
+pub fn build_numeric_chunk(
+    ops: &[bytecode::Op],
+    bignum: bool,
+    slot_count: usize,
+    slot_init: &[f64],
+) -> Option<fusevm::Chunk> {
+    use bytecode::Op;
+    use crate::ast::IncDecOp;
+
+    if !is_fusevm_eligible(ops, bignum) {
+        return None;
+    }
+
+    // Pass 1: map each awkrs ip to its fusevm ip, accounting for expansions
+    // and the slot-init preamble (PushFrame + N×(LoadFloat + SetSlot)).
+    let mut ip_map: Vec<usize> = Vec::with_capacity(ops.len() + 1);
+    let mut fusevm_ip = 1 + slot_count * 2;
+    for op in ops {
+        ip_map.push(fusevm_ip);
+        fusevm_ip += match op {
+            Op::IncrSlot(_) | Op::DecrSlot(_) => 4,
+            Op::CompoundAssignSlot(_, BinOp::Sub) => 5,
+            Op::CompoundAssignSlot(
+                _,
+                BinOp::Add | BinOp::Mul | BinOp::Div | BinOp::Mod | BinOp::Pow,
+            ) => 4,
+            Op::Not => 2,
+            Op::Pos => 2,
+            Op::ToBool => 2,
+            Op::AddSlotToSlot { .. } => 4,
+            Op::JumpIfSlotGeNum { .. } => 4,
+            Op::IncDecSlot(_, _) => 5,
+            _ => 1,
+        };
+    }
+    ip_map.push(fusevm_ip); // sentinel: one past the end
+
+    let remap = |t: usize| -> usize {
+        if t < ip_map.len() {
+            ip_map[t]
+        } else {
+            ip_map[ip_map.len() - 1]
+        }
+    };
+
+    let mut builder = fusevm::ChunkBuilder::new();
+
+    // Preamble: PushFrame + initialize all slots from the awkrs runtime
+    // (LoadFloat value, SetSlot i) for each slot.
+    builder.emit(fusevm::Op::PushFrame, 0);
+    for (i, n) in slot_init.iter().take(slot_count).enumerate() {
+        builder.emit(fusevm::Op::LoadFloat(*n), 0);
+        builder.emit(fusevm::Op::SetSlot(i as u16), 0);
+    }
+
+    for op in ops.iter() {
+        match op {
+            Op::PushNum(n) => { builder.emit(fusevm::Op::LoadFloat(*n), 0); }
+            Op::Add => { builder.emit(fusevm::Op::Add, 0); }
+            Op::Sub => { builder.emit(fusevm::Op::Sub, 0); }
+            Op::Mul => { builder.emit(fusevm::Op::Mul, 0); }
+            Op::Div => { builder.emit(fusevm::Op::Div, 0); }
+            Op::Mod => { builder.emit(fusevm::Op::Mod, 0); }
+            Op::Pow => { builder.emit(fusevm::Op::Pow, 0); }
+            Op::Neg => { builder.emit(fusevm::Op::Negate, 0); }
+            // AWK !x returns Num(0/1): x == 0.0 yields the same for numbers.
+            Op::Not => {
+                builder.emit(fusevm::Op::LoadFloat(0.0), 0);
+                builder.emit(fusevm::Op::NumEq, 0);
+            }
+            // Unary +: coerce to number (x + 0.0).
+            Op::Pos => {
+                builder.emit(fusevm::Op::LoadFloat(0.0), 0);
+                builder.emit(fusevm::Op::Add, 0);
+            }
+            // Convert to 0.0/1.0: (x != 0.0).
+            Op::ToBool => {
+                builder.emit(fusevm::Op::LoadFloat(0.0), 0);
+                builder.emit(fusevm::Op::NumNe, 0);
+            }
+            Op::Pop => { builder.emit(fusevm::Op::Pop, 0); }
+            Op::Dup => { builder.emit(fusevm::Op::Dup, 0); }
+            Op::GetSlot(s) => { builder.emit(fusevm::Op::GetSlot(*s), 0); }
+            Op::SetSlot(s) => { builder.emit(fusevm::Op::SetSlot(*s), 0); }
+            Op::CmpEq => { builder.emit(fusevm::Op::NumEq, 0); }
+            Op::CmpNe => { builder.emit(fusevm::Op::NumNe, 0); }
+            Op::CmpLt => { builder.emit(fusevm::Op::NumLt, 0); }
+            Op::CmpLe => { builder.emit(fusevm::Op::NumLe, 0); }
+            Op::CmpGt => { builder.emit(fusevm::Op::NumGt, 0); }
+            Op::CmpGe => { builder.emit(fusevm::Op::NumGe, 0); }
+            Op::Jump(t) => { builder.emit(fusevm::Op::Jump(remap(*t)), 0); }
+            Op::JumpIfFalsePop(t) => { builder.emit(fusevm::Op::JumpIfFalse(remap(*t)), 0); }
+            Op::JumpIfTruePop(t) => { builder.emit(fusevm::Op::JumpIfTrue(remap(*t)), 0); }
+            Op::IncrSlot(s) => {
+                builder.emit(fusevm::Op::GetSlot(*s), 0);
+                builder.emit(fusevm::Op::LoadFloat(1.0), 0);
+                builder.emit(fusevm::Op::Add, 0);
+                builder.emit(fusevm::Op::SetSlot(*s), 0);
+            }
+            Op::DecrSlot(s) => {
+                builder.emit(fusevm::Op::GetSlot(*s), 0);
+                builder.emit(fusevm::Op::LoadFloat(1.0), 0);
+                builder.emit(fusevm::Op::Sub, 0);
+                builder.emit(fusevm::Op::SetSlot(*s), 0);
+            }
+            Op::CompoundAssignSlot(s, BinOp::Add) => {
+                let slot = *s;
+                builder.emit(fusevm::Op::GetSlot(slot), 0);
+                builder.emit(fusevm::Op::Add, 0);
+                builder.emit(fusevm::Op::Dup, 0);
+                builder.emit(fusevm::Op::SetSlot(slot), 0);
+            }
+            Op::CompoundAssignSlot(s, BinOp::Sub) => {
+                let slot = *s;
+                builder.emit(fusevm::Op::GetSlot(slot), 0);
+                builder.emit(fusevm::Op::Swap, 0);
+                builder.emit(fusevm::Op::Sub, 0);
+                builder.emit(fusevm::Op::Dup, 0);
+                builder.emit(fusevm::Op::SetSlot(slot), 0);
+            }
+            Op::CompoundAssignSlot(s, BinOp::Mul) => {
+                let slot = *s;
+                builder.emit(fusevm::Op::GetSlot(slot), 0);
+                builder.emit(fusevm::Op::Mul, 0);
+                builder.emit(fusevm::Op::Dup, 0);
+                builder.emit(fusevm::Op::SetSlot(slot), 0);
+            }
+            Op::CompoundAssignSlot(s, BinOp::Div) => {
+                let slot = *s;
+                builder.emit(fusevm::Op::GetSlot(slot), 0);
+                builder.emit(fusevm::Op::Div, 0);
+                builder.emit(fusevm::Op::Dup, 0);
+                builder.emit(fusevm::Op::SetSlot(slot), 0);
+            }
+            Op::CompoundAssignSlot(s, BinOp::Mod) => {
+                let slot = *s;
+                builder.emit(fusevm::Op::GetSlot(slot), 0);
+                builder.emit(fusevm::Op::Mod, 0);
+                builder.emit(fusevm::Op::Dup, 0);
+                builder.emit(fusevm::Op::SetSlot(slot), 0);
+            }
+            Op::CompoundAssignSlot(s, BinOp::Pow) => {
+                let slot = *s;
+                builder.emit(fusevm::Op::GetSlot(slot), 0);
+                builder.emit(fusevm::Op::Pow, 0);
+                builder.emit(fusevm::Op::Dup, 0);
+                builder.emit(fusevm::Op::SetSlot(slot), 0);
+            }
+            Op::IncDecSlot(s, kind) => {
+                let slot = *s;
+                match kind {
+                    IncDecOp::PreInc => {
+                        builder.emit(fusevm::Op::GetSlot(slot), 0);
+                        builder.emit(fusevm::Op::LoadFloat(1.0), 0);
+                        builder.emit(fusevm::Op::Add, 0);
+                        builder.emit(fusevm::Op::Dup, 0);
+                        builder.emit(fusevm::Op::SetSlot(slot), 0);
+                    }
+                    IncDecOp::PostInc => {
+                        builder.emit(fusevm::Op::GetSlot(slot), 0);
+                        builder.emit(fusevm::Op::Dup, 0);
+                        builder.emit(fusevm::Op::LoadFloat(1.0), 0);
+                        builder.emit(fusevm::Op::Add, 0);
+                        builder.emit(fusevm::Op::SetSlot(slot), 0);
+                    }
+                    IncDecOp::PreDec => {
+                        builder.emit(fusevm::Op::GetSlot(slot), 0);
+                        builder.emit(fusevm::Op::LoadFloat(1.0), 0);
+                        builder.emit(fusevm::Op::Sub, 0);
+                        builder.emit(fusevm::Op::Dup, 0);
+                        builder.emit(fusevm::Op::SetSlot(slot), 0);
+                    }
+                    IncDecOp::PostDec => {
+                        builder.emit(fusevm::Op::GetSlot(slot), 0);
+                        builder.emit(fusevm::Op::Dup, 0);
+                        builder.emit(fusevm::Op::LoadFloat(1.0), 0);
+                        builder.emit(fusevm::Op::Sub, 0);
+                        builder.emit(fusevm::Op::SetSlot(slot), 0);
+                    }
+                }
+            }
+            Op::AddSlotToSlot { src, dst } => {
+                builder.emit(fusevm::Op::GetSlot(*src), 0);
+                builder.emit(fusevm::Op::GetSlot(*dst), 0);
+                builder.emit(fusevm::Op::Add, 0);
+                builder.emit(fusevm::Op::SetSlot(*dst), 0);
+            }
+            Op::JumpIfSlotGeNum {
+                slot,
+                limit,
+                target,
+            } => {
+                builder.emit(fusevm::Op::GetSlot(*slot), 0);
+                builder.emit(fusevm::Op::LoadFloat(*limit), 0);
+                builder.emit(fusevm::Op::NumGe, 0);
+                builder.emit(fusevm::Op::JumpIfTrue(remap(*target)), 0);
+            }
+            _ => return None,
+        }
+    }
+
+    Some(builder.build())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -472,5 +739,28 @@ mod tests {
     #[test]
     fn translate_neg_v28() {
         assert!(matches!(translate_op(&Op::Neg, 1)[0].0, fusevm::Op::Negate));
+    }
+
+    #[test]
+    fn numeric_chunk_rejects_non_universal_ops() {
+        // PushStr is outside the universal numeric subset → not eligible.
+        assert!(build_numeric_chunk(&[Op::PushStr(0)], false, 0, &[]).is_none());
+    }
+
+    #[test]
+    fn numeric_chunk_rejects_bignum() {
+        assert!(build_numeric_chunk(&[Op::Add], true, 0, &[]).is_none());
+    }
+
+    #[test]
+    fn numeric_chunk_executes_slot_increment() {
+        // slot0 seeded to 5.0; IncrSlot(0) → 6.0; GetSlot(0) leaves 6.0 on stack.
+        let chunk =
+            build_numeric_chunk(&[Op::IncrSlot(0), Op::GetSlot(0)], false, 1, &[5.0]).unwrap();
+        let mut vm = fusevm::VM::new(chunk);
+        match vm.run() {
+            fusevm::VMResult::Ok(fusevm::Value::Float(f)) => assert_eq!(f, 6.0),
+            other => panic!("expected Ok(Float(6.0)), got {other:?}"),
+        }
     }
 }

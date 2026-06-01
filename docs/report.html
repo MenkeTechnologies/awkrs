@@ -149,7 +149,7 @@
           <tr><th>Module</th><th class="num">LOC</th><th class="num">Tests</th><th>Role</th></tr>
         </thead>
         <tbody>
-          <tr><td>vm.rs</td><td class="num">9,781</td><td class="num">512</td><td>Stack VM main loop, opcode dispatch, fused fast paths, array call-by-reference</td></tr>
+          <tr><td>vm.rs</td><td class="num">9,490</td><td class="num">512</td><td>Stack VM main loop, opcode dispatch, fused fast paths, array call-by-reference</td></tr>
           <tr><td>jit.rs</td><td class="num">5,861</td><td class="num">122</td><td>Cranelift JIT, tiered compilation, mixed-mode NaN-boxing</td></tr>
           <tr><td>parser.rs</td><td class="num">5,107</td><td class="num">510</td><td>Recursive-descent parser, gawk extensions, ^= / **= compound, <code>cmd |&amp; getline</code></td></tr>
           <tr><td>runtime.rs</td><td class="num">4,869</td><td class="num">147</td><td>Field/record state, FS default " ", MPFR (-M) integration, CONVFMT/OFMT</td></tr>
@@ -163,7 +163,7 @@
           <tr><td>script_cache.rs</td><td class="num">1,015</td><td class="num">26</td><td>rkyv shard at ~/.awkrs/scripts.rkyv, flock-serialized writes</td></tr>
           <tr><td>bytecode.rs</td><td class="num">805</td><td class="num">21</td><td>Op enum (95 variants), Chunk, CompiledProgram</td></tr>
           <tr><td>gawk_extensions.rs</td><td class="num">674</td><td class="num">22</td><td>ord/chr/intdiv/readdir/stat/readfile/writea/reada, sleep, statvfs, fts</td></tr>
-          <tr><td>(other modules)</td><td class="num">6,986</td><td class="num">524</td><td>ast (1,034), ast_fmt (979), record_io (803), cli (772), bignum (657), source_expand (531), ast/parallel (515), fusevm_bridge (476), procinfo (362), error (256), cyber_help (226), gettext_util (129), locale_numeric (124), flow (58), limits (32), main (16), bin/ars (16)</td></tr>
+          <tr><td>(other modules)</td><td class="num">6,986</td><td class="num">524</td><td>ast (1,034), ast_fmt (979), record_io (803), cli (772), bignum (657), source_expand (531), ast/parallel (515), fusevm_bridge (743), procinfo (362), error (256), cyber_help (226), gettext_util (129), locale_numeric (124), flow (58), limits (32), main (16), bin/ars (16)</td></tr>
           <tr class="total-row"><td>TOTAL</td><td class="num">52,031</td><td class="num">2,882</td><td>+922 integration tests = 3,804 total</td></tr>
         </tbody>
       </table>
