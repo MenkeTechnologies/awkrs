@@ -472,6 +472,14 @@ pub fn is_fusevm_eligible<'s>(
             // `compl(a)`: fatal "negative value is not allowed" on negative arg;
             // non-negative path is `!(a as i64)`. Lower to `Op::AwkComplJit`.
             Op::CallBuiltin(idx, 1) if resolve_name(*idx) == "compl" => continue,
+            // `$N` numeric field read with compile-time N. Lowers to
+            // `fusevm::Op::AwkGetFieldNum(N)`, which calls the thread-local
+            // host hook installed by [`crate::vm::try_fusevm_dispatch`] right
+            // before each chunk invocation. The hook reads the active record's
+            // field via the awkrs Runtime, so the chunk stays disk-cacheable
+            // (the libcall symbol is stable; the per-invocation context flows
+            // through TLS, not through the chunk bytecode).
+            Op::PushFieldNum(_) => continue,
             // Transcendental math builtins lower to native fusevm libcall ops
             // (`Op::AwkSin`/`AwkCos`/`AwkExp`/`AwkAtan2`) that canonicalize NaN
             // to `+nan`, matching awkrs's `Value::Num(if r.is_nan(){NAN}else{r})`
@@ -517,6 +525,7 @@ fn stack_delta<'s>(op: &bytecode::Op, resolve_name: impl Fn(u32) -> &'s str) -> 
         Op::PushNum(_)
         | Op::PushNumDecimalStr(_)
         | Op::GetSlot(_)
+        | Op::PushFieldNum(_)
         | Op::Dup
         | Op::IncDecSlot(_, _) => 1,
         // Div/Mod now lower to the block-JIT-eligible `AwkDivJit`/`AwkModJit`
@@ -937,6 +946,12 @@ pub fn build_numeric_chunk<'s>(
             Op::CallBuiltin(idx, 1) if resolve_name(*idx) == "compl" => {
                 builder.emit(fusevm::Op::AwkComplJit, 0);
             }
+            // `$N` numeric read with compile-time N: emit `AwkGetFieldNum(N)`.
+            // The active Runtime is exposed to the libcall via the thread-local
+            // hook installed by `try_fusevm_dispatch`.
+            Op::PushFieldNum(field) => {
+                builder.emit(fusevm::Op::AwkGetFieldNum(*field), 0);
+            }
             // Transcendental math: native fusevm libcall ops (NaN→`+nan`).
             // sin/cos/exp are 1-arg; atan2 is 2-arg (awkrs pushes y then x, so
             // x is on top — matches fusevm `Op::AwkAtan2`'s pop order).
@@ -1171,6 +1186,43 @@ mod tests {
             |_| "length",
         )
         .is_none());
+    }
+
+    // `$N` numeric reads (Op::PushFieldNum) are admitted into fusevm chunks
+    // since fusevm 0.13.9. The bridge translates them to
+    // `fusevm::Op::AwkGetFieldNum(N)`, which the active dispatch wires to a
+    // thread-local hook over the awkrs Runtime. Verify both the eligibility
+    // gate and the emit pattern. Sum-of-three-fields is the canonical hot
+    // pattern (`{ sum = $1 + $2 + $3 }`) — previously force-dropped, now
+    // stays JIT-eligible.
+    #[test]
+    fn field_num_chunk_lowers_to_awk_get_field_num() {
+        let ops = &[
+            Op::PushFieldNum(1),
+            Op::PushFieldNum(2),
+            Op::Add,
+            Op::PushFieldNum(3),
+            Op::Add,
+            Op::SetSlot(0),
+        ];
+        assert!(is_fusevm_eligible(ops, false, |_| ""));
+        let chunk = build_numeric_chunk(ops, false, |_| 0.0, |_| "").unwrap();
+        let n_field_reads = chunk
+            .ops
+            .iter()
+            .filter(|o| matches!(o, fusevm::Op::AwkGetFieldNum(_)))
+            .count();
+        assert_eq!(n_field_reads, 3);
+        // Field indices preserved in order.
+        let indices: Vec<u16> = chunk
+            .ops
+            .iter()
+            .filter_map(|o| match o {
+                fusevm::Op::AwkGetFieldNum(i) => Some(*i),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(indices, vec![1, 2, 3]);
     }
 
     // `/`, `%`, `/=`, `%=` chunks ARE now offloaded to fusevm: they lower to the

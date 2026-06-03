@@ -635,6 +635,64 @@ fn seed_fusevm_slots(vm: &mut fusevm::VM, slot_init: &[f64]) {
     }
 }
 
+thread_local! {
+    /// Pointer to the awkrs [`Runtime`] currently executing a fusevm chunk on
+    /// this thread, used by [`awkrs_fusevm_field_num_hook`] to satisfy
+    /// `$N` numeric reads inside JIT-compiled chunks. Set by
+    /// [`FieldHookGuard::new`] before `vm.run()` and cleared on drop, so the
+    /// hook only sees a live runtime during a real dispatch.
+    static AWKRS_RT_PTR: std::cell::Cell<*mut Runtime> =
+        const { std::cell::Cell::new(std::ptr::null_mut()) };
+}
+
+/// Hook installed in fusevm (via [`fusevm::set_awk_field_num_hook`]) so the
+/// JIT-compiled `fusevm::Op::AwkGetFieldNum` can read the active awk record's
+/// `$idx` field as a number. Reads `AWKRS_RT_PTR` for the active runtime;
+/// returns `0.0` when no dispatch is in flight (matches awk's missing-field
+/// coercion) or when the underlying `field_as_number` call errors (only
+/// possible on `idx < 0`, which the bytecode emitter never produces).
+extern "C" fn awkrs_fusevm_field_num_hook(idx: i64) -> f64 {
+    let ptr = AWKRS_RT_PTR.with(|c| c.get());
+    if ptr.is_null() {
+        return 0.0;
+    }
+    // SAFETY: AWKRS_RT_PTR is non-null only between FieldHookGuard::new and its
+    // Drop. The guard is constructed from `&mut Runtime` and outlives every
+    // hook call that fires inside `vm.run()`. fusevm calls the hook only on
+    // the same thread that ran `set_awk_field_num_hook`, so there's no
+    // cross-thread aliasing.
+    let rt = unsafe { &mut *ptr };
+    rt.field_as_number(idx as i32).unwrap_or(0.0)
+}
+
+/// RAII guard: install the fusevm field-num hook and stash the active Runtime
+/// pointer for the duration of a chunk dispatch. Restoration happens on drop,
+/// so panics during `vm.run()` still tear the TLS down cleanly. Reentrant
+/// (nested dispatches save and restore the previous pointer).
+struct FieldHookGuard {
+    prev_ptr: *mut Runtime,
+}
+
+impl FieldHookGuard {
+    fn new(rt: &mut Runtime) -> Self {
+        let new_ptr: *mut Runtime = rt as *mut _;
+        let prev_ptr = AWKRS_RT_PTR.with(|c| c.replace(new_ptr));
+        // Re-install on every call (cheap) so a host that toggles the hook
+        // between dispatches doesn't observe a stale binding.
+        fusevm::set_awk_field_num_hook(Some(awkrs_fusevm_field_num_hook));
+        Self { prev_ptr }
+    }
+}
+
+impl Drop for FieldHookGuard {
+    fn drop(&mut self) {
+        AWKRS_RT_PTR.with(|c| c.set(self.prev_ptr));
+        if self.prev_ptr.is_null() {
+            fusevm::set_awk_field_num_hook(None);
+        }
+    }
+}
+
 /// Translate an awkrs chunk to a fusevm chunk and execute via fusevm's VM.
 /// Eligibility + the op→fusevm translation live in
 /// `fusevm_bridge::build_numeric_chunk` (the single source of truth); this
@@ -667,7 +725,11 @@ fn try_fusevm_dispatch(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<Option<VmSi
     // reused from the op_hash-keyed TLS + on-disk caches.
     seed_fusevm_slots(&mut vm, &slot_init);
     vm.enable_tracing_jit();
+    // Install the field-num hook for the duration of vm.run(). Chunks that
+    // never emit AwkGetFieldNum pay only the (cheap) TLS write.
+    let _hook_guard = FieldHookGuard::new(ctx.rt);
     let result = vm.run();
+    drop(_hook_guard);
 
     // Write back modified slots from fusevm frame to awkrs runtime
     if let Some(frame) = vm.frames.last() {
@@ -760,7 +822,11 @@ fn run_fusevm_region(ops: &[Op], ctx: &mut VmCtx<'_>) -> Result<bool> {
     let mut eager_cfg = saved_cfg;
     eager_cfg.block_threshold = 0;
     jit.set_config(eager_cfg);
+    // Install the field-num hook for the duration of vm.run() (same as
+    // `try_fusevm_dispatch`).
+    let _hook_guard = FieldHookGuard::new(ctx.rt);
     let result = vm.run();
+    drop(_hook_guard);
     jit.set_config(saved_cfg);
     if let fusevm::VMResult::Error(msg) = result {
         return Err(Error::Runtime(msg));
