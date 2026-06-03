@@ -1693,13 +1693,20 @@ impl Runtime {
     /// `ARGV[0]` uses the basename of `argv[0]` (gawk convention — `"gawk"` rather than
     /// `"/opt/homebrew/bin/gawk"`); awk scripts that key off the interpreter name
     /// (`ARGV[0] == "awkrs"`) work regardless of how the binary was launched.
+    ///
+    /// In `--traditional` mode the full `argv[0]` is preserved verbatim, matching
+    /// BSD `/usr/bin/awk` and bell-labs nawk semantics (no basename strip).
     pub fn init_argv(&mut self, files: &[std::path::PathBuf]) {
         use std::env;
         let raw = env::args().next().unwrap_or_else(|| "awkrs".to_string());
-        let bin = std::path::Path::new(&raw)
-            .file_name()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or(raw);
+        let bin = if self.traditional {
+            raw.clone()
+        } else {
+            std::path::Path::new(&raw)
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| raw.clone())
+        };
         let mut argv = vec![bin];
         for f in files {
             argv.push(f.to_string_lossy().into_owned());

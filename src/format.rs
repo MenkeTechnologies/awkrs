@@ -3,6 +3,14 @@
 use crate::bignum::{float_trunc_integer, mpfr_string_for_percent_s, value_to_mpfr};
 use crate::runtime::Value;
 use rug::float::Round;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Process-wide opt-in for BSD/Bell-Labs awk printf quirks: zero-padding `%0Ns`
+/// and `%0Nc` (non-POSIX — POSIX says the `0` flag is for numeric conversions
+/// only). Set once from `--traditional` at startup; read with `Relaxed`
+/// ordering inside `format_one_spec`. Defaults to off so gawk/POSIX parity
+/// stays intact for every caller that doesn't explicitly flip the switch.
+pub static AWK_TRADITIONAL_MODE: AtomicBool = AtomicBool::new(false);
 
 #[inline]
 fn fmt_peek(fmt: &str, i: usize) -> Option<char> {
@@ -782,7 +790,9 @@ fn format_one(
         's' => {
             // POSIX / gawk: the `0` flag has no effect on string conversions —
             // pad with spaces regardless. (Numeric conversions below still
-            // respect `pad_char`.)
+            // respect `pad_char`.) BSD `/usr/bin/awk` diverges: it zero-pads
+            // strings under `%0Ns`; that quirk is selectable here via
+            // `--traditional`.
             let mut s: String = match (mpfr_mode, v) {
                 (Some(_), Value::Mpfr(f)) => mpfr_string_for_percent_s(f),
                 _ => v.as_str(),
@@ -790,7 +800,12 @@ fn format_one(
             if let Some(p) = prec {
                 s = s.chars().take(p).collect::<String>();
             }
-            pad_string(&s, w, left, ' ')
+            let s_pad = if AWK_TRADITIONAL_MODE.load(Ordering::Relaxed) {
+                pad_char
+            } else {
+                ' '
+            };
+            pad_string(&s, w, left, s_pad)
         }
         'd' | 'i' => {
             let mut s = if let Some((pr, rd)) = mpfr_mode {
@@ -1125,9 +1140,15 @@ fn format_one(
         }
         'c' => {
             // `%c` is a string-like conversion: the `0` flag is meaningless and
-            // gawk pads with spaces regardless.
+            // gawk pads with spaces regardless. BSD `/usr/bin/awk` zero-pads
+            // under `%0Nc`; that quirk is selectable here via `--traditional`.
             let s = sprintf_c_char(v);
-            pad_string(&s, w, left, ' ')
+            let c_pad = if AWK_TRADITIONAL_MODE.load(Ordering::Relaxed) {
+                pad_char
+            } else {
+                ' '
+            };
+            pad_string(&s, w, left, c_pad)
         }
         // Unreachable in normal flow: `parse_conversion_rest` filters unknown
         // conversion characters through `is_known_conv` before reaching here.
@@ -1393,6 +1414,45 @@ mod tests {
         let s = awk_sprintf_with_decimal("%'d", &[Value::Num(1234567.0)], '.', Some(','), None)
             .unwrap();
         assert_eq!(s, "1,234,567");
+    }
+
+    // BSD `/usr/bin/awk` zero-pads `%0Ns` strings (non-POSIX) — awkrs matches
+    // that quirk when `AWK_TRADITIONAL_MODE` is on. Default (gawk/POSIX) stays
+    // space-padding. These two tests pin both branches so the next edit to
+    // `format_one_spec`'s 's'/'c' arms can't silently regress either side.
+    // Mutex guard serializes the global flag flip across parallel test runs.
+    #[test]
+    fn traditional_mode_zero_pads_percent_s_and_c() {
+        use std::sync::Mutex;
+        static GUARD: Mutex<()> = Mutex::new(());
+        let _g = GUARD.lock().unwrap();
+
+        let prev = AWK_TRADITIONAL_MODE.swap(true, Ordering::Relaxed);
+        let s = awk_sprintf("[%05s][%-05s][%05c]", &[
+            Value::Str("ab".into()),
+            Value::Str("cd".into()),
+            Value::Num(65.0),
+        ])
+        .unwrap();
+        AWK_TRADITIONAL_MODE.store(prev, Ordering::Relaxed);
+        assert_eq!(s, "[000ab][cd   ][0000A]");
+    }
+
+    #[test]
+    fn default_mode_space_pads_percent_s_and_c() {
+        use std::sync::Mutex;
+        static GUARD: Mutex<()> = Mutex::new(());
+        let _g = GUARD.lock().unwrap();
+
+        let prev = AWK_TRADITIONAL_MODE.swap(false, Ordering::Relaxed);
+        let s = awk_sprintf("[%05s][%-05s][%05c]", &[
+            Value::Str("ab".into()),
+            Value::Str("cd".into()),
+            Value::Num(65.0),
+        ])
+        .unwrap();
+        AWK_TRADITIONAL_MODE.store(prev, Ordering::Relaxed);
+        assert_eq!(s, "[   ab][cd   ][    A]");
     }
 
     #[test]

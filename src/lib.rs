@@ -171,6 +171,12 @@ pub fn run(bin_name: &str) -> Result<()> {
     rt.characters_as_bytes = args.characters_as_bytes;
     rt.posix = args.posix;
     rt.traditional = args.traditional;
+    // Process-wide opt-in for the BSD/Bell-Labs printf zero-pad quirk on %s/%c
+    // (read by `crate::format::format_one_spec`). Off by default = POSIX/gawk
+    // parity preserved; flipping `--traditional` switches every awkrs printf
+    // call to BSD-style behavior for those two specifiers.
+    crate::format::AWK_TRADITIONAL_MODE
+        .store(args.traditional, std::sync::atomic::Ordering::Relaxed);
     rt.jit_enabled =
         !args.no_optimize && std::env::var("AWKRS_JIT").map(|v| v != "0").unwrap_or(true);
     if args.use_lc_numeric {

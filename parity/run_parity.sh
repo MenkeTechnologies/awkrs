@@ -58,6 +58,16 @@ run_one_ref() {
     return 2
   fi
 
+  # Per-mode awkrs flags: BSD reference awk has two known POSIX divergences
+  # awkrs intentionally does NOT match by default (full-path ARGV[0],
+  # zero-padding %0Ns/%0Nc strings). Both are reachable behind `--traditional`,
+  # so the BSD parity run flips that switch — gawk/mawk modes stay strict
+  # POSIX/gawk. Empty array in non-BSD modes adds zero overhead.
+  local -a awkrs_flags=()
+  if [[ "$ref_name" == "bsd" ]]; then
+    awkrs_flags+=(--traditional)
+  fi
+
   local failed=0
   local f base stem inp dat p_out r_out
   for f in "${cases[@]}"; do
@@ -76,13 +86,13 @@ run_one_ref() {
 
     if [[ -f "$dat" ]]; then
       "$ref_cmd" -f "$f" "$dat" >"$p_out" 2>&1 || true
-      "$AWKRS" -f "$f" "$dat" >"$r_out" 2>&1 || true
+      "$AWKRS" "${awkrs_flags[@]}" -f "$f" "$dat" >"$r_out" 2>&1 || true
     elif [[ -f "$inp" ]]; then
       "$ref_cmd" -f "$f" <"$inp" >"$p_out" 2>&1 || true
-      "$AWKRS" -f "$f" <"$inp" >"$r_out" 2>&1 || true
+      "$AWKRS" "${awkrs_flags[@]}" -f "$f" <"$inp" >"$r_out" 2>&1 || true
     else
       "$ref_cmd" -f "$f" </dev/null >"$p_out" 2>&1 || true
-      "$AWKRS" -f "$f" </dev/null >"$r_out" 2>&1 || true
+      "$AWKRS" "${awkrs_flags[@]}" -f "$f" </dev/null >"$r_out" 2>&1 || true
     fi
 
     if ! cmp -s "$p_out" "$r_out"; then
