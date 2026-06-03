@@ -58,14 +58,21 @@ run_one_ref() {
     return 2
   fi
 
-  # Per-mode awkrs flags: BSD reference awk has two known POSIX divergences
-  # awkrs intentionally does NOT match by default (full-path ARGV[0],
-  # zero-padding %0Ns/%0Nc strings). Both are reachable behind `--traditional`,
-  # so the BSD parity run flips that switch — gawk/mawk modes stay strict
-  # POSIX/gawk. Empty array in non-BSD modes adds zero overhead.
+  # Per-mode awkrs flags: BSD reference awk *may* have two known POSIX
+  # divergences awkrs intentionally does NOT match by default (full-path
+  # ARGV[0], zero-padding `%0Ns`/`%0Nc` strings). The reference depends on the
+  # host OS — macOS `/usr/bin/awk` has both quirks; Linux's `original-awk`
+  # (one-true-awk) is POSIX-compliant on both. So probe the actual reference
+  # with a tiny program before the main loop; only flip `--traditional` when
+  # the reference itself exhibits the quirk. Gawk/mawk modes never run this
+  # probe.
   local -a awkrs_flags=()
   if [[ "$ref_name" == "bsd" ]]; then
-    awkrs_flags+=(--traditional)
+    local probe
+    probe=$("$ref_cmd" 'BEGIN { printf "%05s", "ab" }' </dev/null 2>/dev/null || echo "")
+    if [[ "$probe" == "000ab" ]]; then
+      awkrs_flags+=(--traditional)
+    fi
   fi
 
   local failed=0
