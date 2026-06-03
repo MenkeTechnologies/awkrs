@@ -85,3 +85,12 @@ jobs:
         run: bash parity/run_parity.sh mawk
       - name: Full corpus vs original-awk (BSD family)
         run: env BSD_AWK=original-awk bash parity/run_parity.sh bsd
+
+  docs-gates:
+    name: Docs gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - run: bash tests/docs-target-blank-rel-noopener.sh
+      - run: bash tests/docs-no-http-links.sh
+      - run: bash tests/docs-no-inline-handlers.sh
