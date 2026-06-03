@@ -32,7 +32,7 @@ chrono = "0.4"
 clap = { version = "4.5", features = ["derive", "cargo", "env"] }
 dirs = "5"
 gettext = "0.4"
-fusevm = { version = "0.13.3", features = ["jit", "jit-disk-cache"] }
+fusevm = { version = "0.13.4", features = ["jit", "jit-disk-cache"] }
 cranelift-codegen = "0.130.0"
 cranelift-frontend = "0.130.0"
 cranelift-jit = "0.130.0"
@@ -62,6 +62,9 @@ tempfile = "3"
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("vms"))'] }
 
-
-[patch.crates-io]
-fusevm = { path = "../fusevm" }
+# Local fusevm-development override — kept out of the committed Cargo.toml
+# because CI doesn't have `../fusevm` checked out. To work against a local
+# fusevm tree, uncomment:
+#
+# [patch.crates-io]
+# fusevm = { path = "../fusevm" }
