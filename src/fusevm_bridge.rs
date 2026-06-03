@@ -389,7 +389,11 @@ pub fn translate_op(op: &bytecode::Op, line: u32) -> Vec<(fusevm::Op, u32)> {
 /// handler required). Returns `false` for bignum mode or an empty chunk.
 ///
 /// This is the gate for [`build_numeric_chunk`]; the two must stay in sync.
-pub fn is_fusevm_eligible(ops: &[bytecode::Op], bignum: bool) -> bool {
+pub fn is_fusevm_eligible<'s>(
+    ops: &[bytecode::Op],
+    bignum: bool,
+    resolve_name: impl Fn(u32) -> &'s str,
+) -> bool {
     use bytecode::Op;
     if bignum || ops.is_empty() {
         return false;
@@ -397,11 +401,10 @@ pub fn is_fusevm_eligible(ops: &[bytecode::Op], bignum: bool) -> bool {
     for op in ops {
         match op {
             Op::PushNum(_)
+            | Op::PushNumDecimalStr(_)
             | Op::Add
             | Op::Sub
             | Op::Mul
-            | Op::Div
-            | Op::Mod
             | Op::Pow
             | Op::Neg
             | Op::Not
@@ -425,16 +428,186 @@ pub fn is_fusevm_eligible(ops: &[bytecode::Op], bignum: bool) -> bool {
             | Op::CompoundAssignSlot(_, BinOp::Add)
             | Op::CompoundAssignSlot(_, BinOp::Sub)
             | Op::CompoundAssignSlot(_, BinOp::Mul)
-            | Op::CompoundAssignSlot(_, BinOp::Div)
-            | Op::CompoundAssignSlot(_, BinOp::Mod)
             | Op::CompoundAssignSlot(_, BinOp::Pow)
             | Op::AddSlotToSlot { .. }
             | Op::JumpIfSlotGeNum { .. }
             | Op::IncDecSlot(_, _) => continue,
+            // `/` and `%` lower to `fusevm::Op::AwkDivJit`/`AwkModJit`: awk-
+            // semantic div/mod that trap on a zero divisor (faithful fatal) AND
+            // are block-JIT-eligible via a Cranelift guarded early-exit (the
+            // divisor is compared to 0.0; on zero a libcall records the trap and
+            // the block returns, the VM raising the awk error). So a div/mod
+            // numeric chunk now native-JITs through fusevm instead of falling to
+            // an interpreter — both trapping correctly. Compound `/=`/`%=` lower
+            // the same way (see `build_numeric_chunk`).
+            Op::Div
+            | Op::Mod
+            | Op::CompoundAssignSlot(_, BinOp::Div)
+            | Op::CompoundAssignSlot(_, BinOp::Mod) => continue,
+            // `int(x)` lowers to a native fusevm `Op::AwkInt` (Cranelift
+            // `trunc`), so the whole numeric chunk can still block/trace-JIT.
+            // Only the 1-arg `int` builtin is admitted — every other builtin
+            // needs host (Runtime) state and stays interpreter-side. Bignum is
+            // already rejected above, matching awkrs's non-bignum
+            // `Value::Num(as_number().trunc())`.
+            Op::CallBuiltin(idx, 1) if resolve_name(*idx) == "int" => continue,
+            // Transcendental math builtins lower to native fusevm libcall ops
+            // (`Op::AwkSin`/`AwkCos`/`AwkExp`/`AwkAtan2`) that canonicalize NaN
+            // to `+nan`, matching awkrs's `Value::Num(if r.is_nan(){NAN}else{r})`
+            // sign normalization. sin/cos/exp are 1-arg; atan2 is 2-arg. sqrt/log
+            // stay interpreter-side (they emit a host stderr warning on negative
+            // args, which a native op cannot reproduce faithfully).
+            Op::CallBuiltin(idx, 1) if matches!(resolve_name(*idx), "sin" | "cos" | "exp") => {
+                continue
+            }
+            Op::CallBuiltin(idx, 2) if resolve_name(*idx) == "atan2" => continue,
+            // `and`/`or`/`xor` are variadic (≥2 args) pure-integer bitwise folds
+            // — operands truncated+saturated to i64 (matching awkrs's
+            // `num_to_u64`), no host state, no value-dependent trap. They lower
+            // to native fusevm `Op::AwkAnd`/`AwkOr`/`AwkXor` (Cranelift
+            // band/bor/bxor) so the chunk stays block-JIT-eligible. `lshift`/
+            // `rshift`/`compl` are NOT admitted: they raise a fatal on negative
+            // args, which a pure native op cannot reproduce (same reason as
+            // div/mod). The arg count must fit fusevm's `u8` payload.
+            Op::CallBuiltin(idx, argc)
+                if *argc >= 2
+                    && *argc <= u8::MAX as u16
+                    && matches!(resolve_name(*idx), "and" | "or" | "xor") =>
+            {
+                continue
+            }
             _ => return false,
         }
     }
     true
+}
+
+/// Value-stack depth change of an eligible op, or `None` if the op is not in
+/// the fusevm-eligible numeric subset. Mirrors the interpreter semantics in
+/// `vm.rs::execute`: `SetSlot`/`CompoundAssignSlot` peek-or-replace (net 0),
+/// `IncDecSlot` leaves the read value (+1), the fused slot ops touch slots
+/// only (0). The admitted builtins (`int`/`sin`/`cos`/`exp` pop 1 push 1 → 0;
+/// `atan2` pops 2 → -1; variadic `and`/`or`/`xor` pop `argc` push 1 → `1-argc`)
+/// need `resolve_name`, so this must stay consistent with `is_fusevm_eligible`.
+/// Used by [`eligible_loop_prefix`] to find statement boundaries.
+fn stack_delta<'s>(op: &bytecode::Op, resolve_name: impl Fn(u32) -> &'s str) -> Option<i32> {
+    use bytecode::Op;
+    Some(match op {
+        Op::PushNum(_)
+        | Op::PushNumDecimalStr(_)
+        | Op::GetSlot(_)
+        | Op::Dup
+        | Op::IncDecSlot(_, _) => 1,
+        // Div/Mod now lower to the block-JIT-eligible `AwkDivJit`/`AwkModJit`
+        // (guarded zero-divisor trap), so they are admitted here AND in
+        // `is_fusevm_eligible`. Binary `/`/`%` pop two, push one (-1); compound
+        // `/=`/`%=` are stack-neutral (0).
+        Op::Add
+        | Op::Sub
+        | Op::Mul
+        | Op::Pow
+        | Op::Div
+        | Op::Mod
+        | Op::CmpEq
+        | Op::CmpNe
+        | Op::CmpLt
+        | Op::CmpLe
+        | Op::CmpGt
+        | Op::CmpGe
+        | Op::Pop
+        | Op::JumpIfFalsePop(_)
+        | Op::JumpIfTruePop(_) => -1,
+        Op::Neg
+        | Op::Not
+        | Op::Pos
+        | Op::ToBool
+        | Op::SetSlot(_)
+        | Op::IncrSlot(_)
+        | Op::DecrSlot(_)
+        | Op::AddSlotToSlot { .. }
+        | Op::JumpIfSlotGeNum { .. }
+        | Op::Jump(_) => 0,
+        Op::CompoundAssignSlot(
+            _,
+            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Pow | BinOp::Div | BinOp::Mod,
+        ) => 0,
+        // Admitted numeric builtins (must match `is_fusevm_eligible`). Each
+        // pops `argc` and pushes one result.
+        Op::CallBuiltin(idx, 1) if matches!(resolve_name(*idx), "int" | "sin" | "cos" | "exp") => 0,
+        Op::CallBuiltin(idx, 2) if resolve_name(*idx) == "atan2" => -1,
+        Op::CallBuiltin(idx, argc)
+            if *argc >= 2
+                && *argc <= u8::MAX as u16
+                && matches!(resolve_name(*idx), "and" | "or" | "xor") =>
+        {
+            1 - *argc as i32
+        }
+        _ => return None,
+    })
+}
+
+/// Find the longest *prefix* of `ops` that is (a) entirely fusevm-eligible,
+/// (b) stack-neutral at its end (a statement boundary), (c) self-contained
+/// (every jump target stays within the prefix), and (d) contains at least one
+/// backward jump (a loop — the only case where offloading to fusevm's JIT can
+/// pay for the per-dispatch setup). Returns the exclusive end index `k`, or
+/// `None` if no such prefix exists.
+///
+/// This lets the JIT engage on compute-in-`BEGIN`/`END` chunks like
+/// `BEGIN{s=0;for(i=1;i<=N;i++)s+=i;print s}` whose trailing `print` makes the
+/// *whole* chunk ineligible: the numeric prefix (init + loop) runs on fusevm,
+/// then the awkrs interpreter resumes at `k` for the `print`.
+pub fn eligible_loop_prefix<'s>(
+    ops: &[bytecode::Op],
+    bignum: bool,
+    resolve_name: impl Fn(u32) -> &'s str,
+) -> Option<usize> {
+    use bytecode::Op;
+    if bignum || ops.is_empty() {
+        return None;
+    }
+    let mut depth: i32 = 0;
+    let mut last_neutral: usize = 0;
+    let mut i: usize = 0;
+    while i < ops.len() {
+        let delta = match stack_delta(&ops[i], &resolve_name) {
+            Some(d) => d,
+            None => break,
+        };
+        depth += delta;
+        if depth < 0 {
+            return None;
+        }
+        i += 1;
+        if depth == 0 {
+            last_neutral = i;
+        }
+    }
+    let k = last_neutral;
+    if k == 0 {
+        return None;
+    }
+    // Validate self-containment + require a backward jump within [0, k).
+    let mut saw_backjump = false;
+    for (j, op) in ops.iter().enumerate().take(k) {
+        let target = match op {
+            Op::Jump(t) | Op::JumpIfFalsePop(t) | Op::JumpIfTruePop(t) => Some(*t),
+            Op::JumpIfSlotGeNum { target, .. } => Some(*target),
+            _ => None,
+        };
+        if let Some(t) = target {
+            if t > k {
+                return None;
+            }
+            if t <= j {
+                saw_backjump = true;
+            }
+        }
+    }
+    if !saw_backjump {
+        return None;
+    }
+    Some(k)
 }
 
 /// Translate an eligible awkrs numeric chunk into a runnable `fusevm::Chunk`,
@@ -447,32 +620,40 @@ pub fn is_fusevm_eligible(ops: &[bytecode::Op], bignum: bool) -> bool {
 ///
 /// Single source of truth for awkrs's numeric fusevm tier; `vm.rs`'s
 /// `try_fusevm_dispatch` marshals slots in/out around this builder.
-pub fn build_numeric_chunk(
+///
+/// `resolve_num` maps a `PushNumDecimalStr` string-pool index to its `f64`
+/// value (non-bignum mode only — eligibility rejects bignum), matching the
+/// interpreter's `str.parse::<f64>().unwrap_or(0.0)`.
+pub fn build_numeric_chunk<'s>(
     ops: &[bytecode::Op],
     bignum: bool,
-    slot_count: usize,
-    slot_init: &[f64],
+    resolve_num: impl Fn(u32) -> f64,
+    resolve_name: impl Fn(u32) -> &'s str,
 ) -> Option<fusevm::Chunk> {
-    use bytecode::Op;
     use crate::ast::IncDecOp;
+    use bytecode::Op;
 
-    if !is_fusevm_eligible(ops, bignum) {
+    if !is_fusevm_eligible(ops, bignum, &resolve_name) {
         return None;
     }
 
-    // Pass 1: map each awkrs ip to its fusevm ip, accounting for expansions
-    // and the slot-init preamble (PushFrame + N×(LoadFloat + SetSlot)).
+    // Pass 1: map each awkrs ip to its fusevm ip, accounting for multi-op
+    // expansions (incr/decr, compound-assign). The chunk is *stable*: slot
+    // seeds are NOT baked in as `LoadFloat` constants (that would make the
+    // chunk's `op_hash` vary every record, defeating fusevm's op_hash-keyed
+    // block-JIT warmup and on-disk cache). Instead the caller pre-seeds the
+    // VM's base-frame slots as data, and the chunk operates on that frame
+    // directly (no `PushFrame`), so identical programs hash identically and
+    // the JIT-compiled native code is reused across records and processes.
     let mut ip_map: Vec<usize> = Vec::with_capacity(ops.len() + 1);
-    let mut fusevm_ip = 1 + slot_count * 2;
+    let mut fusevm_ip = 0;
     for op in ops {
         ip_map.push(fusevm_ip);
         fusevm_ip += match op {
             Op::IncrSlot(_) | Op::DecrSlot(_) => 4,
-            Op::CompoundAssignSlot(_, BinOp::Sub) => 5,
-            Op::CompoundAssignSlot(
-                _,
-                BinOp::Add | BinOp::Mul | BinOp::Div | BinOp::Mod | BinOp::Pow,
-            ) => 4,
+            Op::SetSlot(_) => 2,
+            Op::CompoundAssignSlot(_, BinOp::Sub | BinOp::Div | BinOp::Mod | BinOp::Pow) => 5,
+            Op::CompoundAssignSlot(_, BinOp::Add | BinOp::Mul) => 4,
             Op::Not => 2,
             Op::Pos => 2,
             Op::ToBool => 2,
@@ -494,24 +675,39 @@ pub fn build_numeric_chunk(
 
     let mut builder = fusevm::ChunkBuilder::new();
 
-    // Preamble: PushFrame + initialize all slots from the awkrs runtime
-    // (LoadFloat value, SetSlot i) for each slot.
-    builder.emit(fusevm::Op::PushFrame, 0);
-    for (i, n) in slot_init.iter().take(slot_count).enumerate() {
-        builder.emit(fusevm::Op::LoadFloat(*n), 0);
-        builder.emit(fusevm::Op::SetSlot(i as u16), 0);
-    }
-
     for op in ops.iter() {
         match op {
-            Op::PushNum(n) => { builder.emit(fusevm::Op::LoadFloat(*n), 0); }
-            Op::Add => { builder.emit(fusevm::Op::Add, 0); }
-            Op::Sub => { builder.emit(fusevm::Op::Sub, 0); }
-            Op::Mul => { builder.emit(fusevm::Op::Mul, 0); }
-            Op::Div => { builder.emit(fusevm::Op::Div, 0); }
-            Op::Mod => { builder.emit(fusevm::Op::Mod, 0); }
-            Op::Pow => { builder.emit(fusevm::Op::Pow, 0); }
-            Op::Neg => { builder.emit(fusevm::Op::Negate, 0); }
+            Op::PushNum(n) => {
+                builder.emit(fusevm::Op::LoadFloat(*n), 0);
+            }
+            Op::PushNumDecimalStr(idx) => {
+                builder.emit(fusevm::Op::LoadFloat(resolve_num(*idx)), 0);
+            }
+            Op::Add => {
+                builder.emit(fusevm::Op::Add, 0);
+            }
+            Op::Sub => {
+                builder.emit(fusevm::Op::Sub, 0);
+            }
+            Op::Mul => {
+                builder.emit(fusevm::Op::Mul, 0);
+            }
+            // `/` and `%` lower to the trapping, block-JIT-eligible
+            // AwkDivJit/AwkModJit (guarded zero-divisor early-exit in fusevm's
+            // Cranelift block JIT — see `fusevm::Op::AwkDivJit`). Reachable now:
+            // `is_fusevm_eligible` admits div/mod.
+            Op::Div => {
+                builder.emit(fusevm::Op::AwkDivJit, 0);
+            }
+            Op::Mod => {
+                builder.emit(fusevm::Op::AwkModJit, 0);
+            }
+            Op::Pow => {
+                builder.emit(fusevm::Op::Pow, 0);
+            }
+            Op::Neg => {
+                builder.emit(fusevm::Op::Negate, 0);
+            }
             // AWK !x returns Num(0/1): x == 0.0 yields the same for numbers.
             Op::Not => {
                 builder.emit(fusevm::Op::LoadFloat(0.0), 0);
@@ -527,19 +723,50 @@ pub fn build_numeric_chunk(
                 builder.emit(fusevm::Op::LoadFloat(0.0), 0);
                 builder.emit(fusevm::Op::NumNe, 0);
             }
-            Op::Pop => { builder.emit(fusevm::Op::Pop, 0); }
-            Op::Dup => { builder.emit(fusevm::Op::Dup, 0); }
-            Op::GetSlot(s) => { builder.emit(fusevm::Op::GetSlot(*s), 0); }
-            Op::SetSlot(s) => { builder.emit(fusevm::Op::SetSlot(*s), 0); }
-            Op::CmpEq => { builder.emit(fusevm::Op::NumEq, 0); }
-            Op::CmpNe => { builder.emit(fusevm::Op::NumNe, 0); }
-            Op::CmpLt => { builder.emit(fusevm::Op::NumLt, 0); }
-            Op::CmpLe => { builder.emit(fusevm::Op::NumLe, 0); }
-            Op::CmpGt => { builder.emit(fusevm::Op::NumGt, 0); }
-            Op::CmpGe => { builder.emit(fusevm::Op::NumGe, 0); }
-            Op::Jump(t) => { builder.emit(fusevm::Op::Jump(remap(*t)), 0); }
-            Op::JumpIfFalsePop(t) => { builder.emit(fusevm::Op::JumpIfFalse(remap(*t)), 0); }
-            Op::JumpIfTruePop(t) => { builder.emit(fusevm::Op::JumpIfTrue(remap(*t)), 0); }
+            Op::Pop => {
+                builder.emit(fusevm::Op::Pop, 0);
+            }
+            Op::Dup => {
+                builder.emit(fusevm::Op::Dup, 0);
+            }
+            Op::GetSlot(s) => {
+                builder.emit(fusevm::Op::GetSlot(*s), 0);
+            }
+            // awkrs `SetSlot` PEEKS (stores top, leaves it); fusevm `SetSlot`
+            // POPS. Emit `Dup; SetSlot` so the value survives, matching awkrs
+            // semantics (the awkrs source pairs this with a trailing `Pop` in
+            // statement context, or consumes the value in expression context).
+            Op::SetSlot(s) => {
+                builder.emit(fusevm::Op::Dup, 0);
+                builder.emit(fusevm::Op::SetSlot(*s), 0);
+            }
+            Op::CmpEq => {
+                builder.emit(fusevm::Op::NumEq, 0);
+            }
+            Op::CmpNe => {
+                builder.emit(fusevm::Op::NumNe, 0);
+            }
+            Op::CmpLt => {
+                builder.emit(fusevm::Op::NumLt, 0);
+            }
+            Op::CmpLe => {
+                builder.emit(fusevm::Op::NumLe, 0);
+            }
+            Op::CmpGt => {
+                builder.emit(fusevm::Op::NumGt, 0);
+            }
+            Op::CmpGe => {
+                builder.emit(fusevm::Op::NumGe, 0);
+            }
+            Op::Jump(t) => {
+                builder.emit(fusevm::Op::Jump(remap(*t)), 0);
+            }
+            Op::JumpIfFalsePop(t) => {
+                builder.emit(fusevm::Op::JumpIfFalse(remap(*t)), 0);
+            }
+            Op::JumpIfTruePop(t) => {
+                builder.emit(fusevm::Op::JumpIfTrue(remap(*t)), 0);
+            }
             Op::IncrSlot(s) => {
                 builder.emit(fusevm::Op::GetSlot(*s), 0);
                 builder.emit(fusevm::Op::LoadFloat(1.0), 0);
@@ -577,20 +804,23 @@ pub fn build_numeric_chunk(
             Op::CompoundAssignSlot(s, BinOp::Div) => {
                 let slot = *s;
                 builder.emit(fusevm::Op::GetSlot(slot), 0);
-                builder.emit(fusevm::Op::Div, 0);
+                builder.emit(fusevm::Op::Swap, 0);
+                builder.emit(fusevm::Op::AwkDivJit, 0);
                 builder.emit(fusevm::Op::Dup, 0);
                 builder.emit(fusevm::Op::SetSlot(slot), 0);
             }
             Op::CompoundAssignSlot(s, BinOp::Mod) => {
                 let slot = *s;
                 builder.emit(fusevm::Op::GetSlot(slot), 0);
-                builder.emit(fusevm::Op::Mod, 0);
+                builder.emit(fusevm::Op::Swap, 0);
+                builder.emit(fusevm::Op::AwkModJit, 0);
                 builder.emit(fusevm::Op::Dup, 0);
                 builder.emit(fusevm::Op::SetSlot(slot), 0);
             }
             Op::CompoundAssignSlot(s, BinOp::Pow) => {
                 let slot = *s;
                 builder.emit(fusevm::Op::GetSlot(slot), 0);
+                builder.emit(fusevm::Op::Swap, 0);
                 builder.emit(fusevm::Op::Pow, 0);
                 builder.emit(fusevm::Op::Dup, 0);
                 builder.emit(fusevm::Op::SetSlot(slot), 0);
@@ -643,6 +873,41 @@ pub fn build_numeric_chunk(
                 builder.emit(fusevm::Op::LoadFloat(*limit), 0);
                 builder.emit(fusevm::Op::NumGe, 0);
                 builder.emit(fusevm::Op::JumpIfTrue(remap(*target)), 0);
+            }
+            // `int(x)`: pop the f64 argument, push its truncation. Native
+            // fusevm op (Cranelift `trunc`) — keeps the chunk JIT-eligible.
+            Op::CallBuiltin(idx, 1) if resolve_name(*idx) == "int" => {
+                builder.emit(fusevm::Op::AwkInt, 0);
+            }
+            // Transcendental math: native fusevm libcall ops (NaN→`+nan`).
+            // sin/cos/exp are 1-arg; atan2 is 2-arg (awkrs pushes y then x, so
+            // x is on top — matches fusevm `Op::AwkAtan2`'s pop order).
+            Op::CallBuiltin(idx, 1) if resolve_name(*idx) == "sin" => {
+                builder.emit(fusevm::Op::AwkSin, 0);
+            }
+            Op::CallBuiltin(idx, 1) if resolve_name(*idx) == "cos" => {
+                builder.emit(fusevm::Op::AwkCos, 0);
+            }
+            Op::CallBuiltin(idx, 1) if resolve_name(*idx) == "exp" => {
+                builder.emit(fusevm::Op::AwkExp, 0);
+            }
+            Op::CallBuiltin(idx, 2) if resolve_name(*idx) == "atan2" => {
+                builder.emit(fusevm::Op::AwkAtan2, 0);
+            }
+            // Bitwise and/or/xor: variadic (≥2 args), pure integer fold, no host
+            // state and no trap → native fusevm fold ops (block-JIT-eligible).
+            Op::CallBuiltin(idx, argc)
+                if *argc >= 2
+                    && *argc <= u8::MAX as u16
+                    && matches!(resolve_name(*idx), "and" | "or" | "xor") =>
+            {
+                let n = *argc as u8;
+                let fop = match resolve_name(*idx) {
+                    "and" => fusevm::Op::AwkAnd(n),
+                    "or" => fusevm::Op::AwkOr(n),
+                    _ => fusevm::Op::AwkXor(n),
+                };
+                builder.emit(fop, 0);
             }
             _ => return None,
         }
@@ -744,23 +1009,194 @@ mod tests {
     #[test]
     fn numeric_chunk_rejects_non_universal_ops() {
         // PushStr is outside the universal numeric subset → not eligible.
-        assert!(build_numeric_chunk(&[Op::PushStr(0)], false, 0, &[]).is_none());
+        assert!(build_numeric_chunk(&[Op::PushStr(0)], false, |_| 0.0, |_| "").is_none());
     }
 
     #[test]
     fn numeric_chunk_rejects_bignum() {
-        assert!(build_numeric_chunk(&[Op::Add], true, 0, &[]).is_none());
+        assert!(build_numeric_chunk(&[Op::Add], true, |_| 0.0, |_| "").is_none());
     }
 
     #[test]
     fn numeric_chunk_executes_slot_increment() {
-        // slot0 seeded to 5.0; IncrSlot(0) → 6.0; GetSlot(0) leaves 6.0 on stack.
-        let chunk =
-            build_numeric_chunk(&[Op::IncrSlot(0), Op::GetSlot(0)], false, 1, &[5.0]).unwrap();
+        // slot0 seeded to 5.0 (as VM data); IncrSlot(0) → 6.0; GetSlot(0) leaves
+        // 6.0 on stack. The chunk no longer self-seeds — the caller seeds the
+        // base-frame slot so the chunk's op_hash stays stable across records.
+        let chunk = build_numeric_chunk(&[Op::IncrSlot(0), Op::GetSlot(0)], false, |_| 0.0, |_| "")
+            .unwrap();
         let mut vm = fusevm::VM::new(chunk);
+        vm.set_slot(0, fusevm::Value::Float(5.0));
         match vm.run() {
             fusevm::VMResult::Ok(fusevm::Value::Float(f)) => assert_eq!(f, 6.0),
-            other => panic!("expected Ok(Float(6.0)), got {other:?}"),
+            fusevm::VMResult::Ok(fusevm::Value::Int(n)) => assert_eq!(n, 6),
+            other => panic!("expected Ok(6.0), got {other:?}"),
+        }
+    }
+
+    // Regression: awkrs `SetSlot` PEEKS (leaves the value) and is paired with a
+    // trailing `Pop` in statement context, but fusevm `SetSlot` POPS. The bridge
+    // must emit `Dup; SetSlot` so the value survives for the trailing `Pop`;
+    // emitting a bare `SetSlot` underflowed the stack (silently tolerated by the
+    // fusevm interpreter's saturating pop, but rejected by the strict block JIT).
+    #[test]
+    fn numeric_chunk_setslot_peeks_via_dup() {
+        // `x = 7` as a statement: PushNum(7); SetSlot(0); Pop. Then read it back.
+        let chunk = build_numeric_chunk(
+            &[Op::PushNum(7.0), Op::SetSlot(0), Op::Pop, Op::GetSlot(0)],
+            false,
+            |_| 0.0,
+            |_| "",
+        )
+        .unwrap();
+
+        // The awkrs `SetSlot` must lower to `Dup` immediately followed by
+        // fusevm `SetSlot` (peek semantics), not a bare `SetSlot`.
+        let dup_then_set = chunk
+            .ops
+            .windows(2)
+            .any(|w| matches!(w[0], fusevm::Op::Dup) && matches!(w[1], fusevm::Op::SetSlot(0)));
+        assert!(
+            dup_then_set,
+            "SetSlot must lower to `Dup; SetSlot`, ops = {:?}",
+            chunk.ops
+        );
+
+        // And it must execute without underflow, leaving slot 0 = 7.0 on top.
+        let mut vm = fusevm::VM::new(chunk);
+        vm.set_slot(0, fusevm::Value::Float(0.0));
+        match vm.run() {
+            fusevm::VMResult::Ok(fusevm::Value::Float(f)) => assert_eq!(f, 7.0),
+            fusevm::VMResult::Ok(fusevm::Value::Int(n)) => assert_eq!(n, 7),
+            other => panic!("expected Ok(7.0), got {other:?}"),
+        }
+    }
+
+    // `int(x)` is the one builtin admitted into the numeric chunk: it lowers to
+    // the native fusevm `Op::AwkInt` (Cranelift `trunc`) so an `int()`-bearing
+    // numeric loop stays block/trace-JIT-eligible and cacheable.
+    #[test]
+    fn numeric_chunk_lowers_int_builtin_to_awk_int() {
+        // `int(3.7)` → PushNum(3.7); CallBuiltin("int", 1). Name idx 0 → "int".
+        let chunk = build_numeric_chunk(
+            &[Op::PushNum(3.7), Op::CallBuiltin(0, 1)],
+            false,
+            |_| 0.0,
+            |_| "int",
+        )
+        .unwrap();
+        assert!(
+            chunk.ops.iter().any(|o| matches!(o, fusevm::Op::AwkInt)),
+            "int() must lower to fusevm::Op::AwkInt, ops = {:?}",
+            chunk.ops
+        );
+        let mut vm = fusevm::VM::new(chunk);
+        match vm.run() {
+            // Truncation toward zero; result is an integral value.
+            fusevm::VMResult::Ok(fusevm::Value::Float(f)) => assert_eq!(f, 3.0),
+            fusevm::VMResult::Ok(fusevm::Value::Int(n)) => assert_eq!(n, 3),
+            other => panic!("expected int(3.7)==3, got {other:?}"),
+        }
+    }
+
+    // A builtin other than `int` (e.g. `sqrt`, which needs host warning state)
+    // must keep the chunk ineligible so it stays on the awkrs interpreter.
+    #[test]
+    fn numeric_chunk_rejects_non_int_builtin() {
+        assert!(build_numeric_chunk(
+            &[Op::PushNum(4.0), Op::CallBuiltin(0, 1)],
+            false,
+            |_| 0.0,
+            |_| "sqrt",
+        )
+        .is_none());
+    }
+
+    // `/`, `%`, `/=`, `%=` chunks ARE now offloaded to fusevm: they lower to the
+    // trapping, block-JIT-eligible AwkDivJit/AwkModJit (guarded zero-divisor
+    // early-exit in fusevm's Cranelift block JIT). `is_fusevm_eligible` admits
+    // them and `build_numeric_chunk` emits AwkDivJit/AwkModJit; the chunk still
+    // raises the POSIX fatal on a zero divisor (verified via the VM below).
+    #[test]
+    fn div_mod_chunks_lower_to_awk_jit_ops() {
+        // Binary `/` and `%` are eligible and lower to AwkDivJit/AwkModJit.
+        let div = &[Op::PushNum(2.0), Op::Div];
+        let mod_ = &[Op::PushNum(2.0), Op::Mod];
+        assert!(is_fusevm_eligible(div, false, |_| ""));
+        assert!(is_fusevm_eligible(mod_, false, |_| ""));
+
+        let dchunk = build_numeric_chunk(div, false, |_| 0.0, |_| "").unwrap();
+        assert!(
+            dchunk
+                .ops
+                .iter()
+                .any(|o| matches!(o, fusevm::Op::AwkDivJit)),
+            "`/` must lower to AwkDivJit, ops = {:?}",
+            dchunk.ops
+        );
+        let mchunk = build_numeric_chunk(mod_, false, |_| 0.0, |_| "").unwrap();
+        assert!(
+            mchunk
+                .ops
+                .iter()
+                .any(|o| matches!(o, fusevm::Op::AwkModJit)),
+            "`%` must lower to AwkModJit, ops = {:?}",
+            mchunk.ops
+        );
+
+        // Compound `/=` and `%=` are eligible and lower with `Swap; AwkDivJit`
+        // / `Swap; AwkModJit` (so the op computes `slot OP rhs`, not reversed).
+        let cdiv = &[
+            Op::PushNum(4.0),
+            Op::CompoundAssignSlot(0, BinOp::Div),
+            Op::Pop,
+        ];
+        let cmod = &[
+            Op::PushNum(4.0),
+            Op::CompoundAssignSlot(0, BinOp::Mod),
+            Op::Pop,
+        ];
+        assert!(is_fusevm_eligible(cdiv, false, |_| ""));
+        assert!(is_fusevm_eligible(cmod, false, |_| ""));
+        let cdchunk = build_numeric_chunk(cdiv, false, |_| 0.0, |_| "").unwrap();
+        assert!(
+            cdchunk
+                .ops
+                .windows(2)
+                .any(|w| matches!(w[0], fusevm::Op::Swap) && matches!(w[1], fusevm::Op::AwkDivJit)),
+            "`/=` must lower to `Swap; AwkDivJit`, ops = {:?}",
+            cdchunk.ops
+        );
+
+        // A pure mul/pow chunk (no div/mod) stays eligible + offloads.
+        let mul = &[
+            Op::PushNum(2.0),
+            Op::CompoundAssignSlot(0, BinOp::Mul),
+            Op::Pop,
+        ];
+        assert!(is_fusevm_eligible(mul, false, |_| ""));
+        assert!(build_numeric_chunk(mul, false, |_| 0.0, |_| "").is_some());
+    }
+
+    // A div-by-zero numeric chunk lowered to AwkDivJit raises the POSIX fatal in
+    // the fusevm interpreter (the block JIT's guarded early-exit has the same
+    // observable behavior; this exercises the interpreter arm directly).
+    #[test]
+    fn div_by_zero_chunk_traps_in_fusevm() {
+        // slot0 / 0.0 → AwkDivJit with a zero divisor.
+        let chunk = build_numeric_chunk(
+            &[Op::GetSlot(0), Op::PushNum(0.0), Op::Div, Op::Pop],
+            false,
+            |_| 0.0,
+            |_| "",
+        )
+        .unwrap();
+        let mut vm = fusevm::VM::new(chunk);
+        vm.set_slot(0, fusevm::Value::Float(1.0));
+        match vm.run() {
+            fusevm::VMResult::Error(msg) => {
+                assert!(msg.contains("division by zero"), "unexpected error: {msg}")
+            }
+            other => panic!("expected div-by-zero Error, got {other:?}"),
         }
     }
 }

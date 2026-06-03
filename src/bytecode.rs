@@ -371,16 +371,10 @@ pub enum Op {
 // ── Compiled structures ─────────────────────────────────────────────────────
 
 /// A flat sequence of bytecode instructions.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct Chunk {
     /// `ops` field.
     pub ops: Vec<Op>,
-}
-
-impl Default for Chunk {
-    fn default() -> Self {
-        Self { ops: Vec::new() }
-    }
 }
 
 impl fmt::Debug for Chunk {

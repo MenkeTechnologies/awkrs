@@ -732,6 +732,11 @@ pub fn awk_value_sort_cmp_with_case(a: &Value, b: &Value, ignore_case: bool) -> 
 }
 
 /// gawk `asort` — sort by value; new indices `"1"`…`"n"`.
+///
+/// Currently unused: the VM's asort dispatch routes through
+/// [`crate::vm::VmCtx::array_pairs_for_sort`] instead. Kept here as the
+/// reference implementation + tested via this module's `#[cfg(test)]` block.
+#[allow(dead_code)]
 pub fn asort(rt: &mut Runtime, src: &str, dest: Option<&str>) -> Result<f64> {
     // gawk parity: `asort()` with no array argument is a fatal "0 is invalid
     // as number of arguments for asort". The compiler interns the empty
@@ -775,6 +780,9 @@ pub fn asort(rt: &mut Runtime, src: &str, dest: Option<&str>) -> Result<f64> {
 }
 
 /// gawk `asorti` — sort array indices (keys); values are the sorted keys.
+///
+/// Currently unused (see [`asort`] note); kept as the reference implementation.
+#[allow(dead_code)]
 pub fn asorti(rt: &mut Runtime, src: &str, dest: Option<&str>) -> Result<f64> {
     if src.is_empty() {
         return Err(Error::Runtime(

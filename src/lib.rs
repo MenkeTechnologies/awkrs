@@ -16,8 +16,8 @@ mod cli_effects;
 mod compiler;
 mod cyber_help;
 mod error;
-mod format;
 mod flow;
+mod format;
 /// `fusevm_bridge` submodule.
 pub mod fusevm_bridge;
 mod gawk_extensions;
@@ -171,8 +171,8 @@ pub fn run(bin_name: &str) -> Result<()> {
     rt.characters_as_bytes = args.characters_as_bytes;
     rt.posix = args.posix;
     rt.traditional = args.traditional;
-    rt.jit_enabled = !args.no_optimize
-        && std::env::var("AWKRS_JIT").map(|v| v != "0").unwrap_or(true);
+    rt.jit_enabled =
+        !args.no_optimize && std::env::var("AWKRS_JIT").map(|v| v != "0").unwrap_or(true);
     if args.use_lc_numeric {
         locale_numeric::set_locale_numeric_from_env();
         rt.numeric_decimal = locale_numeric::decimal_point_from_locale();
@@ -232,58 +232,37 @@ pub fn run(bin_name: &str) -> Result<()> {
 
     let mut range_state: Vec<bool> = vec![false; prog_rules_len];
 
-    // Parallel record mode: mmap whole files with RS-aware splitting (`record_io::split_input_into_records`).
-    // Stdin parallel still chunks on newlines only (see `process_stdin_parallel`).
-    // Primary `getline` shares the same stream as the record loop; parallel file mode slurps/mmaps
-    // independently and does not advance that stream.
-    let use_parallel_files =
-        threads > 1 && parallel_ok && !files.is_empty() && !uses_primary_getline(cp.as_ref());
-    let stdin_parallel = files.is_empty()
-        && threads > 1
-        && parallel_ok
-        && !uses_primary_getline(cp.as_ref())
-        && rs_is_default_newline(&rt);
-    if threads > 1 && !parallel_ok {
-        eprintln!("{bin_name}: warning: program is not parallel-safe (range patterns, exit, getline without file, getline coprocess, cross-record assignments, …); running sequentially (use a single thread to silence this warning)");
-    }
+    // POSIX: a program consisting solely of `BEGIN` actions (no main/record rules,
+    // no `END`, and no gawk `BEGINFILE`/`ENDFILE`) exits after `BEGIN` without reading
+    // input. Skipping the record loop here avoids blocking forever on an interactive
+    // stdin for programs like `BEGIN { print 1 }`.
+    let program_reads_input = !cp.record_rules.is_empty()
+        || !cp.end_chunks.is_empty()
+        || !cp.beginfile_chunks.is_empty()
+        || !cp.endfile_chunks.is_empty();
 
-    let mut nr_global = 0.0f64;
-    let chunk_lines = args.read_ahead.max(1);
+    if program_reads_input {
+        // Parallel record mode: mmap whole files with RS-aware splitting (`record_io::split_input_into_records`).
+        // Stdin parallel still chunks on newlines only (see `process_stdin_parallel`).
+        // Primary `getline` shares the same stream as the record loop; parallel file mode slurps/mmaps
+        // independently and does not advance that stream.
+        let use_parallel_files =
+            threads > 1 && parallel_ok && !files.is_empty() && !uses_primary_getline(cp.as_ref());
+        let stdin_parallel = files.is_empty()
+            && threads > 1
+            && parallel_ok
+            && !uses_primary_getline(cp.as_ref())
+            && rs_is_default_newline(&rt);
+        if threads > 1 && !parallel_ok {
+            eprintln!("{bin_name}: warning: program is not parallel-safe (range patterns, exit, getline without file, getline coprocess, cross-record assignments, …); running sequentially (use a single thread to silence this warning)");
+        }
 
-    if files.is_empty() {
-        rt.vars.insert("ARGIND".into(), Value::Num(0.0));
-        rt.filename = "-".into();
-        vm_run_beginfile(cp.as_ref(), &mut rt)?;
-        if rt.exit_pending {
-            rt.detach_input_reader();
-            vm_run_endfile(cp.as_ref(), &mut rt)?;
-            vm_run_end(cp.as_ref(), &mut rt)?;
-            finalize_cli_outputs(&args, bin_name, &rt, cp.as_ref(), profile_start, threads)?;
-            std::process::exit(rt.exit_code);
-        }
-        if stdin_parallel {
-            process_stdin_parallel(
-                &cp,
-                &mut rt,
-                threads,
-                chunk_lines,
-                args.non_decimal_data,
-                worker_sandbox,
-                worker_characters_as_bytes,
-                worker_posix,
-                worker_traditional,
-                worker_jit_enabled,
-            )?;
-        } else {
-            process_file(None, cp.as_ref(), &mut range_state, &mut rt)?;
-        }
-        vm_run_endfile(cp.as_ref(), &mut rt)?;
-    } else {
-        for (arg_idx, p) in files.iter().enumerate() {
-            rt.vars
-                .insert("ARGIND".into(), Value::Num((arg_idx + 1) as f64));
-            rt.filename = p.to_string_lossy().into_owned();
-            rt.fnr = 0.0;
+        let mut nr_global = 0.0f64;
+        let chunk_lines = args.read_ahead.max(1);
+
+        if files.is_empty() {
+            rt.vars.insert("ARGIND".into(), Value::Num(0.0));
+            rt.filename = "-".into();
             vm_run_beginfile(cp.as_ref(), &mut rt)?;
             if rt.exit_pending {
                 rt.detach_input_reader();
@@ -292,27 +271,66 @@ pub fn run(bin_name: &str) -> Result<()> {
                 finalize_cli_outputs(&args, bin_name, &rt, cp.as_ref(), profile_start, threads)?;
                 std::process::exit(rt.exit_code);
             }
-            let n = if use_parallel_files {
-                process_file_parallel(
-                    Some(p.as_path()),
+            if stdin_parallel {
+                process_stdin_parallel(
                     &cp,
                     &mut rt,
                     threads,
-                    nr_global,
+                    chunk_lines,
                     args.non_decimal_data,
                     worker_sandbox,
                     worker_characters_as_bytes,
                     worker_posix,
                     worker_traditional,
                     worker_jit_enabled,
-                )?
+                )?;
             } else {
-                process_file(Some(p.as_path()), cp.as_ref(), &mut range_state, &mut rt)?
-            };
-            nr_global += n as f64;
+                process_file(None, cp.as_ref(), &mut range_state, &mut rt)?;
+            }
             vm_run_endfile(cp.as_ref(), &mut rt)?;
-            if rt.exit_pending {
-                break;
+        } else {
+            for (arg_idx, p) in files.iter().enumerate() {
+                rt.vars
+                    .insert("ARGIND".into(), Value::Num((arg_idx + 1) as f64));
+                rt.filename = p.to_string_lossy().into_owned();
+                rt.fnr = 0.0;
+                vm_run_beginfile(cp.as_ref(), &mut rt)?;
+                if rt.exit_pending {
+                    rt.detach_input_reader();
+                    vm_run_endfile(cp.as_ref(), &mut rt)?;
+                    vm_run_end(cp.as_ref(), &mut rt)?;
+                    finalize_cli_outputs(
+                        &args,
+                        bin_name,
+                        &rt,
+                        cp.as_ref(),
+                        profile_start,
+                        threads,
+                    )?;
+                    std::process::exit(rt.exit_code);
+                }
+                let n = if use_parallel_files {
+                    process_file_parallel(
+                        Some(p.as_path()),
+                        &cp,
+                        &mut rt,
+                        threads,
+                        nr_global,
+                        args.non_decimal_data,
+                        worker_sandbox,
+                        worker_characters_as_bytes,
+                        worker_posix,
+                        worker_traditional,
+                        worker_jit_enabled,
+                    )?
+                } else {
+                    process_file(Some(p.as_path()), cp.as_ref(), &mut range_state, &mut rt)?
+                };
+                nr_global += n as f64;
+                vm_run_endfile(cp.as_ref(), &mut rt)?;
+                if rt.exit_pending {
+                    break;
+                }
             }
         }
     }

@@ -846,6 +846,99 @@ fn variadic_xor_three_args() {
     assert_eq!(o.trim(), "5");
 }
 
+// ── fusevm eager block-JIT: hot numeric loops with builtins ─────────────────
+// These run under the DEFAULT config (fusevm offload on). A hot for-loop whose
+// body is a pure-numeric chunk containing a JIT-able builtin is offloaded to
+// fusevm and eager-compiled by the block JIT on first invocation. The values
+// here pin that the offloaded native code matches the bytecode interpreter
+// (forced via AWKRS_FUSEVM=0) bit-for-bit.
+
+fn run_default_and_nofusevm(prog: &str) -> (String, String) {
+    let (c1, o1, e1) = run_awkrs_stdin(prog, "");
+    assert_eq!(c1, 0, "default stderr={e1}");
+    let env = vec![(OsString::from("AWKRS_FUSEVM"), OsString::from("0"))];
+    let no_args: [&str; 0] = [];
+    let (c2, o2, e2) = run_awkrs_stdin_args_env(no_args, prog, "", env);
+    assert_eq!(c2, 0, "fusevm=0 stderr={e2}");
+    assert_eq!(
+        o1.trim(),
+        o2.trim(),
+        "default vs fusevm=0 mismatch for: {prog}"
+    );
+    (o1.trim().to_string(), o2.trim().to_string())
+}
+
+#[test]
+fn eager_jit_and_loop_matches_interpreter() {
+    let (o, _) = run_default_and_nofusevm(
+        r#"BEGIN { x = 123456; for (i = 0; i < 200000; i++) x = and(x, i) + 1; print x }"#,
+    );
+    assert_eq!(o, "200000");
+}
+
+#[test]
+fn eager_jit_or_xor_loop_matches_interpreter() {
+    run_default_and_nofusevm(
+        r#"BEGIN { x = 7; for (i = 0; i < 200000; i++) x = or(x, i) % 1000 + 1; print x }"#,
+    );
+    run_default_and_nofusevm(
+        r#"BEGIN { x = 7; for (i = 0; i < 200000; i++) x = xor(x, i) % 1000 + 1; print x }"#,
+    );
+}
+
+#[test]
+fn eager_jit_int_and_transcendental_loops_match_interpreter() {
+    run_default_and_nofusevm(
+        r#"BEGIN { x = 0; for (i = 0; i < 200000; i++) x = int(x + 1.9); print x }"#,
+    );
+    run_default_and_nofusevm(
+        r#"BEGIN { s = 0; for (i = 0; i < 200000; i++) s += sin(i); print s }"#,
+    );
+    run_default_and_nofusevm(
+        r#"BEGIN { s = 0; for (i = 1; i < 200000; i++) s += atan2(i, 2); print s }"#,
+    );
+}
+
+#[test]
+fn eager_jit_div_mod_loops_match_interpreter() {
+    // div/mod now lower to fusevm AwkDivJit/AwkModJit and block-JIT-compile via
+    // a guarded zero-divisor early-exit. Hot loops must match the interpreter
+    // bit-for-bit (no zero divisor here, so the guard never fires).
+    run_default_and_nofusevm(
+        r#"BEGIN { x = 1; for (i = 0; i < 200000; i++) x = (x + 1.5) / 1.0001; printf "%.6f\n", x }"#,
+    );
+    run_default_and_nofusevm(
+        r#"BEGIN { s = 0; for (i = 1; i < 200000; i++) s = (s + i) % 9973; print s }"#,
+    );
+    // compound div/mod assignments lower through the same path.
+    run_default_and_nofusevm(
+        r#"BEGIN { x = 1e9; for (i = 1; i < 200000; i++) x /= 1.0001; printf "%.6f\n", x }"#,
+    );
+    run_default_and_nofusevm(
+        r#"BEGIN { x = 7; for (i = 1; i < 200000; i++) { x += i; x %= 9973 } print x }"#,
+    );
+}
+
+#[test]
+fn eager_jit_div_by_zero_in_loop_traps() {
+    // A zero divisor reached inside an offloaded/JIT-compiled loop must raise the
+    // POSIX fatal (exit 1), not hang or produce garbage — the guarded early-exit
+    // in the AwkDivJit/AwkModJit codegen fires the trap libcall.
+    let (c, _o, e) = run_awkrs_stdin(
+        r#"BEGIN { x = 1; d = 1; for (i = 0; i < 10; i++) { if (i == 5) d = 0; x = x / d } print x }"#,
+        "",
+    );
+    assert_eq!(c, 1, "div-by-zero must exit 1; stderr={e}");
+    assert!(e.contains("division by zero"), "stderr={e}");
+
+    let (c2, _o2, e2) = run_awkrs_stdin(
+        r#"BEGIN { x = 1; d = 1; for (i = 0; i < 10; i++) { if (i == 5) d = 0; x = x % d } print x }"#,
+        "",
+    );
+    assert_eq!(c2, 1, "mod-by-zero must exit 1; stderr={e2}");
+    assert!(e2.contains("division by zero"), "stderr={e2}");
+}
+
 // ── readdir builtin ──────────────────────────────────────────────────────
 
 #[test]

@@ -623,6 +623,7 @@ impl Value {
 
     /// Append this value's string representation to an existing String.
     /// Avoids intermediate allocation compared to `format!("{a}{b}")`.
+    #[allow(dead_code)] // tested but no production call sites currently
     #[inline]
     pub fn append_to_string(&self, buf: &mut String) {
         match self {
@@ -3326,6 +3327,10 @@ impl Runtime {
 }
 
 /// Field-splitting for `split(s, a [, fs])` — same algorithm as [`crate::bytecode::Op::Split`].
+///
+/// Thin wrapper around `split_string_with_seps`; unused outside this module's
+/// test suite, kept for direct splitter testing without going through `Op::Split`.
+#[allow(dead_code)]
 pub fn split_string_by_field_separator(s: &str, fs: &str, ignore_case: bool) -> Vec<String> {
     split_string_with_seps(s, fs, ignore_case).0
 }
