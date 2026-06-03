@@ -1428,11 +1428,14 @@ mod tests {
         let _g = GUARD.lock().unwrap();
 
         let prev = AWK_TRADITIONAL_MODE.swap(true, Ordering::Relaxed);
-        let s = awk_sprintf("[%05s][%-05s][%05c]", &[
-            Value::Str("ab".into()),
-            Value::Str("cd".into()),
-            Value::Num(65.0),
-        ])
+        let s = awk_sprintf(
+            "[%05s][%-05s][%05c]",
+            &[
+                Value::Str("ab".into()),
+                Value::Str("cd".into()),
+                Value::Num(65.0),
+            ],
+        )
         .unwrap();
         AWK_TRADITIONAL_MODE.store(prev, Ordering::Relaxed);
         assert_eq!(s, "[000ab][cd   ][0000A]");
@@ -1445,11 +1448,14 @@ mod tests {
         let _g = GUARD.lock().unwrap();
 
         let prev = AWK_TRADITIONAL_MODE.swap(false, Ordering::Relaxed);
-        let s = awk_sprintf("[%05s][%-05s][%05c]", &[
-            Value::Str("ab".into()),
-            Value::Str("cd".into()),
-            Value::Num(65.0),
-        ])
+        let s = awk_sprintf(
+            "[%05s][%-05s][%05c]",
+            &[
+                Value::Str("ab".into()),
+                Value::Str("cd".into()),
+                Value::Num(65.0),
+            ],
+        )
         .unwrap();
         AWK_TRADITIONAL_MODE.store(prev, Ordering::Relaxed);
         assert_eq!(s, "[   ab][cd   ][    A]");
