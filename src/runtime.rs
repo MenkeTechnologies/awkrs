@@ -437,7 +437,15 @@ pub(crate) fn longest_f64_prefix(s: &str) -> Option<&str> {
     if s.is_empty() {
         return None;
     }
-    for end in (1..=s.len()).rev() {
+    // f64 numeric prefixes are entirely ASCII (digits, signs, dot, e/E, inf, nan).
+    // Limit the byte-index iteration to the ASCII prefix so `&s[..end]` never
+    // lands inside a multi-byte UTF-8 character. (Without this, a string like
+    // "ÿ" panicked: "end byte index 1 is not a char boundary; it is inside 'ÿ'".)
+    let ascii_len = s.as_bytes().iter().take_while(|&&b| b.is_ascii()).count();
+    if ascii_len == 0 {
+        return None;
+    }
+    for end in (1..=ascii_len).rev() {
         let p = &s[..end];
         if !awk_numeric_prefix_acceptable(p, end < s.len() && next_byte_is_alnum(s, end)) {
             continue;
@@ -3920,6 +3928,26 @@ mod longest_prefix_and_sorted_in_tests {
     #[test]
     fn longest_f64_prefix_empty_none() {
         assert_eq!(longest_f64_prefix(""), None);
+    }
+
+    #[test]
+    fn longest_f64_prefix_multibyte_first_char_returns_none() {
+        // Regression: vigenere.awk (examples/) round-trips bytes 0..255 through
+        // `sprintf("%c", i)` and uses the result as an array key — strings like
+        // "ÿ" reach `longest_f64_prefix`. The old loop sliced bytewise at
+        // `&s[..end]`, panicking with "end byte index 1 is not a char boundary;
+        // it is inside 'ÿ' (bytes 0..2 of string)". The fix bounds the loop to
+        // the leading ASCII run (numeric prefixes are always ASCII).
+        assert_eq!(longest_f64_prefix("\u{ff}"), None);
+        assert_eq!(longest_f64_prefix("é"), None);
+        assert_eq!(longest_f64_prefix("é42"), None); // leading non-ASCII → no prefix
+    }
+
+    #[test]
+    fn longest_f64_prefix_ascii_then_multibyte() {
+        // Leading ASCII digits, then a multibyte char — should pick the ASCII run.
+        assert_eq!(longest_f64_prefix("42é"), Some("42"));
+        assert_eq!(longest_f64_prefix("1.5ÿ"), Some("1.5"));
     }
 
     #[test]
