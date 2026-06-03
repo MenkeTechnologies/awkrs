@@ -451,6 +451,11 @@ pub fn is_fusevm_eligible<'s>(
             // already rejected above, matching awkrs's non-bignum
             // `Value::Num(as_number().trunc())`.
             Op::CallBuiltin(idx, 1) if resolve_name(*idx) == "int" => continue,
+            // `mkbool(x)` — gawk extension: 1 if x is truthy (numeric != 0,
+            // including NaN/inf), else 0. Lowers to a native `Op::AwkMkbool`
+            // (Cranelift `fcmp ne, 0.0` + `select`), no libcall or host state.
+            // No trap path — chunk stays disk-cacheable.
+            Op::CallBuiltin(idx, 1) if resolve_name(*idx) == "mkbool" => continue,
             // Transcendental math builtins lower to native fusevm libcall ops
             // (`Op::AwkSin`/`AwkCos`/`AwkExp`/`AwkAtan2`) that canonicalize NaN
             // to `+nan`, matching awkrs's `Value::Num(if r.is_nan(){NAN}else{r})`
@@ -533,7 +538,11 @@ fn stack_delta<'s>(op: &bytecode::Op, resolve_name: impl Fn(u32) -> &'s str) -> 
         ) => 0,
         // Admitted numeric builtins (must match `is_fusevm_eligible`). Each
         // pops `argc` and pushes one result.
-        Op::CallBuiltin(idx, 1) if matches!(resolve_name(*idx), "int" | "sin" | "cos" | "exp") => 0,
+        Op::CallBuiltin(idx, 1)
+            if matches!(resolve_name(*idx), "int" | "mkbool" | "sin" | "cos" | "exp") =>
+        {
+            0
+        }
         Op::CallBuiltin(idx, 2) if resolve_name(*idx) == "atan2" => -1,
         Op::CallBuiltin(idx, argc)
             if *argc >= 2
@@ -878,6 +887,12 @@ pub fn build_numeric_chunk<'s>(
             // fusevm op (Cranelift `trunc`) — keeps the chunk JIT-eligible.
             Op::CallBuiltin(idx, 1) if resolve_name(*idx) == "int" => {
                 builder.emit(fusevm::Op::AwkInt, 0);
+            }
+            // `mkbool(x)`: pop the f64 argument, push 1.0 if nonzero (NaN/inf
+            // included), else 0.0. Native fusevm op (Cranelift `fcmp ne, 0.0`
+            // + `select`) added in fusevm 0.13.5 — disk-cacheable.
+            Op::CallBuiltin(idx, 1) if resolve_name(*idx) == "mkbool" => {
+                builder.emit(fusevm::Op::AwkMkbool, 0);
             }
             // Transcendental math: native fusevm libcall ops (NaN→`+nan`).
             // sin/cos/exp are 1-arg; atan2 is 2-arg (awkrs pushes y then x, so

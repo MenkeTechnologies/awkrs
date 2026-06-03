@@ -646,9 +646,9 @@ checksum = "e6d5a32815ae3f33302d95fdcb2ce17862f8c65363dcfd29360480ba1001fc9c"
 
 [[package]]
 name = "fusevm"
-version = "0.13.4"
+version = "0.13.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "49bd8fc0f560714aa255597dad3cc554a6329ac25b573969659d2370b59268d0"
+checksum = "a17721c68c1432fa2222855466aa7bad052d71825248bd935c0c4bb1ad5c9e13"
 dependencies = [
  "chrono",
  "cranelift-codegen",
