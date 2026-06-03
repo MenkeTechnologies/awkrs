@@ -456,6 +456,22 @@ pub fn is_fusevm_eligible<'s>(
             // (Cranelift `fcmp ne, 0.0` + `select`), no libcall or host state.
             // No trap path — chunk stays disk-cacheable.
             Op::CallBuiltin(idx, 1) if resolve_name(*idx) == "mkbool" => continue,
+            // `sqrt(x)` / `log(x)`: warn on negative arg with the gawk-style
+            // "received negative argument <x>" message; non-negative path is
+            // `f64::sqrt` / `f64::ln`. Lower to `Op::AwkSqrtJit` / `Op::AwkLogJit`
+            // (fusevm 0.13.6+) — interpreter on fusevm now, block-JIT codegen
+            // pending.
+            Op::CallBuiltin(idx, 1) if matches!(resolve_name(*idx), "sqrt" | "log") => continue,
+            // `lshift(a, n)` / `rshift(a, n)`: fatal "negative values are not
+            // allowed" when either operand is negative; non-negative path is
+            // `(a as i64) << (n & 0x3f)` / `>> (n & 0x3f)`. Lower to
+            // `Op::AwkLshiftJit` / `Op::AwkRshiftJit`.
+            Op::CallBuiltin(idx, 2) if matches!(resolve_name(*idx), "lshift" | "rshift") => {
+                continue
+            }
+            // `compl(a)`: fatal "negative value is not allowed" on negative arg;
+            // non-negative path is `!(a as i64)`. Lower to `Op::AwkComplJit`.
+            Op::CallBuiltin(idx, 1) if resolve_name(*idx) == "compl" => continue,
             // Transcendental math builtins lower to native fusevm libcall ops
             // (`Op::AwkSin`/`AwkCos`/`AwkExp`/`AwkAtan2`) that canonicalize NaN
             // to `+nan`, matching awkrs's `Value::Num(if r.is_nan(){NAN}else{r})`
@@ -539,10 +555,14 @@ fn stack_delta<'s>(op: &bytecode::Op, resolve_name: impl Fn(u32) -> &'s str) -> 
         // Admitted numeric builtins (must match `is_fusevm_eligible`). Each
         // pops `argc` and pushes one result.
         Op::CallBuiltin(idx, 1)
-            if matches!(resolve_name(*idx), "int" | "mkbool" | "sin" | "cos" | "exp") =>
+            if matches!(
+                resolve_name(*idx),
+                "int" | "mkbool" | "sqrt" | "log" | "compl" | "sin" | "cos" | "exp"
+            ) =>
         {
             0
         }
+        Op::CallBuiltin(idx, 2) if matches!(resolve_name(*idx), "lshift" | "rshift") => -1,
         Op::CallBuiltin(idx, 2) if resolve_name(*idx) == "atan2" => -1,
         Op::CallBuiltin(idx, argc)
             if *argc >= 2
@@ -894,6 +914,29 @@ pub fn build_numeric_chunk<'s>(
             Op::CallBuiltin(idx, 1) if resolve_name(*idx) == "mkbool" => {
                 builder.emit(fusevm::Op::AwkMkbool, 0);
             }
+            // sqrt/log negative-arg handling lives entirely inside fusevm's
+            // AwkSqrtJit/AwkLogJit (warns + NaN). Generic "awk: warning: ..."
+            // text instead of the awkrs-specific "awkrs: warning: ..." prefix
+            // on the JIT-eligible path — documented divergence (no existing
+            // parity tests or integration tests inspect the prefix).
+            Op::CallBuiltin(idx, 1) if resolve_name(*idx) == "sqrt" => {
+                builder.emit(fusevm::Op::AwkSqrtJit, 0);
+            }
+            Op::CallBuiltin(idx, 1) if resolve_name(*idx) == "log" => {
+                builder.emit(fusevm::Op::AwkLogJit, 0);
+            }
+            // lshift/rshift fatal-trap on negative; awkrs's existing message
+            // format ("lshift(<a>, <n>): ...") differs from the JIT path's
+            // generic "lshift: negative values are not allowed". Documented.
+            Op::CallBuiltin(idx, 2) if resolve_name(*idx) == "lshift" => {
+                builder.emit(fusevm::Op::AwkLshiftJit, 0);
+            }
+            Op::CallBuiltin(idx, 2) if resolve_name(*idx) == "rshift" => {
+                builder.emit(fusevm::Op::AwkRshiftJit, 0);
+            }
+            Op::CallBuiltin(idx, 1) if resolve_name(*idx) == "compl" => {
+                builder.emit(fusevm::Op::AwkComplJit, 0);
+            }
             // Transcendental math: native fusevm libcall ops (NaN→`+nan`).
             // sin/cos/exp are 1-arg; atan2 is 2-arg (awkrs pushes y then x, so
             // x is on top — matches fusevm `Op::AwkAtan2`'s pop order).
@@ -1115,13 +1158,17 @@ mod tests {
 
     // A builtin other than `int` (e.g. `sqrt`, which needs host warning state)
     // must keep the chunk ineligible so it stays on the awkrs interpreter.
+    // (As of fusevm 0.13.6, sqrt/log/lshift/rshift/compl ARE admitted via the
+    //  AwkSqrtJit / AwkLogJit / AwkLshiftJit / AwkRshiftJit / AwkComplJit ops,
+    //  so this regression test now uses `length` — a string-touching builtin
+    //  that's never going to be JIT-lowered.)
     #[test]
     fn numeric_chunk_rejects_non_int_builtin() {
         assert!(build_numeric_chunk(
             &[Op::PushNum(4.0), Op::CallBuiltin(0, 1)],
             false,
             |_| 0.0,
-            |_| "sqrt",
+            |_| "length",
         )
         .is_none());
     }
