@@ -735,7 +735,12 @@ fn try_fusevm_dispatch(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<Option<VmSi
     // tracing JIT for hot in-chunk loops (e.g. BEGIN/END counted loops). Both
     // tiers round-trip awk's f64 slots via fusevm's SlotKind bit-pattern model;
     // cold/one-shot chunks fall through to the interpreter at zero extra cost.
-    let mut vm = fusevm::VM::new(fuse_chunk);
+    // Acquire a recycled VM from the pool (or allocate a fresh one if the
+    // pool is empty). `VM::reset(chunk)` preserves Vec capacities (stack,
+    // frames, slot_buf, …) so subsequent records reuse the underlying
+    // allocations. For an awk one-liner over millions of records this skips
+    // per-record VM allocation of the VM's stack/frame/global storage.
+    let mut vm = ctx.rt.fuse_vm_pool.acquire(fuse_chunk);
     // Seed the base-frame slots as *data* (not baked into the chunk), so the
     // chunk stays identical across records and its JIT-compiled native code is
     // reused from the op_hash-keyed TLS + on-disk caches.
@@ -769,7 +774,7 @@ fn try_fusevm_dispatch(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<Option<VmSi
     // VM::run() pops the last stack value into VMResult::Ok(val), so push it
     // onto ctx.stack so callers that inspect the stack (e.g. pattern truthiness)
     // see the result.
-    match result {
+    let signal = match result {
         fusevm::VMResult::Ok(ref val) => {
             match val {
                 fusevm::Value::Float(f) => ctx.push(Value::Num(*f)),
@@ -793,7 +798,10 @@ fn try_fusevm_dispatch(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<Option<VmSi
             Ok(Some(VmSignal::Normal))
         }
         fusevm::VMResult::Error(msg) => Err(Error::Runtime(msg)),
-    }
+    };
+    // Return the VM to the pool — allocations preserved for the next record.
+    ctx.rt.fuse_vm_pool.release(vm);
+    signal
 }
 
 /// Run an eligible numeric *prefix region* (`ops`, identified by
@@ -834,7 +842,8 @@ fn run_fusevm_region(ops: &[Op], ctx: &mut VmCtx<'_>) -> Result<bool> {
         }
     };
 
-    let mut vm = fusevm::VM::new(fuse_chunk);
+    // Pool-acquired VM (see `try_fusevm_dispatch` for the rationale).
+    let mut vm = ctx.rt.fuse_vm_pool.acquire(fuse_chunk);
     seed_fusevm_slots(&mut vm, &slot_init);
     vm.enable_tracing_jit();
     // This region is always a hot loop (`eligible_loop_prefix` requires a
@@ -858,6 +867,7 @@ fn run_fusevm_region(ops: &[Op], ctx: &mut VmCtx<'_>) -> Result<bool> {
     drop(_hook_guard);
     jit.set_config(saved_cfg);
     if let fusevm::VMResult::Error(msg) = result {
+        ctx.rt.fuse_vm_pool.release(vm);
         return Err(Error::Runtime(msg));
     }
 
@@ -870,6 +880,7 @@ fn run_fusevm_region(ops: &[Op], ctx: &mut VmCtx<'_>) -> Result<bool> {
             }
         }
     }
+    ctx.rt.fuse_vm_pool.release(vm);
     Ok(true)
 }
 

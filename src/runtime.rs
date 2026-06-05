@@ -1204,6 +1204,14 @@ pub struct Runtime {
     /// prefix length is determined by the chunk content so the same chunk
     /// always yields the same slice.
     pub fuse_prefix_chunk_cache: HashMap<(usize, usize, bool), Option<fusevm::Chunk>>,
+    /// Recycled `fusevm::VM` instances. `try_fusevm_dispatch` / `run_fusevm_region`
+    /// acquire a VM from the pool (which calls `VM::reset(chunk)` preserving
+    /// internal Vec capacities — stack, frames, slot_buf, etc.) instead of
+    /// allocating a fresh `fusevm::VM::new(chunk)` on every record. For an awk
+    /// one-liner over millions of records, this skips per-record allocation of
+    /// the VM's stack/frame storage. The pool is per-Runtime; parallel record
+    /// workers get their own (fresh empty pool on Runtime clone).
+    pub fuse_vm_pool: fusevm::VMPool,
     /// GNU MO catalogs loaded by `bindtextdomain` (domain → catalog).
     pub gettext_catalogs: AwkMap<String, Arc<Catalog>>,
     /// Copy of [`crate::bytecode::CompiledProgram::slot_map`] for SYMTAB / `array_keys` without VM context.
@@ -1378,6 +1386,7 @@ impl Runtime {
             jit_enabled: true,
             fuse_chunk_cache: HashMap::new(),
             fuse_prefix_chunk_cache: HashMap::new(),
+            fuse_vm_pool: fusevm::VMPool::new(),
             gettext_catalogs: AwkMap::default(),
             symtab_slot_map: HashMap::new(),
             profile_record_hits: Vec::new(),
@@ -1806,6 +1815,7 @@ impl Runtime {
             jit_enabled,
             fuse_chunk_cache: HashMap::new(),
             fuse_prefix_chunk_cache: HashMap::new(),
+            fuse_vm_pool: fusevm::VMPool::new(),
             gettext_catalogs,
             symtab_slot_map: HashMap::new(),
             profile_record_hits: Vec::new(),
@@ -3521,6 +3531,7 @@ impl Clone for Runtime {
             // worker (each has its own thread-local fusevm state too).
             fuse_chunk_cache: HashMap::new(),
             fuse_prefix_chunk_cache: HashMap::new(),
+            fuse_vm_pool: fusevm::VMPool::new(),
             gettext_catalogs: self.gettext_catalogs.clone(),
             symtab_slot_map: self.symtab_slot_map.clone(),
             profile_record_hits: Vec::new(),
