@@ -758,7 +758,9 @@ fn try_fusevm_dispatch(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<Option<VmSi
                         let w = compute_written_slots(&c);
                         std::sync::Arc::new((c, w))
                     });
-                    ctx.rt.fuse_chunk_cache.insert(cache_key, cache_entry.clone());
+                    ctx.rt
+                        .fuse_chunk_cache
+                        .insert(cache_key, cache_entry.clone());
                     cache_entry
                 }
             };
@@ -885,7 +887,9 @@ fn run_fusevm_region(ops: &[Op], ctx: &mut VmCtx<'_>) -> Result<bool> {
                     let w = compute_written_slots(&c);
                     std::sync::Arc::new((c, w))
                 });
-                ctx.rt.fuse_prefix_chunk_cache.insert(cache_key, cache_entry.clone());
+                ctx.rt
+                    .fuse_prefix_chunk_cache
+                    .insert(cache_key, cache_entry.clone());
                 cache_entry
             }
         };

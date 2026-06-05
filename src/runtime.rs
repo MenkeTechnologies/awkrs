@@ -1203,8 +1203,7 @@ pub struct Runtime {
     /// JIT result; this cache catches the upstream translation work that
     /// previously rebuilt the chunk per record AND the per-record writeback
     /// over-iteration.
-    pub fuse_chunk_cache:
-        HashMap<(usize, bool), Option<Arc<(fusevm::Chunk, Vec<u16>)>>>,
+    pub fuse_chunk_cache: HashMap<(usize, bool), Option<Arc<(fusevm::Chunk, Vec<u16>)>>>,
     /// Single-slot side-table that hoists the HashMap lookup out of the
     /// per-record dispatch path. Stores the cache key + Arc of the LAST
     /// chunk we looked up. For an awk program with a single record-rule
