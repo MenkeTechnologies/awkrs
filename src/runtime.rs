@@ -1194,16 +1194,22 @@ pub struct Runtime {
     /// translation that's identical for the same (chunk, bignum) combo across
     /// every record. Caching skips both passes on subsequent dispatches.
     /// `Some(None)` = checked, not eligible — short-circuit without rebuilding.
+    /// The cache value is a `(Chunk, Vec<u16>)` tuple: the second element is
+    /// the sorted-unique set of slot indices the chunk WRITES (via
+    /// `fusevm::Op::SetSlot`), precomputed once so the per-record writeback
+    /// only touches modified slots instead of walking all N runtime slots.
     /// fusevm's own native-code cache (op_hash-keyed TLS + on-disk) caches the
     /// JIT result; this cache catches the upstream translation work that
-    /// previously rebuilt the chunk per record.
-    pub fuse_chunk_cache: HashMap<(usize, bool), Option<fusevm::Chunk>>,
+    /// previously rebuilt the chunk per record AND the per-record writeback
+    /// over-iteration.
+    pub fuse_chunk_cache: HashMap<(usize, bool), Option<(fusevm::Chunk, Vec<u16>)>>,
     /// Same as [`fuse_chunk_cache`] but for `run_fusevm_region` which lowers
     /// just the eligible *prefix* of a chunk (when the whole chunk isn't
     /// eligible). Keyed by (slice base pointer, slice length, bignum) — the
     /// prefix length is determined by the chunk content so the same chunk
-    /// always yields the same slice.
-    pub fuse_prefix_chunk_cache: HashMap<(usize, usize, bool), Option<fusevm::Chunk>>,
+    /// always yields the same slice. Same `(Chunk, written-slots)` tuple value.
+    pub fuse_prefix_chunk_cache:
+        HashMap<(usize, usize, bool), Option<(fusevm::Chunk, Vec<u16>)>>,
     /// Recycled `fusevm::VM` instances. `try_fusevm_dispatch` / `run_fusevm_region`
     /// acquire a VM from the pool (which calls `VM::reset(chunk)` preserving
     /// internal Vec capacities — stack, frames, slot_buf, etc.) instead of

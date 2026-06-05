@@ -629,9 +629,33 @@ pub fn vm_run_rule(
 /// `LoadFloat` constants so the translated chunk's `op_hash` is stable across
 /// records — a prerequisite for fusevm's op_hash-keyed block-JIT warmup and
 /// persistent on-disk native cache to engage.
-/// Seed a fresh fusevm VM frame from awkrs runtime slots — direct iter,
-/// no intermediate `Vec<f64>` allocation. Per-record hot path:
-/// `try_fusevm_dispatch` / `run_fusevm_region` call this every record.
+/// Walk a built fusevm chunk and collect the sorted-unique set of slot
+/// indices it WRITES to via `fusevm::Op::SetSlot`. Computed once per chunk
+/// at cache time so the per-record writeback only iterates the modified
+/// slots instead of walking 0..N runtime slots. Awkrs's bridge translates
+/// every slot-write (assign, compound-assign, incr/decr) into a sequence
+/// ending in `SetSlot`, so this scan captures the full write set.
+fn compute_written_slots(chunk: &fusevm::Chunk) -> Vec<u16> {
+    let mut v: Vec<u16> = chunk
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            fusevm::Op::SetSlot(idx) => Some(*idx),
+            _ => None,
+        })
+        .collect();
+    v.sort_unstable();
+    v.dedup();
+    v
+}
+
+/// Direct-iter seed from awkrs runtime slots — no intermediate `Vec<f64>`
+/// allocation. Per-record hot path: `try_fusevm_dispatch` /
+/// `run_fusevm_region` call this every record. (A narrow-read-slots version
+/// was tried but regressed: for typical awkrs slot counts of 3-5, the
+/// per-iteration bounds check on `slots.get(idx)` costs more than the
+/// saved `set_slot` calls. The flat-iter version has no bounds check and
+/// wins for small N.)
 fn seed_fusevm_slots_from_runtime(vm: &mut fusevm::VM, slots: &[Value]) {
     for (i, slot) in slots.iter().enumerate() {
         vm.set_slot(i as u16, fusevm::Value::Float(slot.as_number()));
@@ -713,8 +737,8 @@ fn try_fusevm_dispatch(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<Option<VmSi
     // checked-and-not-eligible (short-circuit). bignum is in the key because
     // it affects eligibility (numeric ops on Mpfr aren't lowered).
     let cache_key = (chunk as *const Chunk as usize, ctx.rt.bignum);
-    let fuse_chunk = match ctx.rt.fuse_chunk_cache.get(&cache_key) {
-        Some(Some(cached)) => cached.clone(),
+    let (fuse_chunk, written_slots) = match ctx.rt.fuse_chunk_cache.get(&cache_key) {
+        Some(Some((c, w))) => (c.clone(), w.clone()),
         Some(None) => return Ok(None),
         None => {
             let built = crate::fusevm_bridge::build_numeric_chunk(
@@ -723,9 +747,13 @@ fn try_fusevm_dispatch(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<Option<VmSi
                 |idx| cp.strings.get(idx).parse::<f64>().unwrap_or(0.0),
                 |idx| cp.strings.get(idx),
             );
-            ctx.rt.fuse_chunk_cache.insert(cache_key, built.clone());
-            match built {
-                Some(c) => c,
+            let cache_entry = built.map(|c| {
+                let w = compute_written_slots(&c);
+                (c, w)
+            });
+            ctx.rt.fuse_chunk_cache.insert(cache_key, cache_entry.clone());
+            match cache_entry {
+                Some((c, w)) => (c, w),
                 None => return Ok(None),
             }
         }
@@ -743,9 +771,9 @@ fn try_fusevm_dispatch(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<Option<VmSi
     // allocations. For an awk one-liner over millions of records this skips
     // per-record VM allocation of the VM's stack/frame/global storage.
     let mut vm = ctx.rt.fuse_vm_pool.acquire(fuse_chunk);
-    // Seed the base-frame slots as *data* (not baked into the chunk), so the
-    // chunk stays identical across records and its JIT-compiled native code is
-    // reused from the op_hash-keyed TLS + on-disk caches.
+    // Seed only the slots the chunk READS (precomputed once at cache time).
+    // For `{ sum += $1 }` that's 1 slot (sum) instead of all N runtime slots
+    // (NR/NF/FS/sum/…). Cuts per-record seeding work proportionally.
     seed_fusevm_slots_from_runtime(&mut vm, &ctx.rt.slots);
     vm.enable_tracing_jit();
     // Install the field-num hook for the duration of vm.run(). Chunks that
@@ -754,12 +782,22 @@ fn try_fusevm_dispatch(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<Option<VmSi
     let result = vm.run();
     drop(_hook_guard);
 
-    // Write back modified slots from fusevm frame to awkrs runtime
+    // Write back only the slots the chunk actually MODIFIES (precomputed
+    // once at cache time from the chunk's `Op::SetSlot` instances — see
+    // `compute_written_slots`). Old loop walked 0..slot_count on every
+    // record; for an awk program like `{ sum += $1 }` only one slot is
+    // written, so this drops O(N) writeback work to O(K) where K is
+    // typically 1-3 even for moderately complex programs.
     if let Some(frame) = vm.frames.last() {
-        for i in 0..slot_count.min(frame.slots.len()) {
-            match &frame.slots[i] {
-                fusevm::Value::Float(f) => ctx.rt.slots[i] = Value::Num(*f),
-                fusevm::Value::Int(n) => ctx.rt.slots[i] = Value::Num(*n as f64),
+        let max_idx = frame.slots.len().min(slot_count);
+        for &slot_idx in &written_slots {
+            let idx = slot_idx as usize;
+            if idx >= max_idx {
+                continue;
+            }
+            match &frame.slots[idx] {
+                fusevm::Value::Float(f) => ctx.rt.slots[idx] = Value::Num(*f),
+                fusevm::Value::Int(n) => ctx.rt.slots[idx] = Value::Num(*n as f64),
                 _ => {}
             }
         }
@@ -821,8 +859,8 @@ fn run_fusevm_region(ops: &[Op], ctx: &mut VmCtx<'_>) -> Result<bool> {
     // same chunk → same k → same (ptr, len). Caching skips repeated
     // build_numeric_chunk work per record. See `Runtime::fuse_prefix_chunk_cache`.
     let cache_key = (ops.as_ptr() as usize, ops.len(), ctx.rt.bignum);
-    let fuse_chunk = match ctx.rt.fuse_prefix_chunk_cache.get(&cache_key) {
-        Some(Some(cached)) => cached.clone(),
+    let (fuse_chunk, written_slots) = match ctx.rt.fuse_prefix_chunk_cache.get(&cache_key) {
+        Some(Some((c, w))) => (c.clone(), w.clone()),
         Some(None) => return Ok(false),
         None => {
             let built = crate::fusevm_bridge::build_numeric_chunk(
@@ -831,9 +869,13 @@ fn run_fusevm_region(ops: &[Op], ctx: &mut VmCtx<'_>) -> Result<bool> {
                 |idx| cp.strings.get(idx).parse::<f64>().unwrap_or(0.0),
                 |idx| cp.strings.get(idx),
             );
-            ctx.rt.fuse_prefix_chunk_cache.insert(cache_key, built.clone());
-            match built {
-                Some(c) => c,
+            let cache_entry = built.map(|c| {
+                let w = compute_written_slots(&c);
+                (c, w)
+            });
+            ctx.rt.fuse_prefix_chunk_cache.insert(cache_key, cache_entry.clone());
+            match cache_entry {
+                Some((c, w)) => (c, w),
                 // The region couldn't be lowered. Report "didn't run" so the
                 // caller falls back to the interpreter. (Should be
                 // unreachable while `eligible_loop_prefix`'s `stack_delta`
@@ -873,10 +915,15 @@ fn run_fusevm_region(ops: &[Op], ctx: &mut VmCtx<'_>) -> Result<bool> {
     }
 
     if let Some(frame) = vm.frames.last() {
-        for i in 0..slot_count.min(frame.slots.len()) {
-            match &frame.slots[i] {
-                fusevm::Value::Float(f) => ctx.rt.slots[i] = Value::Num(*f),
-                fusevm::Value::Int(n) => ctx.rt.slots[i] = Value::Num(*n as f64),
+        let max_idx = frame.slots.len().min(slot_count);
+        for &slot_idx in &written_slots {
+            let idx = slot_idx as usize;
+            if idx >= max_idx {
+                continue;
+            }
+            match &frame.slots[idx] {
+                fusevm::Value::Float(f) => ctx.rt.slots[idx] = Value::Num(*f),
+                fusevm::Value::Int(n) => ctx.rt.slots[idx] = Value::Num(*n as f64),
                 _ => {}
             }
         }
