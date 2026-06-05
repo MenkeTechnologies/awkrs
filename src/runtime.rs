@@ -1194,22 +1194,33 @@ pub struct Runtime {
     /// translation that's identical for the same (chunk, bignum) combo across
     /// every record. Caching skips both passes on subsequent dispatches.
     /// `Some(None)` = checked, not eligible — short-circuit without rebuilding.
-    /// The cache value is a `(Chunk, Vec<u16>)` tuple: the second element is
-    /// the sorted-unique set of slot indices the chunk WRITES (via
+    /// The cache value is `Option<Arc<(Chunk, Vec<u16>)>>`. The second tuple
+    /// element is the sorted-unique set of slot indices the chunk WRITES (via
     /// `fusevm::Op::SetSlot`), precomputed once so the per-record writeback
-    /// only touches modified slots instead of walking all N runtime slots.
+    /// only touches modified slots. `Arc`-wrapped so the per-record cache hit
+    /// is a refcount bump rather than a deep clone of the `Vec<u16>`.
     /// fusevm's own native-code cache (op_hash-keyed TLS + on-disk) caches the
     /// JIT result; this cache catches the upstream translation work that
     /// previously rebuilt the chunk per record AND the per-record writeback
     /// over-iteration.
-    pub fuse_chunk_cache: HashMap<(usize, bool), Option<(fusevm::Chunk, Vec<u16>)>>,
+    pub fuse_chunk_cache:
+        HashMap<(usize, bool), Option<Arc<(fusevm::Chunk, Vec<u16>)>>>,
+    /// Single-slot side-table that hoists the HashMap lookup out of the
+    /// per-record dispatch path. Stores the cache key + Arc of the LAST
+    /// chunk we looked up. For an awk program with a single record-rule
+    /// (the common case), every record hits this and skips the
+    /// `fuse_chunk_cache` HashMap lookup entirely; for N-rule programs the
+    /// hit rate is N-1/N (each rule swaps the slot once per record). Updated
+    /// only on HashMap miss; cleared in the Runtime constructors.
+    pub fuse_last_chunk_key: (usize, bool),
+    pub fuse_last_chunk_value: Option<Arc<(fusevm::Chunk, Vec<u16>)>>,
     /// Same as [`fuse_chunk_cache`] but for `run_fusevm_region` which lowers
     /// just the eligible *prefix* of a chunk (when the whole chunk isn't
     /// eligible). Keyed by (slice base pointer, slice length, bignum) — the
     /// prefix length is determined by the chunk content so the same chunk
-    /// always yields the same slice. Same `(Chunk, written-slots)` tuple value.
+    /// always yields the same slice. Same `Arc<(Chunk, written-slots)>` value.
     pub fuse_prefix_chunk_cache:
-        HashMap<(usize, usize, bool), Option<(fusevm::Chunk, Vec<u16>)>>,
+        HashMap<(usize, usize, bool), Option<Arc<(fusevm::Chunk, Vec<u16>)>>>,
     /// Recycled `fusevm::VM` instances. `try_fusevm_dispatch` / `run_fusevm_region`
     /// acquire a VM from the pool (which calls `VM::reset(chunk)` preserving
     /// internal Vec capacities — stack, frames, slot_buf, etc.) instead of
@@ -1391,6 +1402,8 @@ impl Runtime {
             traditional: false,
             jit_enabled: true,
             fuse_chunk_cache: HashMap::new(),
+            fuse_last_chunk_key: (0, false),
+            fuse_last_chunk_value: None,
             fuse_prefix_chunk_cache: HashMap::new(),
             fuse_vm_pool: fusevm::VMPool::new(),
             gettext_catalogs: AwkMap::default(),
@@ -1820,6 +1833,8 @@ impl Runtime {
             traditional,
             jit_enabled,
             fuse_chunk_cache: HashMap::new(),
+            fuse_last_chunk_key: (0, false),
+            fuse_last_chunk_value: None,
             fuse_prefix_chunk_cache: HashMap::new(),
             fuse_vm_pool: fusevm::VMPool::new(),
             gettext_catalogs,
@@ -3536,6 +3551,8 @@ impl Clone for Runtime {
             // Parallel record worker — don't share cache; rebuild lazily per
             // worker (each has its own thread-local fusevm state too).
             fuse_chunk_cache: HashMap::new(),
+            fuse_last_chunk_key: (0, false),
+            fuse_last_chunk_value: None,
             fuse_prefix_chunk_cache: HashMap::new(),
             fuse_vm_pool: fusevm::VMPool::new(),
             gettext_catalogs: self.gettext_catalogs.clone(),

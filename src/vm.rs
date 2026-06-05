@@ -737,26 +737,38 @@ fn try_fusevm_dispatch(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<Option<VmSi
     // checked-and-not-eligible (short-circuit). bignum is in the key because
     // it affects eligibility (numeric ops on Mpfr aren't lowered).
     let cache_key = (chunk as *const Chunk as usize, ctx.rt.bignum);
-    let (fuse_chunk, written_slots) = match ctx.rt.fuse_chunk_cache.get(&cache_key) {
-        Some(Some((c, w))) => (c.clone(), w.clone()),
-        Some(None) => return Ok(None),
-        None => {
-            let built = crate::fusevm_bridge::build_numeric_chunk(
-                ops,
-                ctx.rt.bignum,
-                |idx| cp.strings.get(idx).parse::<f64>().unwrap_or(0.0),
-                |idx| cp.strings.get(idx),
-            );
-            let cache_entry = built.map(|c| {
-                let w = compute_written_slots(&c);
-                (c, w)
-            });
-            ctx.rt.fuse_chunk_cache.insert(cache_key, cache_entry.clone());
-            match cache_entry {
-                Some((c, w)) => (c, w),
-                None => return Ok(None),
-            }
-        }
+    // Side-table fast path: 99%+ of dispatches in a tight record loop hit
+    // the last-seen chunk. One tuple compare + Arc::clone, no HashMap.
+    let cached_arc: Option<std::sync::Arc<(fusevm::Chunk, Vec<u16>)>> =
+        if cache_key == ctx.rt.fuse_last_chunk_key {
+            ctx.rt.fuse_last_chunk_value.clone()
+        } else {
+            // HashMap fallback. Also populate / update the side cache so
+            // subsequent dispatches of THIS chunk skip the HashMap.
+            let entry = match ctx.rt.fuse_chunk_cache.get(&cache_key) {
+                Some(v) => v.clone(),
+                None => {
+                    let built = crate::fusevm_bridge::build_numeric_chunk(
+                        ops,
+                        ctx.rt.bignum,
+                        |idx| cp.strings.get(idx).parse::<f64>().unwrap_or(0.0),
+                        |idx| cp.strings.get(idx),
+                    );
+                    let cache_entry = built.map(|c| {
+                        let w = compute_written_slots(&c);
+                        std::sync::Arc::new((c, w))
+                    });
+                    ctx.rt.fuse_chunk_cache.insert(cache_key, cache_entry.clone());
+                    cache_entry
+                }
+            };
+            ctx.rt.fuse_last_chunk_key = cache_key;
+            ctx.rt.fuse_last_chunk_value = entry.clone();
+            entry
+        };
+    let (fuse_chunk, written_slots) = match cached_arc {
+        Some(arc) => (arc.0.clone(), arc.1.clone()),
+        None => return Ok(None),
     };
 
     // Execute via fusevm VM. Enable the tracing JIT so fusevm's Cranelift
@@ -859,30 +871,31 @@ fn run_fusevm_region(ops: &[Op], ctx: &mut VmCtx<'_>) -> Result<bool> {
     // same chunk → same k → same (ptr, len). Caching skips repeated
     // build_numeric_chunk work per record. See `Runtime::fuse_prefix_chunk_cache`.
     let cache_key = (ops.as_ptr() as usize, ops.len(), ctx.rt.bignum);
-    let (fuse_chunk, written_slots) = match ctx.rt.fuse_prefix_chunk_cache.get(&cache_key) {
-        Some(Some((c, w))) => (c.clone(), w.clone()),
-        Some(None) => return Ok(false),
-        None => {
-            let built = crate::fusevm_bridge::build_numeric_chunk(
-                ops,
-                ctx.rt.bignum,
-                |idx| cp.strings.get(idx).parse::<f64>().unwrap_or(0.0),
-                |idx| cp.strings.get(idx),
-            );
-            let cache_entry = built.map(|c| {
-                let w = compute_written_slots(&c);
-                (c, w)
-            });
-            ctx.rt.fuse_prefix_chunk_cache.insert(cache_key, cache_entry.clone());
-            match cache_entry {
-                Some((c, w)) => (c, w),
-                // The region couldn't be lowered. Report "didn't run" so the
-                // caller falls back to the interpreter. (Should be
-                // unreachable while `eligible_loop_prefix`'s `stack_delta`
-                // stays a subset of `is_fusevm_eligible`.)
-                None => return Ok(false),
+    let cached_arc: Option<std::sync::Arc<(fusevm::Chunk, Vec<u16>)>> =
+        match ctx.rt.fuse_prefix_chunk_cache.get(&cache_key) {
+            Some(v) => v.clone(),
+            None => {
+                let built = crate::fusevm_bridge::build_numeric_chunk(
+                    ops,
+                    ctx.rt.bignum,
+                    |idx| cp.strings.get(idx).parse::<f64>().unwrap_or(0.0),
+                    |idx| cp.strings.get(idx),
+                );
+                let cache_entry = built.map(|c| {
+                    let w = compute_written_slots(&c);
+                    std::sync::Arc::new((c, w))
+                });
+                ctx.rt.fuse_prefix_chunk_cache.insert(cache_key, cache_entry.clone());
+                cache_entry
             }
-        }
+        };
+    let (fuse_chunk, written_slots) = match cached_arc {
+        Some(arc) => (arc.0.clone(), arc.1.clone()),
+        // The region couldn't be lowered. Report "didn't run" so the
+        // caller falls back to the interpreter. (Should be
+        // unreachable while `eligible_loop_prefix`'s `stack_delta`
+        // stays a subset of `is_fusevm_eligible`.)
+        None => return Ok(false),
     };
 
     // Pool-acquired VM (see `try_fusevm_dispatch` for the rationale).
