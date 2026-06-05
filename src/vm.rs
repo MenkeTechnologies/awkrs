@@ -629,9 +629,12 @@ pub fn vm_run_rule(
 /// `LoadFloat` constants so the translated chunk's `op_hash` is stable across
 /// records — a prerequisite for fusevm's op_hash-keyed block-JIT warmup and
 /// persistent on-disk native cache to engage.
-fn seed_fusevm_slots(vm: &mut fusevm::VM, slot_init: &[f64]) {
-    for (i, n) in slot_init.iter().enumerate() {
-        vm.set_slot(i as u16, fusevm::Value::Float(*n));
+/// Seed a fresh fusevm VM frame from awkrs runtime slots — direct iter,
+/// no intermediate `Vec<f64>` allocation. Per-record hot path:
+/// `try_fusevm_dispatch` / `run_fusevm_region` call this every record.
+fn seed_fusevm_slots_from_runtime(vm: &mut fusevm::VM, slots: &[Value]) {
+    for (i, slot) in slots.iter().enumerate() {
+        vm.set_slot(i as u16, fusevm::Value::Float(slot.as_number()));
     }
 }
 
@@ -701,7 +704,6 @@ fn try_fusevm_dispatch(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<Option<VmSi
     let ops = &chunk.ops;
     let cp = ctx.cp;
     let slot_count = ctx.rt.slots.len();
-    let slot_init: Vec<f64> = ctx.rt.slots.iter().map(|s| s.as_number()).collect();
 
     // Per-(chunk pointer, bignum) cache for the built fusevm::Chunk. The
     // translation is identical across every dispatch on the same awkrs Chunk
@@ -744,7 +746,7 @@ fn try_fusevm_dispatch(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<Option<VmSi
     // Seed the base-frame slots as *data* (not baked into the chunk), so the
     // chunk stays identical across records and its JIT-compiled native code is
     // reused from the op_hash-keyed TLS + on-disk caches.
-    seed_fusevm_slots(&mut vm, &slot_init);
+    seed_fusevm_slots_from_runtime(&mut vm, &ctx.rt.slots);
     vm.enable_tracing_jit();
     // Install the field-num hook for the duration of vm.run(). Chunks that
     // never emit AwkGetFieldNum pay only the (cheap) TLS write.
@@ -813,7 +815,6 @@ fn try_fusevm_dispatch(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<Option<VmSi
 fn run_fusevm_region(ops: &[Op], ctx: &mut VmCtx<'_>) -> Result<bool> {
     let cp = ctx.cp;
     let slot_count = ctx.rt.slots.len();
-    let slot_init: Vec<f64> = ctx.rt.slots.iter().map(|s| s.as_number()).collect();
 
     // Per-(slice base, slice len, bignum) cache. The slice is &chunk.ops[..k]
     // where k is determined by `eligible_loop_prefix` on the same chunk —
@@ -844,7 +845,7 @@ fn run_fusevm_region(ops: &[Op], ctx: &mut VmCtx<'_>) -> Result<bool> {
 
     // Pool-acquired VM (see `try_fusevm_dispatch` for the rationale).
     let mut vm = ctx.rt.fuse_vm_pool.acquire(fuse_chunk);
-    seed_fusevm_slots(&mut vm, &slot_init);
+    seed_fusevm_slots_from_runtime(&mut vm, &ctx.rt.slots);
     vm.enable_tracing_jit();
     // This region is always a hot loop (`eligible_loop_prefix` requires a
     // backward jump) but the offloaded chunk runs `vm.run()` exactly once, so
