@@ -1085,6 +1085,12 @@ fn split_fields_into(
         }
     }
 }
+/// Value type shared by the fuse_chunk_cache + fuse_prefix_chunk_cache pair:
+/// `Some(Some(Arc<(chunk, written_slots)>))` = cached + eligible;
+/// `Some(None)` = checked + not eligible (short-circuit without rebuilding).
+/// `None` (HashMap miss) = never checked.
+pub type FuseChunkSlot = Option<Arc<(fusevm::Chunk, Vec<u16>)>>;
+
 /// `Runtime` — see fields for the structure layout.
 pub struct Runtime {
     /// `vars` field.
@@ -1203,7 +1209,7 @@ pub struct Runtime {
     /// JIT result; this cache catches the upstream translation work that
     /// previously rebuilt the chunk per record AND the per-record writeback
     /// over-iteration.
-    pub fuse_chunk_cache: HashMap<(usize, bool), Option<Arc<(fusevm::Chunk, Vec<u16>)>>>,
+    pub fuse_chunk_cache: HashMap<(usize, bool), FuseChunkSlot>,
     /// Single-slot side-table that hoists the HashMap lookup out of the
     /// per-record dispatch path. Stores the cache key + Arc of the LAST
     /// chunk we looked up. For an awk program with a single record-rule
@@ -1212,14 +1218,13 @@ pub struct Runtime {
     /// hit rate is N-1/N (each rule swaps the slot once per record). Updated
     /// only on HashMap miss; cleared in the Runtime constructors.
     pub fuse_last_chunk_key: (usize, bool),
-    pub fuse_last_chunk_value: Option<Arc<(fusevm::Chunk, Vec<u16>)>>,
+    pub fuse_last_chunk_value: FuseChunkSlot,
     /// Same as [`fuse_chunk_cache`] but for `run_fusevm_region` which lowers
     /// just the eligible *prefix* of a chunk (when the whole chunk isn't
     /// eligible). Keyed by (slice base pointer, slice length, bignum) — the
     /// prefix length is determined by the chunk content so the same chunk
     /// always yields the same slice. Same `Arc<(Chunk, written-slots)>` value.
-    pub fuse_prefix_chunk_cache:
-        HashMap<(usize, usize, bool), Option<Arc<(fusevm::Chunk, Vec<u16>)>>>,
+    pub fuse_prefix_chunk_cache: HashMap<(usize, usize, bool), FuseChunkSlot>,
     /// Recycled `fusevm::VM` instances. `try_fusevm_dispatch` / `run_fusevm_region`
     /// acquire a VM from the pool (which calls `VM::reset(chunk)` preserving
     /// internal Vec capacities — stack, frames, slot_buf, etc.) instead of
