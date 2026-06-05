@@ -1188,6 +1188,22 @@ pub struct Runtime {
     pub traditional: bool,
     /// Bytecode JIT (`-s` / `--no-optimize` disables when set).
     pub jit_enabled: bool,
+    /// Cache of fusevm::Chunk built from awkrs Chunks via
+    /// `fusevm_bridge::build_numeric_chunk`. Keyed by (chunk pointer, bignum
+    /// flag): the bridge builder does an eligibility check + 2-pass op→fusevm
+    /// translation that's identical for the same (chunk, bignum) combo across
+    /// every record. Caching skips both passes on subsequent dispatches.
+    /// `Some(None)` = checked, not eligible — short-circuit without rebuilding.
+    /// fusevm's own native-code cache (op_hash-keyed TLS + on-disk) caches the
+    /// JIT result; this cache catches the upstream translation work that
+    /// previously rebuilt the chunk per record.
+    pub fuse_chunk_cache: HashMap<(usize, bool), Option<fusevm::Chunk>>,
+    /// Same as [`fuse_chunk_cache`] but for `run_fusevm_region` which lowers
+    /// just the eligible *prefix* of a chunk (when the whole chunk isn't
+    /// eligible). Keyed by (slice base pointer, slice length, bignum) — the
+    /// prefix length is determined by the chunk content so the same chunk
+    /// always yields the same slice.
+    pub fuse_prefix_chunk_cache: HashMap<(usize, usize, bool), Option<fusevm::Chunk>>,
     /// GNU MO catalogs loaded by `bindtextdomain` (domain → catalog).
     pub gettext_catalogs: AwkMap<String, Arc<Catalog>>,
     /// Copy of [`crate::bytecode::CompiledProgram::slot_map`] for SYMTAB / `array_keys` without VM context.
@@ -1360,6 +1376,8 @@ impl Runtime {
             posix: false,
             traditional: false,
             jit_enabled: true,
+            fuse_chunk_cache: HashMap::new(),
+            fuse_prefix_chunk_cache: HashMap::new(),
             gettext_catalogs: AwkMap::default(),
             symtab_slot_map: HashMap::new(),
             profile_record_hits: Vec::new(),
@@ -1786,6 +1804,8 @@ impl Runtime {
             posix,
             traditional,
             jit_enabled,
+            fuse_chunk_cache: HashMap::new(),
+            fuse_prefix_chunk_cache: HashMap::new(),
             gettext_catalogs,
             symtab_slot_map: HashMap::new(),
             profile_record_hits: Vec::new(),
@@ -3497,6 +3517,10 @@ impl Clone for Runtime {
             posix: self.posix,
             traditional: self.traditional,
             jit_enabled: self.jit_enabled,
+            // Parallel record worker — don't share cache; rebuild lazily per
+            // worker (each has its own thread-local fusevm state too).
+            fuse_chunk_cache: HashMap::new(),
+            fuse_prefix_chunk_cache: HashMap::new(),
             gettext_catalogs: self.gettext_catalogs.clone(),
             symtab_slot_map: self.symtab_slot_map.clone(),
             profile_record_hits: Vec::new(),

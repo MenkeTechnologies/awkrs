@@ -703,14 +703,30 @@ fn try_fusevm_dispatch(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<Option<VmSi
     let slot_count = ctx.rt.slots.len();
     let slot_init: Vec<f64> = ctx.rt.slots.iter().map(|s| s.as_number()).collect();
 
-    let fuse_chunk = match crate::fusevm_bridge::build_numeric_chunk(
-        ops,
-        ctx.rt.bignum,
-        |idx| cp.strings.get(idx).parse::<f64>().unwrap_or(0.0),
-        |idx| cp.strings.get(idx),
-    ) {
-        Some(c) => c,
-        None => return Ok(None),
+    // Per-(chunk pointer, bignum) cache for the built fusevm::Chunk. The
+    // translation is identical across every dispatch on the same awkrs Chunk
+    // (chunks are immutable for the program's lifetime); caching skips the
+    // eligibility check + 2-pass op→fusevm translation that
+    // build_numeric_chunk would otherwise repeat per record. `Some(None)` =
+    // checked-and-not-eligible (short-circuit). bignum is in the key because
+    // it affects eligibility (numeric ops on Mpfr aren't lowered).
+    let cache_key = (chunk as *const Chunk as usize, ctx.rt.bignum);
+    let fuse_chunk = match ctx.rt.fuse_chunk_cache.get(&cache_key) {
+        Some(Some(cached)) => cached.clone(),
+        Some(None) => return Ok(None),
+        None => {
+            let built = crate::fusevm_bridge::build_numeric_chunk(
+                ops,
+                ctx.rt.bignum,
+                |idx| cp.strings.get(idx).parse::<f64>().unwrap_or(0.0),
+                |idx| cp.strings.get(idx),
+            );
+            ctx.rt.fuse_chunk_cache.insert(cache_key, built.clone());
+            match built {
+                Some(c) => c,
+                None => return Ok(None),
+            }
+        }
     };
 
     // Execute via fusevm VM. Enable the tracing JIT so fusevm's Cranelift
@@ -791,18 +807,31 @@ fn run_fusevm_region(ops: &[Op], ctx: &mut VmCtx<'_>) -> Result<bool> {
     let slot_count = ctx.rt.slots.len();
     let slot_init: Vec<f64> = ctx.rt.slots.iter().map(|s| s.as_number()).collect();
 
-    let fuse_chunk = match crate::fusevm_bridge::build_numeric_chunk(
-        ops,
-        ctx.rt.bignum,
-        |idx| cp.strings.get(idx).parse::<f64>().unwrap_or(0.0),
-        |idx| cp.strings.get(idx),
-    ) {
-        Some(c) => c,
-        // The region couldn't be lowered. Report "didn't run" so the caller
-        // falls back to the interpreter for these ops rather than skipping
-        // them. (Should be unreachable while `eligible_loop_prefix`'s
-        // `stack_delta` stays a subset of `is_fusevm_eligible`.)
-        None => return Ok(false),
+    // Per-(slice base, slice len, bignum) cache. The slice is &chunk.ops[..k]
+    // where k is determined by `eligible_loop_prefix` on the same chunk —
+    // same chunk → same k → same (ptr, len). Caching skips repeated
+    // build_numeric_chunk work per record. See `Runtime::fuse_prefix_chunk_cache`.
+    let cache_key = (ops.as_ptr() as usize, ops.len(), ctx.rt.bignum);
+    let fuse_chunk = match ctx.rt.fuse_prefix_chunk_cache.get(&cache_key) {
+        Some(Some(cached)) => cached.clone(),
+        Some(None) => return Ok(false),
+        None => {
+            let built = crate::fusevm_bridge::build_numeric_chunk(
+                ops,
+                ctx.rt.bignum,
+                |idx| cp.strings.get(idx).parse::<f64>().unwrap_or(0.0),
+                |idx| cp.strings.get(idx),
+            );
+            ctx.rt.fuse_prefix_chunk_cache.insert(cache_key, built.clone());
+            match built {
+                Some(c) => c,
+                // The region couldn't be lowered. Report "didn't run" so the
+                // caller falls back to the interpreter. (Should be
+                // unreachable while `eligible_loop_prefix`'s `stack_delta`
+                // stays a subset of `is_fusevm_eligible`.)
+                None => return Ok(false),
+            }
+        }
     };
 
     let mut vm = fusevm::VM::new(fuse_chunk);
