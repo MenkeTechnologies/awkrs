@@ -532,19 +532,29 @@ pub fn awk_strftime(args: &[Value]) -> std::result::Result<Value, String> {
     };
     let secs = ts.floor() as i64;
     let nsec = ((ts - secs as f64) * 1e9).round().clamp(0.0, 1e9 - 1.0) as u32;
+    // chrono's `format(...).to_string()` panics inside `Display::fmt` when an
+    // unsupported strftime directive is encountered (e.g. `%N` on some chrono
+    // versions). Format via `write!` so the fmt::Error path returns Err
+    // instead of taking down the process.
+    use std::fmt::Write as _;
     let out = if utc {
-        Utc.timestamp_opt(secs, nsec)
-            .single()
-            .ok_or_else(|| "strftime: timestamp out of range".to_string())?
-            .format(&fmt)
-            .to_string()
-    } else {
-        Local
+        let dt = Utc
             .timestamp_opt(secs, nsec)
             .single()
-            .ok_or_else(|| "strftime: timestamp out of range".to_string())?
-            .format(&fmt)
-            .to_string()
+            .ok_or_else(|| "strftime: timestamp out of range".to_string())?;
+        let mut buf = String::new();
+        write!(buf, "{}", dt.format(&fmt))
+            .map_err(|_| format!("strftime: unsupported format string `{fmt}`"))?;
+        buf
+    } else {
+        let dt = Local
+            .timestamp_opt(secs, nsec)
+            .single()
+            .ok_or_else(|| "strftime: timestamp out of range".to_string())?;
+        let mut buf = String::new();
+        write!(buf, "{}", dt.format(&fmt))
+            .map_err(|_| format!("strftime: unsupported format string `{fmt}`"))?;
+        buf
     };
     Ok(Value::Str(out))
 }
@@ -671,6 +681,13 @@ pub fn awk_strtonum(s: &str) -> f64 {
             && !t.contains('.')
             && !t.contains('e')
             && !t.contains('E')
+            // Pre-fix the octal branch was entered for ANY leading-zero string
+            // — including "08", "09", "0888" which contain digits invalid in
+            // base-8. `i64::from_str_radix(_, 8)` then returned Err and the
+            // `.unwrap_or(0.0)` swallowed the value to 0.0 (gawk's strtonum
+            // returns 8.0 for "08", 9.0 for "09" — falls through to decimal).
+            // Gate the octal branch on "every char is a valid octal digit".
+            && t.bytes().all(|b| (b'0'..=b'7').contains(&b))
         {
             return i64::from_str_radix(t, 8).map(|v| v as f64).unwrap_or(0.0);
         }
@@ -1797,5 +1814,43 @@ mod tests {
             .as_str(),
             "0"
         );
+    }
+
+    /// `awk_strftime` must NOT panic on unsupported chrono format directives.
+    /// Pre-fix, `strftime("%N", ts)` panicked inside chrono's `Display::fmt`
+    /// because `.to_string()` propagates fmt::Error as a panic. New impl
+    /// formats via `write!` and surfaces the error as a clean string.
+    #[test]
+    fn awk_strftime_unsupported_directive_errors_without_panic() {
+        let r = awk_strftime(&[Value::Str("%N".to_string()), Value::Num(0.5)]);
+        match r {
+            Err(msg) => assert!(
+                msg.contains("unsupported format string") || msg.contains("%N"),
+                "expected unsupported-format error, got: {msg}"
+            ),
+            Ok(v) => {
+                // If a future chrono version DOES support %N, that's fine —
+                // the test passes as long as no panic occurred.
+                let _ = v;
+            }
+        }
+    }
+
+    /// `awk_strtonum` must NOT collapse leading-zero strings containing 8/9
+    /// to 0. gawk parity: `"08"` → 8.0, `"09"` → 9.0 (fall through to decimal
+    /// because base-8 can't represent those digits, so the octal branch is
+    /// skipped). Pre-fix, the octal branch ran unconditionally for any
+    /// leading-zero string → from_str_radix(_, 8) failed → unwrap_or(0.0).
+    #[test]
+    fn awk_strtonum_leading_zero_with_8_or_9_falls_through_to_decimal() {
+        assert_eq!(awk_strtonum("08"), 8.0);
+        assert_eq!(awk_strtonum("09"), 9.0);
+        assert_eq!(awk_strtonum("0888"), 888.0);
+        assert_eq!(awk_strtonum("01239"), 1239.0);
+        // Valid octal still works.
+        assert_eq!(awk_strtonum("010"), 8.0);
+        assert_eq!(awk_strtonum("077"), 63.0);
+        // Hex still works.
+        assert_eq!(awk_strtonum("0x10"), 16.0);
     }
 }

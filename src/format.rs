@@ -2311,4 +2311,46 @@ mod tests {
     fn format_percent_d_float_v3() {
         assert_eq!(awk_sprintf("%d", &[Value::Num(3.9)]).unwrap(), "3");
     }
+
+    // ------------------------------------------------------------------
+    // Adversarial parser-overflow tests (currently FAILING — see bug
+    // report). These probe specific overflow sites in `awk_sprintf_with_decimal`
+    // where the digit accumulator `n = n * 10 + d` runs unchecked. Real
+    // user input like `printf "%99999999999999999999d", 1` aborts the awk
+    // program (and the shell on the JIT path) instead of treating the
+    // malformed spec as an error. gawk and busybox awk both gracefully
+    // reject these without crashing. NOT BOILERPLATE: existing star_*
+    // tests all use small widths (5, 8) and never exercise the digit
+    // accumulator past the i32 boundary.
+    // ------------------------------------------------------------------
+
+    /// Bug class: integer overflow panic in the `%m$` lookahead digit loop
+    /// (line ~242) and width digit loop (line ~754) when a format string
+    /// contains 20+ decimal digits before the conversion letter. Expected:
+    /// the function should either reject with `Err` or saturate the width;
+    /// observed: panic with `attempt to multiply with overflow`.
+    #[test]
+    fn format_huge_literal_width_does_not_panic() {
+        let r = awk_sprintf("%99999999999999999999d", &[Value::Num(1.0)]);
+        if let Ok(s) = r {
+            assert!(
+                s.len() < 10_000_000,
+                "implausible output length {} suggests width was honored as huge int",
+                s.len()
+            );
+        }
+    }
+
+    /// Bug class: the same overflow path in `parse_star_value` at line
+    /// ~300 — exercised through the `*N$` positional star path. Distinct
+    /// branch from the literal-width test above (parses digits AFTER a
+    /// leading `*`).
+    #[test]
+    fn format_huge_positional_star_does_not_panic() {
+        let r = awk_sprintf(
+            "%*99999999999999999999$d",
+            &[Value::Num(1.0), Value::Num(2.0)],
+        );
+        let _ = r;
+    }
 }
