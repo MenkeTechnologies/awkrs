@@ -243,7 +243,9 @@ pub fn awk_sprintf_with_decimal(
             // builds for absurd-width literals like `%99999999999999999999d` and
             // panicked. Saturate at usize::MAX so the downstream width handling
             // can either cap or refuse without taking down the process.
-            m = m.saturating_mul(10).saturating_add((ch as u8 - b'0') as usize);
+            m = m
+                .saturating_mul(10)
+                .saturating_add((ch as u8 - b'0') as usize);
             i += ch.len_utf8();
         }
         let val_pos = if has_digits && fmt_peek(fmt, i) == Some('$') {
@@ -304,7 +306,9 @@ fn parse_star_value(
         // Saturating arithmetic — same fix as `parse_star_value` parent: an
         // input like `%*99999999999999999999$d` walked through this loop and
         // panicked on the unchecked `* 10`.
-        n = n.saturating_mul(10).saturating_add((ch as u8 - b'0') as usize);
+        n = n
+            .saturating_mul(10)
+            .saturating_add((ch as u8 - b'0') as usize);
         i += ch.len_utf8();
     }
     if has_digits && fmt_peek(fmt, i) == Some('$') {
@@ -767,7 +771,9 @@ fn parse_width_or_star(
             // Saturating — `%99999999999999999999d` would otherwise overflow
             // and panic in debug builds. The downstream width handling caps
             // at a reasonable budget.
-            w = w.saturating_mul(10).saturating_add((d as u8 - b'0') as usize);
+            w = w
+                .saturating_mul(10)
+                .saturating_add((d as u8 - b'0') as usize);
             i += d.len_utf8();
         }
         return Ok((Some(w), false, i));
