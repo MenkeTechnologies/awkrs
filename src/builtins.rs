@@ -1283,7 +1283,11 @@ mod tests {
         assert_eq!(awk_strtonum("010"), 8.0);
         assert_eq!(awk_strtonum("42"), 42.0);
         assert_eq!(awk_strtonum("0xG"), 0.0); // Invalid hex
-        assert_eq!(awk_strtonum("09"), 0.0); // Leading 0 implies octal; '9' is invalid octal digit
+        // FIXED: gawk parity — "09" has a leading 0 but contains '9' which is
+        // not a valid octal digit, so the octal branch is SKIPPED and the
+        // value falls through to decimal interpretation. Pre-fix awkrs
+        // entered the octal branch unconditionally and returned 0.0.
+        assert_eq!(awk_strtonum("09"), 9.0);
         assert_eq!(awk_strtonum("  0x10  "), 16.0); // Spaces allowed
         assert_eq!(awk_strtonum("1e3"), 1000.0); // Scientific in strtonum
         assert_eq!(awk_strtonum("\t\n 42 \r"), 42.0); // All whitespace
