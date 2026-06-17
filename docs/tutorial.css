@@ -1,4 +1,4 @@
-/* AWKRS — Tutorial pages
+/* AUDIO_HAXOR — Tutorial pages
    Cyberpunk walkthrough styles. Loads after hud-static.css and
    reuses its CSS variables (var(--bg), --text, --accent, --border).
 */
@@ -666,3 +666,4 @@
   .tutorial-section { opacity: 1; }
   .tutorial-card    { opacity: 1; }
 }
+
