@@ -122,7 +122,7 @@
       <!-- SECTION 1: EXECUTIVE SUMMARY           -->
       <!-- ═══════════════════════════════════════ -->
       <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>EXECUTIVE SUMMARY</h2>
-      <p class="tutorial-subtitle">awkrs is a single-binary AWK implementation written in Rust. The interpreter compiles AWK source to a 95-opcode bytecode, runs it on a stack VM with peephole-fused instructions, and JITs hot chunks via Cranelift to native code with tiered compilation. Parallel record processing rides on rayon work-stealing. <strong>First AWK implementation to combine bytecode VM + Cranelift JIT + persistent on-disk bytecode cache</strong> (rkyv-backed at <code>~/.awkrs/scripts.rkyv</code>) &mdash; repeat <code>-f script.awk</code> runs skip lex/parse/compile entirely. 2,116 parity files cross-check byte-for-byte against gawk, mawk, and BSD awk; CI runs full corpus against all three references on every push.</p>
+      <p class="tutorial-subtitle">awkrs is a single-binary AWK implementation written in Rust. The interpreter compiles AWK source to a 95-opcode bytecode and runs it on a stack VM with peephole-fused superinstructions; eligible numeric chunks are offloaded to the shared <code>fusevm</code> VM and Cranelift-JITed to native code (on by default; <code>AWKRS_FUSEVM=0</code> disables). Parallel record processing rides on rayon work-stealing via <code>-j N</code>. Based on a survey of major public AWK implementations, awkrs appears to be the <strong>first awk implementation to pair a bytecode VM with a persistent on-disk bytecode cache</strong> (rkyv-backed at <code>~/.awkrs/scripts.rkyv</code>) &mdash; repeat <code>-f script.awk</code> runs skip lex/parse/compile entirely. 2,116 parity files cross-check byte-for-byte against gawk, mawk, and BSD awk; CI runs the full corpus against all three references on every push.</p>
 
       <div class="stat-grid">
         <div class="stat-card"><div class="stat-val">45,134</div><div class="stat-label">Rust Lines</div></div>
@@ -141,7 +141,7 @@
       <!-- SECTION 2: ARCHITECTURE                -->
       <!-- ═══════════════════════════════════════ -->
       <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>ARCHITECTURE</h2>
-      <p class="tutorial-subtitle">Single-pass pipeline: <code>lexer.rs</code> &rarr; <code>parser.rs</code> &rarr; AST in <code>ast.rs</code> &rarr; <code>compiler.rs</code> emits bytecode <code>Chunk</code>s with peephole fusion &rarr; <code>vm.rs</code> runs the stack VM &rarr; <code>jit.rs</code> tiered-compiles hot chunks via Cranelift. <code>script_cache.rs</code> memoizes the <code>CompiledProgram</code> as an rkyv archive so the next run mmaps it zero-copy. <code>runtime.rs</code> holds the central state (fields, $0, vars, slots).</p>
+      <p class="tutorial-subtitle">Single-pass pipeline: <code>lexer.rs</code> &rarr; <code>parser.rs</code> &rarr; AST in <code>ast.rs</code> &rarr; <code>compiler.rs</code> emits bytecode <code>Chunk</code>s with peephole fusion &rarr; <code>vm.rs</code> runs the stack VM. Eligible numeric chunks are lowered by <code>fusevm_bridge.rs</code> into the shared <code>fusevm</code> crate (the bytecode VM also used by zshrs and stryke), which Cranelift-JITs them to native code. <code>script_cache.rs</code> memoizes the <code>CompiledProgram</code> as an rkyv archive so the next run mmaps it zero-copy. <code>runtime.rs</code> holds the central state (fields, $0, vars, slots).</p>
 
       <h3 style="font-family:'Orbitron',sans-serif;font-size:14px;color:var(--cyan);letter-spacing:1.5px;margin-top:1.2rem;">Source layout</h3>
       <table class="file-table">
@@ -189,9 +189,9 @@
           </ul>
         </div>
         <div class="feature-card">
-          <h4>Cranelift JIT (tiered)</h4>
-          <p>Hot bytecode chunks are JIT-compiled by Cranelift with <code>opt_level=speed</code>. <strong>Tiered</strong>: chunks run on the interpreter until they cross <code>AWKRS_JIT_MIN_INVOCATIONS</code> (default 3) &mdash; avoids compile cost on one-shot BEGIN blocks.</p>
-          <p>ABI: <code>(vmctx, slots, field_fn, array_field_add, var_dispatch, field_dispatch, io_dispatch, val_dispatch) &rarr; f64</code>. Mixed-mode chunks NaN-box <code>Value</code> in slots; non-mixed chunks keep slots in Cranelift SSA. Unsupported opcodes fall back to bytecode.</p>
+          <h4>fusevm / Cranelift JIT offload</h4>
+          <p>Eligible <strong>numeric</strong> bytecode chunks are translated by <code>fusevm_bridge.rs</code> into a <code>fusevm::Chunk</code> and run on the shared <code>fusevm</code> VM, whose Cranelift tiers JIT them to native code. On by default; <code>AWKRS_FUSEVM=0</code> forces the bytecode interpreter for every chunk.</p>
+          <p>Two JIT tiers persist to <code>~/.cache/fusevm-jit</code>: a <strong>block JIT</strong> (<code>*.blk.fjit</code>) for fully-eligible per-record numeric chunks and a <strong>tracing JIT</strong> (<code>*.trc.fjit</code>) for hot in-chunk loop traces. For a loop region run once via <code>run_fusevm_region</code>, the bridge forces eager block-JIT compilation on the first <code>run()</code>. Chunks touching strings, fields, arrays, regexes, <code>getline</code>, <code>print</code>, user calls, or ineligible builtins fall back to the interpreter; <code>-M</code>/<code>--bignum</code> disables the path entirely.</p>
         </div>
         <div class="feature-card">
           <h4>Persistent bytecode cache (rkyv)</h4>
@@ -200,7 +200,7 @@
         </div>
         <div class="feature-card">
           <h4>Parallel record processing (rayon)</h4>
-          <p><code>-j N</code> spawns a rayon thread pool. Records are processed in parallel when the program is parallel-safe (no range patterns, no <code>exit</code>, no primary <code>getline</code>, no cross-record assignments). Output is reassembled in order.</p>
+          <p><code>-j N</code> (default 1) spawns a rayon thread pool. Records are processed in parallel when the program is parallel-safe (static check: no range patterns, no <code>exit</code>/<code>nextfile</code>/<code>delete</code>, no primary or pipe/coproc <code>getline</code>, no <code>asort</code>/<code>asorti</code>, no indirect calls, no <code>print</code>/<code>printf</code> redirection, no cross-record assignments). Output is reassembled in input order; non-safe programs fall back to sequential with a warning.</p>
           <p>Files use RS-aware mmap-and-split; stdin uses chunked line buffering. Worker runtime is a per-thread <code>Runtime</code> with shared <code>Arc&lt;CompiledProgram&gt;</code>.</p>
         </div>
         <div class="feature-card">
@@ -298,20 +298,20 @@
       <!-- SECTION 5: COMPETITIVE LANDSCAPE       -->
       <!-- ═══════════════════════════════════════ -->
       <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>COMPETITIVE LANDSCAPE</h2>
-      <p class="tutorial-subtitle">Based on a survey of major public AWK implementations: <strong>awkrs is the first to combine a bytecode VM, a JIT compiler, and a persistent on-disk bytecode cache</strong>. frawk has VM + Cranelift/LLVM JIT but recompiles per invocation. gawk's <em>pm-gawk</em> persists script variables (heap), not compiled bytecode.</p>
+      <p class="tutorial-subtitle">Based on a survey of major public AWK implementations: <strong>awkrs appears to be the first to pair a bytecode VM with a persistent on-disk bytecode cache</strong>. frawk has VM + Cranelift/LLVM JIT but recompiles per invocation. gawk's <em>pm-gawk</em> persists script variables (heap), not compiled bytecode. awkrs's own fusevm/Cranelift JIT offload is on by default for eligible numeric chunks and carries a separate persistent <em>machine-code</em> cache at <code>~/.cache/fusevm-jit</code>, distinct from the bytecode cache.</p>
 
       <table class="file-table">
         <thead>
           <tr><th>Implementation</th><th class="num">Bytecode VM</th><th class="num">JIT</th><th class="num">Persistent bytecode cache</th></tr>
         </thead>
         <tbody>
-          <tr><td>BWK awk (one-true-awk)</td><td class="num">&mdash;</td><td class="num">&mdash;</td><td class="num">&mdash;</td></tr>
+          <tr><td>BWK awk (one-true-awk)</td><td class="num">&mdash; tree-walker</td><td class="num">&mdash;</td><td class="num">&mdash;</td></tr>
           <tr><td>gawk</td><td class="num">✓</td><td class="num">&mdash;</td><td class="num">&mdash; (pm-gawk is for vars)</td></tr>
           <tr><td>mawk</td><td class="num">✓</td><td class="num">&mdash;</td><td class="num">&mdash;</td></tr>
           <tr><td>goawk</td><td class="num">✓</td><td class="num">&mdash;</td><td class="num">&mdash;</td></tr>
           <tr><td>frawk</td><td class="num">✓</td><td class="num">Cranelift + LLVM</td><td class="num">&mdash;</td></tr>
           <tr><td>zawk (frawk fork)</td><td class="num">✓</td><td class="num">Cranelift + LLVM</td><td class="num">&mdash;</td></tr>
-          <tr class="total-row"><td>awkrs</td><td class="num">✓</td><td class="num">Cranelift</td><td class="num">✓ (rkyv mmap)</td></tr>
+          <tr class="total-row"><td>awkrs</td><td class="num">✓</td><td class="num">◐ fusevm/Cranelift</td><td class="num">✓ (rkyv mmap)</td></tr>
         </tbody>
       </table>
 
@@ -347,11 +347,12 @@
         <div class="feature-card">
           <h4>awkrs-specific extensions</h4>
           <ul>
-            <li><code>-j N</code> parallel record processing</li>
-            <li><code>--read-ahead</code> stdin chunk sizing</li>
-            <li><code>-O</code>/<code>-s</code> JIT enable/disable</li>
-            <li>Persistent bytecode cache (auto)</li>
-            <li>Cyberpunk HUD help (<code>-h</code>) with theme switching</li>
+            <li><code>-j N</code> / <code>--threads N</code> parallel record processing (default 1)</li>
+            <li><code>--read-ahead</code> stdin chunk sizing (default 1024)</li>
+            <li><code>-O</code>/<code>-s</code> JIT enable/disable; <code>AWKRS_JIT=0</code> equivalent</li>
+            <li>fusevm/Cranelift offload of numeric chunks (<code>AWKRS_FUSEVM=0</code> to disable; machine-code cache at <code>~/.cache/fusevm-jit</code>)</li>
+            <li>Persistent bytecode cache (auto; <code>AWKRS_CACHE=0</code> to disable)</li>
+            <li>Cyberpunk HUD help (<code>-h</code>) with theme switching; <code>NO_COLOR</code> for plain text</li>
             <li>Compatibility flags from <em>mawk</em> (<code>-W</code>) and <em>BSD awk</em></li>
           </ul>
         </div>
@@ -374,7 +375,7 @@
       </ul>
 
       <p style="font-family:'Share Tech Mono',monospace;font-size:10px;color:var(--text-muted);margin-top:2rem;opacity:0.65;">
-        Stats snapshot: 2026-06-14 &middot; awkrs v0.4.14 &middot; full parity green vs gawk + mawk + BSD awk
+        Stats snapshot: 2026-06-21 &middot; awkrs v0.4.14 &middot; full parity green vs gawk + mawk + BSD awk
       </p>
     </main>
   </div>

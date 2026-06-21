@@ -146,7 +146,7 @@
             <span class="sep">/</span>
             <a href="https://docs.rs/awkrs" target="_blank" rel="noopener noreferrer">docs.rs</a>
           </nav>
-          <p class="docs-build-line" id="awkrsBuildLine">awkrs v0.4.14 · Rust-powered · Parallel records · Cranelift JIT · rkyv bytecode cache · 2,116 parity tests vs gawk/mawk/BSD awk</p>
+          <p class="docs-build-line" id="awkrsBuildLine">awkrs v0.4.14 · Rust-powered · Parallel records (-j) · fusevm/Cranelift JIT offload · rkyv bytecode cache · 2,116 parity tests vs gawk/mawk/BSD awk</p>
         </div>
         <div class="tutorial-toolbar">
           <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
@@ -173,12 +173,20 @@
       <section class="tutorial-section">
         <h2>Quickstart</h2>
         <p>Install from crates.io or build from source, then use <code>aw</code> (short) or <code>awkrs</code>:</p>
-<pre># install
+<pre># Homebrew tap
+brew tap MenkeTechnologies/menketech
+brew install awkrs
+
+# crates.io
 cargo install awkrs
 
 # from source
 git clone https://github.com/MenkeTechnologies/awkrs
-cd awkrs &amp;&amp; cargo build
+cd awkrs &amp;&amp; cargo build --release
+
+# zsh completion
+fpath=(/path/to/awkrs/completions $fpath)
+autoload -Uz compinit &amp;&amp; compinit
 
 # one-liners
 aw 'BEGIN { print "hello, world" }'
@@ -229,9 +237,10 @@ aw '/error/i { print FILENAME ":" NR ":" $0 }' *.log</pre>
           <li><strong>Parser &amp; compiler</strong> — recursive-descent parser producing an AST, compiled to bytecode for the VM. Hot paths can be JIT-compiled via Cranelift.</li>
           <li><strong>Values</strong> — AWK values (string/number/uninitialized) with automatic coercion. Arrays are associative (hash maps).</li>
           <li><strong>Regex</strong> — three-tier engine: Rust <code>regex</code> → <code>fancy-regex</code> (backrefs) → <code>pcre2</code> (advanced).</li>
-          <li><strong>Parallelism</strong> — <code>-P</code> flag enables parallel record processing via rayon work-stealing.</li>
-          <li><strong>Bytecode cache</strong> — <code>-f script.awk</code> runs memoize compiled bytecode to <code>~/.awkrs/scripts.rkyv</code>; repeat invocations skip lex/parse/compile.</li>
-          <li><strong>Binary size</strong> — ~8MB stripped with LTO.</li>
+          <li><strong>fusevm offload</strong> — eligible numeric bytecode chunks lower to the shared <a href="https://crates.io/crates/fusevm">fusevm</a> VM (also used by zshrs and stryke) and JIT-compile via Cranelift; <code>AWKRS_FUSEVM=0</code> forces the bytecode interpreter for every chunk.</li>
+          <li><strong>Parallelism</strong> — <code>-j N</code> / <code>--threads N</code> (default 1) processes records in parallel via rayon when the program is parallel-safe; output is reordered to input order.</li>
+          <li><strong>Bytecode cache</strong> — <code>-f script.awk</code> runs memoize the compiled program to <code>~/.awkrs/scripts.rkyv</code>; repeat invocations skip lex/parse/compile.</li>
+          <li><strong>Binary size</strong> — single binary built with LTO; see the comparison table below.</li>
         </ul>
       </section>
 
@@ -257,24 +266,62 @@ aw '/error/i { print FILENAME ":" NR ":" $0 }' *.log</pre>
             <tr><td><code>SUBSEP</code></td><td>Subscript separator for arrays</td></tr>
             <tr><td><code>RSTART</code></td><td>Start of match from <code>match()</code></td></tr>
             <tr><td><code>RLENGTH</code></td><td>Length of match from <code>match()</code></td></tr>
-            <tr><td><code>ARGC, ARGV</code></td><td>Command-line argument count and array</td></tr>
+            <tr><td><code>ARGC, ARGV</code></td><td>Argument count and array; set before <code>BEGIN</code>. <code>ARGV[0]</code> is the executable, <code>ARGV[1..]</code> are file paths</td></tr>
             <tr><td><code>ENVIRON</code></td><td>Environment variables array</td></tr>
+            <tr><td><code>RT</code></td><td>Text matched by <code>RS</code> for the current record (gawk)</td></tr>
+            <tr><td><code>FPAT</code></td><td>Field-pattern regex: non-empty matches define fields (gawk)</td></tr>
+            <tr><td><code>FIELDWIDTHS</code></td><td>Fixed-width field layout (gawk)</td></tr>
+            <tr><td><code>IGNORECASE</code></td><td>Case-insensitive regex and comparisons (gawk)</td></tr>
+            <tr><td><code>ARGIND</code></td><td>Index in <code>ARGV</code> of the current file (gawk)</td></tr>
+            <tr><td><code>ERRNO</code></td><td>System error string after a failed I/O / <code>getline</code> (gawk)</td></tr>
+            <tr><td><code>PROCINFO</code></td><td>Process / runtime info array (gawk)</td></tr>
+            <tr><td><code>SYMTAB</code></td><td>Array view of global variables (gawk)</td></tr>
+            <tr><td><code>FUNCTAB</code></td><td>Array of defined function names (gawk)</td></tr>
+            <tr><td><code>BINMODE</code></td><td>Binary I/O mode (gawk)</td></tr>
+            <tr><td><code>LINT</code></td><td>Toggle lint diagnostics at runtime (gawk)</td></tr>
+            <tr><td><code>TEXTDOMAIN</code></td><td>gettext text domain for translatable strings (gawk)</td></tr>
           </tbody>
         </table>
+        <p>All special variable names are pinned in <code>src/namespace.rs</code> (<code>SPECIAL_GLOBAL_NAMES</code>, 28 entries) and stay in the global namespace under <code>@namespace</code>.</p>
       </section>
 
       <section class="tutorial-section">
         <h2>Built-in Functions</h2>
+        <p>The 63 builtin names are pinned in <code>src/namespace.rs</code> (<code>BUILTIN_NAMES</code>) and are exempt from <code>@namespace</code> prefixing.</p>
         <div class="cat-grid">
-          <div class="cat-card"><h4>String</h4><p><code>length gsub sub match split substr index sprintf tolower toupper</code></p></div>
-          <div class="cat-card"><h4>Math</h4><p><code>sin cos atan2 exp log sqrt int rand srand</code></p></div>
+          <div class="cat-card"><h4>String</h4><p><code>length substr index split sprintf tolower toupper</code></p></div>
+          <div class="cat-card"><h4>Regex / substitution</h4><p><code>gsub sub match gensub patsplit</code> — <code>gensub</code> expands <code>\N</code> capture-group backrefs</p></div>
+          <div class="cat-card"><h4>Math</h4><p><code>sin cos atan2 exp log sqrt int rand srand intdiv intdiv0</code></p></div>
           <div class="cat-card"><h4>I/O</h4><p><code>print printf getline close fflush system</code></p></div>
-          <div class="cat-card"><h4>Time (gawk)</h4><p><code>systime mktime strftime</code></p></div>
-          <div class="cat-card"><h4>Bit ops (gawk)</h4><p><code>and or xor compl lshift rshift</code></p></div>
-          <div class="cat-card"><h4>Type (gawk)</h4><p><code>typeof isarray</code></p></div>
-          <div class="cat-card"><h4>Array (gawk)</h4><p><code>asort asorti delete</code></p></div>
-          <div class="cat-card"><h4>Regex (gawk)</h4><p><code>gensub patsplit</code></p></div>
+          <div class="cat-card"><h4>Time (gawk)</h4><p><code>systime mktime strftime gettimeofday getlocaltime</code></p></div>
+          <div class="cat-card"><h4>Bit ops (gawk)</h4><p><code>and or xor compl lshift rshift</code> — <code>and/or/xor</code> are variadic (&ge;2 args)</p></div>
+          <div class="cat-card"><h4>Type / convert (gawk)</h4><p><code>typeof isarray strtonum mkbool ord chr</code></p></div>
+          <div class="cat-card"><h4>Array (gawk)</h4><p><code>asort asorti</code> — plus the <code>delete</code> statement</p></div>
+          <div class="cat-card"><h4>Filesystem (gawk ext)</h4><p><code>stat statvfs readdir readfile fts chdir rename sleep fflush</code></p></div>
+          <div class="cat-card"><h4>Persistence (gawk ext)</h4><p><code>reada writea inplace_tmpfile inplace_commit</code></p></div>
+          <div class="cat-card"><h4>I18N (gawk)</h4><p><code>bindtextdomain dcgettext dcngettext</code> — <code>.mo</code> catalogs</p></div>
+          <div class="cat-card"><h4>Two-way I/O (gawk)</h4><p><code>revoutput revtwoway</code></p></div>
         </div>
+      </section>
+
+      <section class="tutorial-section">
+        <h2>Patterns, Rules &amp; Control Flow</h2>
+        <ul>
+          <li><strong>Rules</strong> — <code>BEGIN</code>, <code>END</code>, <code>BEGINFILE</code>/<code>ENDFILE</code>, empty pattern, <code>/regex/</code>, expression patterns, range patterns (<code>/a/,/b/</code> or <code>NR==1,NR==5</code>). Like gawk, the four special patterns must use <code>{ … }</code>; record rules may omit braces for the default <code>{ print $0 }</code>.</li>
+          <li><strong>Statements</strong> — <code>if</code>/<code>while</code>/<code>do…while</code>/<code>for</code> (C-style and <code>for (i in arr)</code>), <code>switch</code>/<code>case</code>/<code>default</code> (gawk-style: no fall-through, <code>case /re/</code>), <code>print</code>/<code>printf</code> (with <code>&gt;</code>, <code>&gt;&gt;</code>, <code>|</code>, <code>|&amp;</code> redirection), <code>break</code>, <code>continue</code>, <code>next</code>, <code>nextfile</code>, <code>exit</code>, <code>delete</code>, <code>return</code>.</li>
+          <li><strong>getline forms</strong> — primary, <code>getline &lt; file</code>, <code>cmd | getline [var]</code>, coprocess <code>cmd |&amp; getline</code>. As an expression it returns <code>1</code> (read), <code>0</code> (EOF), <code>-1</code> (error), or <code>-2</code> (gawk retryable I/O when <code>PROCINFO[input,"RETRY"]</code> is set).</li>
+          <li><strong>Operators</strong> — arithmetic, comparison, string concat, ternary, <code>in</code>, <code>~</code>/<code>!~</code>, <code>++</code>/<code>--</code> (prefix/postfix on vars, <code>$n</code>, <code>a[k]</code>), <code>^</code>/<code>**</code> (right-associative). Division by zero (<code>/</code>, <code>/=</code>) is a fatal error (gawk-style <code>division by zero attempted</code>), not infinity.</li>
+        </ul>
+      </section>
+
+      <section class="tutorial-section">
+        <h2>CSV Mode</h2>
+        <p><code>-k</code> / <code>--csv</code> enables CSV parsing aligned with <code>gawk --csv</code>: RFC-style quoting with the <code>""</code> escape, comma field separator, and a dedicated parser (not a plain <code>FS=","</code>). Leading commas count as empty fields (<code>,,,</code> &rarr; <code>NF=4</code>).</p>
+<pre># count rows by a quoted CSV column
+aw --csv '{ c[$2]++ } END { for (k in c) print k, c[k] }' data.csv
+
+# re-emit selected columns
+aw --csv 'BEGIN { OFS="," } { print $1, $3 }' in.csv</pre>
       </section>
 
       <section class="tutorial-section">
@@ -301,47 +348,68 @@ aw '/error/i { print FILENAME ":" NR ":" $0 }' *.log</pre>
 
       <section class="tutorial-section">
         <h2>CLI Flags</h2>
-<pre>-f FILE            # read program from file
--F FS              # set field separator
--v VAR=VAL         # set variable before execution
--b                 # binary mode (no UTF-8)
--c                 # CSV mode
--d                 # debug: dump variables
--e PROG            # program text (multiple allowed)
--E FILE            # like -f, but different variable handling
--g                 # GNU regex mode
--i FILE            # include file (library)
--k                 # CSV mode with header
--l LIB             # load extension library
--M                 # arbitrary precision math
--n                 # no implicit input loop
--N                 # decimal context for -M
--o FILE            # pretty-print to file
--O                 # optimize (enable JIT)
--p FILE            # profile output
--P                 # POSIX mode
--r                 # extended regex (ERE)
--s                 # sandbox mode
--S                 # sandbox + safe mode
--t                 # lint-old compatibility warnings
--V                 # version
--W OPT             # gawk-style option</pre>
+        <p>Flags mirror POSIX <code>awk</code>, GNU <code>gawk</code>, and mawk-style <code>-W</code>. Each short flag has the long form shown. Some gawk flags are accepted for script compatibility and only affect diagnostics; those are noted.</p>
+<pre># POSIX
+-f, --file PROGFILE        # read program from file (repeatable)
+-F, --field-separator FS   # set the input field separator
+-v, --assign var=val       # set a variable before execution (repeatable)
+
+# GNU: program sources
+-e, --source PROGRAM       # program text (repeatable; combine with -f)
+-i, --include FILE         # include an awk library file (AWKPATH; repeatable)
+-l, --load LIB             # load extension library by name (repeatable)
+
+# gawk extensions
+-b, --characters-as-bytes  # treat characters as bytes (no UTF-8)
+-c, --traditional          # traditional (no gawk extensions) compatibility
+-C, --copyright            # print copyright / license
+-d, --dump-variables[FILE] # dump variable state after the run (stdout / FILE)
+-D, --debug[FILE]          # rule / function listing to stderr or FILE
+-E, --exec FILE            # run program FILE (gawk -E)
+-g, --gen-pot              # extract gettext strings to a .pot template
+-I, --trace                # trace mode
+-k, --csv                  # CSV mode: comma FS + FPAT quoting ("" escape)
+-L, --lint[fatal|invalid|no-ext]  # enable lint diagnostics
+-M, --bignum               # arbitrary-precision math via MPFR (rug)
+-N, --use-lc-numeric       # apply LC_NUMERIC to printf/print and %' grouping
+-n, --non-decimal-data     # recognize 0x / octal in input data
+-o, --pretty-print[FILE]   # awk-like AST listing (awkrs format)
+-O, --optimize             # accepted; JIT is on unless -s is set
+-p, --profile[FILE]        # wall-clock + per-rule summary (awkrs format)
+-P, --posix                # POSIX mode (accepted; reserved on Runtime)
+-r, --re-interval          # accepted no-op ({m,n} intervals always enabled)
+-s, --no-optimize          # disable peephole/JIT optimization
+-S, --sandbox              # sandbox mode (no file/command I/O)
+-t, --lint-old             # warn on constructs not in old awk
+
+# mawk / BusyBox
+-W OPT                     # mawk-style options (help, version, dump, exec=…, …)
+
+# awkrs-specific
+-j, --threads N            # worker threads for parallel records (default 1)
+    --read-ahead N         # stdin lines per parallel batch (default 1024)
+-h, --help                 # cyberpunk HUD help
+-V, --version              # print version</pre>
       </section>
 
       <section class="tutorial-section">
         <h2>Parallel Processing</h2>
-        <p>Use <code>-P</code> or <code>--parallel</code> to enable parallel record processing. Each record is processed independently using rayon work-stealing across all CPU cores.</p>
-<pre># process large file in parallel
-aw -P '{ complex_computation($0) }' huge_file.txt
+        <p>The default thread count is <strong>1</strong>. Pass <code>-j N</code> / <code>--threads N</code> to process records in parallel via rayon. Workers run the same bytecode VM; the compiled program is shared as <code>Arc&lt;CompiledProgram&gt;</code> with per-worker runtime state. Output is <strong>reordered to input order</strong> within each batch so pipelines stay deterministic.</p>
+<pre># process a large file with 8 workers
+aw -j 8 '{ s += $1 } END { print s }' data.txt
 
-# parallel aggregation (thread-safe)
-aw -P '{ sum += $1 } END { print sum }' data.txt</pre>
-        <p>Note: Parallel mode may reorder output. Use <code>-P -s</code> for sorted output by record number.</p>
+# parallel field extraction
+aw -j 4 -F: '{ print $1 }' big.csv
+
+# tune the stdin batch size (lines per parallel batch)
+seq 1 1000000 | aw -j 8 --read-ahead 4096 '{ s += $1 } END { print s }'</pre>
+        <p>Parallel mode engages only when the program is <strong>parallel-safe</strong> by static check: no range patterns, no <code>exit</code>/<code>nextfile</code>/<code>delete</code>, no primary <code>getline</code>, no pipe/coproc <code>getline</code>, no <code>asort</code>/<code>asorti</code>, no indirect calls, no <code>print</code>/<code>printf</code> redirection, no cross-record assignments. Non-parallel-safe programs (and programs using primary <code>getline</code> on file input) run sequentially, with a warning when <code>-j &gt; 1</code>.</p>
+        <p>Regular files are memory-mapped (<code>memmap2</code>) and scanned with the same <code>RS</code> rules as the sequential path — no full-file <code>read()</code> copy. Stdin chunks up to <code>--read-ahead</code> lines (default 1024) per batch, dispatches to workers, emits in order, then refills. <code>END</code> only sees post-<code>BEGIN</code> global state; record-rule mutations from parallel workers are not merged back.</p>
       </section>
 
       <section class="tutorial-section">
         <h2>Bytecode Cache</h2>
-        <p>Based on a survey of the major public awk implementations (BWK awk, gawk, mawk, goawk, frawk, zawk), awkrs appears to be the <strong>first awk implementation to combine a bytecode VM, a JIT compiler, and a persistent on-disk bytecode cache</strong>. frawk is the closest prior art — it has VM + Cranelift/LLVM JIT — but re-compiles on every invocation. gawk's <em>pm-gawk</em> persists script variables, not compiled bytecode.</p>
+        <p>Based on a survey of the major public awk implementations (BWK awk, gawk, mawk, goawk, frawk, zawk), awkrs appears to be the <strong>first awk implementation to pair a bytecode VM with a persistent on-disk bytecode cache</strong>. frawk is the closest prior art on JIT — it has VM + Cranelift/LLVM JIT — but re-compiles on every invocation. gawk's <em>pm-gawk</em> persists script variables, not compiled bytecode. (awkrs's own fusevm/Cranelift JIT offload additionally keeps a separate machine-code cache at <code>~/.cache/fusevm-jit</code>.)</p>
         <table class="comparison-table" style="width:100%; border-collapse:collapse; font-size:0.85em; margin-bottom:12px;">
           <thead>
             <tr style="border-bottom:2px solid #0ff;">
@@ -358,7 +426,7 @@ aw -P '{ sum += $1 } END { print sum }' data.txt</pre>
             <tr><td>goawk</td><td>&#10003;</td><td>&#10007;</td><td>&#10007;</td></tr>
             <tr><td>frawk</td><td>&#10003;</td><td>&#10003; (Cranelift + LLVM)</td><td>&#10007;</td></tr>
             <tr><td>zawk (frawk fork)</td><td>&#10003;</td><td>&#10003; (Cranelift + LLVM)</td><td>&#10007;</td></tr>
-            <tr style="background:rgba(0,255,0,0.05);"><td><strong>awkrs</strong></td><td style="color:#0f0;">&#10003;</td><td style="color:#0f0;">&#10003; (Cranelift)</td><td style="color:#0f0;">&#10003;</td></tr>
+            <tr style="background:rgba(0,255,0,0.05);"><td><strong>awkrs</strong></td><td style="color:#0f0;">&#10003;</td><td style="color:#0f0;">&#10003; (fusevm/Cranelift)</td><td style="color:#0f0;">&#10003;</td></tr>
           </tbody>
         </table>
         <p>Invocations of the form <code>awkrs -f script.awk ...</code> memoize the compiled <code>CompiledProgram</code> to an rkyv-archived shard at <code>~/.awkrs/scripts.rkyv</code>. The cache hit path is <code>mmap</code> + zero-copy <code>ArchivedHashMap</code> lookup + bincode-decode of the matched entry's inner blob. Same outer-rkyv / inner-bincode pattern used by zshrs and stryke.</p>
@@ -402,6 +470,35 @@ rm ~/.awkrs/scripts.rkyv</pre>
           <li><strong>Network I/O</strong> — <code>/inet/tcp/...</code> special files</li>
           <li><strong>Time functions</strong> — <code>systime()</code>, <code>mktime()</code>, <code>strftime()</code></li>
           <li><strong>Bit operations</strong> — <code>and()</code>, <code>or()</code>, <code>xor()</code>, etc.</li>
+        </ul>
+      </section>
+
+      <section class="tutorial-section">
+        <h2>Environment Variables</h2>
+        <table class="reflection-table">
+          <thead>
+            <tr><th>Variable</th><th>Effect</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><code>AWKRS_CACHE=0|false|no</code></td><td>Disable the <code>~/.awkrs/scripts.rkyv</code> bytecode cache for the run</td></tr>
+            <tr><td><code>AWKRS_FUSEVM=0</code></td><td>Force the bytecode interpreter for every chunk (disable fusevm offload)</td></tr>
+            <tr><td><code>AWKRS_JIT=0</code></td><td>Disable JIT/peephole optimization (same effect as <code>-s</code>/<code>--no-optimize</code>)</td></tr>
+            <tr><td><code>FUSEVM_JIT_CACHE_DIR</code></td><td>Override the fusevm machine-code cache dir (<code>~/.cache/fusevm-jit</code>); <code>off</code> disables it</td></tr>
+            <tr><td><code>FUSEVM_JIT_CACHE_MAX_BYTES</code></td><td>Cap the fusevm machine-code cache size</td></tr>
+            <tr><td><code>NO_COLOR</code></td><td>Force plain-text help (no ANSI colors)</td></tr>
+            <tr><td><code>LC_NUMERIC, LC_COLLATE, LC_ALL</code></td><td>Locale for <code>-N</code> number formatting / <code>%'</code> grouping and <code>strcoll</code> ordering</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="tutorial-section">
+        <h2>Troubleshooting</h2>
+        <ul>
+          <li><strong>Output reordered or program runs single-threaded under <code>-j</code></strong> — the program isn't parallel-safe (range pattern, <code>exit</code>, primary <code>getline</code>, redirection, etc.). awkrs falls back to sequential execution and warns; remove the offending construct or accept sequential mode.</li>
+          <li><strong>Stale results after editing a script</strong> — the cache invalidates on source mtime change and on a newer <code>awkrs</code> binary, but you can force a clean run with <code>AWKRS_CACHE=0 awkrs -f script.awk …</code> or wipe <code>~/.awkrs/scripts.rkyv</code>.</li>
+          <li><strong><code>division by zero attempted</code></strong> — division and modulo by zero are fatal (gawk semantics), not <code>inf</code>/<code>NaN</code>. Guard the divisor.</li>
+          <li><strong>Whole-array used in scalar context fatals</strong> — <code>print a</code> (where <code>a</code> is an array) is a fatal runtime error, matching gawk; index the array instead.</li>
+          <li><strong>Build needs a C compiler</strong> — <code>-M</code>/<code>--bignum</code> pulls in <code>gmp-mpfr-sys</code> via <code>rug</code>, which needs a C compiler and <code>make</code>.</li>
         </ul>
       </section>
 
