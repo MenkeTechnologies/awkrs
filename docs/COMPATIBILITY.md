@@ -196,7 +196,7 @@ Columns: **P** = POSIX / universal core, **B** = BSD awk, **M** = mawk, **G** = 
 
 ## 9. Known intentional or unavoidable divergences
 
-- **JIT** (`src/jit.rs`): When enabled, must match interpreter; if a mismatch is found, treat as a bug in JIT, not as "gawk is wrong." Known eligibility filters: chunks that combine `~`/`!~` regex match ops with short-circuit branches (`&&`/`||`) bail out to the interpreter — the JIT codegen's merge-block stack handling doesn't preserve the match result across the join, so the optimizer refuses these chunks to avoid silent miscompilation.
+- **JIT** (fusevm's Cranelift, via `src/fusevm_bridge.rs`): When enabled, must match interpreter; if a mismatch is found, treat as a bug in JIT, not as "gawk is wrong." Eligibility is an allowlist of numeric ops (`is_fusevm_eligible`); AWK-specific ops including `~`/`!~` regex match lower to `fusevm::Op::Extended` and run on the interpreter, not the JIT.
 - **Parallel mode** (`-j`): Record rules may run concurrently; programs with side effects or dependence on global order are unsafe.
 - **Dynamic extensions**: gawk `@load "foo.so"` has no equivalent in awkrs.
 - **Process / locale / OS**: `PROCINFO["platform"]` mapping uses `posix`/`mingw` style (`procinfo.rs`), not necessarily gawk’s host string for every OS.
@@ -208,7 +208,7 @@ Columns: **P** = POSIX / universal core, **B** = BSD awk, **M** = mawk, **G** = 
 
 1. Add a row when a user reports a behavioral delta; cite **minimal** repro and which engine defines the expected result.
 2. Prefer a **regression test** under `tests/` over a permanent “known bug” row.
-3. Update **`BUILTIN_NAMES`** / `exec_builtin_dispatch` in `src/vm.rs` when adding builtins, then mirror here.
+3. Update **`BUILTIN_NAMES`** (`src/namespace.rs`) / `exec_builtin_dispatch` (`src/vm_builtins.rs`) when adding builtins, then mirror here.
 
 ---
 

@@ -465,7 +465,7 @@ cargo test
 
 CI runs on pushes and pull requests to `main` via [GitHub Actions](.github/workflows/ci.yml): one Ubuntu lint job (`cargo fmt --check`, `cargo clippy -D warnings`, `cargo doc` with `RUSTDOCFLAGS=-D warnings`) plus a build/test matrix on Ubuntu and macOS.
 
-Coverage spans library unit tests for every module (lexer, parser, format, builtins, interp, vm, jit, compiler, runtime, locale, cli, cyber_help) and integration suites under `tests/` that exercise the gawk-style additions, the slurped-input path, parallel record behavior, and the full CLI surface. Cross-feature combinations (CSV + ENDFILE, paragraph `RS=""` + getline, `FIELDWIDTHS` + NF reassignment, ...) live in [`tests/cross_feature_integration.rs`](tests/cross_feature_integration.rs).
+Coverage spans library unit tests for every module (lexer, parser, format, builtins, vm, compiler, runtime, locale_numeric, cli, cyber_help) and integration suites under `tests/` that exercise the gawk-style additions, the slurped-input path, parallel record behavior, and the full CLI surface. Cross-feature combinations (CSV + ENDFILE, paragraph `RS=""` + getline, `FIELDWIDTHS` + NF reassignment, ...) live in [`tests/cross_feature_integration.rs`](tests/cross_feature_integration.rs).
 
 ---
 
