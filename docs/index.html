@@ -457,6 +457,17 @@ rm ~/.awkrs/scripts.rkyv</pre>
       </section>
 
       <section class="tutorial-section">
+        <h2>Invention &mdash; First AWK with a Language Server + Debug Adapter</h2>
+        <p>Based on a survey of the major public awk implementations (BWK awk, gawk, mawk, goawk, frawk, zawk), awkrs appears to be the <strong>first awk to ship a Language Server (LSP) and a Debug Adapter (DAP) as first-class subsystems of the awk binary itself</strong>. No other awk ships either: gawk has only the unrelated <code>--debug</code> command-line debugger (no DAP, no editor protocol), and there is no awk language server in any of the others.</p>
+        <ul>
+          <li><code>awkrs --lsp</code> &mdash; starts a Language Server on stdio: completion (keywords, built-in variables, built-in functions), hover, diagnostics from the parser/linter, document symbols, and formatting &mdash; consumed by any LSP editor.</li>
+          <li><code>awkrs --dap</code> &mdash; speaks the Debug Adapter Protocol on stdio: breakpoints, step over/into/out, call stack, scopes, variables, and watch/evaluate, so any DAP client can debug an AWK program.</li>
+          <li>Each is invoked with only its flag (no appended <code>--stdio</code>); the wiring is guarded so editors degrade cleanly if the binary is absent.</li>
+        </ul>
+        <p>Three first-party editor plugins drive them &mdash; <a href="https://github.com/MenkeTechnologies/vscode-awk" target="_blank" rel="noopener noreferrer">vscode-awk</a> (LSP client + DAP debug config), <a href="https://github.com/MenkeTechnologies/vim-awk" target="_blank" rel="noopener noreferrer">vim-awk</a> (vim-lsp / coc + nvim-dap), and <a href="https://github.com/MenkeTechnologies/emacs-awk" target="_blank" rel="noopener noreferrer">emacs-awk</a> (eglot + lsp-mode) &mdash; so AWK gets the modern IDE surface (live diagnostics, completion, breakpoint debugging) that no other awk has had.</p>
+      </section>
+
+      <section class="tutorial-section">
         <h2>gawk Extensions</h2>
         <p>awkrs implements many gawk extensions for compatibility:</p>
         <ul>
