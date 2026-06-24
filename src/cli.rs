@@ -161,6 +161,10 @@ pub struct Args {
     #[arg(long = "read-ahead", default_value_t = 1024usize)]
     pub read_ahead: usize,
 
+    /// Run as a Language Server (LSP over stdio) for editor integration (`awkrs --lsp`).
+    #[arg(long = "lsp", action = ArgAction::SetTrue)]
+    pub lsp: bool,
+
     /// Print help (cyberpunk HUD).
     #[arg(short = 'h', long = "help", action = ArgAction::SetTrue)]
     pub show_help: bool,

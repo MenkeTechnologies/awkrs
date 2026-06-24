@@ -20,11 +20,14 @@ mod flow;
 mod format;
 /// `fusevm_bridge` submodule.
 pub mod fusevm_bridge;
+mod fusevm_compile;
+mod fusevm_host;
 mod gawk_extensions;
 mod gettext_util;
 mod lexer;
 mod limits;
 mod locale_numeric;
+mod lsp;
 mod namespace;
 mod parser;
 mod procinfo;
@@ -100,12 +103,26 @@ pub fn run(bin_name: &str) -> Result<()> {
         );
         return Ok(());
     }
+    if args.lsp {
+        return crate::lsp::run_stdio();
+    }
     let threads = args.threads.unwrap_or(1).max(1);
     let profile_start = args.profile.is_some().then(Instant::now);
 
     crate::runtime::set_numeric_parse_mode(args.non_decimal_data);
 
     let (program_text, files) = resolve_program_and_files(&args)?;
+
+    // ── fusevm-native execution (opt-in, stage 4) ─────────────────────────
+    // `AWKRS_FUSEVM_NATIVE=1` runs the program on fusevm's VM via the
+    // `fusevm_compile` backend instead of the `vm.rs` interpreter. The validation
+    // harness for the migration; becomes the default once parity is proven, after
+    // which vm.rs is removed.
+    if std::env::var("AWKRS_FUSEVM_NATIVE").as_deref() == Ok("1")
+        && try_native_run(&args, &program_text, &files)?
+    {
+        return Ok(());
+    }
 
     // ── Bytecode cache fast path ──────────────────────────────────────────
     // Skip lex/parse/compile when the program comes from a single `-f script.awk`
@@ -1692,6 +1709,54 @@ fn cacheable_script_path(args: &Args) -> Option<PathBuf> {
         return None;
     }
     Some(args.progfiles[0].clone())
+}
+
+/// Try to run the program on the fusevm-native backend (`AWKRS_FUSEVM_NATIVE=1`).
+/// Returns `Ok(true)` when it ran the program (caller should return), `Ok(false)`
+/// to fall back to the interpreter for anything not yet handled: a construct the
+/// backend can't compile, multiple input files / inline `var=val` ARGV entries,
+/// or an unreadable/binary file. Compilation happens before any input is read, so
+/// a fall-back never consumes stdin.
+fn try_native_run(args: &Args, program_text: &str, files: &[PathBuf]) -> Result<bool> {
+    // Inline `var=val` ARGV entries (assignment between files) aren't handled yet.
+    if files.iter().any(|f| f.to_string_lossy().contains('=')) {
+        return Ok(false);
+    }
+    let Ok(prog) = parse_program(program_text) else {
+        return Ok(false);
+    };
+    let Ok(native) = crate::fusevm_compile::compile_program_native(&prog) else {
+        return Ok(false);
+    };
+
+    let mut rt = Runtime::new();
+    rt.characters_as_bytes = args.characters_as_bytes;
+    if let Some(fs) = &args.field_sep {
+        rt.vars.insert("FS".into(), Value::Str(fs.clone()));
+    }
+    apply_assigns(args, &mut rt)?;
+    rt.init_argv(files);
+
+    // Build the (filename, content) source list: stdin when no files, else each
+    // file in ARGV order. An unreadable/non-UTF-8 file defers to the interpreter.
+    let sources: Vec<(String, String)> = if files.is_empty() {
+        let mut s = String::new();
+        std::io::stdin().read_to_string(&mut s).map_err(Error::Io)?;
+        vec![(String::new(), s)]
+    } else {
+        let mut v = Vec::with_capacity(files.len());
+        for f in files {
+            match std::fs::read_to_string(f) {
+                Ok(s) => v.push((f.to_string_lossy().into_owned(), s)),
+                Err(_) => return Ok(false),
+            }
+        }
+        v
+    };
+
+    let out = crate::fusevm_compile::run_compiled_files(&native, &sources, &mut rt)?;
+    std::io::stdout().write_all(&out).map_err(Error::Io)?;
+    Ok(true)
 }
 
 fn resolve_program_and_files(args: &Args) -> Result<(String, Vec<PathBuf>)> {
