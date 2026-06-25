@@ -6,6 +6,7 @@
 // don't resolve as intra-doc links from rustdoc's POV, so silence the lint.
 #![allow(rustdoc::broken_intra_doc_links)]
 
+pub mod aot;
 mod ast;
 mod ast_fmt;
 mod bignum;
@@ -112,6 +113,17 @@ pub fn run(bin_name: &str) -> Result<()> {
     crate::runtime::set_numeric_parse_mode(args.non_decimal_data);
 
     let (program_text, files) = resolve_program_and_files(&args)?;
+
+    // AOT: compile a BEGIN-only program to a native standalone executable.
+    if let Some(out) = &args.aot {
+        return match crate::aot::build_native(&program_text, out) {
+            Ok(p) => {
+                eprintln!("awkrs: wrote native binary {}", p.display());
+                Ok(())
+            }
+            Err(e) => Err(Error::Runtime(e)),
+        };
+    }
 
     // ── fusevm-native execution (opt-in, stage 4) ─────────────────────────
     // `AWKRS_FUSEVM_NATIVE=1` runs the program on fusevm's VM via the

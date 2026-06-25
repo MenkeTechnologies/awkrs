@@ -21,6 +21,9 @@ categories = ["command-line-utilities", "parser-implementations"]
 [lib]
 name = "awkrs"
 path = "src/lib.rs"
+# `staticlib` produces libawkrs.a so `--aot` can link AOT-compiled objects
+# (fusevm::aot) against the awk runtime into a standalone executable.
+crate-type = ["lib", "staticlib"]
 
 [[bin]]
 name = "awkrs"
@@ -36,7 +39,7 @@ chrono = "0.4"
 clap = { version = "4.5", features = ["derive", "cargo", "env"] }
 dirs = "5"
 gettext = "0.4"
-fusevm = { version = "0.13.9", features = ["jit", "jit-disk-cache"] }
+fusevm = { version = "0.14.2", features = ["jit", "jit-disk-cache", "aot"] }
 cranelift-codegen = "0.130.0"
 cranelift-frontend = "0.130.0"
 cranelift-jit = "0.130.0"

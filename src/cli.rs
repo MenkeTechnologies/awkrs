@@ -56,6 +56,11 @@ pub struct Args {
     #[arg(short = 'C', long = "copyright")]
     pub copyright: bool,
 
+    /// AOT-compile a BEGIN-only program to a native standalone executable at
+    /// this path (Cranelift object linked against the awk runtime).
+    #[arg(long = "aot", value_name = "OUT")]
+    pub aot: Option<PathBuf>,
+
     /// Dump variable state after execution (stdout, `-`, or a file path).
     #[arg(
         short = 'd',
