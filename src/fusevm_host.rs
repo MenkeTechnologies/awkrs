@@ -1166,7 +1166,7 @@ mod tests {
             &[
                 fusevm::Value::str("x"),
                 fusevm::Value::Int(42),
-                fusevm::Value::Float(3.14159),
+                fusevm::Value::Float(std::f64::consts::PI),
             ],
         );
         assert_eq!(s.to_str(), "x=42 (3.14)");

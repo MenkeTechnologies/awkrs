@@ -42,7 +42,7 @@ extern "C" fn flush_print_buf() {
 /// # Safety
 /// `vm` is the live run VM passed by the fusevm runtime; borrowed only here.
 #[no_mangle]
-pub extern "C" fn fusevm_aot_register_builtins(vm: *mut fusevm::VM) {
+pub unsafe extern "C" fn fusevm_aot_register_builtins(vm: *mut fusevm::VM) {
     // SAFETY: the fusevm runtime hands us the live run VM for this call.
     let vm = unsafe { &mut *vm };
     let rt: &'static mut crate::runtime::Runtime =

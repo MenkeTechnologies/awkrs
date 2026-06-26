@@ -716,13 +716,11 @@ fn position_to_offset(text: &str, pos: Position) -> Option<usize> {
             }
         }
     }
-    let mut col = 0u32;
-    for c in chars {
-        if col >= pos.character || c == '\n' {
+    for (col, c) in chars.enumerate() {
+        if col >= pos.character as usize || c == '\n' {
             break;
         }
         offset += 1;
-        col += 1;
     }
     Some(offset)
 }

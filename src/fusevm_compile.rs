@@ -16,9 +16,10 @@
 //! user functions (recursion, frame-slot params, global access). Unsupported
 //! constructs return an error — there is no silent miscompile.
 //!
-//! Full programs run via [`run_program_on_input`]: a Rust-driven main loop that
+//! Full programs run via [`run_compiled_files`]: a Rust-driven main loop that
 //! compiles `BEGIN` / each per-record rule / `END` to separate chunks and drives
-//! records through them (stage 4 turns this into the production path).
+//! records through them over the ARGV file list (`run_program_on_input` is the
+//! test-only single-string wrapper).
 //!
 //! Variable model: all awk scalars (user globals and specials) are host-backed
 //! through `Op::AwkSpecial*` → `Runtime.symtab_elem_get/set`, so they persist
@@ -993,7 +994,9 @@ pub(crate) fn compile_program_native(prog: &Program) -> Result<NativeProgram> {
 
 /// Run a compiled program over `input` (records split on '\n') on the given
 /// Runtime: `BEGIN`, then every record through the main rules, then `END`.
-/// Returns the bytes written to the record stream.
+/// Returns the bytes written to the record stream. Test-only thin wrapper over
+/// [`run_compiled_files`] (the production driver takes the ARGV file list).
+#[cfg(test)]
 pub(crate) fn run_compiled(
     p: &NativeProgram,
     input: &str,
@@ -1057,6 +1060,7 @@ pub(crate) fn run_compiled_files(
 
 /// Test/helper entry: compile `prog` and run it over `input` with a fresh
 /// Runtime, returning the record-stream output.
+#[cfg(test)]
 pub(crate) fn run_program_on_input(prog: &Program, input: &str) -> Result<Vec<u8>> {
     let np = compile_program_native(prog)?;
     let mut rt = crate::runtime::Runtime::new();
