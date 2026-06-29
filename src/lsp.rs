@@ -1,9 +1,9 @@
 //! Language Server Protocol (stdio) for editors — `awkrs --lsp`.
 //!
 //! A self-contained LSP that reuses awkrs's own parser and language model:
-//! diagnostics come from [`crate::parser::parse_program`], and completion /
-//! hover / signature help draw on [`crate::namespace::BUILTIN_NAMES`],
-//! [`crate::namespace::SPECIAL_GLOBAL_NAMES`], and the AWK keyword set plus a
+//! diagnostics come from `crate::parser::parse_program`, and completion /
+//! hover / signature help draw on `crate::namespace::BUILTIN_NAMES`,
+//! `crate::namespace::SPECIAL_GLOBAL_NAMES`, and the AWK keyword set plus a
 //! hand-authored builtin-signature table sourced from the POSIX awk spec and
 //! the gawk extensions awkrs accepts.
 //!
@@ -923,7 +923,9 @@ pub fn keyword_doc(name: &str) -> Option<&'static str> {
         "exit" => "Stop reading input and run `END`; `exit [expr]` sets the exit status.",
         "return" => "Return from a user function, optionally with a value: `return [expr]`.",
         "delete" => "Remove an array element (`delete arr[k]`) or clear it (`delete arr`).",
-        "getline" => "Read the next record into `$0` or a variable from input, a file, or a command.",
+        "getline" => {
+            "Read the next record into `$0` or a variable from input, a file, or a command."
+        }
         "print" => "Write its arguments to output, separated by `OFS` and terminated by `ORS`.",
         "printf" => "Write formatted output using a C-style format string: `printf fmt, args`.",
         "in" => "Array membership test (`key in arr`) or iteration (`for (key in arr)`).",
