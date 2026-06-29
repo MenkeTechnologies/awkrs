@@ -51,6 +51,18 @@ pub fn parse_program(src: &str) -> Result<Program> {
     Ok(prog)
 }
 
+/// Like [`parse_program`] but interleaves a [`Stmt::SrcLine`] marker before every
+/// statement so the compiler can emit per-line debug hooks. Used only by the
+/// `--dap` debugger entry point; the normal parse path stays marker-free.
+pub fn parse_program_debug(src: &str) -> Result<Program> {
+    let expanded = crate::source_expand::expand_source_directives(src)?;
+    let mut p = Parser::new(&expanded.text);
+    p.debug_lines = true;
+    let mut prog = p.parse_program()?;
+    crate::namespace::apply_default_namespace(&mut prog, expanded.default_namespace.as_deref());
+    Ok(prog)
+}
+
 struct Parser<'a> {
     lexer: Lexer<'a>,
     cur: Token,
@@ -59,6 +71,9 @@ struct Parser<'a> {
     in_print_arg: bool,
     /// When parsing `printf` argument list — parenthesized comma lists are invalid (gawk).
     in_printf_args: bool,
+    /// When true, prepend a [`Stmt::SrcLine`] marker before each parsed statement
+    /// (the `--dap` debugger path). Off for normal parsing.
+    debug_lines: bool,
 }
 
 struct ParserCheckpoint<'a> {
@@ -80,7 +95,19 @@ impl<'a> Parser<'a> {
             line,
             in_print_arg: false,
             in_printf_args: false,
+            debug_lines: false,
         }
+    }
+
+    /// Parse one statement, prepending a [`Stmt::SrcLine`] marker into `v` first
+    /// when `debug_lines` is set. The line is captured from `self.line`, which
+    /// (after `skip_*` separators) points at the first token of the statement.
+    fn push_stmt(&mut self, v: &mut Vec<Stmt>) -> Result<()> {
+        if self.debug_lines {
+            v.push(Stmt::SrcLine(self.line as u32));
+        }
+        v.push(self.parse_stmt()?);
+        Ok(())
     }
 
     fn reject_tuple_expr(e: &Expr, line: usize) -> Result<()> {
@@ -344,7 +371,7 @@ impl<'a> Parser<'a> {
         let mut v = Vec::new();
         self.skip_stmt_separators()?;
         while self.cur != Token::RBrace && !matches!(self.cur, Token::Eof) {
-            v.push(self.parse_stmt()?);
+            self.push_stmt(&mut v)?;
             self.skip_stmt_separators()?;
         }
         Ok(v)
@@ -865,7 +892,9 @@ impl<'a> Parser<'a> {
             self.bump(true)?;
             Ok(b)
         } else {
-            Ok(vec![self.parse_stmt()?])
+            let mut v = Vec::new();
+            self.push_stmt(&mut v)?;
+            Ok(v)
         }
     }
 
@@ -877,7 +906,7 @@ impl<'a> Parser<'a> {
             if matches!(self.cur, Token::Case | Token::Default | Token::RBrace) {
                 break;
             }
-            stmts.push(self.parse_stmt()?);
+            self.push_stmt(&mut stmts)?;
         }
         Ok(stmts)
     }

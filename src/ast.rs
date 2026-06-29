@@ -119,6 +119,12 @@ pub enum Stmt {
         expr: Expr,
         arms: Vec<SwitchArm>,
     },
+    /// Synthetic source-line marker, emitted only by [`crate::parser::parse_program_debug`]
+    /// (the `--dap` debugger path). Interleaved before each real statement so the
+    /// compiler can lower it to [`crate::bytecode::Op::DebugLine`]; carries the 1-based
+    /// source line. Never produced by the normal parser, so normal runs and the bytecode
+    /// cache never see it. All non-compiler consumers treat it as a no-op.
+    SrcLine(u32),
 }
 
 /// One arm of a `switch` statement.

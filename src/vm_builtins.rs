@@ -905,6 +905,7 @@ pub(crate) fn exec_call_user_inner(
     for (p, v) in func.params.iter().zip(vals) {
         frame.insert(p.clone(), v);
     }
+    crate::vm::debugger_enter_sub(ctx, name);
     ctx.locals.push(frame);
     let was_fn = ctx.in_function;
     ctx.in_function = true;
@@ -915,11 +916,13 @@ pub(crate) fn exec_call_user_inner(
         Ok(VmSignal::Next) => {
             ctx.locals.pop();
             ctx.in_function = was_fn;
+            crate::vm::debugger_leave_sub(ctx);
             return Err(Error::Runtime("invalid jump out of function (next)".into()));
         }
         Ok(VmSignal::NextFile) => {
             ctx.locals.pop();
             ctx.in_function = was_fn;
+            crate::vm::debugger_leave_sub(ctx);
             return Err(Error::Runtime(
                 "invalid jump out of function (nextfile)".into(),
             ));
@@ -927,16 +930,19 @@ pub(crate) fn exec_call_user_inner(
         Ok(VmSignal::ExitPending) => {
             ctx.locals.pop();
             ctx.in_function = was_fn;
+            crate::vm::debugger_leave_sub(ctx);
             return Err(Error::Exit(ctx.rt.exit_code));
         }
         Err(e) => {
             ctx.locals.pop();
             ctx.in_function = was_fn;
+            crate::vm::debugger_leave_sub(ctx);
             return Err(e);
         }
     };
 
     ctx.locals.pop();
     ctx.in_function = was_fn;
+    crate::vm::debugger_leave_sub(ctx);
     Ok(result)
 }

@@ -75,6 +75,14 @@ pub struct Compiler {
 
 impl Compiler {
     /// `compile_program` — see implementation for the contract.
+    /// Compile a program parsed with [`crate::parser::parse_program_debug`] for the
+    /// `--dap` debugger. The AST already carries [`Stmt::SrcLine`] markers, which
+    /// [`Self::compile_stmt`] lowers to [`Op::DebugLine`]; this is a thin alias over
+    /// [`Self::compile_program`] that documents the debug intent at the call site.
+    pub fn compile_program_debug(prog: &Program) -> Result<CompiledProgram> {
+        Self::compile_program(prog)
+    }
+
     pub fn compile_program(prog: &Program) -> Result<CompiledProgram> {
         validate_program(prog)?;
         // Pre-pass: collect all names used in array contexts.
@@ -249,6 +257,12 @@ impl Compiler {
 
     fn compile_stmt(&mut self, stmt: &Stmt, ops: &mut Vec<Op>) {
         match stmt {
+            // Debug line marker (only present when parsed via
+            // `parse_program_debug` for `--dap`): lower to a runtime line hook.
+            Stmt::SrcLine(n) => {
+                ops.push(Op::DebugLine(*n));
+            }
+
             Stmt::Expr(e) => {
                 self.compile_expr(e, ops);
                 ops.push(Op::Pop);
@@ -1481,6 +1495,7 @@ fn propagate_array_call_args(
 
 fn collect_array_names_stmt(s: &Stmt, names: &mut HashSet<String>) {
     match s {
+        Stmt::SrcLine(_) => {}
         Stmt::If { cond, then_, else_ } => {
             collect_array_names_expr(cond, names);
             for t in then_ {
@@ -2234,6 +2249,7 @@ fn validate_print_redir(r: &PrintRedir) -> Result<()> {
 
 fn validate_stmt(st: &Stmt) -> Result<()> {
     match st {
+        Stmt::SrcLine(_) => Ok(()),
         Stmt::If { cond, then_, else_ } => {
             validate_expr(cond, false)?;
             for s in then_ {

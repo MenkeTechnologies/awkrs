@@ -72,6 +72,7 @@ fn escape_pot_str(s: &str) -> String {
 
 fn collect_stmt_strings(s: &Stmt, out: &mut BTreeMap<String, usize>) {
     match s {
+        Stmt::SrcLine(_) => {}
         Stmt::If { cond, then_, else_ } => {
             collect_expr_strings(cond, out);
             for t in then_ {
@@ -558,6 +559,7 @@ fn collect_pattern_defines(p: &Pattern, out: &mut FxHashSet<String>) {
 
 fn stmt_collect_defines(s: &Stmt, out: &mut FxHashSet<String>) {
     match s {
+        Stmt::SrcLine(_) => {}
         Stmt::If { cond, then_, else_ } => {
             expr_collect_defines(cond, out);
             for t in then_ {
@@ -831,6 +833,7 @@ fn stmt_lint_reads(
     w: &impl Fn(&str),
 ) {
     match s {
+        Stmt::SrcLine(_) => {}
         Stmt::If { cond, then_, else_ } => {
             expr_lint_reads(cond, global_def, params, warned, w);
             for t in then_ {
@@ -1070,6 +1073,7 @@ fn lint_regex_literal(w: &impl Fn(&str), s: &str) {
 
 fn lint_stmt_regex(w: &impl Fn(&str), s: &Stmt) {
     match s {
+        Stmt::SrcLine(_) => {}
         Stmt::Switch { expr: _, arms } => {
             for a in arms {
                 match a {
@@ -1314,6 +1318,7 @@ fn lint_old_expr(e: &Expr, w: &impl Fn(&str)) {
 
 fn lint_stmt_printf_args(w: &impl Fn(&str), stmt: &Stmt) {
     match stmt {
+        Stmt::SrcLine(_) => {}
         Stmt::Printf { args, redir } => {
             if let Some(Expr::Str(fmt)) = args.first() {
                 if let Some(min) = printf_min_args_for_format(fmt) {

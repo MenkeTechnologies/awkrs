@@ -227,6 +227,7 @@ fn qualify_pattern(p: &mut Pattern, ns: &str, locals: &FxHashSet<String>) {
 
 fn qualify_stmt(s: &mut Stmt, ns: &str, locals: &FxHashSet<String>) {
     match s {
+        Stmt::SrcLine(_) => {}
         Stmt::If { cond, then_, else_ } => {
             qualify_expr(cond, ns, locals);
             for x in then_ {

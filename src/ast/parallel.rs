@@ -34,6 +34,7 @@ pub fn record_rules_parallel_safe(prog: &Program) -> bool {
 
 fn stmt_blocks_parallel(s: &Stmt) -> bool {
     match s {
+        Stmt::SrcLine(_) => false,
         Stmt::Exit(_) => true,
         Stmt::GetLine {
             pipe_cmd: Some(_), ..

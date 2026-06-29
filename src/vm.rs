@@ -2183,10 +2183,98 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                     continue;
                 }
             }
+            // ── Debugger ────────────────────────────────────────────────
+            // Only present in `--dap` debug compiles. Record the line and, if
+            // the debugger wants to stop here, snapshot the current scope and
+            // block until the client resumes.
+            Op::DebugLine(n) => {
+                ctx.rt.cur_line = n;
+                let stop = ctx
+                    .rt
+                    .debugger
+                    .as_mut()
+                    .is_some_and(|d| d.should_stop(n as usize));
+                if stop {
+                    let snap = build_debug_snapshot(ctx, n as usize);
+                    if let Some(d) = ctx.rt.debugger.as_mut() {
+                        if d.handle_pause(snap) == crate::debugger::DebugAction::Quit {
+                            return Err(Error::Runtime("debugger: quit".into()));
+                        }
+                    }
+                }
+            }
         }
         pc += 1;
     }
     Ok(VmSignal::Normal)
+}
+
+/// Build a [`crate::dap::PauseSnapshot`] for the current VM state. Called from
+/// the `Op::DebugLine` hook (debugger present), so it reads the live scope:
+/// the innermost local frame, the global scalars (slots), and the global
+/// arrays / specials (`vars`). Borrows `ctx` immutably — the caller must not
+/// hold the debugger borrow across this call.
+fn build_debug_snapshot(ctx: &VmCtx<'_>, line: usize) -> crate::dap::PauseSnapshot {
+    use crate::dap::FrameSnap;
+
+    let dbg = ctx.rt.debugger.as_ref();
+    let file = dbg.map(|d| d.file.clone()).unwrap_or_default();
+    let reason = if dbg.is_some_and(|d| d.pause_requested()) {
+        "pause"
+    } else if dbg.is_some_and(|d| d.is_line_breakpoint(line)) {
+        "breakpoint"
+    } else {
+        "step"
+    };
+
+    // Call-stack frames, innermost first. `debug_call_stack` holds
+    // (callee_name, call_site_line) per active call.
+    let stack = &ctx.rt.debug_call_stack;
+    let mut frames: Vec<FrameSnap> = Vec::with_capacity(stack.len() + 1);
+    let cur_name = stack
+        .last()
+        .map(|(n, _)| n.clone())
+        .unwrap_or_else(|| "main".to_string());
+    frames.push(FrameSnap {
+        name: cur_name,
+        file: file.clone(),
+        line,
+    });
+    for i in (0..stack.len()).rev() {
+        let caller = if i == 0 {
+            "main".to_string()
+        } else {
+            stack[i - 1].0.clone()
+        };
+        frames.push(FrameSnap {
+            name: caller,
+            file: file.clone(),
+            line: stack[i].1,
+        });
+    }
+
+    // Locals: the innermost function frame (if any).
+    let locals: Vec<(String, &Value)> = ctx
+        .locals
+        .last()
+        .map(|frame| frame.iter().map(|(k, v)| (k.clone(), v)).collect())
+        .unwrap_or_default();
+
+    // Globals: user scalars live in slots (by name via symtab_slot_map);
+    // arrays and specials live in vars. Skip vars names already shown as slots.
+    let mut globals: Vec<(String, &Value)> = Vec::new();
+    for (name, &slot) in ctx.rt.symtab_slot_map.iter() {
+        if let Some(v) = ctx.rt.slots.get(slot as usize) {
+            globals.push((name.clone(), v));
+        }
+    }
+    for (name, v) in ctx.rt.vars.iter() {
+        if !ctx.rt.symtab_slot_map.contains_key(name) {
+            globals.push((name.clone(), v));
+        }
+    }
+
+    crate::dap::build_snapshot(file, line, reason, frames, &locals, &globals)
 }
 
 // ── Helper functions ────────────────────────────────────────────────────────
@@ -2782,6 +2870,36 @@ fn exec_call_user_bind_arrays(ctx: &mut VmCtx<'_>, name: &str, argc: u16) -> Res
 
 /// Same as [`exec_call_user_inner`] but returns the final function frame
 /// alongside the result so the caller can write array params back.
+/// Debugger: note entry into user function `name`, recording the call depth and
+/// a `(name, call-site line)` frame for `--dap`. No-op without a debugger, so
+/// the normal call path pays only one `Option` check.
+pub(crate) fn debugger_enter_sub(ctx: &mut VmCtx<'_>, name: &str) {
+    if ctx.rt.debugger.is_none() {
+        return;
+    }
+    let line = ctx.rt.cur_line as usize;
+    if let Some(d) = ctx.rt.debugger.as_mut() {
+        d.enter_sub(name);
+        // Function breakpoint: arm step mode so the first line inside the
+        // function stops.
+        if d.should_stop_at_sub(name) {
+            d.set_step_mode(true);
+        }
+    }
+    ctx.rt.debug_call_stack.push((name.to_string(), line));
+}
+
+/// Debugger: note return from a user function. Pairs with [`debugger_enter_sub`].
+pub(crate) fn debugger_leave_sub(ctx: &mut VmCtx<'_>) {
+    if ctx.rt.debugger.is_none() {
+        return;
+    }
+    if let Some(d) = ctx.rt.debugger.as_mut() {
+        d.leave_sub();
+    }
+    ctx.rt.debug_call_stack.pop();
+}
+
 fn exec_call_user_inner_with_frame(
     ctx: &mut VmCtx<'_>,
     name: &str,
@@ -2810,6 +2928,7 @@ fn exec_call_user_inner_with_frame(
     for (p, v) in func.params.iter().zip(vals) {
         frame.insert(p.clone(), v);
     }
+    debugger_enter_sub(ctx, name);
     ctx.locals.push(frame);
     let was_fn = ctx.in_function;
     ctx.in_function = true;
@@ -2820,11 +2939,13 @@ fn exec_call_user_inner_with_frame(
         Ok(VmSignal::Next) => {
             ctx.locals.pop();
             ctx.in_function = was_fn;
+            debugger_leave_sub(ctx);
             return Err(Error::Runtime("invalid jump out of function (next)".into()));
         }
         Ok(VmSignal::NextFile) => {
             ctx.locals.pop();
             ctx.in_function = was_fn;
+            debugger_leave_sub(ctx);
             return Err(Error::Runtime(
                 "invalid jump out of function (nextfile)".into(),
             ));
@@ -2832,17 +2953,20 @@ fn exec_call_user_inner_with_frame(
         Ok(VmSignal::ExitPending) => {
             ctx.locals.pop();
             ctx.in_function = was_fn;
+            debugger_leave_sub(ctx);
             return Err(Error::Exit(ctx.rt.exit_code));
         }
         Err(e) => {
             ctx.locals.pop();
             ctx.in_function = was_fn;
+            debugger_leave_sub(ctx);
             return Err(e);
         }
     };
 
     let frame = ctx.locals.pop().unwrap_or_default();
     ctx.in_function = was_fn;
+    debugger_leave_sub(ctx);
     Ok((result, frame))
 }
 

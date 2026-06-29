@@ -16,6 +16,8 @@ mod cli;
 mod cli_effects;
 mod compiler;
 mod cyber_help;
+mod dap;
+mod debugger;
 mod error;
 mod flow;
 mod format;
@@ -156,6 +158,12 @@ pub fn run(bin_name: &str) -> Result<()> {
     }
     if args.lsp {
         return crate::lsp::run_stdio();
+    }
+    if let Some(addr) = args.dap.clone() {
+        // `--dap` (empty) = stdio mode; `--dap HOST:PORT` = TCP mode.
+        let connect = if addr.is_empty() { None } else { Some(addr) };
+        let code = crate::dap::run_with_args(connect);
+        return if code == 0 { Ok(()) } else { Err(Error::Exit(code)) };
     }
     let threads = args.threads.unwrap_or(1).max(1);
     let profile_start = args.profile.is_some().then(Instant::now);

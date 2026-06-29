@@ -446,6 +446,8 @@ impl Compiler {
 
     fn compile_stmt(&mut self, s: &Stmt) -> Result<()> {
         match s {
+            // Debug line markers never reach the fusevm backend (debug runs on vm.rs).
+            Stmt::SrcLine(_) => Ok(()),
             Stmt::Print { args, redir: None } => {
                 if args.is_empty() {
                     // bare `print` ≡ `print $0`

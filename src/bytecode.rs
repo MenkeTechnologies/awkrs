@@ -63,6 +63,13 @@ pub enum SubTarget {
 /// Each variant is `Copy` so the VM can read instructions without cloning.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum Op {
+    // ── Debugger ─────────────────────────────────────────────────────────
+    /// Source-line marker (1-based line). Emitted only when compiling for the
+    /// `--dap` debugger (see [`crate::compiler::Compiler::compile_program_debug`]).
+    /// At runtime the VM records the line and runs the breakpoint/step hook;
+    /// normal compiles never emit it, so it carries zero cost outside debugging.
+    DebugLine(u32),
+
     // ── Constants ────────────────────────────────────────────────────────
     /// `PushNum` variant.
     PushNum(f64),

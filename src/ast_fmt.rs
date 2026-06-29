@@ -100,6 +100,7 @@ fn indent(n: usize) -> String {
 fn format_stmt(st: &Stmt, depth: usize) -> String {
     let ind = indent(depth);
     match st {
+        Stmt::SrcLine(_) => String::new(),
         Stmt::If { cond, then_, else_ } => {
             let mut s = format!("{ind}if ({}) {{\n", format_expr(cond));
             for t in then_ {

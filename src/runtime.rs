@@ -1237,6 +1237,15 @@ pub struct Runtime {
     pub gettext_catalogs: AwkMap<String, Arc<Catalog>>,
     /// Copy of [`crate::bytecode::CompiledProgram::slot_map`] for SYMTAB / `array_keys` without VM context.
     pub symtab_slot_map: HashMap<String, u16>,
+    /// DAP debugger state. `Some` only under `awkrs --dap`; drives breakpoints,
+    /// stepping, and variable inspection. The VM checks it on each
+    /// [`crate::bytecode::Op::DebugLine`] marker.
+    pub debugger: Option<crate::debugger::Debugger>,
+    /// Active call stack for the debugger: `(function name, call-site line)`,
+    /// innermost last. Only maintained when [`Self::debugger`] is set.
+    pub debug_call_stack: Vec<(String, usize)>,
+    /// Current source line, updated by `Op::DebugLine`. 0 when not debugging.
+    pub cur_line: u32,
     /// `-p` / `--profile`: invocation count per **record** rule (index matches `CompiledProgram::record_rules`).
     pub profile_record_hits: Vec<u64>,
     /// One-shot: warn once when `PROCINFO["sorted_in"]` is set to an unsupported custom comparator name.
@@ -1412,6 +1421,9 @@ impl Runtime {
             fuse_vm_pool: fusevm::VMPool::new(),
             gettext_catalogs: AwkMap::default(),
             symtab_slot_map: HashMap::new(),
+            debugger: None,
+            debug_call_stack: Vec::new(),
+            cur_line: 0,
             profile_record_hits: Vec::new(),
             sorted_in_warned: Cell::new(false),
             errno_code: 0,
@@ -1843,6 +1855,9 @@ impl Runtime {
             fuse_vm_pool: fusevm::VMPool::new(),
             gettext_catalogs,
             symtab_slot_map: HashMap::new(),
+            debugger: None,
+            debug_call_stack: Vec::new(),
+            cur_line: 0,
             profile_record_hits: Vec::new(),
             sorted_in_warned: Cell::new(false),
             errno_code: 0,
@@ -3561,6 +3576,11 @@ impl Clone for Runtime {
             fuse_vm_pool: fusevm::VMPool::new(),
             gettext_catalogs: self.gettext_catalogs.clone(),
             symtab_slot_map: self.symtab_slot_map.clone(),
+            // The debugger lives only on the main thread's runtime; parallel
+            // worker clones never debug.
+            debugger: None,
+            debug_call_stack: Vec::new(),
+            cur_line: 0,
             profile_record_hits: Vec::new(),
             sorted_in_warned: Cell::new(self.sorted_in_warned.get()),
             errno_code: self.errno_code,

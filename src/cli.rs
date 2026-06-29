@@ -170,6 +170,12 @@ pub struct Args {
     #[arg(long = "lsp", action = ArgAction::SetTrue)]
     pub lsp: bool,
 
+    /// Run as a Debug Adapter (DAP) for editor debuggers. `--dap` speaks DAP over
+    /// stdio; `--dap HOST:PORT` connects to the given address (so the program's
+    /// own stdout is left free — the mode IDE plugins use).
+    #[arg(long = "dap", num_args = 0..=1, default_missing_value = "", value_name = "HOST:PORT")]
+    pub dap: Option<String>,
+
     /// Print help (cyberpunk HUD).
     #[arg(short = 'h', long = "help", action = ArgAction::SetTrue)]
     pub show_help: bool,
