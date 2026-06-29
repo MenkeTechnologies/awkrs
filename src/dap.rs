@@ -442,7 +442,11 @@ fn handle_request(
                     .arguments
                     .get("args")
                     .and_then(|v| v.as_array())
-                    .map(|a| a.iter().filter_map(|s| s.as_str().map(String::from)).collect())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|s| s.as_str().map(String::from))
+                            .collect()
+                    })
                     .unwrap_or_default(),
                 cwd: req
                     .arguments
@@ -918,11 +922,11 @@ fn launch_and_run(
             }
         } else {
             for (i, p) in files.iter().enumerate() {
-                rt.vars
-                    .insert("ARGIND".into(), Value::Num((i + 1) as f64));
+                rt.vars.insert("ARGIND".into(), Value::Num((i + 1) as f64));
                 rt.filename = p.to_string_lossy().into_owned();
                 rt.fnr = 0.0;
-                if let Err(e) = run_one_input(shared, &cp, &mut rt, Some(p.as_path()), &mut range_state)
+                if let Err(e) =
+                    run_one_input(shared, &cp, &mut rt, Some(p.as_path()), &mut range_state)
                 {
                     return finish_with_error(shared, &mut rt, e);
                 }
@@ -972,11 +976,7 @@ fn finish_with_error(
     let _ = crate::vm::flush_print_buf(&mut rt.print_buf);
     match e {
         crate::Error::Exit(code) => code,
-        crate::Error::Runtime(ref msg)
-            if msg == "debugger: quit" || shared.was_disconnected() =>
-        {
-            0
-        }
+        crate::Error::Runtime(ref msg) if msg == "debugger: quit" || shared.was_disconnected() => 0,
         other => {
             shared.emit_event(
                 "output",

@@ -76,7 +76,7 @@ use std::time::Instant;
 ///
 /// Unlike [`run`], this takes the program and input as strings and captures
 /// output from the runtime's print buffer instead of writing to the process
-/// stdout — safe to call from a GUI/TUI host. A fresh [`Runtime`] is used per
+/// stdout — safe to call from a GUI/TUI host. A fresh `Runtime` is used per
 /// call (no state shared between invocations). Records are split on the default
 /// record separator (newline); a trailing newline does not yield a final empty
 /// record. Field splitting honors `FS` (set it in `BEGIN` to override the
@@ -163,7 +163,11 @@ pub fn run(bin_name: &str) -> Result<()> {
         // `--dap` (empty) = stdio mode; `--dap HOST:PORT` = TCP mode.
         let connect = if addr.is_empty() { None } else { Some(addr) };
         let code = crate::dap::run_with_args(connect);
-        return if code == 0 { Ok(()) } else { Err(Error::Exit(code)) };
+        return if code == 0 {
+            Ok(())
+        } else {
+            Err(Error::Exit(code))
+        };
     }
     let threads = args.threads.unwrap_or(1).max(1);
     let profile_start = args.profile.is_some().then(Instant::now);
