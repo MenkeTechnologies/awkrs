@@ -770,7 +770,13 @@ fn fuse_to_awk(v: fusevm::Value) -> crate::runtime::Value {
         fusevm::Value::Str(s) => A::Str((*s).clone()),
         fusevm::Value::Status(n) => A::Num(n as f64),
         fusevm::Value::Ref(inner) => fuse_to_awk(*inner),
-        fusevm::Value::Array(_) | fusevm::Value::Hash(_) | fusevm::Value::NativeFn(_) => A::Uninit,
+        // `Obj` is a frontend heap handle (added in fusevm 0.14.3 for elisp
+        // cons/symbol cells); awk has no such concept, so it collapses to
+        // uninitialized like the other non-scalar kinds.
+        fusevm::Value::Array(_)
+        | fusevm::Value::Hash(_)
+        | fusevm::Value::NativeFn(_)
+        | fusevm::Value::Obj(_) => A::Uninit,
     }
 }
 

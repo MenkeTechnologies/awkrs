@@ -69,6 +69,56 @@ use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+/// Embedding entry point: run an awk `program` over `input` (treated as the
+/// whole input stream) and return everything the program `print`/`printf`s.
+///
+/// Unlike [`run`], this takes the program and input as strings and captures
+/// output from the runtime's print buffer instead of writing to the process
+/// stdout — safe to call from a GUI/TUI host. A fresh [`Runtime`] is used per
+/// call (no state shared between invocations). Records are split on the default
+/// record separator (newline); a trailing newline does not yield a final empty
+/// record. Field splitting honors `FS` (set it in `BEGIN` to override the
+/// default whitespace splitting). `RS` overrides set in `BEGIN` are not honored
+/// by this simplified record loop.
+pub fn run_program(program: &str, input: &str) -> Result<String> {
+    let prog = parse_program(program)?;
+    let prog_rules_len = prog.rules.len();
+    let cp = Compiler::compile_program(&prog)?;
+
+    let mut rt = Runtime::new();
+    rt.slots = cp.init_slots(&rt.vars);
+    rt.symtab_slot_map = cp.slot_map.clone();
+    rt.refresh_special_arrays(&cp, "awkrs");
+
+    vm_run_begin(&cp, &mut rt)?;
+
+    if !rt.exit_pending {
+        let mut range_state: Vec<bool> = vec![false; prog_rules_len];
+        let mut records: Vec<&str> = if input.is_empty() {
+            Vec::new()
+        } else {
+            input.split('\n').collect()
+        };
+        // A trailing newline marks the end of the last record, not a new empty one.
+        if records.last() == Some(&"") {
+            records.pop();
+        }
+        for rec in records {
+            rt.nr += 1.0;
+            rt.fnr += 1.0;
+            rt.line_buf.clear();
+            rt.line_buf.extend_from_slice(rec.as_bytes());
+            rt.set_record_from_line_buf();
+            if dispatch_rules(&cp, &mut range_state, &mut rt)? {
+                break;
+            }
+        }
+    }
+
+    vm_run_end(&cp, &mut rt)?;
+    Ok(String::from_utf8_lossy(&rt.print_buf).into_owned())
+}
+
 /// Run the interpreter. `bin_name` is used for diagnostics and help (e.g. `"awkrs"` or `"ars"`).
 pub fn run(bin_name: &str) -> Result<()> {
     let mut args = Args::parse();
