@@ -1,0 +1,684 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta name="description" content="awkrs full reference — every builtin, special variable, and keyword with its LSP hover doc rendered as a static page.">
+  <title>awkrs — Reference</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;900&amp;family=Share+Tech+Mono&amp;display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="hud-static.css">
+  <link rel="stylesheet" href="tutorial.css">
+  <style>
+    .tutorial-main { max-width: 72rem; }
+    .docs-build-line {
+      margin: 0.35rem 0 0;
+      font-family: 'Share Tech Mono', ui-monospace, monospace;
+      font-size: 11px; color: var(--text-dim);
+      letter-spacing: 0.03em; max-width: 42rem; opacity: 0.75;
+    }
+    .hub-scheme-strip {
+      border-bottom: 1px dashed var(--border);
+      background: color-mix(in srgb, var(--bg-secondary) 85%, transparent);
+      padding: 0.55rem 1.5rem 0.65rem; position: relative;
+    }
+    .hub-scheme-strip-inner {
+      max-width: 72rem; margin: 0 auto;
+      display: flex; align-items: center; gap: 0.85rem;
+    }
+    .hub-scheme-strip .hud-scheme-label {
+      flex: 0 0 auto;
+      font-family: 'Orbitron', sans-serif; font-size: 9px; font-weight: 700;
+      letter-spacing: 2px; text-transform: uppercase; color: var(--accent);
+    }
+    .hub-scheme-strip .scheme-grid {
+      flex: 1 1 auto;
+      display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px;
+    }
+    @media (max-width: 720px) {
+      .hub-scheme-strip-inner { flex-direction: column; align-items: stretch; }
+      .hub-scheme-strip .scheme-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+
+    .chapter-index {
+      list-style: none; padding: 0; margin: 0;
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr));
+      gap: 0.3rem;
+    }
+    .chapter-index li {
+      border: 1px solid var(--border); padding: 0.45rem 0.65rem; border-radius: 2px;
+      background: color-mix(in srgb, var(--bg-card) 92%, transparent);
+      display: flex; justify-content: space-between; align-items: baseline;
+    }
+    .chapter-index li a {
+      color: var(--cyan); text-decoration: none; font-size: 13px;
+      font-family: 'Share Tech Mono', ui-monospace, monospace;
+    }
+    .chapter-index li a:hover { color: var(--accent-light); }
+    .chapter-count {
+      font-size: 10px; color: var(--text-muted);
+      font-family: 'Share Tech Mono', ui-monospace, monospace;
+    }
+    .chapter-meta {
+      font-size: 11px; color: var(--text-muted); margin: -0.3rem 0 0.8rem;
+      font-family: 'Share Tech Mono', ui-monospace, monospace;
+    }
+
+    .doc-entry {
+      margin: 1rem 0 1.4rem;
+      padding: 0.75rem 0.9rem 0.5rem;
+      border-left: 2px solid var(--cyan);
+      background: color-mix(in srgb, var(--bg) 94%, transparent);
+      border-radius: 2px;
+    }
+    .doc-entry h3 {
+      margin: 0 0 0.45rem;
+      font-family: 'Orbitron', sans-serif;
+      font-size: 13px; font-weight: 700; letter-spacing: 1.5px;
+      text-transform: uppercase; color: var(--cyan);
+    }
+    .doc-entry h3 code {
+      color: var(--accent-light); background: transparent; border: none;
+      padding: 0; font-size: 1em; letter-spacing: 0.5px;
+    }
+    .doc-entry .doc-anchor {
+      color: var(--text-muted); font-size: 0.85em; margin-right: 0.25rem;
+      text-decoration: none;
+    }
+    .doc-entry .doc-anchor:hover { color: var(--accent); }
+    .doc-entry h4 {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 11px; font-weight: 700; letter-spacing: 1.5px;
+      text-transform: uppercase; color: var(--accent-light);
+      margin: 0.8rem 0 0.3rem;
+    }
+    .doc-entry p {
+      font-size: 13px; line-height: 1.6; color: var(--text-dim);
+      margin: 0.35rem 0;
+    }
+    .doc-entry p code, .doc-entry li code {
+      color: var(--accent-light); font-size: 12px;
+    }
+    .doc-entry ul { margin: 0.3rem 0 0.5rem; padding-left: 1.25rem; }
+    .doc-entry li { font-size: 13px; color: var(--text-dim); line-height: 1.55; margin: 0.2rem 0; }
+    .doc-entry pre {
+      font-family: 'Share Tech Mono', ui-monospace, monospace;
+      font-size: 12px;
+      background: var(--bg); border: 1px solid var(--border);
+      border-radius: 2px;
+      padding: 0.7rem 0.9rem; overflow-x: auto;
+      color: var(--text); margin: 0.5rem 0;
+      box-shadow: inset 0 0 18px rgba(0, 0, 0, 0.35);
+    }
+    .doc-entry pre code { color: var(--text); background: transparent; border: none; padding: 0; }
+    [data-theme="light"] .doc-entry pre { box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.05); }
+
+    kbd {
+      font-family: 'Share Tech Mono', ui-monospace, monospace;
+      font-size: 11px;
+      padding: 1px 6px;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-bottom-width: 2px;
+      border-radius: 3px;
+      color: var(--cyan);
+    }
+  </style>
+</head>
+<body>
+  <div class="app tutorial-app" id="docsApp">
+    <div class="crt-scanline" id="crtH" aria-hidden="true"></div>
+    <div class="crt-scanline-v" id="crtV" aria-hidden="true"></div>
+  <header class="tutorial-header">
+    <div class="tutorial-header-inner">
+      <div>
+        <h1 class="tutorial-brand">// AWKRS — FULL REFERENCE</h1>
+        <nav class="tutorial-crumbs" aria-label="Breadcrumb">
+          <a href="index.html">Docs</a>
+          <span class="sep">/</span>
+          <span class="current">Reference</span>
+          <span class="sep">/</span>
+          <a href="https://github.com/MenkeTechnologies/awkrs" target="_blank" rel="noopener noreferrer">GitHub</a>
+        </nav>
+        <p class="docs-build-line">awkrs v0.4.15 · 86 topics · 8 chapters · generated from <code>awkrs/src/lsp.rs</code></p>
+      </div>
+      <div class="tutorial-toolbar">
+        <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
+        <button type="button" class="btn btn-secondary active" id="btnCrt" title="CRT scanline overlay">CRT</button>
+        <button type="button" class="btn btn-secondary active" id="btnNeon" title="Neon border pulse">Neon</button>
+        <a class="btn btn-secondary" href="index.html">Hub</a>
+        <a class="btn btn-secondary" href="https://github.com/MenkeTechnologies/awkrs" target="_blank" rel="noopener noreferrer">GitHub</a>
+      </div>
+    </div>
+  </header>
+
+  <div class="hub-scheme-strip">
+    <div class="hub-scheme-strip-inner">
+      <span class="hud-scheme-label">// Color scheme</span>
+      <div class="scheme-grid" id="hudSchemeGrid"></div>
+    </div>
+  </div>
+
+  <main class="tutorial-main">
+    <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>LANGUAGE REFERENCE</h2>
+    <p class="tutorial-subtitle">Every builtin, special variable, and keyword awkrs documents, rendered from the exact markdown that the awkrs LSP shows on hover. Jump via the chapter index, or <kbd>Ctrl+F</kbd> for a specific name.</p>
+    <section class="tutorial-section">
+      <h2>Chapters</h2>
+      <ul class="chapter-index">
+        <li><a href="#ch-string-functions">String Functions</a> <span class="chapter-count">11</span></li>
+        <li><a href="#ch-arithmetic-functions">Arithmetic Functions</a> <span class="chapter-count">9</span></li>
+        <li><a href="#ch-i-o-general-functions">I/O &amp; General Functions</a> <span class="chapter-count">6</span></li>
+        <li><a href="#ch-time-functions-gawk">Time Functions (gawk)</a> <span class="chapter-count">3</span></li>
+        <li><a href="#ch-bitwise-functions-gawk">Bitwise Functions (gawk)</a> <span class="chapter-count">6</span></li>
+        <li><a href="#ch-array-type-functions-gawk">Array &amp; Type Functions (gawk)</a> <span class="chapter-count">5</span></li>
+        <li><a href="#ch-special-variables">Special Variables</a> <span class="chapter-count">25</span></li>
+        <li><a href="#ch-keywords-control-flow">Keywords &amp; Control Flow</a> <span class="chapter-count">21</span></li>
+      </ul>
+    </section>
+    <section class="tutorial-section" id="ch-string-functions">
+      <h2>String Functions</h2>
+      <p class="chapter-meta">11 topics</p>
+      <article class="doc-entry" id="doc-length">
+        <h3><a class="doc-anchor" href="#doc-length">#</a> <code>length</code></h3>
+        <pre><code class="lang-awk">length([s])
+</code></pre>
+        <p>Length of string <code>s</code> (or <code>$0</code>), or element count of an array.</p>
+      </article>
+      <article class="doc-entry" id="doc-substr">
+        <h3><a class="doc-anchor" href="#doc-substr">#</a> <code>substr</code></h3>
+        <pre><code class="lang-awk">substr(s, m [, n])
+</code></pre>
+        <p><code>n</code>-char substring of <code>s</code> starting at position <code>m</code> (1-based).</p>
+      </article>
+      <article class="doc-entry" id="doc-index">
+        <h3><a class="doc-anchor" href="#doc-index">#</a> <code>index</code></h3>
+        <pre><code class="lang-awk">index(s, t)
+</code></pre>
+        <p>1-based position of <code>t</code> in <code>s</code>, or 0 if not found.</p>
+      </article>
+      <article class="doc-entry" id="doc-split">
+        <h3><a class="doc-anchor" href="#doc-split">#</a> <code>split</code></h3>
+        <pre><code class="lang-awk">split(s, arr [, fs [, seps]])
+</code></pre>
+        <p>Split <code>s</code> into <code>arr</code> on <code>fs</code>; returns the field count.</p>
+      </article>
+      <article class="doc-entry" id="doc-sub">
+        <h3><a class="doc-anchor" href="#doc-sub">#</a> <code>sub</code></h3>
+        <pre><code class="lang-awk">sub(re, repl [, target])
+</code></pre>
+        <p>Replace first match of <code>re</code> in <code>target</code> (<code>$0</code>); returns 1/0.</p>
+      </article>
+      <article class="doc-entry" id="doc-gsub">
+        <h3><a class="doc-anchor" href="#doc-gsub">#</a> <code>gsub</code></h3>
+        <pre><code class="lang-awk">gsub(re, repl [, target])
+</code></pre>
+        <p>Replace all matches of <code>re</code> in <code>target</code> (<code>$0</code>); returns count.</p>
+      </article>
+      <article class="doc-entry" id="doc-match">
+        <h3><a class="doc-anchor" href="#doc-match">#</a> <code>match</code></h3>
+        <pre><code class="lang-awk">match(s, re [, arr])
+</code></pre>
+        <p>Set RSTART/RLENGTH to the match of <code>re</code> in <code>s</code>; returns position or 0.</p>
+      </article>
+      <article class="doc-entry" id="doc-sprintf">
+        <h3><a class="doc-anchor" href="#doc-sprintf">#</a> <code>sprintf</code></h3>
+        <pre><code class="lang-awk">sprintf(fmt, ...)
+</code></pre>
+        <p>Format the arguments per <code>fmt</code> and return the string.</p>
+      </article>
+      <article class="doc-entry" id="doc-tolower">
+        <h3><a class="doc-anchor" href="#doc-tolower">#</a> <code>tolower</code></h3>
+        <pre><code class="lang-awk">tolower(s)
+</code></pre>
+        <p>Copy of <code>s</code> with uppercase letters lowercased.</p>
+      </article>
+      <article class="doc-entry" id="doc-toupper">
+        <h3><a class="doc-anchor" href="#doc-toupper">#</a> <code>toupper</code></h3>
+        <pre><code class="lang-awk">toupper(s)
+</code></pre>
+        <p>Copy of <code>s</code> with lowercase letters uppercased.</p>
+      </article>
+      <article class="doc-entry" id="doc-gensub">
+        <h3><a class="doc-anchor" href="#doc-gensub">#</a> <code>gensub</code></h3>
+        <pre><code class="lang-awk">gensub(re, repl, how [, target])
+</code></pre>
+        <p>Non-destructive global/Nth substitution returning the new string.</p>
+      </article>
+    </section>
+    <section class="tutorial-section" id="ch-arithmetic-functions">
+      <h2>Arithmetic Functions</h2>
+      <p class="chapter-meta">9 topics</p>
+      <article class="doc-entry" id="doc-sin">
+        <h3><a class="doc-anchor" href="#doc-sin">#</a> <code>sin</code></h3>
+        <pre><code class="lang-awk">sin(x)
+</code></pre>
+        <p>Sine of <code>x</code> (radians).</p>
+      </article>
+      <article class="doc-entry" id="doc-cos">
+        <h3><a class="doc-anchor" href="#doc-cos">#</a> <code>cos</code></h3>
+        <pre><code class="lang-awk">cos(x)
+</code></pre>
+        <p>Cosine of <code>x</code> (radians).</p>
+      </article>
+      <article class="doc-entry" id="doc-atan2">
+        <h3><a class="doc-anchor" href="#doc-atan2">#</a> <code>atan2</code></h3>
+        <pre><code class="lang-awk">atan2(y, x)
+</code></pre>
+        <p>Arctangent of <code>y/x</code> in radians.</p>
+      </article>
+      <article class="doc-entry" id="doc-exp">
+        <h3><a class="doc-anchor" href="#doc-exp">#</a> <code>exp</code></h3>
+        <pre><code class="lang-awk">exp(x)
+</code></pre>
+        <p>e raised to the power <code>x</code>.</p>
+      </article>
+      <article class="doc-entry" id="doc-log">
+        <h3><a class="doc-anchor" href="#doc-log">#</a> <code>log</code></h3>
+        <pre><code class="lang-awk">log(x)
+</code></pre>
+        <p>Natural logarithm of <code>x</code>.</p>
+      </article>
+      <article class="doc-entry" id="doc-sqrt">
+        <h3><a class="doc-anchor" href="#doc-sqrt">#</a> <code>sqrt</code></h3>
+        <pre><code class="lang-awk">sqrt(x)
+</code></pre>
+        <p>Square root of <code>x</code>.</p>
+      </article>
+      <article class="doc-entry" id="doc-int">
+        <h3><a class="doc-anchor" href="#doc-int">#</a> <code>int</code></h3>
+        <pre><code class="lang-awk">int(x)
+</code></pre>
+        <p>Integer part of <code>x</code>, truncated toward zero.</p>
+      </article>
+      <article class="doc-entry" id="doc-rand">
+        <h3><a class="doc-anchor" href="#doc-rand">#</a> <code>rand</code></h3>
+        <pre><code class="lang-awk">rand()
+</code></pre>
+        <p>Pseudo-random number in [0, 1).</p>
+      </article>
+      <article class="doc-entry" id="doc-srand">
+        <h3><a class="doc-anchor" href="#doc-srand">#</a> <code>srand</code></h3>
+        <pre><code class="lang-awk">srand([x])
+</code></pre>
+        <p>Seed the RNG with <code>x</code> (or time); returns the previous seed.</p>
+      </article>
+    </section>
+    <section class="tutorial-section" id="ch-i-o-general-functions">
+      <h2>I/O &amp; General Functions</h2>
+      <p class="chapter-meta">6 topics</p>
+      <article class="doc-entry" id="doc-print">
+        <h3><a class="doc-anchor" href="#doc-print">#</a> <code>print</code></h3>
+        <p><strong><code>print</code></strong> — keyword</p>
+        <p>Write its arguments to output, separated by <code>OFS</code> and terminated by <code>ORS</code>.</p>
+      </article>
+      <article class="doc-entry" id="doc-printf">
+        <h3><a class="doc-anchor" href="#doc-printf">#</a> <code>printf</code></h3>
+        <pre><code class="lang-awk">printf(fmt, ...)
+</code></pre>
+        <p>Format and print the arguments per <code>fmt</code>.</p>
+      </article>
+      <article class="doc-entry" id="doc-getline">
+        <h3><a class="doc-anchor" href="#doc-getline">#</a> <code>getline</code></h3>
+        <p><strong><code>getline</code></strong> — keyword</p>
+        <p>Read the next record into <code>$0</code> or a variable from input, a file, or a command.</p>
+      </article>
+      <article class="doc-entry" id="doc-close">
+        <h3><a class="doc-anchor" href="#doc-close">#</a> <code>close</code></h3>
+        <pre><code class="lang-awk">close(file [, how])
+</code></pre>
+        <p>Close an open file/pipe; returns its status.</p>
+      </article>
+      <article class="doc-entry" id="doc-system">
+        <h3><a class="doc-anchor" href="#doc-system">#</a> <code>system</code></h3>
+        <pre><code class="lang-awk">system(cmd)
+</code></pre>
+        <p>Run <code>cmd</code> via the shell; returns its exit status.</p>
+      </article>
+      <article class="doc-entry" id="doc-fflush">
+        <h3><a class="doc-anchor" href="#doc-fflush">#</a> <code>fflush</code></h3>
+        <pre><code class="lang-awk">fflush([file])
+</code></pre>
+        <p>Flush buffers for <code>file</code>, or all outputs if omitted.</p>
+      </article>
+    </section>
+    <section class="tutorial-section" id="ch-time-functions-gawk">
+      <h2>Time Functions (gawk)</h2>
+      <p class="chapter-meta">3 topics</p>
+      <article class="doc-entry" id="doc-systime">
+        <h3><a class="doc-anchor" href="#doc-systime">#</a> <code>systime</code></h3>
+        <pre><code class="lang-awk">systime()
+</code></pre>
+        <p>Current time as seconds since the epoch (gawk).</p>
+      </article>
+      <article class="doc-entry" id="doc-strftime">
+        <h3><a class="doc-anchor" href="#doc-strftime">#</a> <code>strftime</code></h3>
+        <pre><code class="lang-awk">strftime([fmt [, ts [, utc]]])
+</code></pre>
+        <p>Format timestamp <code>ts</code> per <code>fmt</code> (gawk).</p>
+      </article>
+      <article class="doc-entry" id="doc-mktime">
+        <h3><a class="doc-anchor" href="#doc-mktime">#</a> <code>mktime</code></h3>
+        <pre><code class="lang-awk">mktime(spec [, utc])
+</code></pre>
+        <p>Convert a &quot;YYYY MM DD HH MM SS [DST]&quot; spec to a timestamp (gawk).</p>
+      </article>
+    </section>
+    <section class="tutorial-section" id="ch-bitwise-functions-gawk">
+      <h2>Bitwise Functions (gawk)</h2>
+      <p class="chapter-meta">6 topics</p>
+      <article class="doc-entry" id="doc-and">
+        <h3><a class="doc-anchor" href="#doc-and">#</a> <code>and</code></h3>
+        <pre><code class="lang-awk">and(v1, v2, ...)
+</code></pre>
+        <p>Bitwise AND of the arguments (gawk).</p>
+      </article>
+      <article class="doc-entry" id="doc-or">
+        <h3><a class="doc-anchor" href="#doc-or">#</a> <code>or</code></h3>
+        <pre><code class="lang-awk">or(v1, v2, ...)
+</code></pre>
+        <p>Bitwise OR of the arguments (gawk).</p>
+      </article>
+      <article class="doc-entry" id="doc-xor">
+        <h3><a class="doc-anchor" href="#doc-xor">#</a> <code>xor</code></h3>
+        <pre><code class="lang-awk">xor(v1, v2, ...)
+</code></pre>
+        <p>Bitwise XOR of the arguments (gawk).</p>
+      </article>
+      <article class="doc-entry" id="doc-compl">
+        <h3><a class="doc-anchor" href="#doc-compl">#</a> <code>compl</code></h3>
+        <pre><code class="lang-awk">compl(v)
+</code></pre>
+        <p>Bitwise complement of <code>v</code> (gawk).</p>
+      </article>
+      <article class="doc-entry" id="doc-lshift">
+        <h3><a class="doc-anchor" href="#doc-lshift">#</a> <code>lshift</code></h3>
+        <pre><code class="lang-awk">lshift(v, n)
+</code></pre>
+        <p><code>v</code> left-shifted by <code>n</code> bits (gawk).</p>
+      </article>
+      <article class="doc-entry" id="doc-rshift">
+        <h3><a class="doc-anchor" href="#doc-rshift">#</a> <code>rshift</code></h3>
+        <pre><code class="lang-awk">rshift(v, n)
+</code></pre>
+        <p><code>v</code> right-shifted by <code>n</code> bits (gawk).</p>
+      </article>
+    </section>
+    <section class="tutorial-section" id="ch-array-type-functions-gawk">
+      <h2>Array &amp; Type Functions (gawk)</h2>
+      <p class="chapter-meta">5 topics</p>
+      <article class="doc-entry" id="doc-typeof">
+        <h3><a class="doc-anchor" href="#doc-typeof">#</a> <code>typeof</code></h3>
+        <pre><code class="lang-awk">typeof(x)
+</code></pre>
+        <p>Type of <code>x</code>: &quot;scalar&quot;, &quot;array&quot;, &quot;untyped&quot;, … (gawk).</p>
+      </article>
+      <article class="doc-entry" id="doc-isarray">
+        <h3><a class="doc-anchor" href="#doc-isarray">#</a> <code>isarray</code></h3>
+        <pre><code class="lang-awk">isarray(x)
+</code></pre>
+        <p>1 if <code>x</code> is an array, else 0 (gawk).</p>
+      </article>
+      <article class="doc-entry" id="doc-patsplit">
+        <h3><a class="doc-anchor" href="#doc-patsplit">#</a> <code>patsplit</code></h3>
+        <pre><code class="lang-awk">patsplit(s, arr [, fpat [, seps]])
+</code></pre>
+        <p>Split <code>s</code> into <code>arr</code> by the pattern <code>fpat</code> (gawk).</p>
+      </article>
+      <article class="doc-entry" id="doc-asort">
+        <h3><a class="doc-anchor" href="#doc-asort">#</a> <code>asort</code></h3>
+        <pre><code class="lang-awk">asort(src [, dst [, how]])
+</code></pre>
+        <p>Sort array values; returns the element count (gawk).</p>
+      </article>
+      <article class="doc-entry" id="doc-asorti">
+        <h3><a class="doc-anchor" href="#doc-asorti">#</a> <code>asorti</code></h3>
+        <pre><code class="lang-awk">asorti(src [, dst [, how]])
+</code></pre>
+        <p>Sort array indices; returns the element count (gawk).</p>
+      </article>
+    </section>
+    <section class="tutorial-section" id="ch-special-variables">
+      <h2>Special Variables</h2>
+      <p class="chapter-meta">25 topics</p>
+      <article class="doc-entry" id="doc-nr">
+        <h3><a class="doc-anchor" href="#doc-nr">#</a> <code>NR</code></h3>
+        <p><strong><code>NR</code></strong> — special variable</p>
+        <p>Total number of input records read so far.</p>
+      </article>
+      <article class="doc-entry" id="doc-nf">
+        <h3><a class="doc-anchor" href="#doc-nf">#</a> <code>NF</code></h3>
+        <p><strong><code>NF</code></strong> — special variable</p>
+        <p>Number of fields in the current record.</p>
+      </article>
+      <article class="doc-entry" id="doc-fs">
+        <h3><a class="doc-anchor" href="#doc-fs">#</a> <code>FS</code></h3>
+        <p><strong><code>FS</code></strong> — special variable</p>
+        <p>Input field separator (default &quot; &quot;).</p>
+      </article>
+      <article class="doc-entry" id="doc-ofs">
+        <h3><a class="doc-anchor" href="#doc-ofs">#</a> <code>OFS</code></h3>
+        <p><strong><code>OFS</code></strong> — special variable</p>
+        <p>Output field separator (default &quot; &quot;).</p>
+      </article>
+      <article class="doc-entry" id="doc-ors">
+        <h3><a class="doc-anchor" href="#doc-ors">#</a> <code>ORS</code></h3>
+        <p><strong><code>ORS</code></strong> — special variable</p>
+        <p>Output record separator (default &quot;\n&quot;).</p>
+      </article>
+      <article class="doc-entry" id="doc-rs">
+        <h3><a class="doc-anchor" href="#doc-rs">#</a> <code>RS</code></h3>
+        <p><strong><code>RS</code></strong> — special variable</p>
+        <p>Input record separator (default &quot;\n&quot;).</p>
+      </article>
+      <article class="doc-entry" id="doc-filename">
+        <h3><a class="doc-anchor" href="#doc-filename">#</a> <code>FILENAME</code></h3>
+        <p><strong><code>FILENAME</code></strong> — special variable</p>
+        <p>Name of the current input file.</p>
+      </article>
+      <article class="doc-entry" id="doc-fnr">
+        <h3><a class="doc-anchor" href="#doc-fnr">#</a> <code>FNR</code></h3>
+        <p><strong><code>FNR</code></strong> — special variable</p>
+        <p>Record number within the current input file.</p>
+      </article>
+      <article class="doc-entry" id="doc-rstart">
+        <h3><a class="doc-anchor" href="#doc-rstart">#</a> <code>RSTART</code></h3>
+        <p><strong><code>RSTART</code></strong> — special variable</p>
+        <p>Start position of the last match() (1-based), or 0.</p>
+      </article>
+      <article class="doc-entry" id="doc-rlength">
+        <h3><a class="doc-anchor" href="#doc-rlength">#</a> <code>RLENGTH</code></h3>
+        <p><strong><code>RLENGTH</code></strong> — special variable</p>
+        <p>Length of the last match(), or -1.</p>
+      </article>
+      <article class="doc-entry" id="doc-subsep">
+        <h3><a class="doc-anchor" href="#doc-subsep">#</a> <code>SUBSEP</code></h3>
+        <p><strong><code>SUBSEP</code></strong> — special variable</p>
+        <p>Subscript separator for multi-dimensional array keys.</p>
+      </article>
+      <article class="doc-entry" id="doc-argc">
+        <h3><a class="doc-anchor" href="#doc-argc">#</a> <code>ARGC</code></h3>
+        <p><strong><code>ARGC</code></strong> — special variable</p>
+        <p>Count of command-line arguments in ARGV.</p>
+      </article>
+      <article class="doc-entry" id="doc-argv">
+        <h3><a class="doc-anchor" href="#doc-argv">#</a> <code>ARGV</code></h3>
+        <p><strong><code>ARGV</code></strong> — special variable</p>
+        <p>Array of command-line arguments.</p>
+      </article>
+      <article class="doc-entry" id="doc-environ">
+        <h3><a class="doc-anchor" href="#doc-environ">#</a> <code>ENVIRON</code></h3>
+        <p><strong><code>ENVIRON</code></strong> — special variable</p>
+        <p>Array of the process environment variables.</p>
+      </article>
+      <article class="doc-entry" id="doc-convfmt">
+        <h3><a class="doc-anchor" href="#doc-convfmt">#</a> <code>CONVFMT</code></h3>
+        <p><strong><code>CONVFMT</code></strong> — special variable</p>
+        <p>Conversion format for numbers used as strings (default &quot;%.6g&quot;).</p>
+      </article>
+      <article class="doc-entry" id="doc-ofmt">
+        <h3><a class="doc-anchor" href="#doc-ofmt">#</a> <code>OFMT</code></h3>
+        <p><strong><code>OFMT</code></strong> — special variable</p>
+        <p>Output format for numbers in print (default &quot;%.6g&quot;).</p>
+      </article>
+      <article class="doc-entry" id="doc-ignorecase">
+        <h3><a class="doc-anchor" href="#doc-ignorecase">#</a> <code>IGNORECASE</code></h3>
+        <p><strong><code>IGNORECASE</code></strong> — special variable</p>
+        <p>When non-zero, regex and string comparisons ignore case (gawk).</p>
+      </article>
+      <article class="doc-entry" id="doc-fieldwidths">
+        <h3><a class="doc-anchor" href="#doc-fieldwidths">#</a> <code>FIELDWIDTHS</code></h3>
+        <p><strong><code>FIELDWIDTHS</code></strong> — special variable</p>
+        <p>Space-separated fixed field widths for parsing (gawk).</p>
+      </article>
+      <article class="doc-entry" id="doc-fpat">
+        <h3><a class="doc-anchor" href="#doc-fpat">#</a> <code>FPAT</code></h3>
+        <p><strong><code>FPAT</code></strong> — special variable</p>
+        <p>Regexp describing field contents, as an alternative to FS (gawk).</p>
+      </article>
+      <article class="doc-entry" id="doc-procinfo">
+        <h3><a class="doc-anchor" href="#doc-procinfo">#</a> <code>PROCINFO</code></h3>
+        <p><strong><code>PROCINFO</code></strong> — special variable</p>
+        <p>Array of process/runtime information (gawk).</p>
+      </article>
+      <article class="doc-entry" id="doc-rt">
+        <h3><a class="doc-anchor" href="#doc-rt">#</a> <code>RT</code></h3>
+        <p><strong><code>RT</code></strong> — special variable</p>
+        <p>Text matched by RS for the current record (gawk).</p>
+      </article>
+      <article class="doc-entry" id="doc-errno">
+        <h3><a class="doc-anchor" href="#doc-errno">#</a> <code>ERRNO</code></h3>
+        <p><strong><code>ERRNO</code></strong> — special variable</p>
+        <p>Description of the last getline/close/system error (gawk).</p>
+      </article>
+      <article class="doc-entry" id="doc-textdomain">
+        <h3><a class="doc-anchor" href="#doc-textdomain">#</a> <code>TEXTDOMAIN</code></h3>
+        <p><strong><code>TEXTDOMAIN</code></strong> — special variable</p>
+        <p>Text domain for string translation (gawk).</p>
+      </article>
+      <article class="doc-entry" id="doc-binmode">
+        <h3><a class="doc-anchor" href="#doc-binmode">#</a> <code>BINMODE</code></h3>
+        <p><strong><code>BINMODE</code></strong> — special variable</p>
+        <p>Binary I/O mode control (gawk).</p>
+      </article>
+      <article class="doc-entry" id="doc-lint">
+        <h3><a class="doc-anchor" href="#doc-lint">#</a> <code>LINT</code></h3>
+        <p><strong><code>LINT</code></strong> — special variable</p>
+        <p>Dynamic control of lint warnings (gawk).</p>
+      </article>
+    </section>
+    <section class="tutorial-section" id="ch-keywords-control-flow">
+      <h2>Keywords &amp; Control Flow</h2>
+      <p class="chapter-meta">21 topics</p>
+      <article class="doc-entry" id="doc-begin">
+        <h3><a class="doc-anchor" href="#doc-begin">#</a> <code>BEGIN</code></h3>
+        <p><strong><code>BEGIN</code></strong> — keyword</p>
+        <p>Special pattern whose action runs once before any input is read.</p>
+      </article>
+      <article class="doc-entry" id="doc-end">
+        <h3><a class="doc-anchor" href="#doc-end">#</a> <code>END</code></h3>
+        <p><strong><code>END</code></strong> — keyword</p>
+        <p>Special pattern whose action runs once after all input is consumed.</p>
+      </article>
+      <article class="doc-entry" id="doc-beginfile">
+        <h3><a class="doc-anchor" href="#doc-beginfile">#</a> <code>BEGINFILE</code></h3>
+        <p><strong><code>BEGINFILE</code></strong> — keyword</p>
+        <p>Pattern whose action runs before each input file is read (gawk).</p>
+      </article>
+      <article class="doc-entry" id="doc-endfile">
+        <h3><a class="doc-anchor" href="#doc-endfile">#</a> <code>ENDFILE</code></h3>
+        <p><strong><code>ENDFILE</code></strong> — keyword</p>
+        <p>Pattern whose action runs after each input file is processed (gawk).</p>
+      </article>
+      <article class="doc-entry" id="doc-function">
+        <h3><a class="doc-anchor" href="#doc-function">#</a> <code>function</code></h3>
+        <p><strong><code>function</code></strong> — keyword</p>
+        <p>Define a user function: <code>function name(params) { body }</code>.</p>
+      </article>
+      <article class="doc-entry" id="doc-if">
+        <h3><a class="doc-anchor" href="#doc-if">#</a> <code>if</code></h3>
+        <p><strong><code>if</code></strong> — keyword</p>
+        <p>Conditional statement: <code>if (cond) stmt</code> with an optional <code>else</code> branch.</p>
+      </article>
+      <article class="doc-entry" id="doc-else">
+        <h3><a class="doc-anchor" href="#doc-else">#</a> <code>else</code></h3>
+        <p><strong><code>else</code></strong> — keyword</p>
+        <p>The alternative branch taken when an <code>if</code> condition is false.</p>
+      </article>
+      <article class="doc-entry" id="doc-while">
+        <h3><a class="doc-anchor" href="#doc-while">#</a> <code>while</code></h3>
+        <p><strong><code>while</code></strong> — keyword</p>
+        <p>Loop that repeats <code>stmt</code> while <code>cond</code> is true: <code>while (cond) stmt</code>.</p>
+      </article>
+      <article class="doc-entry" id="doc-for">
+        <h3><a class="doc-anchor" href="#doc-for">#</a> <code>for</code></h3>
+        <p><strong><code>for</code></strong> — keyword</p>
+        <p>Loop: <code>for (init; cond; incr) stmt</code>, or <code>for (key in array) stmt</code>.</p>
+      </article>
+      <article class="doc-entry" id="doc-do">
+        <h3><a class="doc-anchor" href="#doc-do">#</a> <code>do</code></h3>
+        <p><strong><code>do</code></strong> — keyword</p>
+        <p>Do-while loop: <code>do stmt while (cond)</code>; the body runs at least once.</p>
+      </article>
+      <article class="doc-entry" id="doc-break">
+        <h3><a class="doc-anchor" href="#doc-break">#</a> <code>break</code></h3>
+        <p><strong><code>break</code></strong> — keyword</p>
+        <p>Exit the innermost <code>for</code>, <code>while</code>, or <code>do</code> loop immediately.</p>
+      </article>
+      <article class="doc-entry" id="doc-continue">
+        <h3><a class="doc-anchor" href="#doc-continue">#</a> <code>continue</code></h3>
+        <p><strong><code>continue</code></strong> — keyword</p>
+        <p>Skip to the next iteration of the innermost loop.</p>
+      </article>
+      <article class="doc-entry" id="doc-next">
+        <h3><a class="doc-anchor" href="#doc-next">#</a> <code>next</code></h3>
+        <p><strong><code>next</code></strong> — keyword</p>
+        <p>Stop processing the current record and read the next one.</p>
+      </article>
+      <article class="doc-entry" id="doc-nextfile">
+        <h3><a class="doc-anchor" href="#doc-nextfile">#</a> <code>nextfile</code></h3>
+        <p><strong><code>nextfile</code></strong> — keyword</p>
+        <p>Stop processing the current input file and advance to the next.</p>
+      </article>
+      <article class="doc-entry" id="doc-exit">
+        <h3><a class="doc-anchor" href="#doc-exit">#</a> <code>exit</code></h3>
+        <p><strong><code>exit</code></strong> — keyword</p>
+        <p>Stop reading input and run <code>END</code>; <code>exit [expr]</code> sets the exit status.</p>
+      </article>
+      <article class="doc-entry" id="doc-return">
+        <h3><a class="doc-anchor" href="#doc-return">#</a> <code>return</code></h3>
+        <p><strong><code>return</code></strong> — keyword</p>
+        <p>Return from a user function, optionally with a value: <code>return [expr]</code>.</p>
+      </article>
+      <article class="doc-entry" id="doc-delete">
+        <h3><a class="doc-anchor" href="#doc-delete">#</a> <code>delete</code></h3>
+        <p><strong><code>delete</code></strong> — keyword</p>
+        <p>Remove an array element (<code>delete arr[k]</code>) or clear it (<code>delete arr</code>).</p>
+      </article>
+      <article class="doc-entry" id="doc-switch">
+        <h3><a class="doc-anchor" href="#doc-switch">#</a> <code>switch</code></h3>
+        <p><strong><code>switch</code></strong> — keyword</p>
+        <p>Multi-way branch on a value: <code>switch (expr) { case ...: ... }</code> (gawk).</p>
+      </article>
+      <article class="doc-entry" id="doc-case">
+        <h3><a class="doc-anchor" href="#doc-case">#</a> <code>case</code></h3>
+        <p><strong><code>case</code></strong> — keyword</p>
+        <p>A labeled branch inside a <code>switch</code> statement (gawk).</p>
+      </article>
+      <article class="doc-entry" id="doc-default">
+        <h3><a class="doc-anchor" href="#doc-default">#</a> <code>default</code></h3>
+        <p><strong><code>default</code></strong> — keyword</p>
+        <p>The fallback branch taken when no <code>case</code> matches in a <code>switch</code> (gawk).</p>
+      </article>
+      <article class="doc-entry" id="doc-in">
+        <h3><a class="doc-anchor" href="#doc-in">#</a> <code>in</code></h3>
+        <p><strong><code>in</code></strong> — keyword</p>
+        <p>Array membership test (<code>key in arr</code>) or iteration (<code>for (key in arr)</code>).</p>
+      </article>
+    </section>
+  </main>
+  </div>
+  <script src="hud-theme.js"></script>
+</body>
+</html>

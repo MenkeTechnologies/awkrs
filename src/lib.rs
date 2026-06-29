@@ -30,7 +30,10 @@ mod gettext_util;
 mod lexer;
 mod limits;
 mod locale_numeric;
-mod lsp;
+/// LSP server plus the shared documentation corpus (`builtin_signature`,
+/// `special_doc`, `keyword_doc`, `AWK_KEYWORDS`) consumed by the offline
+/// `gen-docs` reference generator.
+pub mod lsp;
 mod namespace;
 mod parser;
 mod procinfo;

@@ -33,6 +33,12 @@ path = "src/main.rs"
 name = "aw"
 path = "src/bin/ars.rs"
 
+# Offline generator for `docs/reference.html` — renders the LSP doc corpus
+# (`awkrs::lsp`) as a static reference page. Run `cargo run --bin gen-docs`.
+[[bin]]
+name = "gen-docs"
+path = "src/bin/gen_docs.rs"
+
 [dependencies]
 bincode = "1.3"
 chrono = "0.4"

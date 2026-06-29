@@ -41,7 +41,10 @@ use crate::error::Error;
 use crate::namespace::{BUILTIN_NAMES, SPECIAL_GLOBAL_NAMES};
 
 /// AWK keyword set (fixed by the language; mirrors the lexer's keyword tokens).
-const AWK_KEYWORDS: &[&str] = &[
+///
+/// Public so the offline `gen-docs` reference generator can enumerate the same
+/// keyword corpus the LSP hover path uses (single source of truth).
+pub const AWK_KEYWORDS: &[&str] = &[
     "BEGIN",
     "END",
     "BEGINFILE",
@@ -338,8 +341,8 @@ fn hover(docs: &Docs, params: HoverParams) -> Option<Hover> {
         format!("```awk\n{sig}\n```\n\n{doc}")
     } else if let Some(doc) = special_doc(&word) {
         format!("**`{word}`** — special variable\n\n{doc}")
-    } else if AWK_KEYWORDS.contains(&word.as_str()) {
-        format!("**`{word}`** — AWK keyword")
+    } else if let Some(doc) = keyword_doc(&word) {
+        format!("**`{word}`** — keyword\n\n{doc}")
     } else {
         return None;
     };
@@ -729,7 +732,10 @@ fn position_to_offset(text: &str, pos: Position) -> Option<usize> {
 
 /// Signature + one-line description for an AWK builtin, if known.
 /// Sourced from the POSIX awk spec and the gawk extensions awkrs accepts.
-fn builtin_signature(name: &str) -> Option<(&'static str, &'static str)> {
+///
+/// Public so the offline `gen-docs` reference generator renders the exact same
+/// signatures/descriptions the LSP hover and signature-help paths use.
+pub fn builtin_signature(name: &str) -> Option<(&'static str, &'static str)> {
     let v = match name {
         "length" => (
             "length([s])",
@@ -854,7 +860,10 @@ fn builtin_signature(name: &str) -> Option<(&'static str, &'static str)> {
 }
 
 /// One-line description for an AWK special variable, if known.
-fn special_doc(name: &str) -> Option<&'static str> {
+///
+/// Public so the offline `gen-docs` reference generator shares this corpus
+/// with the LSP hover path (single source of truth).
+pub fn special_doc(name: &str) -> Option<&'static str> {
     let d = match name {
         "NR" => "Total number of input records read so far.",
         "NF" => "Number of fields in the current record.",
@@ -884,6 +893,43 @@ fn special_doc(name: &str) -> Option<&'static str> {
         "BINMODE" => "Binary I/O mode control (gawk).",
         "LINT" => "Dynamic control of lint warnings (gawk).",
         "TEXTDOMAIN" => "Text domain for string translation (gawk).",
+        _ => return None,
+    };
+    Some(d)
+}
+
+/// One-line description for an AWK keyword / control-flow construct, if known.
+/// Covers every entry in [`AWK_KEYWORDS`]. Sourced from the POSIX awk grammar
+/// and the gawk manual; gawk-only constructs are tagged `(gawk)`.
+///
+/// Public so the offline `gen-docs` reference generator and the LSP hover path
+/// render keyword docs from one source of truth.
+pub fn keyword_doc(name: &str) -> Option<&'static str> {
+    let d = match name {
+        "BEGIN" => "Special pattern whose action runs once before any input is read.",
+        "END" => "Special pattern whose action runs once after all input is consumed.",
+        "BEGINFILE" => "Pattern whose action runs before each input file is read (gawk).",
+        "ENDFILE" => "Pattern whose action runs after each input file is processed (gawk).",
+        "function" => "Define a user function: `function name(params) { body }`.",
+        "if" => "Conditional statement: `if (cond) stmt` with an optional `else` branch.",
+        "else" => "The alternative branch taken when an `if` condition is false.",
+        "while" => "Loop that repeats `stmt` while `cond` is true: `while (cond) stmt`.",
+        "for" => "Loop: `for (init; cond; incr) stmt`, or `for (key in array) stmt`.",
+        "do" => "Do-while loop: `do stmt while (cond)`; the body runs at least once.",
+        "break" => "Exit the innermost `for`, `while`, or `do` loop immediately.",
+        "continue" => "Skip to the next iteration of the innermost loop.",
+        "next" => "Stop processing the current record and read the next one.",
+        "nextfile" => "Stop processing the current input file and advance to the next.",
+        "exit" => "Stop reading input and run `END`; `exit [expr]` sets the exit status.",
+        "return" => "Return from a user function, optionally with a value: `return [expr]`.",
+        "delete" => "Remove an array element (`delete arr[k]`) or clear it (`delete arr`).",
+        "getline" => "Read the next record into `$0` or a variable from input, a file, or a command.",
+        "print" => "Write its arguments to output, separated by `OFS` and terminated by `ORS`.",
+        "printf" => "Write formatted output using a C-style format string: `printf fmt, args`.",
+        "in" => "Array membership test (`key in arr`) or iteration (`for (key in arr)`).",
+        "switch" => "Multi-way branch on a value: `switch (expr) { case ...: ... }` (gawk).",
+        "case" => "A labeled branch inside a `switch` statement (gawk).",
+        "default" => "The fallback branch taken when no `case` matches in a `switch` (gawk).",
         _ => return None,
     };
     Some(d)
