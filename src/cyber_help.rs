@@ -104,7 +104,43 @@ fn status_box(version: &str) -> String {
 
 fn tagline() -> String {
     let s = " >> PATTERN / ACTION ENGINE // FIELD RECORDS & TEXT HAX <<";
-    c_yellow(s)
+    c_magenta(s)
+}
+
+/// A cyan `── LABEL ──────` section rule sized to the status-box inner width.
+fn section_rule(label: &str) -> String {
+    let prefix = format!("── {label} ");
+    let pad = BOX_INNER.saturating_sub(prefix.chars().count());
+    format!("\x1b[36m  {}{}\x1b[0m", prefix, "─".repeat(pad))
+}
+
+/// clap help template: yellow `USAGE:`, then cyan `── OPTIONS ──` / `── POSITIONAL ──`
+/// section rules wrapping the clap-rendered arg blocks. Literal ANSI here is stripped
+/// again when color is off (see [`print_cyberpunk_help`]).
+fn help_template() -> String {
+    format!(
+        "\x1b[33mUSAGE:\x1b[0m {{usage}}\n\n{opt}\n{{options}}\n\n{pos}\n{{positionals}}",
+        opt = section_rule("OPTIONS"),
+        pos = section_rule("POSITIONAL"),
+    )
+}
+
+/// Strip CSI (`\x1b[…m`) sequences so the help body honors `NO_COLOR`.
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            for c2 in chars.by_ref() {
+                if c2 == 'm' {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 fn footer(version: &str) -> String {
@@ -139,19 +175,22 @@ pub fn print_cyberpunk_help(bin_name: &str) {
     );
     let _ = writeln!(out);
 
+    let colored = color_on();
     let mut cmd = Args::command()
         .bin_name(bin_name)
         .styles(cyber_styles())
-        .help_template(
-            "\
-{usage-heading} {usage}
-
-{all-args}",
-        );
-    if color_on() {
-        cmd = cmd.color(clap::ColorChoice::Always);
+        .help_template(help_template());
+    cmd = cmd.color(if colored {
+        clap::ColorChoice::Always
+    } else {
+        clap::ColorChoice::Never
+    });
+    let body = cmd.render_help().ansi().to_string();
+    if colored {
+        let _ = write!(out, "{body}");
+    } else {
+        let _ = write!(out, "{}", strip_ansi(&body));
     }
-    let _ = cmd.print_help();
     let _ = write!(out, "{}", footer(version));
     let _ = writeln!(out);
 }

@@ -28,37 +28,58 @@ use std::path::PathBuf;
 pub struct Args {
     // --- POSIX ---
     /// `progfiles` field.
-    #[arg(short = 'f', long = "file", value_name = "PROGFILE", action = ArgAction::Append, value_hint = ValueHint::FilePath)]
+    #[arg(short = 'f', long = "file", value_name = "PROGFILE", action = ArgAction::Append, value_hint = ValueHint::FilePath, help = "\x1b[32m//\x1b[0m Read program text from PROGFILE (repeatable)")]
     pub progfiles: Vec<PathBuf>,
     /// `field_sep` field.
-    #[arg(short = 'F', long = "field-separator", value_name = "FS")]
+    #[arg(
+        short = 'F',
+        long = "field-separator",
+        value_name = "FS",
+        help = "\x1b[32m//\x1b[0m Set the field separator FS"
+    )]
     pub field_sep: Option<String>,
     /// `assigns` field.
-    #[arg(short = 'v', long = "assign", value_name = "var=val", action = ArgAction::Append)]
+    #[arg(short = 'v', long = "assign", value_name = "var=val", action = ArgAction::Append, help = "\x1b[32m//\x1b[0m Assign var=val before the program runs (repeatable)")]
     pub assigns: Vec<String>,
 
     // --- GNU: program sources ---
     /// `source` field.
-    #[arg(short = 'e', long = "source", value_name = "PROGRAM", action = ArgAction::Append)]
+    #[arg(short = 'e', long = "source", value_name = "PROGRAM", action = ArgAction::Append, help = "\x1b[32m//\x1b[0m Add PROGRAM source text (repeatable)")]
     pub source: Vec<String>,
     /// `include` field.
-    #[arg(short = 'i', long = "include", value_name = "FILE", action = ArgAction::Append, value_hint = ValueHint::FilePath)]
+    #[arg(short = 'i', long = "include", value_name = "FILE", action = ArgAction::Append, value_hint = ValueHint::FilePath, help = "\x1b[32m//\x1b[0m Include library FILE (gawk @include)")]
     pub include: Vec<PathBuf>,
 
     // --- gawk extensions ---
     /// `characters_as_bytes` field.
-    #[arg(short = 'b', long = "characters-as-bytes")]
+    #[arg(
+        short = 'b',
+        long = "characters-as-bytes",
+        help = "\x1b[32m//\x1b[0m Treat input bytes as characters (no multibyte)"
+    )]
     pub characters_as_bytes: bool,
     /// `traditional` field.
-    #[arg(short = 'c', long = "traditional")]
+    #[arg(
+        short = 'c',
+        long = "traditional",
+        help = "\x1b[32m//\x1b[0m Traditional/POSIX awk compatibility mode"
+    )]
     pub traditional: bool,
     /// `copyright` field.
-    #[arg(short = 'C', long = "copyright")]
+    #[arg(
+        short = 'C',
+        long = "copyright",
+        help = "\x1b[32m//\x1b[0m Print copyright and exit"
+    )]
     pub copyright: bool,
 
     /// AOT-compile a BEGIN-only program to a native standalone executable at
     /// this path (Cranelift object linked against the awk runtime).
-    #[arg(long = "aot", value_name = "OUT")]
+    #[arg(
+        long = "aot",
+        value_name = "OUT",
+        help = "\x1b[32m//\x1b[0m AOT-compile a BEGIN-only program to native OUT"
+    )]
     pub aot: Option<PathBuf>,
 
     /// Dump variable state after execution (stdout, `-`, or a file path).
@@ -67,7 +88,8 @@ pub struct Args {
         long = "dump-variables",
         value_name = "FILE",
         num_args = 0..=1,
-        default_missing_value = ""
+        default_missing_value = "",
+        help = "\x1b[32m//\x1b[0m Dump final variable state (stdout, -, or FILE)"
     )]
     /// `dump_variables` field.
     pub dump_variables: Option<String>,
@@ -77,38 +99,68 @@ pub struct Args {
         long = "debug",
         value_name = "FILE",
         num_args = 0..=1,
-        default_missing_value = ""
+        default_missing_value = "",
+        help = "\x1b[32m//\x1b[0m List rules/functions for debugging (stderr or FILE)"
     )]
     /// `debug` field.
     pub debug: Option<String>,
     /// `exec_file` field.
-    #[arg(short = 'E', long = "exec", value_name = "FILE", value_hint = ValueHint::FilePath)]
+    #[arg(short = 'E', long = "exec", value_name = "FILE", value_hint = ValueHint::FilePath, help = "\x1b[32m//\x1b[0m Read program from FILE; remaining args are data")]
     pub exec_file: Option<PathBuf>,
     /// `gen_pot` field.
-    #[arg(short = 'g', long = "gen-pot")]
+    #[arg(
+        short = 'g',
+        long = "gen-pot",
+        help = "\x1b[32m//\x1b[0m Scan the program and emit a .pot translation stub"
+    )]
     pub gen_pot: bool,
     /// `trace` field.
-    #[arg(short = 'I', long = "trace")]
+    #[arg(
+        short = 'I',
+        long = "trace",
+        help = "\x1b[32m//\x1b[0m Trace opcode execution"
+    )]
     pub trace: bool,
 
     /// CSV mode (gawk-style): set `FS` to comma and `FPAT` for quoted fields (`""` escape).
-    #[arg(short = 'k', long = "csv")]
+    #[arg(
+        short = 'k',
+        long = "csv",
+        help = "\x1b[32m//\x1b[0m CSV mode: FS=comma with quoted-field FPAT"
+    )]
     pub csv: bool,
     /// `load` field.
-    #[arg(short = 'l', long = "load", value_name = "LIB", action = ArgAction::Append)]
+    #[arg(short = 'l', long = "load", value_name = "LIB", action = ArgAction::Append, help = "\x1b[32m//\x1b[0m Load extension LIB from AWKPATH (repeatable)")]
     pub load: Vec<String>,
     /// `lint` field.
-    #[arg(short = 'L', long = "lint", value_name = "fatal|invalid|no-ext")]
+    #[arg(
+        short = 'L',
+        long = "lint",
+        value_name = "fatal|invalid|no-ext",
+        help = "\x1b[32m//\x1b[0m Enable lint warnings (fatal|invalid|no-ext)"
+    )]
     pub lint: Option<String>,
     /// `bignum` field.
-    #[arg(short = 'M', long = "bignum")]
+    #[arg(
+        short = 'M',
+        long = "bignum",
+        help = "\x1b[32m//\x1b[0m Arbitrary-precision integer/float arithmetic"
+    )]
     pub bignum: bool,
 
     /// Apply `LC_NUMERIC` to `sprintf`/`printf`/`print` and `%'` grouping; `$n` / `$0` string→number still uses `.`.
-    #[arg(short = 'N', long = "use-lc-numeric")]
+    #[arg(
+        short = 'N',
+        long = "use-lc-numeric",
+        help = "\x1b[32m//\x1b[0m Honor LC_NUMERIC in printf/print formatting"
+    )]
     pub use_lc_numeric: bool,
     /// `non_decimal_data` field.
-    #[arg(short = 'n', long = "non-decimal-data")]
+    #[arg(
+        short = 'n',
+        long = "non-decimal-data",
+        help = "\x1b[32m//\x1b[0m Recognize octal/hex numbers in input data"
+    )]
     pub non_decimal_data: bool,
 
     /// Awk-like listing from the AST (awkrs format; not gawk `--pretty-print` output).
@@ -117,12 +169,17 @@ pub struct Args {
         long = "pretty-print",
         value_name = "FILE",
         num_args = 0..=1,
-        default_missing_value = ""
+        default_missing_value = "",
+        help = "\x1b[32m//\x1b[0m Emit an AST-derived program listing (stdout or FILE)"
     )]
     /// `pretty_print` field.
     pub pretty_print: Option<String>,
     /// `optimize` field.
-    #[arg(short = 'O', long = "optimize")]
+    #[arg(
+        short = 'O',
+        long = "optimize",
+        help = "\x1b[32m//\x1b[0m Enable optimizations (JIT on unless -s)"
+    )]
     pub optimize: bool,
 
     /// Wall-clock summary and per-record-rule hits (awkrs format; not gawk `--profile` output).
@@ -131,61 +188,94 @@ pub struct Args {
         long = "profile",
         value_name = "FILE",
         num_args = 0..=1,
-        default_missing_value = ""
+        default_missing_value = "",
+        help = "\x1b[32m//\x1b[0m Wall-clock and per-rule profile summary (stdout or FILE)"
     )]
     /// `profile` field.
     pub profile: Option<String>,
     /// `posix` field.
-    #[arg(short = 'P', long = "posix")]
+    #[arg(
+        short = 'P',
+        long = "posix",
+        help = "\x1b[32m//\x1b[0m Strict POSIX mode"
+    )]
     pub posix: bool,
 
     /// Accepted for script compatibility; no-op (`{m,n}` intervals are always enabled).
-    #[arg(short = 'r', long = "re-interval")]
+    #[arg(
+        short = 'r',
+        long = "re-interval",
+        help = "\x1b[32m//\x1b[0m Accept {m,n} interval regexes (always on; no-op)"
+    )]
     pub re_interval: bool,
     /// `no_optimize` field.
-    #[arg(short = 's', long = "no-optimize")]
+    #[arg(
+        short = 's',
+        long = "no-optimize",
+        help = "\x1b[32m//\x1b[0m Disable optimizations and the JIT"
+    )]
     pub no_optimize: bool,
     /// `sandbox` field.
-    #[arg(short = 'S', long = "sandbox")]
+    #[arg(
+        short = 'S',
+        long = "sandbox",
+        help = "\x1b[32m//\x1b[0m Sandbox: disable system() and file I/O extensions"
+    )]
     pub sandbox: bool,
     /// `lint_old` field.
-    #[arg(short = 't', long = "lint-old")]
+    #[arg(
+        short = 't',
+        long = "lint-old",
+        help = "\x1b[32m//\x1b[0m Warn about non-portable/obsolete constructs"
+    )]
     pub lint_old: bool,
 
     // --- mawk / BusyBox `-W` ---
     /// `mawk_w` field.
-    #[arg(short = 'W', value_name = "OPT", action = ArgAction::Append)]
+    #[arg(short = 'W', value_name = "OPT", action = ArgAction::Append, help = "\x1b[32m//\x1b[0m mawk -W option (help|version|dump|exec=FILE)")]
     pub mawk_w: Vec<String>,
 
     /// Threads for internal pools (default: 1).
-    #[arg(short = 'j', long = "threads", value_name = "N")]
+    #[arg(
+        short = 'j',
+        long = "threads",
+        value_name = "N",
+        help = "\x1b[32m//\x1b[0m Worker threads for parallel record mode (default 1)"
+    )]
     pub threads: Option<usize>,
 
     /// Stdin chunk size (lines per batch) when using **`-j`** parallel record mode without input files;
     /// each batch is processed in parallel and printed in order before the next batch is read.
-    #[arg(long = "read-ahead", default_value_t = 1024usize)]
+    #[arg(
+        long = "read-ahead",
+        default_value_t = 1024usize,
+        help = "\x1b[32m//\x1b[0m Stdin lines per parallel batch (default 1024)"
+    )]
     pub read_ahead: usize,
 
     /// Run as a Language Server (LSP over stdio) for editor integration (`awkrs --lsp`).
-    #[arg(long = "lsp", action = ArgAction::SetTrue)]
+    #[arg(long = "lsp", action = ArgAction::SetTrue, help = "\x1b[32m//\x1b[0m Run as an LSP server over stdio")]
     pub lsp: bool,
 
     /// Run as a Debug Adapter (DAP) for editor debuggers. `--dap` speaks DAP over
     /// stdio; `--dap HOST:PORT` connects to the given address (so the program's
     /// own stdout is left free — the mode IDE plugins use).
-    #[arg(long = "dap", num_args = 0..=1, default_missing_value = "", value_name = "HOST:PORT")]
+    #[arg(long = "dap", num_args = 0..=1, default_missing_value = "", value_name = "HOST:PORT", help = "\x1b[32m//\x1b[0m Run as a DAP debug adapter (stdio, or connect HOST:PORT)")]
     pub dap: Option<String>,
 
     /// Print help (cyberpunk HUD).
-    #[arg(short = 'h', long = "help", action = ArgAction::SetTrue)]
+    #[arg(short = 'h', long = "help", action = ArgAction::SetTrue, help = "\x1b[32m//\x1b[0m Print this help")]
     pub show_help: bool,
 
     /// Print version.
-    #[arg(short = 'V', long = "version", action = ArgAction::SetTrue)]
+    #[arg(short = 'V', long = "version", action = ArgAction::SetTrue, help = "\x1b[32m//\x1b[0m Print version and exit")]
     pub show_version: bool,
 
     /// Inline program and input files (use `--` before files if program starts with `-`).
-    #[arg(value_name = "program [file ...]")]
+    #[arg(
+        value_name = "program [file ...]",
+        help = "\x1b[32m//\x1b[0m awk program text, then input files"
+    )]
     pub rest: Vec<String>,
 }
 
