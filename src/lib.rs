@@ -9,6 +9,8 @@
 pub mod aot;
 mod ast;
 mod ast_fmt;
+/// AWKRS ASCII logo + live-stats banner (shared by the REPL and `--help`).
+pub mod banner;
 mod bignum;
 mod builtins;
 mod bytecode;
@@ -38,6 +40,8 @@ mod namespace;
 mod parser;
 mod procinfo;
 mod record_io;
+/// Interactive REPL (`awkrs --repl`, or the default on a bare terminal).
+pub mod repl;
 mod runtime;
 mod script_cache;
 mod source_expand;
@@ -162,6 +166,9 @@ pub fn run(bin_name: &str) -> Result<()> {
     if args.lsp {
         return crate::lsp::run_stdio();
     }
+    if args.repl {
+        return crate::repl::run(bin_name);
+    }
     if let Some(addr) = args.dap.clone() {
         // `--dap` (empty) = stdio mode; `--dap HOST:PORT` = TCP mode.
         let connect = if addr.is_empty() { None } else { Some(addr) };
@@ -177,7 +184,17 @@ pub fn run(bin_name: &str) -> Result<()> {
 
     crate::runtime::set_numeric_parse_mode(args.non_decimal_data);
 
-    let (program_text, files) = resolve_program_and_files(&args)?;
+    // No program and no files on an interactive terminal → drop into the REPL
+    // instead of erroring with "no program given".
+    let (program_text, files) = match resolve_program_and_files(&args) {
+        Ok(pf) => pf,
+        Err(Error::Parse { line: 1, msg })
+            if msg == "no program given" && std::io::IsTerminal::is_terminal(&std::io::stdin()) =>
+        {
+            return crate::repl::run(bin_name);
+        }
+        Err(e) => return Err(e),
+    };
 
     // AOT: compile a BEGIN-only program to a native standalone executable.
     if let Some(out) = &args.aot {

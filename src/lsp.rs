@@ -71,6 +71,24 @@ pub const AWK_KEYWORDS: &[&str] = &[
     "default",
 ];
 
+/// Merged completion vocabulary: AWK keywords + builtin functions + special
+/// globals, sorted and deduped into a flat bare-name list. Single source of
+/// truth shared by the LSP completion path ([`completions`]) and the
+/// interactive REPL ([`crate::repl`]) so both surfaces offer the identical
+/// word set. Does not include user-defined function names — those are added by
+/// each caller from the live buffer / session.
+pub fn completion_words() -> Vec<String> {
+    let mut v: Vec<String> = AWK_KEYWORDS
+        .iter()
+        .chain(BUILTIN_NAMES.iter())
+        .chain(SPECIAL_GLOBAL_NAMES.iter())
+        .map(|s| (*s).to_string())
+        .collect();
+    v.sort();
+    v.dedup();
+    v
+}
+
 /// Open-document store: uri string → full buffer text (FULL text sync).
 type Docs = HashMap<String, String>;
 
@@ -293,6 +311,12 @@ fn compute_diagnostics(text: &str) -> Vec<Diagnostic> {
 
 // ─────────────────────────── completion ───────────────────────────
 
+// Items are built from the same three source arrays that
+// [`completion_words`] unions — `AWK_KEYWORDS`, `BUILTIN_NAMES`,
+// `SPECIAL_GLOBAL_NAMES` — so the LSP and REPL vocabularies never drift.
+// The LSP path keeps each item's `CompletionItemKind` + signature/doc detail
+// (and the per-source ordering + `printf` keyword/builtin overlap), which the
+// flat REPL word list intentionally drops.
 fn completions(docs: &Docs, params: CompletionParams) -> CompletionResponse {
     let uri = uri_key(&params.text_document_position.text_document.uri);
     let mut items: Vec<CompletionItem> = Vec::new();
@@ -998,6 +1022,29 @@ mod tests {
             2,
             "should match the two standalone `x`, not `xx`"
         );
+    }
+
+    #[test]
+    fn completion_words_union_is_sorted_deduped_and_covers_sources() {
+        let words = completion_words();
+        // Sorted + deduped.
+        assert!(
+            words.windows(2).all(|w| w[0] < w[1]),
+            "must be strictly sorted"
+        );
+        // Every source name is present.
+        for kw in AWK_KEYWORDS {
+            assert!(words.iter().any(|w| w == kw), "missing keyword {kw}");
+        }
+        for b in BUILTIN_NAMES {
+            assert!(words.iter().any(|w| w == b), "missing builtin {b}");
+        }
+        for v in SPECIAL_GLOBAL_NAMES {
+            assert!(words.iter().any(|w| w == v), "missing special {v}");
+        }
+        // `printf` appears in both AWK_KEYWORDS and BUILTIN_NAMES but must be
+        // deduped to a single flat entry.
+        assert_eq!(words.iter().filter(|w| *w == "printf").count(), 1);
     }
 
     #[test]

@@ -113,6 +113,25 @@ fpath=(/path/to/awkrs/completions $fpath)
 autoload -Uz compinit && compinit
 ```
 
+**Interactive REPL:**
+
+```sh
+awkrs --repl        # launch the reedline REPL (live banner, Tab completion, history)
+awkrs               # same REPL when run with no program on a terminal
+```
+
+The REPL runs each line through the awk engine. A bare expression prints its
+value (`1 + 2` → `3`, `substr("abcdef", 2, 3)` → `bcd`); a bare statement runs
+(`print "hi"`, `for (i=0;i<3;i++) print i`); a complete rule with an action
+block or `BEGIN`/`END` runs as typed against empty input (`{ print $1 }`,
+`BEGIN { print 6*7 }`); and a `function name(...) { … }` definition persists for
+the session so later lines (e.g. `BEGIN { print f(x) }`) can call it. Tab
+completes awk keywords, builtins, special variables, and
+functions you have defined. History lives in `~/.awkrs/history`; edit mode
+(emacs/vi) comes from `~/.awkrs/config.toml` or `AWKRS_REPL_MODE` (set
+`AWKRS_NO_CONFIG=1` to skip touching the home dir). Leave with `exit`, `quit`,
+or Ctrl-D.
+
 ---
 
 ## [0x03] LANGUAGE COVERAGE

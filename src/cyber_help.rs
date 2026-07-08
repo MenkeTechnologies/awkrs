@@ -79,13 +79,9 @@ fn c_dim(s: &str) -> String {
 }
 
 fn awkrs_logo() -> String {
-    let art = r" █████╗ ██╗    ██╗██╗  ██╗██████╗ ███████╗
-██╔══██╗██║    ██║██║ ██╔╝██╔══██╗██╔════╝
-███████║██║ █╗ ██║█████╔╝ ██████╔╝███████╗
-██╔══██║██║███╗██║██╔═██╗ ██╔══██╗╚════██║
-██║  ██║╚███╔███╔╝██║  ██╗██║  ██║███████║
-╚═╝  ╚═╝ ╚══╝╚══╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝";
-    c_cyan(art)
+    // Glyphs live in `crate::banner` (single source of truth shared with the
+    // REPL startup banner) — no duplicated ASCII art here.
+    c_cyan(crate::banner::AWKRS_LOGO)
 }
 
 fn status_box(version: &str) -> String {
@@ -172,6 +168,11 @@ pub fn print_cyberpunk_help(bin_name: &str) {
         c_dim(
             "Pattern-directed scanning: union CLI (POSIX / gawk / mawk-style). Sequential engine."
         )
+    );
+    let _ = writeln!(
+        out,
+        "{}",
+        c_dim("Modes: --repl (interactive REPL; also the default on a bare terminal) // --lsp // --dap")
     );
     let _ = writeln!(out);
 

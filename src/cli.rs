@@ -253,6 +253,12 @@ pub struct Args {
     )]
     pub read_ahead: usize,
 
+    /// Launch the interactive REPL (reedline line editor over the awk engine).
+    /// Also the default when awkrs is run with no program and no files on a
+    /// terminal (`awkrs --repl`).
+    #[arg(long = "repl", action = ArgAction::SetTrue, help = "\x1b[32m//\x1b[0m Launch the interactive REPL")]
+    pub repl: bool,
+
     /// Run as a Language Server (LSP over stdio) for editor integration (`awkrs --lsp`).
     #[arg(long = "lsp", action = ArgAction::SetTrue, help = "\x1b[32m//\x1b[0m Run as an LSP server over stdio")]
     pub lsp: bool,

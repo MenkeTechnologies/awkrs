@@ -219,6 +219,36 @@ parallel mode without input files. Each batch is processed in parallel and
 printed in order before the next batch is read. Default
 .BR 1024 .
 .TP
+.BR \-\-repl
+Launch the interactive REPL (a
+.B reedline
+line editor over the awk engine, with a live banner, Tab completion, and
+history in
+.IR ~/.awkrs/history ).
+This is also the default when
+.B awkrs
+is run with no program and no input files on a terminal.
+A bare expression prints its value
+.RB ( "1 + 2"
+yields
+.BR 3 );
+a bare statement runs
+.RB ( print " " \(dq hi \(dq );
+a complete rule with an action block or
+.BR BEGIN / END
+runs as typed against empty input; and a
+.B function
+definition persists for the session so later lines can call it. Edit mode
+.RB ( emacs / vi )
+comes from
+.I ~/.awkrs/config.toml
+or the
+.B AWKRS_REPL_MODE
+environment variable;
+.B AWKRS_NO_CONFIG=1
+skips writing to the home directory. Leave with
+.BR exit ", " quit ", or Ctrl-D."
+.TP
 .BR \-h ", " \-\-help
 Print the cyberpunk HUD help and exit.
 .TP
