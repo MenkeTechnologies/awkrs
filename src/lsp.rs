@@ -73,7 +73,7 @@ pub const AWK_KEYWORDS: &[&str] = &[
 
 /// Merged completion vocabulary: AWK keywords + builtin functions + special
 /// globals, sorted and deduped into a flat bare-name list. Single source of
-/// truth shared by the LSP completion path ([`completions`]) and the
+/// truth shared by the LSP completion path (`completions`) and the
 /// interactive REPL ([`crate::repl`]) so both surfaces offer the identical
 /// word set. Does not include user-defined function names — those are added by
 /// each caller from the live buffer / session.
