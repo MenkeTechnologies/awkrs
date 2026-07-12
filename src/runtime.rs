@@ -2563,10 +2563,10 @@ impl Runtime {
     /// Flush every open output handle (files via `>` / `>>` and pipes via `|`),
     /// best-effort — used by `system()` to interleave subprocess output correctly.
     pub fn flush_all_output_handles(&mut self) {
-        for (_, w) in self.output_handles.iter_mut() {
+        for w in self.output_handles.values_mut() {
             let _ = w.flush();
         }
-        for (_, w) in self.pipe_stdin.iter_mut() {
+        for w in self.pipe_stdin.values_mut() {
             let _ = w.flush();
         }
     }

@@ -105,7 +105,13 @@ fn spawn_orphan_guard() {
         #[cfg(target_os = "linux")]
         // SAFETY: prctl(PR_SET_PDEATHSIG, ...) only registers a signal disposition.
         unsafe {
-            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL as libc::c_ulong, 0, 0, 0);
+            libc::prctl(
+                libc::PR_SET_PDEATHSIG,
+                libc::SIGKILL as libc::c_ulong,
+                0,
+                0,
+                0,
+            );
         }
         loop {
             std::thread::sleep(std::time::Duration::from_secs(2));
@@ -391,10 +397,9 @@ fn hover(docs: &Docs, params: HoverParams) -> Option<Hover> {
         format!("```awk\n{sig}\n```\n\n{doc}")
     } else if let Some(doc) = special_doc(&word) {
         format!("**`{word}`** — special variable\n\n{doc}")
-    } else if let Some(doc) = keyword_doc(&word) {
-        format!("**`{word}`** — keyword\n\n{doc}")
     } else {
-        return None;
+        let doc = keyword_doc(&word)?;
+        format!("**`{word}`** — keyword\n\n{doc}")
     };
 
     Some(Hover {
