@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="awkrs — fast AWK in Rust. 96-opcode bytecode VM, Cranelift JIT, rkyv-cached compiled scripts, parallel records, 3,792 tests, 2,116 parity files vs gawk/mawk/BSD awk.">
+  <meta name="description" content="awkrs — fast AWK in Rust. 96-opcode bytecode VM, Cranelift JIT, rkyv-cached compiled scripts, parallel records, 3,811 tests, 2,116 parity files vs gawk/mawk/BSD awk.">
   <title>awkrs — Documentation</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -287,7 +287,7 @@ aw '/error/i { print FILENAME ":" NR ":" $0 }' *.log</pre>
 
       <section class="tutorial-section">
         <h2>Built-in Functions</h2>
-        <p>The 63 builtin names are pinned in <code>src/namespace.rs</code> (<code>BUILTIN_NAMES</code>) and are exempt from <code>@namespace</code> prefixing.</p>
+        <p>The 61 builtin names are pinned in <code>src/namespace.rs</code> (<code>BUILTIN_NAMES</code>) and are exempt from <code>@namespace</code> prefixing.</p>
         <div class="cat-grid">
           <div class="cat-card"><h4>String</h4><p><code>length substr index split sprintf tolower toupper</code></p></div>
           <div class="cat-card"><h4>Regex / substitution</h4><p><code>gsub sub match gensub patsplit</code> — <code>gensub</code> expands <code>\N</code> capture-group backrefs</p></div>
