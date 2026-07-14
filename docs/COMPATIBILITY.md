@@ -141,6 +141,7 @@ Columns: **P** = POSIX / universal core, **B** = BSD awk, **M** = mawk, **G** = 
 | `revoutput` `revtwoway` `rename` | — | — | — | Ext | **Match** |
 | `inplace_tmpfile` `inplace_commit` | — | — | — | Ext | **Match** |
 | `writea` `reada` | — | — | — | Ext | **Match** |
+| `intercept` `intercept_proceed` `intercept_list` `intercept_remove` `intercept_clear` | — | — | — | — | **awkrs-only** — aspect-oriented before/after/around advice on user-function calls (ported from `zshrs`; no POSIX/gawk counterpart). See §0x03 of the README. |
 
 ¹ `strtonum` appears in POSIX awk revision used by gawk; older texts omit it.
 

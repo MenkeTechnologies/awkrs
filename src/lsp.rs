@@ -909,6 +909,26 @@ pub fn builtin_signature(name: &str) -> Option<(&'static str, &'static str)> {
         ),
         "chr" => ("chr(n)", "Character for code point `n`."),
         "ord" => ("ord(s)", "Code point of the first character of `s`."),
+        "intercept" => (
+            "intercept(kind, pattern, code)",
+            "Register AOP advice (`kind`: \"before\"/\"after\"/\"around\") on user-function calls matching `pattern`; returns the ID (awkrs extension).",
+        ),
+        "intercept_list" => (
+            "intercept_list()",
+            "List registered intercepts (to stderr); returns the count (awkrs extension).",
+        ),
+        "intercept_remove" => (
+            "intercept_remove(id)",
+            "Remove the intercept with `id`; returns 1 if removed, else 0 (awkrs extension).",
+        ),
+        "intercept_clear" => (
+            "intercept_clear()",
+            "Remove all intercepts; returns the number cleared (awkrs extension).",
+        ),
+        "intercept_proceed" => (
+            "intercept_proceed()",
+            "From around advice: run the original function and return its value (awkrs extension).",
+        ),
         _ => return None,
     };
     Some(v)

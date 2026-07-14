@@ -29,6 +29,10 @@ mod fusevm_compile;
 mod fusevm_host;
 mod gawk_extensions;
 mod gettext_util;
+/// Function-call AOP intercepts (before/after/around advice) — awkrs/zshrs-original
+/// extension; no POSIX awk counterpart. Types + pattern matcher live here; the VM
+/// wiring is in [`crate::vm`], the builtins in `vm_builtins`.
+pub mod intercepts;
 mod lexer;
 mod limits;
 mod locale_numeric;

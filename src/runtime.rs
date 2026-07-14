@@ -1252,6 +1252,15 @@ pub struct Runtime {
     pub sorted_in_warned: Cell<bool>,
     /// Last OS errno from [`Self::set_errno_io`] (gawk **`PROCINFO["errno"]`** numeric mirror).
     pub errno_code: i32,
+    /// Registered AOP function-call intercepts (before/after/around advice).
+    /// awkrs/zshrs-original extension; see [`crate::intercepts`]. Cloned into
+    /// parallel record workers (cheap `Arc` refcount bumps) so advice fires
+    /// regardless of which worker runs the intercepted call.
+    pub intercepts: Vec<crate::intercepts::Intercept>,
+    /// Live AOP call stack — pushed while an intercept set is firing so
+    /// `intercept_proceed()` (from *around* advice) can reach the original
+    /// function name + argument values. Fresh (empty) in every clone.
+    pub intercept_call_stack: Vec<crate::intercepts::InterceptCall>,
     /// Unix: raw fd for [`libc::poll`] before reads on the primary input stream (stdin or first file).
     #[cfg(unix)]
     pub primary_input_poll_fd: Option<std::os::unix::io::RawFd>,
@@ -1427,6 +1436,8 @@ impl Runtime {
             profile_record_hits: Vec::new(),
             sorted_in_warned: Cell::new(false),
             errno_code: 0,
+            intercepts: Vec::new(),
+            intercept_call_stack: Vec::new(),
             #[cfg(unix)]
             primary_input_poll_fd: None,
         }
@@ -1861,6 +1872,8 @@ impl Runtime {
             profile_record_hits: Vec::new(),
             sorted_in_warned: Cell::new(false),
             errno_code: 0,
+            intercepts: Vec::new(),
+            intercept_call_stack: Vec::new(),
             #[cfg(unix)]
             primary_input_poll_fd: None,
         }
@@ -3584,6 +3597,10 @@ impl Clone for Runtime {
             profile_record_hits: Vec::new(),
             sorted_in_warned: Cell::new(self.sorted_in_warned.get()),
             errno_code: self.errno_code,
+            // Advice set carries into parallel workers (cheap Arc clones); the
+            // live AOP call stack is per-execution, so start each clone empty.
+            intercepts: self.intercepts.clone(),
+            intercept_call_stack: Vec::new(),
             #[cfg(unix)]
             primary_input_poll_fd: self.primary_input_poll_fd,
         }

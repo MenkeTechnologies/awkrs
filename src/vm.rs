@@ -2803,10 +2803,192 @@ fn exec_sub(ctx: &mut VmCtx<'_>, target: SubTarget, is_global: bool) -> Result<(
 mod vm_builtins;
 use vm_builtins::{exec_call_builtin, exec_call_user_inner, sort_keys_with_custom_cmp};
 
+/// Pop the AOP call frame and unset the `INTERCEPT_*` / `__intercept_proceed`
+/// context globals. Runs on every exit path of [`run_user_intercepts`].
+fn intercept_cleanup(ctx: &mut VmCtx<'_>) {
+    ctx.rt.intercept_call_stack.pop();
+    for k in [
+        "INTERCEPT_NAME",
+        "INTERCEPT_ARGS",
+        "INTERCEPT_CMD",
+        "INTERCEPT_MS",
+        "INTERCEPT_US",
+        "__intercept_proceed",
+    ] {
+        ctx.rt.vars.remove(k);
+    }
+}
+
+/// Fire AOP intercepts for a user-function call. Ported from zshrs
+/// `run_intercepts`, adapted to awk's value-returning function join point.
+///
+/// Returns `Ok(None)` when nothing matched, or only *before* advice matched (the
+/// original then runs via normal dispatch). Returns `Ok(Some(value))` when an
+/// *around* advice handled the call (its `intercept_proceed()` result, or `Uninit`
+/// if it suppressed the original) or when *after* advice required us to run the
+/// original ourselves. `INTERCEPT_NAME`/`INTERCEPT_ARGS`/`INTERCEPT_CMD` are exposed
+/// to advice for the whole span; `INTERCEPT_MS`/`INTERCEPT_US` are set before *after*
+/// advice runs. awkrs/zshrs-original extension.
+fn run_user_intercepts(
+    ctx: &mut VmCtx<'_>,
+    name: &str,
+    args: &[Value],
+) -> Result<Option<Value>> {
+    use crate::intercepts::{intercept_matches, AdviceKind, InterceptCall};
+
+    let args_joined = args
+        .iter()
+        .map(|v| v.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let full = if args_joined.is_empty() {
+        name.to_string()
+    } else {
+        format!("{name} {args_joined}")
+    };
+
+    // Clone the matching intercepts (cheap: `Arc` program refcount bumps) so the
+    // live `rt.intercepts` stays intact — a function called from inside advice
+    // still sees its own intercepts (re-entrancy).
+    let matching: Vec<crate::intercepts::Intercept> = ctx
+        .rt
+        .intercepts
+        .iter()
+        .filter(|i| intercept_matches(&i.pattern, name, &full))
+        .cloned()
+        .collect();
+    if matching.is_empty() {
+        return Ok(None);
+    }
+
+    // Expose AOP context to advice (HashMap-backed via SPECIAL_VARS).
+    ctx.rt
+        .vars
+        .insert("INTERCEPT_NAME".into(), Value::Str(name.to_string()));
+    ctx.rt
+        .vars
+        .insert("INTERCEPT_ARGS".into(), Value::Str(args_joined));
+    ctx.rt
+        .vars
+        .insert("INTERCEPT_CMD".into(), Value::Str(full));
+
+    ctx.rt.intercept_call_stack.push(InterceptCall {
+        name: name.to_string(),
+        args: args.to_vec(),
+        proceeded: false,
+        result: Value::Uninit,
+    });
+
+    // Before advice always runs.
+    for adv in matching.iter().filter(|i| matches!(i.kind, AdviceKind::Before)) {
+        if let Err(e) = run_advice_program(ctx, &adv.program) {
+            intercept_cleanup(ctx);
+            return Err(e);
+        }
+    }
+
+    let around = matching.iter().find(|i| matches!(i.kind, AdviceKind::Around));
+    let has_after = matching.iter().any(|i| matches!(i.kind, AdviceKind::After));
+
+    let t0 = std::time::Instant::now();
+    let final_value = if let Some(adv) = around {
+        // Around: run advice; it calls `intercept_proceed()` to run the original.
+        ctx.rt
+            .vars
+            .insert("__intercept_proceed".into(), Value::Str("0".into()));
+        if let Err(e) = run_advice_program(ctx, &adv.program) {
+            intercept_cleanup(ctx);
+            return Err(e);
+        }
+        // The original's result was captured on the AOP frame by
+        // `intercept_proceed`; `Uninit` (awk empty) if the advice suppressed it.
+        ctx.rt
+            .intercept_call_stack
+            .last()
+            .map(|c| c.result.clone())
+            .unwrap_or(Value::Uninit)
+    } else if has_after {
+        // No around, but after advice needs the original run first.
+        match exec_call_user_inner(ctx, name, args.to_vec()) {
+            Ok(v) => v,
+            Err(e) => {
+                intercept_cleanup(ctx);
+                return Err(e);
+            }
+        }
+    } else {
+        // Only before advice fired — let normal dispatch run the original.
+        intercept_cleanup(ctx);
+        return Ok(None);
+    };
+    let elapsed = t0.elapsed();
+
+    let ms = elapsed.as_secs_f64() * 1000.0;
+    ctx.rt
+        .vars
+        .insert("INTERCEPT_MS".into(), Value::Str(format!("{ms:.3}")));
+    ctx.rt.vars.insert(
+        "INTERCEPT_US".into(),
+        Value::Str(format!("{:.0}", ms * 1000.0)),
+    );
+
+    for adv in matching.iter().filter(|i| matches!(i.kind, AdviceKind::After)) {
+        if let Err(e) = run_advice_program(ctx, &adv.program) {
+            intercept_cleanup(ctx);
+            return Err(e);
+        }
+    }
+
+    intercept_cleanup(ctx);
+    Ok(Some(final_value))
+}
+
+/// Execute a compiled advice program's `BEGIN` chunk(s) against the live runtime,
+/// in a fresh sub-context (global scope — advice is not inside the join point's
+/// call frame). No fork. Ported alongside zshrs `execute_advice`.
+fn run_advice_program(ctx: &mut VmCtx<'_>, prog: &CompiledProgram) -> Result<()> {
+    // The advice program's slot map extends the base program's; make sure the
+    // shared `slots` Vec covers any advice-only scalars.
+    if ctx.rt.slots.len() < prog.slot_count as usize {
+        ctx.rt.slots.resize(prog.slot_count as usize, Value::Uninit);
+    }
+    let mut sub = VmCtx::new(prog, &mut *ctx.rt);
+    let mut result = Ok(());
+    for chunk in &prog.begin_chunks {
+        match execute(chunk, &mut sub) {
+            Ok(VmSignal::Normal) | Ok(VmSignal::Return(_)) => {}
+            Ok(VmSignal::Next) | Ok(VmSignal::NextFile) => {
+                // `next`/`nextfile` are meaningless in advice; ignore.
+            }
+            Ok(VmSignal::ExitPending) => {
+                let code = sub.rt.exit_code;
+                result = Err(Error::Exit(code));
+                break;
+            }
+            Err(e) => {
+                result = Err(e);
+                break;
+            }
+        }
+    }
+    sub.recycle();
+    result
+}
+
 fn exec_call_user(ctx: &mut VmCtx<'_>, name: &str, argc: u16) -> Result<()> {
     let argc = argc as usize;
     let start = ctx.stack.len() - argc;
     let vals: Vec<Value> = ctx.stack.drain(start..).collect();
+    // AOP join point: fire before/after/around advice registered for this
+    // function. `Some` means an around advice (or the after-advice path) fully
+    // handled the call; `None` falls through to normal dispatch (matches the
+    // zshrs `run_intercepts` contract).
+    if !ctx.rt.intercepts.is_empty() {
+        if let Some(v) = run_user_intercepts(ctx, name, &vals)? {
+            ctx.push(v);
+            return Ok(());
+        }
+    }
     let result = exec_call_user_inner(ctx, name, vals)?;
     ctx.push(result);
     Ok(())
@@ -2826,6 +3008,16 @@ fn exec_call_user_bind_arrays(ctx: &mut VmCtx<'_>, name: &str, argc: u16) -> Res
     let mut all: Vec<Value> = ctx.stack.drain(start..).collect();
     let vals: Vec<Value> = all.split_off(argc);
     let names: Vec<String> = all.into_iter().map(|v| v.into_string()).collect();
+
+    // AOP join point (same as `exec_call_user`). When advice fully handles the
+    // call, array-by-reference write-back is skipped — the advice controls the
+    // invocation. The common scalar-argument path is unaffected.
+    if !ctx.rt.intercepts.is_empty() {
+        if let Some(v) = run_user_intercepts(ctx, name, &vals)? {
+            ctx.push(v);
+            return Ok(());
+        }
+    }
 
     let param_names: Vec<String> = ctx
         .cp

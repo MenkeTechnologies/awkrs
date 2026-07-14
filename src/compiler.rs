@@ -36,6 +36,15 @@ const SPECIAL_VARS: &[&str] = &[
     "BINMODE",
     "LINT",
     "TEXTDOMAIN",
+    // AOP intercept context (awkrs/zshrs-original extension). Kept off the slot
+    // system so the VM and dynamically-compiled advice programs share one
+    // HashMap-backed storage for them regardless of slot layout differences.
+    "INTERCEPT_NAME",
+    "INTERCEPT_ARGS",
+    "INTERCEPT_CMD",
+    "INTERCEPT_MS",
+    "INTERCEPT_US",
+    "__intercept_proceed",
 ];
 
 fn flatten_print_args(e: &Expr) -> Vec<&Expr> {
@@ -165,6 +174,81 @@ impl Compiler {
             array_var_names,
             parallel_safe,
             prog_rules_len,
+        })
+    }
+
+    /// Compile a fragment of awk source as AOP *advice* against a `base` program
+    /// (the running program the intercept was registered from).
+    ///
+    /// The advice runs in the live interpreter and must share `base`'s world:
+    ///   - **strings** are seeded from `base.strings` (same indices, advice's own
+    ///     literals appended) so `base`'s function bodies still resolve, and
+    ///   - **slots** are seeded from `base.slot_map`/`slot_count` (same indices,
+    ///     new advice-only scalars appended) so a global scalar read/written in
+    ///     advice hits the same `Runtime::slots` cell the main program uses, and
+    ///   - **functions** are copied from `base` so advice — and `intercept_proceed()`
+    ///     — can call the original and any other user function, and
+    ///   - **array names** carry over so advice treats them as arrays, not slots.
+    ///
+    /// The advice body is compiled as the single `BEGIN` chunk of the returned
+    /// program and executed by the VM's `run_advice_program`. awkrs/zshrs-original
+    /// extension — no POSIX awk counterpart.
+    pub fn compile_advice(code: &str, base: &CompiledProgram) -> Result<CompiledProgram> {
+        let src = format!("BEGIN {{ {code}\n}}");
+        let prog = crate::parser::parse_program(&src)
+            .map_err(|e| Error::Runtime(format!("intercept advice: {e}")))?;
+        validate_program(&prog)?;
+
+        let mut array_names = collect_array_names(&prog);
+        for a in &base.array_var_names {
+            array_names.insert(a.clone());
+        }
+
+        let mut c = Compiler {
+            strings: base.strings.clone(),
+            structural_stack: Vec::new(),
+            var_slots: base.slot_map.clone(),
+            next_slot: base.slot_count,
+            array_names,
+            current_func_params: HashSet::new(),
+            // Let calls to the base program's functions compile as user calls.
+            user_funcs: base.functions.keys().cloned().collect(),
+        };
+
+        let mut begin_chunks = Vec::new();
+        for rule in &prog.rules {
+            if let Pattern::Begin = &rule.pattern {
+                begin_chunks.push(c.compile_chunk(&rule.stmts));
+            }
+        }
+
+        let slot_count = c.next_slot;
+        let mut slot_names = vec![String::new(); slot_count as usize];
+        let mut slot_map = HashMap::new();
+        for (name, &idx) in &c.var_slots {
+            slot_names[idx as usize] = name.clone();
+            slot_map.insert(name.clone(), idx);
+        }
+
+        let mut array_var_names: Vec<String> = c.array_names.iter().cloned().collect();
+        array_var_names.sort();
+
+        Ok(CompiledProgram {
+            begin_chunks,
+            end_chunks: Vec::new(),
+            beginfile_chunks: Vec::new(),
+            endfile_chunks: Vec::new(),
+            record_rules: Vec::new(),
+            // Share the base program's functions so advice / intercept_proceed can
+            // call the original; their bodies index the seeded string pool.
+            functions: base.functions.clone(),
+            strings: c.strings,
+            slot_count,
+            slot_names,
+            slot_map,
+            array_var_names,
+            parallel_safe: false,
+            prog_rules_len: 0,
         })
     }
 

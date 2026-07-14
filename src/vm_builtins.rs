@@ -810,6 +810,110 @@ pub(crate) fn exec_builtin_dispatch(
             };
             crate::gawk_extensions::getlocaltime(ctx.rt, &arr_name, ts)?
         }
+        // ── AOP function-call intercepts (awkrs/zshrs-original extension) ──────
+        "intercept" => {
+            // intercept("before"|"after"|"around", pattern, code) — register
+            // advice; returns the new intercept ID.
+            if argc != 3 {
+                return Err(Error::Runtime(format!(
+                    "{argc} is invalid as number of arguments for intercept (want kind, pattern, code)"
+                )));
+            }
+            let kind_s = args[0].as_str();
+            let kind = match kind_s.as_str() {
+                "before" => crate::intercepts::AdviceKind::Before,
+                "after" => crate::intercepts::AdviceKind::After,
+                "around" => crate::intercepts::AdviceKind::Around,
+                other => {
+                    return Err(Error::Runtime(format!(
+                        "intercept: unknown advice kind `{other}` (want before|after|around)"
+                    )))
+                }
+            };
+            let pattern = args[1].as_str();
+            let code = args[2].as_str();
+            // Compile the advice against the running program so it shares live
+            // globals/arrays and can call the original via intercept_proceed().
+            let program = crate::compiler::Compiler::compile_advice(&code, ctx.cp)?;
+            let id = ctx.rt.intercepts.iter().map(|i| i.id).max().unwrap_or(0) + 1;
+            ctx.rt.intercepts.push(crate::intercepts::Intercept {
+                pattern,
+                kind,
+                code,
+                id,
+                program: std::sync::Arc::new(program),
+            });
+            Value::Num(id as f64)
+        }
+        "intercept_list" => {
+            // Diagnostic listing goes to stderr (awk stdout is the data stream);
+            // the return value is the count of registered intercepts.
+            if !ctx.rt.intercepts.is_empty() {
+                eprintln!("{:>4}  {:<8}  {:<20}  {}", "ID", "KIND", "PATTERN", "CODE");
+                for i in &ctx.rt.intercepts {
+                    let kind = match i.kind {
+                        crate::intercepts::AdviceKind::Before => "before",
+                        crate::intercepts::AdviceKind::After => "after",
+                        crate::intercepts::AdviceKind::Around => "around",
+                    };
+                    let code_preview: String = if i.code.chars().count() > 40 {
+                        let mut s: String = i.code.chars().take(37).collect();
+                        s.push_str("...");
+                        s
+                    } else {
+                        i.code.clone()
+                    };
+                    eprintln!(
+                        "{:>4}  {:<8}  {:<20}  {}",
+                        i.id, kind, i.pattern, code_preview
+                    );
+                }
+            }
+            Value::Num(ctx.rt.intercepts.len() as f64)
+        }
+        "intercept_remove" => {
+            if argc != 1 {
+                return Err(Error::Runtime(format!(
+                    "{argc} is invalid as number of arguments for intercept_remove (want id)"
+                )));
+            }
+            let id = args[0].as_number() as u32;
+            let before = ctx.rt.intercepts.len();
+            ctx.rt.intercepts.retain(|i| i.id != id);
+            Value::Num(if ctx.rt.intercepts.len() < before {
+                1.0
+            } else {
+                0.0
+            })
+        }
+        "intercept_clear" => {
+            let n = ctx.rt.intercepts.len();
+            ctx.rt.intercepts.clear();
+            Value::Num(n as f64)
+        }
+        "intercept_proceed" => {
+            // Called from around advice: run the original function with its real
+            // arguments and return its value. Bypasses the intercept check
+            // (`exec_call_user_inner` does not re-fire advice), so an around
+            // advice that unconditionally proceeds won't recurse on itself.
+            let (fname, fargs) = match ctx.rt.intercept_call_stack.last() {
+                Some(c) => (c.name.clone(), c.args.clone()),
+                None => {
+                    return Err(Error::Runtime(
+                        "intercept_proceed: called outside around advice".into(),
+                    ))
+                }
+            };
+            ctx.rt
+                .vars
+                .insert("__intercept_proceed".into(), Value::Str("1".into()));
+            let v = exec_call_user_inner(ctx, &fname, fargs)?;
+            if let Some(c) = ctx.rt.intercept_call_stack.last_mut() {
+                c.proceeded = true;
+                c.result = v.clone();
+            }
+            v
+        }
         _ => return Err(Error::Runtime(format!("unknown function `{name}`"))),
     };
     Ok(result)
