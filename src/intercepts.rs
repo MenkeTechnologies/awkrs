@@ -53,7 +53,7 @@ pub struct Intercept {
 
 /// Internal per-call AOP frame. Pushed when [`Intercept`]s fire for a call so that
 /// `intercept_proceed()` (invoked from *around* advice) can reach the original
-/// function name and its actual argument [`Value`]s. A stack for re-entrancy
+/// function name and its actual argument `Value`s. A stack for re-entrancy
 /// (an intercepted function called from inside advice).
 #[derive(Debug, Clone)]
 pub struct InterceptCall {
