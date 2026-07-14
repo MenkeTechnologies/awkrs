@@ -2829,11 +2829,7 @@ fn intercept_cleanup(ctx: &mut VmCtx<'_>) {
 /// original ourselves. `INTERCEPT_NAME`/`INTERCEPT_ARGS`/`INTERCEPT_CMD` are exposed
 /// to advice for the whole span; `INTERCEPT_MS`/`INTERCEPT_US` are set before *after*
 /// advice runs. awkrs/zshrs-original extension.
-fn run_user_intercepts(
-    ctx: &mut VmCtx<'_>,
-    name: &str,
-    args: &[Value],
-) -> Result<Option<Value>> {
+fn run_user_intercepts(ctx: &mut VmCtx<'_>, name: &str, args: &[Value]) -> Result<Option<Value>> {
     use crate::intercepts::{intercept_matches, AdviceKind, InterceptCall};
 
     let args_joined = args
@@ -2868,9 +2864,7 @@ fn run_user_intercepts(
     ctx.rt
         .vars
         .insert("INTERCEPT_ARGS".into(), Value::Str(args_joined));
-    ctx.rt
-        .vars
-        .insert("INTERCEPT_CMD".into(), Value::Str(full));
+    ctx.rt.vars.insert("INTERCEPT_CMD".into(), Value::Str(full));
 
     ctx.rt.intercept_call_stack.push(InterceptCall {
         name: name.to_string(),
@@ -2880,14 +2874,19 @@ fn run_user_intercepts(
     });
 
     // Before advice always runs.
-    for adv in matching.iter().filter(|i| matches!(i.kind, AdviceKind::Before)) {
+    for adv in matching
+        .iter()
+        .filter(|i| matches!(i.kind, AdviceKind::Before))
+    {
         if let Err(e) = run_advice_program(ctx, &adv.program) {
             intercept_cleanup(ctx);
             return Err(e);
         }
     }
 
-    let around = matching.iter().find(|i| matches!(i.kind, AdviceKind::Around));
+    let around = matching
+        .iter()
+        .find(|i| matches!(i.kind, AdviceKind::Around));
     let has_after = matching.iter().any(|i| matches!(i.kind, AdviceKind::After));
 
     let t0 = std::time::Instant::now();
@@ -2932,7 +2931,10 @@ fn run_user_intercepts(
         Value::Str(format!("{:.0}", ms * 1000.0)),
     );
 
-    for adv in matching.iter().filter(|i| matches!(i.kind, AdviceKind::After)) {
+    for adv in matching
+        .iter()
+        .filter(|i| matches!(i.kind, AdviceKind::After))
+    {
         if let Err(e) = run_advice_program(ctx, &adv.program) {
             intercept_cleanup(ctx);
             return Err(e);

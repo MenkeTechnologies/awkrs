@@ -849,7 +849,7 @@ pub(crate) fn exec_builtin_dispatch(
             // Diagnostic listing goes to stderr (awk stdout is the data stream);
             // the return value is the count of registered intercepts.
             if !ctx.rt.intercepts.is_empty() {
-                eprintln!("{:>4}  {:<8}  {:<20}  {}", "ID", "KIND", "PATTERN", "CODE");
+                eprintln!("{:>4}  {:<8}  {:<20}  CODE", "ID", "KIND", "PATTERN");
                 for i in &ctx.rt.intercepts {
                     let kind = match i.kind {
                         crate::intercepts::AdviceKind::Before => "before",

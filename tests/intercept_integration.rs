@@ -190,10 +190,7 @@ fn nested_interception_fires_for_inner_calls() {
 
 #[test]
 fn proceed_outside_around_is_a_runtime_error() {
-    let (c, _, e) = run_awkrs_stdin(
-        r#"BEGIN { intercept_proceed() }"#,
-        "",
-    );
+    let (c, _, e) = run_awkrs_stdin(r#"BEGIN { intercept_proceed() }"#, "");
     assert_ne!(c, 0);
     assert!(
         e.contains("intercept_proceed"),
