@@ -24,7 +24,7 @@
  │ STATUS: ONLINE &nbsp;&nbsp; THREAT LEVEL: NEON &nbsp;&nbsp; SIGNAL: ████████░░ │
  └──────────────────────────────────────────────────────────────┘
 
-### [`Read the Docs`](https://menketechnologies.github.io/awkrs/) &middot; [`Engineering Report`](https://menketechnologies.github.io/awkrs/report.html) · [`strykelang`](https://github.com/MenkeTechnologies/strykelang) · [`zshrs`](https://github.com/MenkeTechnologies/zshrs) · [`fusevm`](https://github.com/MenkeTechnologies/fusevm)
+### [`Read the Docs`](https://menketechnologies.github.io/awkrs/) &middot; [`Engineering Report`](https://menketechnologies.github.io/awkrs/report.html) &middot; [`Builtin Reference`](https://menketechnologies.github.io/awkrs/reference.html) · [`strykelang`](https://github.com/MenkeTechnologies/strykelang) · [`zshrs`](https://github.com/MenkeTechnologies/zshrs) · [`fusevm`](https://github.com/MenkeTechnologies/fusevm)
 
 ---
 
@@ -496,6 +496,7 @@ Coverage spans library unit tests for every module (lexer, parser, format, built
 | Doc | Source | Live URL |
 |---|---|---|
 | User reference (quickstart, builtins, variables, examples, cache + parallel notes) | [`docs/index.html`](docs/index.html) | <https://menketechnologies.github.io/awkrs/> |
+| Builtin reference (every builtin, variable, and operator — generated from `src/lsp.rs`) | [`docs/reference.html`](docs/reference.html) | <https://menketechnologies.github.io/awkrs/reference.html> |
 | Engineering report (architecture, module table, perf stack, divergence ledger, competitive matrix) | [`docs/report.html`](docs/report.html) | <https://menketechnologies.github.io/awkrs/report.html> |
 | Compatibility matrix vs BSD awk / mawk / gawk | [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md) | renders on GitHub |
 | Benchmarks vs BSD awk / mawk / gawk (hyperfine, 1 M lines) | [`benchmarks/benchmark-results.md`](benchmarks/benchmark-results.md) | renders on GitHub |
