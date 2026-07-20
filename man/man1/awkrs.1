@@ -249,6 +249,31 @@ environment variable;
 skips writing to the home directory. Leave with
 .BR exit ", " quit ", or Ctrl-D."
 .TP
+.BR \-\-dump\-tokens
+Print the lexer token stream for the program (after
+.B rust { }
+desugaring), one
+.RI < line >< tab >< token >
+per line, then exit without reading input.
+.TP
+.BR \-\-dump\-ast
+Print the parsed awk abstract syntax tree for the program and exit without
+reading input.
+.TP
+.BR \-\-dump\-bytecode
+Print the compiled fusevm bytecode ops for every chunk
+.RB ( BEGIN ,
+per\-record rules, and
+.BR END )
+and exit without reading input. Constructs the fusevm backend does not yet
+support produce a compile error.
+.TP
+.BR \-\-disasm
+Print a fusevm bytecode disassembly listing for every compiled chunk (via the
+shared
+.B fusevm::Chunk::disassemble )
+and exit without reading input.
+.TP
 .BR \-h ", " \-\-help
 Print the cyberpunk HUD help and exit.
 .TP

@@ -212,6 +212,9 @@ pub fn run(bin_name: &str) -> Result<()> {
     if args.dump_ast {
         return dump_ast(&program_text);
     }
+    if args.dump_bytecode {
+        return dump_bytecode(&program_text);
+    }
     if args.disasm {
         return disasm(&program_text);
     }
@@ -505,6 +508,15 @@ fn dump_tokens(program_text: &str) -> Result<()> {
 fn dump_ast(program_text: &str) -> Result<()> {
     let prog = parse_program(program_text)?;
     println!("{prog:#?}");
+    Ok(())
+}
+
+/// `--dump-bytecode`: print the compiled fusevm bytecode ops for every chunk
+/// (`BEGIN` / record rules / `END`). Uses the fusevm backend (`fusevm_compile`);
+/// constructs it doesn't yet support produce a compile error.
+fn dump_bytecode(program_text: &str) -> Result<()> {
+    let prog = parse_program(program_text)?;
+    print!("{}", crate::fusevm_compile::dump_bytecode_program(&prog)?);
     Ok(())
 }
 

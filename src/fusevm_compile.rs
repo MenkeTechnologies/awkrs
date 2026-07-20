@@ -994,6 +994,25 @@ pub(crate) fn compile_program_native(prog: &Program) -> Result<NativeProgram> {
     })
 }
 
+/// Dump a whole program's raw fusevm bytecode ops: every `BEGIN` block,
+/// per-record rule, and `END` block as a labelled section, each rendered as the
+/// pretty-printed `Vec<fusevm::Op>` (`{:#?}`). Returns an `Err` (prefixed
+/// `fusevm_compile:`) for any construct the backend doesn't support yet.
+pub(crate) fn dump_bytecode_program(prog: &Program) -> Result<String> {
+    let np = compile_program_native(prog)?;
+    let mut out = String::new();
+    for (i, ch) in np.begin.iter().enumerate() {
+        out.push_str(&format!("== BEGIN[{i}] ==\n{:#?}\n", ch.ops));
+    }
+    for (i, ch) in np.main.iter().enumerate() {
+        out.push_str(&format!("== rule[{i}] ==\n{:#?}\n", ch.ops));
+    }
+    for (i, ch) in np.end.iter().enumerate() {
+        out.push_str(&format!("== END[{i}] ==\n{:#?}\n", ch.ops));
+    }
+    Ok(out)
+}
+
 /// Disassemble a whole program to a fusevm bytecode listing: every `BEGIN`
 /// block, per-record rule, and `END` block as a labelled section, via the shared
 /// `fusevm::Chunk::disassemble`. Returns an `Err` (prefixed `fusevm_compile:`)

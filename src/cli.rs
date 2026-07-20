@@ -269,6 +269,10 @@ pub struct Args {
     #[arg(long = "dap", num_args = 0..=1, default_missing_value = "", value_name = "HOST:PORT", help = "\x1b[32m//\x1b[0m Run as a DAP debug adapter (stdio, or connect HOST:PORT)")]
     pub dap: Option<String>,
 
+    /// Print the compiled fusevm bytecode ops for the program and exit.
+    #[arg(long = "dump-bytecode", action = ArgAction::SetTrue, help = "\x1b[32m//\x1b[0m Print the compiled fusevm bytecode and exit")]
+    pub dump_bytecode: bool,
+
     /// Print the lexer token stream for the program (after `rust { }`
     /// desugaring) and exit.
     #[arg(long = "dump-tokens", action = ArgAction::SetTrue, help = "\x1b[32m//\x1b[0m Print the lexer token stream and exit")]
