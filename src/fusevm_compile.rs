@@ -994,6 +994,25 @@ pub(crate) fn compile_program_native(prog: &Program) -> Result<NativeProgram> {
     })
 }
 
+/// Disassemble a whole program to a fusevm bytecode listing: every `BEGIN`
+/// block, per-record rule, and `END` block as a labelled section, via the shared
+/// `fusevm::Chunk::disassemble`. Returns an `Err` (prefixed `fusevm_compile:`)
+/// for any construct the backend doesn't support yet.
+pub(crate) fn disassemble_program(prog: &Program) -> Result<String> {
+    let np = compile_program_native(prog)?;
+    let mut out = String::new();
+    for (i, ch) in np.begin.iter().enumerate() {
+        out.push_str(&format!("; awkrs fusevm — BEGIN[{i}]\n{}\n", ch.disassemble()));
+    }
+    for (i, ch) in np.main.iter().enumerate() {
+        out.push_str(&format!("; awkrs fusevm — rule[{i}]\n{}\n", ch.disassemble()));
+    }
+    for (i, ch) in np.end.iter().enumerate() {
+        out.push_str(&format!("; awkrs fusevm — END[{i}]\n{}\n", ch.disassemble()));
+    }
+    Ok(out)
+}
+
 /// Run a compiled program over `input` (records split on '\n') on the given
 /// Runtime: `BEGIN`, then every record through the main rules, then `END`.
 /// Returns the bytes written to the record stream. Test-only thin wrapper over

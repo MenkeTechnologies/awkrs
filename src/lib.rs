@@ -47,6 +47,9 @@ mod record_io;
 /// Interactive REPL (`awkrs --repl`, or the default on a bare terminal).
 pub mod repl;
 mod runtime;
+/// awk wiring for inline Rust FFI (`rust { ... }` blocks): the [`fusevm::RustSugar`]
+/// config and the source-level desugar the parser runs before lexing.
+pub mod rust_ffi;
 mod script_cache;
 mod source_expand;
 mod vm;
@@ -199,6 +202,19 @@ pub fn run(bin_name: &str) -> Result<()> {
         }
         Err(e) => return Err(e),
     };
+
+    // Introspection dumps: lexer tokens, parsed AST, or fusevm disassembly.
+    // Each runs on the resolved program text (after `rust { }` desugaring) and
+    // exits without reading input.
+    if args.dump_tokens {
+        return dump_tokens(&program_text);
+    }
+    if args.dump_ast {
+        return dump_ast(&program_text);
+    }
+    if args.disasm {
+        return disasm(&program_text);
+    }
 
     // AOT: compile a BEGIN-only program to a native standalone executable.
     if let Some(out) = &args.aot {
@@ -463,6 +479,41 @@ pub fn run(bin_name: &str) -> Result<()> {
     if rt.exit_pending {
         std::process::exit(rt.exit_code);
     }
+    Ok(())
+}
+
+/// `--dump-tokens`: print the lexer token stream (after `rust { }` desugaring),
+/// one `line<TAB>Token` per line. Lexed with `regex_mode = false`, so a `/re/`
+/// literal appears as its operator tokens rather than a single `Regexp` — a
+/// lossy but non-erroring view sufficient for inspecting the stream.
+fn dump_tokens(program_text: &str) -> Result<()> {
+    let src = crate::rust_ffi::desugar(program_text);
+    let mut lx = crate::lexer::Lexer::new(&src);
+    loop {
+        let line = lx.line();
+        let tok = lx.next_token(false)?;
+        println!("{line}\t{tok:?}");
+        if tok == crate::lexer::Token::Eof {
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// `--dump-ast`: print the parsed awk AST (`parse_program` already desugars
+/// `rust { }` blocks).
+fn dump_ast(program_text: &str) -> Result<()> {
+    let prog = parse_program(program_text)?;
+    println!("{prog:#?}");
+    Ok(())
+}
+
+/// `--disasm`: print a fusevm bytecode disassembly of every compiled chunk via
+/// the shared `fusevm::Chunk::disassemble`. Uses the fusevm backend
+/// (`fusevm_compile`); constructs it doesn't yet support produce a compile error.
+fn disasm(program_text: &str) -> Result<()> {
+    let prog = parse_program(program_text)?;
+    print!("{}", crate::fusevm_compile::disassemble_program(&prog)?);
     Ok(())
 }
 

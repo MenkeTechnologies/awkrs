@@ -914,9 +914,52 @@ pub(crate) fn exec_builtin_dispatch(
             }
             v
         }
-        _ => return Err(Error::Runtime(format!("unknown function `{name}`"))),
+        // Inline Rust FFI: the `rust { ... }` desugar emits a `BEGIN` rule that
+        // calls `__rust_compile(b64, line)`; compile + register the block's
+        // exported functions.
+        "__rust_compile" => {
+            let b64 = args.first().map(|v| v.as_str()).unwrap_or_default();
+            fusevm::ffi::compile_and_register(&b64).map_err(Error::Runtime)?;
+            Value::Uninit
+        }
+        // A `rust { ... }` block's exported functions are callable by bareword.
+        // User awk functions win (`exec_call_builtin` resolves them before this
+        // dispatch), and every language builtin matches an earlier arm; the FFI
+        // registry is the last resort before "unknown function", and the
+        // membership check keeps it off the hot path.
+        _ => {
+            if fusevm::ffi::is_registered(name) {
+                let fargs: Vec<fusevm::Value> = args.iter().map(awk_value_to_fusevm).collect();
+                if let Some(r) = fusevm::ffi::try_call(name, &fargs) {
+                    return r.map(fusevm_value_to_awk).map_err(Error::Runtime);
+                }
+            }
+            return Err(Error::Runtime(format!("unknown function `{name}`")));
+        }
     };
     Ok(result)
+}
+
+/// Marshal an awk [`Value`] into a [`fusevm::Value`] for an FFI call. Numbers
+/// map to `Float` (fusevm coerces to `i64`/`f64` per the target signature);
+/// everything else marshals via its string form, which fusevm parses when the
+/// target parameter is numeric (so numeric-string fields work as int/float args).
+fn awk_value_to_fusevm(v: &Value) -> fusevm::Value {
+    match v {
+        Value::Num(n) => fusevm::Value::float(*n),
+        Value::Mpfr(f) => fusevm::Value::float(f.to_f64()),
+        _ => fusevm::Value::str(v.as_str()),
+    }
+}
+
+/// Marshal an FFI [`fusevm::Value`] result back into an awk [`Value`].
+fn fusevm_value_to_awk(v: fusevm::Value) -> Value {
+    match v {
+        fusevm::Value::Int(n) => Value::Num(n as f64),
+        fusevm::Value::Float(f) => Value::Num(f),
+        fusevm::Value::Undef => Value::Uninit,
+        other => Value::Str(other.to_str()),
+    }
 }
 
 pub(super) fn sort_keys_with_custom_cmp(

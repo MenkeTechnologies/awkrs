@@ -44,7 +44,10 @@ fn builtin_regex_pattern_arg(fname: &str, arg_index: usize) -> bool {
 }
 /// `parse_program` — see implementation for the contract.
 pub fn parse_program(src: &str) -> Result<Program> {
-    let expanded = crate::source_expand::expand_source_directives(src)?;
+    // Inline `rust { ... }` FFI blocks are desugared to `BEGIN { __rust_compile(...) }`
+    // rules before include-expansion and lexing.
+    let src = crate::rust_ffi::desugar(src);
+    let expanded = crate::source_expand::expand_source_directives(&src)?;
     let mut p = Parser::new(&expanded.text);
     let mut prog = p.parse_program()?;
     crate::namespace::apply_default_namespace(&mut prog, expanded.default_namespace.as_deref());
@@ -55,7 +58,8 @@ pub fn parse_program(src: &str) -> Result<Program> {
 /// statement so the compiler can emit per-line debug hooks. Used only by the
 /// `--dap` debugger entry point; the normal parse path stays marker-free.
 pub fn parse_program_debug(src: &str) -> Result<Program> {
-    let expanded = crate::source_expand::expand_source_directives(src)?;
+    let src = crate::rust_ffi::desugar(src);
+    let expanded = crate::source_expand::expand_source_directives(&src)?;
     let mut p = Parser::new(&expanded.text);
     p.debug_lines = true;
     let mut prog = p.parse_program()?;

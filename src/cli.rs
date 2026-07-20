@@ -269,6 +269,19 @@ pub struct Args {
     #[arg(long = "dap", num_args = 0..=1, default_missing_value = "", value_name = "HOST:PORT", help = "\x1b[32m//\x1b[0m Run as a DAP debug adapter (stdio, or connect HOST:PORT)")]
     pub dap: Option<String>,
 
+    /// Print the lexer token stream for the program (after `rust { }`
+    /// desugaring) and exit.
+    #[arg(long = "dump-tokens", action = ArgAction::SetTrue, help = "\x1b[32m//\x1b[0m Print the lexer token stream and exit")]
+    pub dump_tokens: bool,
+
+    /// Print the parsed AST for the program and exit.
+    #[arg(long = "dump-ast", action = ArgAction::SetTrue, help = "\x1b[32m//\x1b[0m Print the parsed AST and exit")]
+    pub dump_ast: bool,
+
+    /// Print a fusevm bytecode disassembly listing for the program and exit.
+    #[arg(long = "disasm", action = ArgAction::SetTrue, help = "\x1b[32m//\x1b[0m Print a fusevm bytecode disassembly and exit")]
+    pub disasm: bool,
+
     /// Print help (cyberpunk HUD).
     #[arg(short = 'h', long = "help", action = ArgAction::SetTrue, help = "\x1b[32m//\x1b[0m Print this help")]
     pub show_help: bool,
