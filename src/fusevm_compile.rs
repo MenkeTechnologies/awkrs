@@ -1021,13 +1021,22 @@ pub(crate) fn disassemble_program(prog: &Program) -> Result<String> {
     let np = compile_program_native(prog)?;
     let mut out = String::new();
     for (i, ch) in np.begin.iter().enumerate() {
-        out.push_str(&format!("; awkrs fusevm — BEGIN[{i}]\n{}\n", ch.disassemble()));
+        out.push_str(&format!(
+            "; awkrs fusevm — BEGIN[{i}]\n{}\n",
+            ch.disassemble()
+        ));
     }
     for (i, ch) in np.main.iter().enumerate() {
-        out.push_str(&format!("; awkrs fusevm — rule[{i}]\n{}\n", ch.disassemble()));
+        out.push_str(&format!(
+            "; awkrs fusevm — rule[{i}]\n{}\n",
+            ch.disassemble()
+        ));
     }
     for (i, ch) in np.end.iter().enumerate() {
-        out.push_str(&format!("; awkrs fusevm — END[{i}]\n{}\n", ch.disassemble()));
+        out.push_str(&format!(
+            "; awkrs fusevm — END[{i}]\n{}\n",
+            ch.disassemble()
+        ));
     }
     Ok(out)
 }

@@ -54,7 +54,10 @@ BEGIN { print awk_ffi_addi(21, 21) "|" awk_ffi_mulf(1.5, 2.0, 3.0) "|" awk_ffi_s
 "#;
     let (code, stdout, stderr) = run_awkrs(program);
     assert_eq!(code, 0, "awkrs exited nonzero; stderr:\n{stderr}");
-    assert_eq!(stdout, "42|9|11\n", "unexpected FFI output; stderr:\n{stderr}");
+    assert_eq!(
+        stdout, "42|9|11\n",
+        "unexpected FFI output; stderr:\n{stderr}"
+    );
 }
 
 #[test]
