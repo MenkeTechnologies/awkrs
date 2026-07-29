@@ -286,6 +286,11 @@ pub struct Args {
     #[arg(long = "disasm", action = ArgAction::SetTrue, help = "\x1b[32m//\x1b[0m Print a fusevm bytecode disassembly and exit")]
     pub disasm: bool,
 
+    /// Run the program on the fusevm backend, then report which fusevm
+    /// execution tier took each of its chunks.
+    #[arg(long = "tiers", action = ArgAction::SetTrue, help = "\x1b[32m//\x1b[0m Run it, then report which fusevm tiers took it")]
+    pub tiers: bool,
+
     /// Print help (cyberpunk HUD).
     #[arg(short = 'h', long = "help", action = ArgAction::SetTrue, help = "\x1b[32m//\x1b[0m Print this help")]
     pub show_help: bool,

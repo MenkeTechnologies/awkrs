@@ -51,6 +51,7 @@ mod runtime;
 /// config and the source-level desugar the parser runs before lexing.
 pub mod rust_ffi;
 mod script_cache;
+mod tiers;
 mod source_expand;
 mod vm;
 
@@ -217,6 +218,13 @@ pub fn run(bin_name: &str) -> Result<()> {
     }
     if args.disasm {
         return disasm(&program_text);
+    }
+
+    // `--tiers`: run the program on the fusevm backend, then report which of
+    // fusevm's execution tiers took each of its chunks.
+    if args.tiers {
+        println!("{}", crate::tiers::report(&args, &program_text, &files)?);
+        return Ok(());
     }
 
     // AOT: compile a BEGIN-only program to a native standalone executable.

@@ -994,6 +994,27 @@ pub(crate) fn compile_program_native(prog: &Program) -> Result<NativeProgram> {
     })
 }
 
+/// Every chunk a program compiles to, labelled the way `--disasm` labels them.
+///
+/// An awk program is not one chunk: `BEGIN`, each per-record rule, and `END`
+/// are compiled and driven separately (see [`run_compiled_files`]), so a report
+/// on any single one would answer the wrong question. Used by
+/// [`crate::tiers`].
+pub(crate) fn program_chunks(prog: &Program) -> Result<Vec<(String, fusevm::Chunk)>> {
+    let np = compile_program_native(prog)?;
+    let mut out = Vec::with_capacity(np.begin.len() + np.main.len() + np.end.len());
+    for (i, ch) in np.begin.into_iter().enumerate() {
+        out.push((format!("BEGIN[{i}]"), ch));
+    }
+    for (i, ch) in np.main.into_iter().enumerate() {
+        out.push((format!("rule[{i}]"), ch));
+    }
+    for (i, ch) in np.end.into_iter().enumerate() {
+        out.push((format!("END[{i}]"), ch));
+    }
+    Ok(out)
+}
+
 /// Dump a whole program's raw fusevm bytecode ops: every `BEGIN` block,
 /// per-record rule, and `END` block as a labelled section, each rendered as the
 /// pretty-printed `Vec<fusevm::Op>` (`{:#?}`). Returns an `Err` (prefixed
