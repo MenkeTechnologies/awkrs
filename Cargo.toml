@@ -1,6 +1,6 @@
 [package]
 name = "awkrs"
-version = "0.4.20"
+version = "0.4.21"
 edition = "2021"
 authors = ["MenkeTechnologies <linux.dev25@gmail.com>"]
 # Keep the published crate lean: ship `src/`, `man/`, `completions/`,
