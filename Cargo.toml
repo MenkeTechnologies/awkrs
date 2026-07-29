@@ -3,8 +3,27 @@ name = "awkrs"
 version = "0.4.20"
 edition = "2021"
 authors = ["MenkeTechnologies <linux.dev25@gmail.com>"]
-# `parity/` stays in the git repo for local/CI testing vs gawk; omit from `cargo package` / crates.io tarball.
-exclude = ["/parity/", "/.github/", "/tests/", "/docs/"]
+# Keep the published crate lean: ship `src/`, `man/`, `completions/`,
+# README/LICENSE — nothing else. Everything below (`parity/` vs gawk,
+# the benchmarks, the docs site) stays in the git repo for local/CI use
+# but is omitted from `cargo package` / the crates.io tarball. Mirrors
+# strykelang's exclude set.
+exclude = [
+    "/.github/",
+    "/tests/",
+    "/examples/",
+    "/docs/",
+    "/assets/",
+    "/bench/",
+    "/benches/",
+    "/benchmarks/",
+    "/parity/",
+    "/scripts/",
+    "/vendor/",
+    "/tools/",
+    "/fuzz/",
+    "/BUGS.md",
+]
 description = "Awk implementation in Rust with broad CLI compatibility, parallel records, and experimental Cranelift JIT"
 license = "MIT"
 repository = "https://github.com/MenkeTechnologies/awkrs"
