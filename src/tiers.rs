@@ -153,7 +153,6 @@ pub fn report(
     Ok(inspect_all(&named))
 }
 
-
 /// Report on every chunk a compiled program holds, in lowering order.
 pub fn inspect_all(named: &[(String, Chunk)]) -> Report {
     Report {
@@ -247,7 +246,6 @@ fn op_name(op: &Op) -> String {
         None => text,
     }
 }
-
 
 #[cfg(test)]
 mod tests {

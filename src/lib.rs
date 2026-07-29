@@ -51,8 +51,8 @@ mod runtime;
 /// config and the source-level desugar the parser runs before lexing.
 pub mod rust_ffi;
 mod script_cache;
-mod tiers;
 mod source_expand;
+mod tiers;
 mod vm;
 
 pub use error::{Error, Result};
