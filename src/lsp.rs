@@ -786,7 +786,11 @@ fn position_to_offset(text: &str, pos: Position) -> Option<usize> {
 // ─────────────────────────── language data ───────────────────────────
 
 /// Signature + one-line description for an AWK builtin, if known.
-/// Sourced from the POSIX awk spec and the gawk extensions awkrs accepts.
+/// Sourced from the POSIX awk spec, the gawk extensions awkrs accepts, and
+/// awkrs's own intercept engine. Covers every name in
+/// [`crate::namespace::BUILTIN_NAMES`] — `builtin_signature_covers_every_name`
+/// keeps the two in lockstep — so completion, hover, and signature help never
+/// show a bare name with no detail.
 ///
 /// Public so the offline `gen-docs` reference generator renders the exact same
 /// signatures/descriptions the LSP hover and signature-help paths use.
@@ -907,8 +911,98 @@ pub fn builtin_signature(name: &str) -> Option<(&'static str, &'static str)> {
             "mkbool(expr)",
             "Boolean-typed value from the truth of `expr` (gawk).",
         ),
-        "chr" => ("chr(n)", "Character for code point `n`."),
-        "ord" => ("ord(s)", "Code point of the first character of `s`."),
+        "chr" => (
+            "chr(n)",
+            "Single-character string for code point `n`; empty string when `n` is not a valid scalar value (gawk `ordchr`).",
+        ),
+        "ord" => (
+            "ord(s)",
+            "Code point of the first character of `s`, or 0 when `s` is empty (gawk `ordchr`).",
+        ),
+        "intdiv" => (
+            "intdiv(a, b)",
+            "Truncating integer quotient of `a / b`; a zero divisor is a fatal error. Diverges from gawk, whose `intdiv(num, den, arr)` takes a result array instead of returning the quotient.",
+        ),
+        "intdiv0" => (
+            "intdiv0(a, b)",
+            "Same as `intdiv` but yields 0 instead of failing when `b` is zero (gawk `intdiv`).",
+        ),
+        "chdir" => (
+            "chdir(path)",
+            "Change the process working directory; returns 0 on success or -1 with `ERRNO` set (gawk `filefuncs`). Blocked under `-S`/`--sandbox`.",
+        ),
+        "stat" => (
+            "stat(path, arr)",
+            "Clear `arr` and fill it with `type`, `size`, `dev`, `ino`, `mode`, `nlink`, `uid`, `gid`, `rdev`, `blksize`, `blocks`, `atime`, `mtime`, `ctime`; returns 0, or -1 with `ERRNO` set (gawk `filefuncs`). `type` is one of `file`, `directory`, `symlink`, `other`.",
+        ),
+        "statvfs" => (
+            "statvfs(path, arr)",
+            "Clear `arr` and fill it with the `f_bsize`, `f_frsize`, `f_blocks`, `f_bfree`, `f_bavail`, `f_files`, `f_ffree`, `f_favail`, `f_fsid`, `f_flag`, `f_namemax` filesystem fields; returns 0, or -1 on non-Unix platforms and errors (gawk `filefuncs`).",
+        ),
+        "fts" => (
+            "fts(root, arr)",
+            "Walk `root` recursively and fill `arr[1]`…`arr[n]` with the sorted path list; returns the entry count, or -1 when `root` does not exist. awkrs returns a flat sorted path array rather than gawk's nested per-directory hierarchy (gawk `filefuncs`).",
+        ),
+        "readdir" => (
+            "readdir(path, arr)",
+            "Clear `arr` and fill `arr[1]`…`arr[n]` with `\"name/type\"` strings, where type is `f`, `d`, `l`, or `u`; returns the entry count, or -1 with `ERRNO` set (gawk `readdir`).",
+        ),
+        "readfile" => (
+            "readfile(path)",
+            "Whole contents of `path` as one string; empty string with `ERRNO` set on failure (gawk `readfile`).",
+        ),
+        "rename" => (
+            "rename(old, new)",
+            "Rename `old` to `new`; returns 0 on success or -1 with `ERRNO` set (gawk `filefuncs`).",
+        ),
+        "writea" => (
+            "writea(file, arr)",
+            "Write `arr` to `file` in awkrs's own `awkrs-rwarray-v1` text format (a magic line, then tab-separated escaped key/value lines); returns 0 or -1. Not binary-compatible with gawk's `rwarray` (gawk `rwarray`).",
+        ),
+        "reada" => (
+            "reada(file, arr)",
+            "Clear `arr` and reload it from an `awkrs-rwarray-v1` file written by `writea`; returns 0, or -1 when the file is missing or carries the wrong magic line (gawk `rwarray`).",
+        ),
+        "inplace_tmpfile" => (
+            "inplace_tmpfile(path)",
+            "Create and return a unique sibling temp path next to `path` (`.NAME.awkrs_inplace.NANOS`) for the edit-then-rename cycle; empty string with `ERRNO` set on failure (gawk `inplace`).",
+        ),
+        "inplace_commit" => (
+            "inplace_commit(tmp, dest)",
+            "Atomically rename `tmp` over `dest`, completing an in-place edit; returns 0 or -1 with `ERRNO` set (gawk `inplace`).",
+        ),
+        "revoutput" => (
+            "revoutput(s)",
+            "Return `s` reversed by Unicode scalar. awkrs exposes gawk's `revoutput` demo as a plain function rather than an output wrapper (gawk `revoutput`).",
+        ),
+        "revtwoway" => (
+            "revtwoway(s)",
+            "Return `s` reversed by Unicode scalar — identical to `revoutput`. awkrs exposes gawk's `revtwoway` demo as a plain function rather than a two-way coprocess (gawk `revtwoway`).",
+        ),
+        "gettimeofday" => (
+            "gettimeofday(arr)",
+            "Clear `arr` and set `arr[\"sec\"]` to the fractional epoch seconds and `arr[\"usec\"]` to the microsecond remainder; returns 0 (gawk `time`).",
+        ),
+        "getlocaltime" => (
+            "getlocaltime(arr [, ts])",
+            "Clear `arr` and fill it with the broken-down local-time fields `sec`, `min`, `hour`, `mday`, `mon` (1-12), `year` (full), `wday`, `yday` (1-based), `isdst`; returns the epoch seconds used. Uses the current time when `ts` is omitted (gawk `time`).",
+        ),
+        "sleep" => (
+            "sleep(sec)",
+            "Sleep for `sec` seconds, fractions included; a negative duration is a fatal error. Returns 0 (gawk `time`).",
+        ),
+        "bindtextdomain" => (
+            "bindtextdomain(domain, dirname)",
+            "Set `TEXTDOMAIN` to `domain`, point the catalog search at `dirname`, and load that catalog if present; returns `dirname`. Both arguments are required, and awkrs takes them in `(domain, dirname)` order.",
+        ),
+        "dcgettext" => (
+            "dcgettext(string, domain, category)",
+            "Translate `string` through the loaded `domain` catalog, returning `string` unchanged when no catalog is loaded. All three arguments are required and `category` is accepted but not used for lookup.",
+        ),
+        "dcngettext" => (
+            "dcngettext(s1, s2, n, domain, category)",
+            "Plural-aware translation of `s1`/`s2` for count `n` through the `domain` catalog; with no catalog loaded, returns `s1` when `n` is 1 and `s2` otherwise. All five arguments are required and `category` is accepted but not used for lookup.",
+        ),
         "intercept" => (
             "intercept(kind, pattern, code)",
             "Register AOP advice (`kind`: \"before\"/\"after\"/\"around\") on user-function calls matching `pattern`; returns the ID (awkrs extension).",
@@ -1096,6 +1190,62 @@ mod tests {
         // `printf` appears in both AWK_KEYWORDS and BUILTIN_NAMES but must be
         // deduped to a single flat entry.
         assert_eq!(words.iter().filter(|w| *w == "printf").count(), 1);
+    }
+
+    /// Every callable name the compiler recognizes must carry a signature and a
+    /// description. A miss is silently invisible in the editor (completion item
+    /// with no detail, hover that returns nothing) and silently *absent* from
+    /// the generated reference, so pin it here rather than in either consumer.
+    #[test]
+    fn builtin_signature_covers_every_name() {
+        let missing: Vec<&str> = BUILTIN_NAMES
+            .iter()
+            .copied()
+            .filter(|n| builtin_signature(n).is_none())
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "builtins with no signature: {missing:?}"
+        );
+    }
+
+    /// A signature must start with the name it documents, otherwise signature
+    /// help labels one builtin while the cursor sits in another.
+    #[test]
+    fn builtin_signature_labels_match_their_name() {
+        for name in BUILTIN_NAMES {
+            let (sig, desc) = builtin_signature(name).expect("covered above");
+            assert!(
+                sig.starts_with(name) && sig[name.len()..].starts_with('('),
+                "signature {sig:?} does not open with `{name}(`"
+            );
+            assert!(!desc.is_empty(), "empty description for {name}");
+        }
+    }
+
+    /// `special_doc` is the hover/completion detail for every special global, so
+    /// an unlisted one shows up bare in the editor and vanishes from the
+    /// reference the same way a missing builtin would.
+    #[test]
+    fn special_doc_covers_every_special_global() {
+        let missing: Vec<&str> = SPECIAL_GLOBAL_NAMES
+            .iter()
+            .copied()
+            .filter(|n| special_doc(n).is_none())
+            .collect();
+        assert!(missing.is_empty(), "specials with no doc: {missing:?}");
+    }
+
+    /// Same contract for keywords: `AWK_KEYWORDS` drives completion, so every
+    /// entry needs hover text.
+    #[test]
+    fn keyword_doc_covers_every_keyword() {
+        let missing: Vec<&str> = AWK_KEYWORDS
+            .iter()
+            .copied()
+            .filter(|n| keyword_doc(n).is_none())
+            .collect();
+        assert!(missing.is_empty(), "keywords with no doc: {missing:?}");
     }
 
     #[test]

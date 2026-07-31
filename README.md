@@ -498,7 +498,7 @@ Coverage spans library unit tests for every module (lexer, parser, format, built
 | Doc | Source | Live URL |
 |---|---|---|
 | User reference (quickstart, builtins, variables, examples, cache + parallel notes) | [`docs/index.html`](docs/index.html) | <https://menketechnologies.github.io/awkrs/> |
-| Builtin reference (every builtin, variable, and operator — generated from `src/lsp.rs`) | [`docs/reference.html`](docs/reference.html) | <https://menketechnologies.github.io/awkrs/reference.html> |
+| Language reference (every builtin, special variable, keyword, operator, redirection, `printf` specifier, directive, `PROCINFO` key, CLI option, and environment variable — identifier entries generated from `src/lsp.rs`, the rest from `src/bin/gen_docs.rs`) | [`docs/reference.html`](docs/reference.html) | <https://menketechnologies.github.io/awkrs/reference.html> |
 | Engineering report (architecture, module table, perf stack, divergence ledger, competitive matrix) | [`docs/report.html`](docs/report.html) | <https://menketechnologies.github.io/awkrs/report.html> |
 | Compatibility matrix vs BSD awk / mawk / gawk | [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md) | renders on GitHub |
 | Benchmarks vs BSD awk / mawk / gawk (hyperfine, 1 M lines) | [`benchmarks/benchmark-results.md`](benchmarks/benchmark-results.md) | renders on GitHub |

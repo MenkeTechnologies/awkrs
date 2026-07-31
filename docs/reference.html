@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="awkrs full reference — every builtin, special variable, and keyword with its LSP hover doc rendered as a static page.">
+  <meta name="description" content="awkrs full reference — every builtin, special variable, keyword, operator, format specifier, directive, command-line option, and environment variable, each with a signature and a description written from the implementation.">
   <title>awkrs — Reference</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -142,7 +142,7 @@
           <span class="sep">/</span>
           <a href="https://github.com/MenkeTechnologies/awkrs" target="_blank" rel="noopener noreferrer">GitHub</a>
         </nav>
-        <p class="docs-build-line">awkrs v0.4.21 · 86 topics · 8 chapters · generated from <code>awkrs/src/lsp.rs</code></p>
+        <p class="docs-build-line">awkrs v0.4.21 · 308 topics · 24 chapters · generated from <code>awkrs/src/lsp.rs</code> and <code>awkrs/src/bin/gen_docs.rs</code></p>
       </div>
       <div class="tutorial-toolbar">
         <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
@@ -163,18 +163,34 @@
 
   <main class="tutorial-main">
     <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>LANGUAGE REFERENCE</h2>
-    <p class="tutorial-subtitle">Every builtin, special variable, and keyword awkrs documents, rendered from the exact markdown that the awkrs LSP shows on hover. Jump via the chapter index, or <kbd>Ctrl+F</kbd> for a specific name.</p>
+    <p class="tutorial-subtitle">Every builtin, special variable, keyword, operator, redirection, format specifier, directive, command-line option, and environment variable awkrs implements — each with its signature and a description written from the implementation. Identifier entries render from the exact markdown the awkrs LSP shows on hover. Jump via the chapter index, or <kbd>Ctrl+F</kbd> for a specific name.</p>
     <section class="tutorial-section">
       <h2>Chapters</h2>
       <ul class="chapter-index">
         <li><a href="#ch-string-functions">String Functions</a> <span class="chapter-count">11</span></li>
-        <li><a href="#ch-arithmetic-functions">Arithmetic Functions</a> <span class="chapter-count">9</span></li>
-        <li><a href="#ch-i-o-general-functions">I/O &amp; General Functions</a> <span class="chapter-count">6</span></li>
-        <li><a href="#ch-time-functions-gawk">Time Functions (gawk)</a> <span class="chapter-count">3</span></li>
-        <li><a href="#ch-bitwise-functions-gawk">Bitwise Functions (gawk)</a> <span class="chapter-count">6</span></li>
-        <li><a href="#ch-array-type-functions-gawk">Array &amp; Type Functions (gawk)</a> <span class="chapter-count">5</span></li>
-        <li><a href="#ch-special-variables">Special Variables</a> <span class="chapter-count">25</span></li>
-        <li><a href="#ch-keywords-control-flow">Keywords &amp; Control Flow</a> <span class="chapter-count">21</span></li>
+        <li><a href="#ch-arithmetic-functions">Arithmetic Functions</a> <span class="chapter-count">12</span></li>
+        <li><a href="#ch-i-o-and-general-functions">I/O and General Functions</a> <span class="chapter-count">6</span></li>
+        <li><a href="#ch-time-functions">Time Functions</a> <span class="chapter-count">6</span></li>
+        <li><a href="#ch-bitwise-functions">Bitwise Functions</a> <span class="chapter-count">6</span></li>
+        <li><a href="#ch-array-and-type-functions">Array and Type Functions</a> <span class="chapter-count">6</span></li>
+        <li><a href="#ch-character-and-text-functions">Character and Text Functions</a> <span class="chapter-count">4</span></li>
+        <li><a href="#ch-file-and-directory-functions">File and Directory Functions</a> <span class="chapter-count">11</span></li>
+        <li><a href="#ch-localization-functions">Localization Functions</a> <span class="chapter-count">3</span></li>
+        <li><a href="#ch-the-intercept-engine">The Intercept Engine</a> <span class="chapter-count">9</span></li>
+        <li><a href="#ch-intercept-functions">Intercept Functions</a> <span class="chapter-count">5</span></li>
+        <li><a href="#ch-special-variables">Special Variables</a> <span class="chapter-count">28</span></li>
+        <li><a href="#ch-keywords-and-control-flow">Keywords and Control Flow</a> <span class="chapter-count">21</span></li>
+        <li><a href="#ch-pattern-forms">Pattern Forms</a> <span class="chapter-count">6</span></li>
+        <li><a href="#ch-operators">Operators</a> <span class="chapter-count">24</span></li>
+        <li><a href="#ch-redirection-and-getline-forms">Redirection and getline Forms</a> <span class="chapter-count">13</span></li>
+        <li><a href="#ch-printf-conversions">printf Conversions</a> <span class="chapter-count">12</span></li>
+        <li><a href="#ch-printf-flags-width-and-precision">printf Flags, Width, and Precision</a> <span class="chapter-count">12</span></li>
+        <li><a href="#ch-string-escape-sequences">String Escape Sequences</a> <span class="chapter-count">13</span></li>
+        <li><a href="#ch-source-directives-and-inline-rust">Source Directives and Inline Rust</a> <span class="chapter-count">6</span></li>
+        <li><a href="#ch-procinfo-keys">PROCINFO Keys</a> <span class="chapter-count">26</span></li>
+        <li><a href="#ch-array-traversal-order">Array Traversal Order</a> <span class="chapter-count">13</span></li>
+        <li><a href="#ch-command-line-options">Command-Line Options</a> <span class="chapter-count">42</span></li>
+        <li><a href="#ch-environment-variables">Environment Variables</a> <span class="chapter-count">13</span></li>
       </ul>
     </section>
     <section class="tutorial-section" id="ch-string-functions">
@@ -185,128 +201,173 @@
         <pre><code class="lang-awk">length([s])
 </code></pre>
         <p>Length of string <code>s</code> (or <code>$0</code>), or element count of an array.</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Lowered to the native <code>fusevm::Op::AwkLength</code> by the <code>AWKRS_FUSEVM_NATIVE=1</code> backend. The default numeric-chunk offload does not admit it, so an ordinary run always executes the VM path.</p>
       </article>
       <article class="doc-entry" id="doc-substr">
         <h3><a class="doc-anchor" href="#doc-substr">#</a> <code>substr</code></h3>
         <pre><code class="lang-awk">substr(s, m [, n])
 </code></pre>
         <p><code>n</code>-char substring of <code>s</code> starting at position <code>m</code> (1-based).</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Lowered to the native <code>fusevm::Op::AwkSubstr</code> by the <code>AWKRS_FUSEVM_NATIVE=1</code> backend. The default numeric-chunk offload does not admit it, so an ordinary run always executes the VM path.</p>
       </article>
       <article class="doc-entry" id="doc-index">
         <h3><a class="doc-anchor" href="#doc-index">#</a> <code>index</code></h3>
         <pre><code class="lang-awk">index(s, t)
 </code></pre>
         <p>1-based position of <code>t</code> in <code>s</code>, or 0 if not found.</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Lowered to the native <code>fusevm::Op::AwkIndex</code> by the <code>AWKRS_FUSEVM_NATIVE=1</code> backend. The default numeric-chunk offload does not admit it, so an ordinary run always executes the VM path.</p>
       </article>
       <article class="doc-entry" id="doc-split">
         <h3><a class="doc-anchor" href="#doc-split">#</a> <code>split</code></h3>
         <pre><code class="lang-awk">split(s, arr [, fs [, seps]])
 </code></pre>
         <p>Split <code>s</code> into <code>arr</code> on <code>fs</code>; returns the field count.</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Neither fusevm route lowers it: the numeric-chunk offload treats the chunk as ineligible, and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend refuses to compile a program that calls it rather than lowering it to something approximate.</p>
       </article>
       <article class="doc-entry" id="doc-sub">
         <h3><a class="doc-anchor" href="#doc-sub">#</a> <code>sub</code></h3>
         <pre><code class="lang-awk">sub(re, repl [, target])
 </code></pre>
         <p>Replace first match of <code>re</code> in <code>target</code> (<code>$0</code>); returns 1/0.</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Lowered to the native <code>fusevm::Op::AwkSub</code> by the <code>AWKRS_FUSEVM_NATIVE=1</code> backend. The default numeric-chunk offload does not admit it, so an ordinary run always executes the VM path.</p>
       </article>
       <article class="doc-entry" id="doc-gsub">
         <h3><a class="doc-anchor" href="#doc-gsub">#</a> <code>gsub</code></h3>
         <pre><code class="lang-awk">gsub(re, repl [, target])
 </code></pre>
         <p>Replace all matches of <code>re</code> in <code>target</code> (<code>$0</code>); returns count.</p>
-      </article>
-      <article class="doc-entry" id="doc-match">
-        <h3><a class="doc-anchor" href="#doc-match">#</a> <code>match</code></h3>
-        <pre><code class="lang-awk">match(s, re [, arr])
-</code></pre>
-        <p>Set RSTART/RLENGTH to the match of <code>re</code> in <code>s</code>; returns position or 0.</p>
-      </article>
-      <article class="doc-entry" id="doc-sprintf">
-        <h3><a class="doc-anchor" href="#doc-sprintf">#</a> <code>sprintf</code></h3>
-        <pre><code class="lang-awk">sprintf(fmt, ...)
-</code></pre>
-        <p>Format the arguments per <code>fmt</code> and return the string.</p>
-      </article>
-      <article class="doc-entry" id="doc-tolower">
-        <h3><a class="doc-anchor" href="#doc-tolower">#</a> <code>tolower</code></h3>
-        <pre><code class="lang-awk">tolower(s)
-</code></pre>
-        <p>Copy of <code>s</code> with uppercase letters lowercased.</p>
-      </article>
-      <article class="doc-entry" id="doc-toupper">
-        <h3><a class="doc-anchor" href="#doc-toupper">#</a> <code>toupper</code></h3>
-        <pre><code class="lang-awk">toupper(s)
-</code></pre>
-        <p>Copy of <code>s</code> with lowercase letters uppercased.</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Lowered to the native <code>fusevm::Op::AwkGsub</code> by the <code>AWKRS_FUSEVM_NATIVE=1</code> backend. The default numeric-chunk offload does not admit it, so an ordinary run always executes the VM path.</p>
       </article>
       <article class="doc-entry" id="doc-gensub">
         <h3><a class="doc-anchor" href="#doc-gensub">#</a> <code>gensub</code></h3>
         <pre><code class="lang-awk">gensub(re, repl, how [, target])
 </code></pre>
         <p>Non-destructive global/Nth substitution returning the new string.</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Neither fusevm route lowers it: the numeric-chunk offload treats the chunk as ineligible, and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend refuses to compile a program that calls it rather than lowering it to something approximate.</p>
+        <p><strong>Restrictions.</strong> Rejected as a non-POSIX extension under <code>-P</code>/<code>--posix</code> and <code>-c</code>/<code>--traditional</code>.</p>
+      </article>
+      <article class="doc-entry" id="doc-match">
+        <h3><a class="doc-anchor" href="#doc-match">#</a> <code>match</code></h3>
+        <pre><code class="lang-awk">match(s, re [, arr])
+</code></pre>
+        <p>Set RSTART/RLENGTH to the match of <code>re</code> in <code>s</code>; returns position or 0.</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Lowered to the native <code>fusevm::Op::AwkMatch</code> by the <code>AWKRS_FUSEVM_NATIVE=1</code> backend. The default numeric-chunk offload does not admit it, so an ordinary run always executes the VM path.</p>
+      </article>
+      <article class="doc-entry" id="doc-sprintf">
+        <h3><a class="doc-anchor" href="#doc-sprintf">#</a> <code>sprintf</code></h3>
+        <pre><code class="lang-awk">sprintf(fmt, ...)
+</code></pre>
+        <p>Format the arguments per <code>fmt</code> and return the string.</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Lowered to the native <code>fusevm::Op::AwkSprintf</code> by the <code>AWKRS_FUSEVM_NATIVE=1</code> backend. The default numeric-chunk offload does not admit it, so an ordinary run always executes the VM path.</p>
+      </article>
+      <article class="doc-entry" id="doc-tolower">
+        <h3><a class="doc-anchor" href="#doc-tolower">#</a> <code>tolower</code></h3>
+        <pre><code class="lang-awk">tolower(s)
+</code></pre>
+        <p>Copy of <code>s</code> with uppercase letters lowercased.</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Lowered to the native <code>fusevm::Op::AwkToLower</code> by the <code>AWKRS_FUSEVM_NATIVE=1</code> backend. The default numeric-chunk offload does not admit it, so an ordinary run always executes the VM path.</p>
+      </article>
+      <article class="doc-entry" id="doc-toupper">
+        <h3><a class="doc-anchor" href="#doc-toupper">#</a> <code>toupper</code></h3>
+        <pre><code class="lang-awk">toupper(s)
+</code></pre>
+        <p>Copy of <code>s</code> with lowercase letters uppercased.</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Lowered to the native <code>fusevm::Op::AwkToUpper</code> by the <code>AWKRS_FUSEVM_NATIVE=1</code> backend. The default numeric-chunk offload does not admit it, so an ordinary run always executes the VM path.</p>
       </article>
     </section>
     <section class="tutorial-section" id="ch-arithmetic-functions">
       <h2>Arithmetic Functions</h2>
-      <p class="chapter-meta">9 topics</p>
+      <p class="chapter-meta">12 topics</p>
       <article class="doc-entry" id="doc-sin">
         <h3><a class="doc-anchor" href="#doc-sin">#</a> <code>sin</code></h3>
         <pre><code class="lang-awk">sin(x)
 </code></pre>
         <p>Sine of <code>x</code> (radians).</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Also lowered to the native <code>fusevm::Op::AwkSin</code> on both fusevm routes — the default numeric-chunk offload and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend.</p>
       </article>
       <article class="doc-entry" id="doc-cos">
         <h3><a class="doc-anchor" href="#doc-cos">#</a> <code>cos</code></h3>
         <pre><code class="lang-awk">cos(x)
 </code></pre>
         <p>Cosine of <code>x</code> (radians).</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Also lowered to the native <code>fusevm::Op::AwkCos</code> on both fusevm routes — the default numeric-chunk offload and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend.</p>
       </article>
       <article class="doc-entry" id="doc-atan2">
         <h3><a class="doc-anchor" href="#doc-atan2">#</a> <code>atan2</code></h3>
         <pre><code class="lang-awk">atan2(y, x)
 </code></pre>
         <p>Arctangent of <code>y/x</code> in radians.</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Also lowered to the native <code>fusevm::Op::AwkAtan2</code> on both fusevm routes — the default numeric-chunk offload and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend.</p>
       </article>
       <article class="doc-entry" id="doc-exp">
         <h3><a class="doc-anchor" href="#doc-exp">#</a> <code>exp</code></h3>
         <pre><code class="lang-awk">exp(x)
 </code></pre>
         <p>e raised to the power <code>x</code>.</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Also lowered to the native <code>fusevm::Op::AwkExp</code> on both fusevm routes — the default numeric-chunk offload and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend.</p>
       </article>
       <article class="doc-entry" id="doc-log">
         <h3><a class="doc-anchor" href="#doc-log">#</a> <code>log</code></h3>
         <pre><code class="lang-awk">log(x)
 </code></pre>
         <p>Natural logarithm of <code>x</code>.</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Also lowered to native fusevm ops on both routes: <code>fusevm::Op::AwkLogJit</code> by the default numeric-chunk offload, <code>fusevm::Op::AwkLog</code> by the <code>AWKRS_FUSEVM_NATIVE=1</code> backend.</p>
       </article>
       <article class="doc-entry" id="doc-sqrt">
         <h3><a class="doc-anchor" href="#doc-sqrt">#</a> <code>sqrt</code></h3>
         <pre><code class="lang-awk">sqrt(x)
 </code></pre>
         <p>Square root of <code>x</code>.</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Also lowered to native fusevm ops on both routes: <code>fusevm::Op::AwkSqrtJit</code> by the default numeric-chunk offload, <code>fusevm::Op::AwkSqrt</code> by the <code>AWKRS_FUSEVM_NATIVE=1</code> backend.</p>
       </article>
       <article class="doc-entry" id="doc-int">
         <h3><a class="doc-anchor" href="#doc-int">#</a> <code>int</code></h3>
         <pre><code class="lang-awk">int(x)
 </code></pre>
         <p>Integer part of <code>x</code>, truncated toward zero.</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Also lowered to the native <code>fusevm::Op::AwkInt</code> on both fusevm routes — the default numeric-chunk offload and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend.</p>
+      </article>
+      <article class="doc-entry" id="doc-intdiv">
+        <h3><a class="doc-anchor" href="#doc-intdiv">#</a> <code>intdiv</code></h3>
+        <pre><code class="lang-awk">intdiv(a, b)
+</code></pre>
+        <p>Truncating integer quotient of <code>a / b</code>; a zero divisor is a fatal error. Diverges from gawk, whose <code>intdiv(num, den, arr)</code> takes a result array instead of returning the quotient.</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Neither fusevm route lowers it: the numeric-chunk offload treats the chunk as ineligible, and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend refuses to compile a program that calls it rather than lowering it to something approximate.</p>
+        <p><strong>Restrictions.</strong> Rejected as a non-POSIX extension under <code>-P</code>/<code>--posix</code> and <code>-c</code>/<code>--traditional</code>.</p>
+      </article>
+      <article class="doc-entry" id="doc-intdiv0">
+        <h3><a class="doc-anchor" href="#doc-intdiv0">#</a> <code>intdiv0</code></h3>
+        <pre><code class="lang-awk">intdiv0(a, b)
+</code></pre>
+        <p>Same as <code>intdiv</code> but yields 0 instead of failing when <code>b</code> is zero (gawk <code>intdiv</code>).</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Neither fusevm route lowers it: the numeric-chunk offload treats the chunk as ineligible, and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend refuses to compile a program that calls it rather than lowering it to something approximate.</p>
+        <p><strong>Restrictions.</strong> Rejected as a non-POSIX extension under <code>-P</code>/<code>--posix</code> and <code>-c</code>/<code>--traditional</code>.</p>
+      </article>
+      <article class="doc-entry" id="doc-strtonum">
+        <h3><a class="doc-anchor" href="#doc-strtonum">#</a> <code>strtonum</code></h3>
+        <pre><code class="lang-awk">strtonum(s)
+</code></pre>
+        <p>Numeric value of <code>s</code>, honoring 0x/0 prefixes (gawk).</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Neither fusevm route lowers it: the numeric-chunk offload treats the chunk as ineligible, and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend refuses to compile a program that calls it rather than lowering it to something approximate.</p>
+        <p><strong>Restrictions.</strong> Rejected as a non-POSIX extension under <code>-P</code>/<code>--posix</code> and <code>-c</code>/<code>--traditional</code>.</p>
       </article>
       <article class="doc-entry" id="doc-rand">
         <h3><a class="doc-anchor" href="#doc-rand">#</a> <code>rand</code></h3>
         <pre><code class="lang-awk">rand()
 </code></pre>
         <p>Pseudo-random number in [0, 1).</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Neither fusevm route lowers it: the numeric-chunk offload treats the chunk as ineligible, and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend refuses to compile a program that calls it rather than lowering it to something approximate.</p>
       </article>
       <article class="doc-entry" id="doc-srand">
         <h3><a class="doc-anchor" href="#doc-srand">#</a> <code>srand</code></h3>
         <pre><code class="lang-awk">srand([x])
 </code></pre>
         <p>Seed the RNG with <code>x</code> (or time); returns the previous seed.</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Neither fusevm route lowers it: the numeric-chunk offload treats the chunk as ineligible, and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend refuses to compile a program that calls it rather than lowering it to something approximate.</p>
       </article>
     </section>
-    <section class="tutorial-section" id="ch-i-o-general-functions">
-      <h2>I/O &amp; General Functions</h2>
+    <section class="tutorial-section" id="ch-i-o-and-general-functions">
+      <h2>I/O and General Functions</h2>
       <p class="chapter-meta">6 topics</p>
       <article class="doc-entry" id="doc-print">
         <h3><a class="doc-anchor" href="#doc-print">#</a> <code>print</code></h3>
@@ -318,6 +379,7 @@
         <pre><code class="lang-awk">printf(fmt, ...)
 </code></pre>
         <p>Format and print the arguments per <code>fmt</code>.</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Neither fusevm route lowers it: the numeric-chunk offload treats the chunk as ineligible, and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend refuses to compile a program that calls it rather than lowering it to something approximate.</p>
       </article>
       <article class="doc-entry" id="doc-getline">
         <h3><a class="doc-anchor" href="#doc-getline">#</a> <code>getline</code></h3>
@@ -329,119 +391,434 @@
         <pre><code class="lang-awk">close(file [, how])
 </code></pre>
         <p>Close an open file/pipe; returns its status.</p>
-      </article>
-      <article class="doc-entry" id="doc-system">
-        <h3><a class="doc-anchor" href="#doc-system">#</a> <code>system</code></h3>
-        <pre><code class="lang-awk">system(cmd)
-</code></pre>
-        <p>Run <code>cmd</code> via the shell; returns its exit status.</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Neither fusevm route lowers it: the numeric-chunk offload treats the chunk as ineligible, and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend refuses to compile a program that calls it rather than lowering it to something approximate.</p>
       </article>
       <article class="doc-entry" id="doc-fflush">
         <h3><a class="doc-anchor" href="#doc-fflush">#</a> <code>fflush</code></h3>
         <pre><code class="lang-awk">fflush([file])
 </code></pre>
         <p>Flush buffers for <code>file</code>, or all outputs if omitted.</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Neither fusevm route lowers it: the numeric-chunk offload treats the chunk as ineligible, and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend refuses to compile a program that calls it rather than lowering it to something approximate.</p>
+      </article>
+      <article class="doc-entry" id="doc-system">
+        <h3><a class="doc-anchor" href="#doc-system">#</a> <code>system</code></h3>
+        <pre><code class="lang-awk">system(cmd)
+</code></pre>
+        <p>Run <code>cmd</code> via the shell; returns its exit status.</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Neither fusevm route lowers it: the numeric-chunk offload treats the chunk as ineligible, and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend refuses to compile a program that calls it rather than lowering it to something approximate.</p>
+        <p><strong>Restrictions.</strong> Blocked under <code>-S</code>/<code>--sandbox</code>.</p>
       </article>
     </section>
-    <section class="tutorial-section" id="ch-time-functions-gawk">
-      <h2>Time Functions (gawk)</h2>
-      <p class="chapter-meta">3 topics</p>
+    <section class="tutorial-section" id="ch-time-functions">
+      <h2>Time Functions</h2>
+      <p class="chapter-meta">6 topics</p>
       <article class="doc-entry" id="doc-systime">
         <h3><a class="doc-anchor" href="#doc-systime">#</a> <code>systime</code></h3>
         <pre><code class="lang-awk">systime()
 </code></pre>
         <p>Current time as seconds since the epoch (gawk).</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Neither fusevm route lowers it: the numeric-chunk offload treats the chunk as ineligible, and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend refuses to compile a program that calls it rather than lowering it to something approximate.</p>
+        <p><strong>Restrictions.</strong> Rejected as a non-POSIX extension under <code>-P</code>/<code>--posix</code> and <code>-c</code>/<code>--traditional</code>.</p>
       </article>
       <article class="doc-entry" id="doc-strftime">
         <h3><a class="doc-anchor" href="#doc-strftime">#</a> <code>strftime</code></h3>
         <pre><code class="lang-awk">strftime([fmt [, ts [, utc]]])
 </code></pre>
         <p>Format timestamp <code>ts</code> per <code>fmt</code> (gawk).</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Neither fusevm route lowers it: the numeric-chunk offload treats the chunk as ineligible, and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend refuses to compile a program that calls it rather than lowering it to something approximate.</p>
+        <p><strong>Restrictions.</strong> Rejected as a non-POSIX extension under <code>-P</code>/<code>--posix</code> and <code>-c</code>/<code>--traditional</code>.</p>
       </article>
       <article class="doc-entry" id="doc-mktime">
         <h3><a class="doc-anchor" href="#doc-mktime">#</a> <code>mktime</code></h3>
         <pre><code class="lang-awk">mktime(spec [, utc])
 </code></pre>
         <p>Convert a &quot;YYYY MM DD HH MM SS [DST]&quot; spec to a timestamp (gawk).</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Neither fusevm route lowers it: the numeric-chunk offload treats the chunk as ineligible, and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend refuses to compile a program that calls it rather than lowering it to something approximate.</p>
+        <p><strong>Restrictions.</strong> Rejected as a non-POSIX extension under <code>-P</code>/<code>--posix</code> and <code>-c</code>/<code>--traditional</code>.</p>
+      </article>
+      <article class="doc-entry" id="doc-gettimeofday">
+        <h3><a class="doc-anchor" href="#doc-gettimeofday">#</a> <code>gettimeofday</code></h3>
+        <pre><code class="lang-awk">gettimeofday(arr)
+</code></pre>
+        <p>Clear <code>arr</code> and set <code>arr[&quot;sec&quot;]</code> to the fractional epoch seconds and <code>arr[&quot;usec&quot;]</code> to the microsecond remainder; returns 0 (gawk <code>time</code>).</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Neither fusevm route lowers it: the numeric-chunk offload treats the chunk as ineligible, and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend refuses to compile a program that calls it rather than lowering it to something approximate.</p>
+        <p><strong>Restrictions.</strong> Rejected as a non-POSIX extension under <code>-P</code>/<code>--posix</code> and <code>-c</code>/<code>--traditional</code>.</p>
+      </article>
+      <article class="doc-entry" id="doc-getlocaltime">
+        <h3><a class="doc-anchor" href="#doc-getlocaltime">#</a> <code>getlocaltime</code></h3>
+        <pre><code class="lang-awk">getlocaltime(arr [, ts])
+</code></pre>
+        <p>Clear <code>arr</code> and fill it with the broken-down local-time fields <code>sec</code>, <code>min</code>, <code>hour</code>, <code>mday</code>, <code>mon</code> (1-12), <code>year</code> (full), <code>wday</code>, <code>yday</code> (1-based), <code>isdst</code>; returns the epoch seconds used. Uses the current time when <code>ts</code> is omitted (gawk <code>time</code>).</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Neither fusevm route lowers it: the numeric-chunk offload treats the chunk as ineligible, and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend refuses to compile a program that calls it rather than lowering it to something approximate.</p>
+        <p><strong>Restrictions.</strong> Rejected as a non-POSIX extension under <code>-P</code>/<code>--posix</code> and <code>-c</code>/<code>--traditional</code>.</p>
+      </article>
+      <article class="doc-entry" id="doc-sleep">
+        <h3><a class="doc-anchor" href="#doc-sleep">#</a> <code>sleep</code></h3>
+        <pre><code class="lang-awk">sleep(sec)
+</code></pre>
+        <p>Sleep for <code>sec</code> seconds, fractions included; a negative duration is a fatal error. Returns 0 (gawk <code>time</code>).</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Neither fusevm route lowers it: the numeric-chunk offload treats the chunk as ineligible, and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend refuses to compile a program that calls it rather than lowering it to something approximate.</p>
+        <p><strong>Restrictions.</strong> Rejected as a non-POSIX extension under <code>-P</code>/<code>--posix</code> and <code>-c</code>/<code>--traditional</code>.</p>
       </article>
     </section>
-    <section class="tutorial-section" id="ch-bitwise-functions-gawk">
-      <h2>Bitwise Functions (gawk)</h2>
+    <section class="tutorial-section" id="ch-bitwise-functions">
+      <h2>Bitwise Functions</h2>
       <p class="chapter-meta">6 topics</p>
       <article class="doc-entry" id="doc-and">
         <h3><a class="doc-anchor" href="#doc-and">#</a> <code>and</code></h3>
         <pre><code class="lang-awk">and(v1, v2, ...)
 </code></pre>
         <p>Bitwise AND of the arguments (gawk).</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Also lowered to the native <code>fusevm::Op::AwkAnd</code> when the default numeric-chunk offload takes the surrounding chunk. The <code>AWKRS_FUSEVM_NATIVE=1</code> backend has no op for it and refuses to compile a program that calls it.</p>
+        <p><strong>Restrictions.</strong> Rejected as a non-POSIX extension under <code>-P</code>/<code>--posix</code> and <code>-c</code>/<code>--traditional</code>.</p>
       </article>
       <article class="doc-entry" id="doc-or">
         <h3><a class="doc-anchor" href="#doc-or">#</a> <code>or</code></h3>
         <pre><code class="lang-awk">or(v1, v2, ...)
 </code></pre>
         <p>Bitwise OR of the arguments (gawk).</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Also lowered to the native <code>fusevm::Op::AwkOr</code> when the default numeric-chunk offload takes the surrounding chunk. The <code>AWKRS_FUSEVM_NATIVE=1</code> backend has no op for it and refuses to compile a program that calls it.</p>
+        <p><strong>Restrictions.</strong> Rejected as a non-POSIX extension under <code>-P</code>/<code>--posix</code> and <code>-c</code>/<code>--traditional</code>.</p>
       </article>
       <article class="doc-entry" id="doc-xor">
         <h3><a class="doc-anchor" href="#doc-xor">#</a> <code>xor</code></h3>
         <pre><code class="lang-awk">xor(v1, v2, ...)
 </code></pre>
         <p>Bitwise XOR of the arguments (gawk).</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Also lowered to the native <code>fusevm::Op::AwkXor</code> when the default numeric-chunk offload takes the surrounding chunk. The <code>AWKRS_FUSEVM_NATIVE=1</code> backend has no op for it and refuses to compile a program that calls it.</p>
+        <p><strong>Restrictions.</strong> Rejected as a non-POSIX extension under <code>-P</code>/<code>--posix</code> and <code>-c</code>/<code>--traditional</code>.</p>
       </article>
       <article class="doc-entry" id="doc-compl">
         <h3><a class="doc-anchor" href="#doc-compl">#</a> <code>compl</code></h3>
         <pre><code class="lang-awk">compl(v)
 </code></pre>
         <p>Bitwise complement of <code>v</code> (gawk).</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Also lowered to the native <code>fusevm::Op::AwkComplJit</code> when the default numeric-chunk offload takes the surrounding chunk. The <code>AWKRS_FUSEVM_NATIVE=1</code> backend has no op for it and refuses to compile a program that calls it.</p>
+        <p><strong>Restrictions.</strong> Rejected as a non-POSIX extension under <code>-P</code>/<code>--posix</code> and <code>-c</code>/<code>--traditional</code>.</p>
       </article>
       <article class="doc-entry" id="doc-lshift">
         <h3><a class="doc-anchor" href="#doc-lshift">#</a> <code>lshift</code></h3>
         <pre><code class="lang-awk">lshift(v, n)
 </code></pre>
         <p><code>v</code> left-shifted by <code>n</code> bits (gawk).</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Also lowered to the native <code>fusevm::Op::AwkLshiftJit</code> when the default numeric-chunk offload takes the surrounding chunk. The <code>AWKRS_FUSEVM_NATIVE=1</code> backend has no op for it and refuses to compile a program that calls it.</p>
+        <p><strong>Restrictions.</strong> Rejected as a non-POSIX extension under <code>-P</code>/<code>--posix</code> and <code>-c</code>/<code>--traditional</code>.</p>
       </article>
       <article class="doc-entry" id="doc-rshift">
         <h3><a class="doc-anchor" href="#doc-rshift">#</a> <code>rshift</code></h3>
         <pre><code class="lang-awk">rshift(v, n)
 </code></pre>
         <p><code>v</code> right-shifted by <code>n</code> bits (gawk).</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Also lowered to the native <code>fusevm::Op::AwkRshiftJit</code> when the default numeric-chunk offload takes the surrounding chunk. The <code>AWKRS_FUSEVM_NATIVE=1</code> backend has no op for it and refuses to compile a program that calls it.</p>
+        <p><strong>Restrictions.</strong> Rejected as a non-POSIX extension under <code>-P</code>/<code>--posix</code> and <code>-c</code>/<code>--traditional</code>.</p>
       </article>
     </section>
-    <section class="tutorial-section" id="ch-array-type-functions-gawk">
-      <h2>Array &amp; Type Functions (gawk)</h2>
-      <p class="chapter-meta">5 topics</p>
+    <section class="tutorial-section" id="ch-array-and-type-functions">
+      <h2>Array and Type Functions</h2>
+      <p class="chapter-meta">6 topics</p>
       <article class="doc-entry" id="doc-typeof">
         <h3><a class="doc-anchor" href="#doc-typeof">#</a> <code>typeof</code></h3>
         <pre><code class="lang-awk">typeof(x)
 </code></pre>
         <p>Type of <code>x</code>: &quot;scalar&quot;, &quot;array&quot;, &quot;untyped&quot;, … (gawk).</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Neither fusevm route lowers it: the numeric-chunk offload treats the chunk as ineligible, and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend refuses to compile a program that calls it rather than lowering it to something approximate.</p>
+        <p><strong>Restrictions.</strong> Rejected as a non-POSIX extension under <code>-P</code>/<code>--posix</code> and <code>-c</code>/<code>--traditional</code>.</p>
       </article>
       <article class="doc-entry" id="doc-isarray">
         <h3><a class="doc-anchor" href="#doc-isarray">#</a> <code>isarray</code></h3>
         <pre><code class="lang-awk">isarray(x)
 </code></pre>
         <p>1 if <code>x</code> is an array, else 0 (gawk).</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Neither fusevm route lowers it: the numeric-chunk offload treats the chunk as ineligible, and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend refuses to compile a program that calls it rather than lowering it to something approximate.</p>
+        <p><strong>Restrictions.</strong> Rejected as a non-POSIX extension under <code>-P</code>/<code>--posix</code> and <code>-c</code>/<code>--traditional</code>.</p>
+      </article>
+      <article class="doc-entry" id="doc-mkbool">
+        <h3><a class="doc-anchor" href="#doc-mkbool">#</a> <code>mkbool</code></h3>
+        <pre><code class="lang-awk">mkbool(expr)
+</code></pre>
+        <p>Boolean-typed value from the truth of <code>expr</code> (gawk).</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Also lowered to the native <code>fusevm::Op::AwkMkbool</code> when the default numeric-chunk offload takes the surrounding chunk. The <code>AWKRS_FUSEVM_NATIVE=1</code> backend has no op for it and refuses to compile a program that calls it.</p>
+        <p><strong>Restrictions.</strong> Rejected as a non-POSIX extension under <code>-P</code>/<code>--posix</code> and <code>-c</code>/<code>--traditional</code>.</p>
       </article>
       <article class="doc-entry" id="doc-patsplit">
         <h3><a class="doc-anchor" href="#doc-patsplit">#</a> <code>patsplit</code></h3>
         <pre><code class="lang-awk">patsplit(s, arr [, fpat [, seps]])
 </code></pre>
         <p>Split <code>s</code> into <code>arr</code> by the pattern <code>fpat</code> (gawk).</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Neither fusevm route lowers it: the numeric-chunk offload treats the chunk as ineligible, and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend refuses to compile a program that calls it rather than lowering it to something approximate.</p>
+        <p><strong>Restrictions.</strong> Rejected as a non-POSIX extension under <code>-P</code>/<code>--posix</code> and <code>-c</code>/<code>--traditional</code>.</p>
       </article>
       <article class="doc-entry" id="doc-asort">
         <h3><a class="doc-anchor" href="#doc-asort">#</a> <code>asort</code></h3>
         <pre><code class="lang-awk">asort(src [, dst [, how]])
 </code></pre>
         <p>Sort array values; returns the element count (gawk).</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Neither fusevm route lowers it: the numeric-chunk offload treats the chunk as ineligible, and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend refuses to compile a program that calls it rather than lowering it to something approximate.</p>
       </article>
       <article class="doc-entry" id="doc-asorti">
         <h3><a class="doc-anchor" href="#doc-asorti">#</a> <code>asorti</code></h3>
         <pre><code class="lang-awk">asorti(src [, dst [, how]])
 </code></pre>
         <p>Sort array indices; returns the element count (gawk).</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Neither fusevm route lowers it: the numeric-chunk offload treats the chunk as ineligible, and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend refuses to compile a program that calls it rather than lowering it to something approximate.</p>
+      </article>
+    </section>
+    <section class="tutorial-section" id="ch-character-and-text-functions">
+      <h2>Character and Text Functions</h2>
+      <p class="chapter-meta">4 topics</p>
+      <article class="doc-entry" id="doc-chr">
+        <h3><a class="doc-anchor" href="#doc-chr">#</a> <code>chr</code></h3>
+        <pre><code class="lang-awk">chr(n)
+</code></pre>
+        <p>Single-character string for code point <code>n</code>; empty string when <code>n</code> is not a valid scalar value (gawk <code>ordchr</code>).</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Neither fusevm route lowers it: the numeric-chunk offload treats the chunk as ineligible, and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend refuses to compile a program that calls it rather than lowering it to something approximate.</p>
+        <p><strong>Restrictions.</strong> Rejected as a non-POSIX extension under <code>-P</code>/<code>--posix</code> and <code>-c</code>/<code>--traditional</code>.</p>
+      </article>
+      <article class="doc-entry" id="doc-ord">
+        <h3><a class="doc-anchor" href="#doc-ord">#</a> <code>ord</code></h3>
+        <pre><code class="lang-awk">ord(s)
+</code></pre>
+        <p>Code point of the first character of <code>s</code>, or 0 when <code>s</code> is empty (gawk <code>ordchr</code>).</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Neither fusevm route lowers it: the numeric-chunk offload treats the chunk as ineligible, and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend refuses to compile a program that calls it rather than lowering it to something approximate.</p>
+        <p><strong>Restrictions.</strong> Rejected as a non-POSIX extension under <code>-P</code>/<code>--posix</code> and <code>-c</code>/<code>--traditional</code>.</p>
+      </article>
+      <article class="doc-entry" id="doc-revoutput">
+        <h3><a class="doc-anchor" href="#doc-revoutput">#</a> <code>revoutput</code></h3>
+        <pre><code class="lang-awk">revoutput(s)
+</code></pre>
+        <p>Return <code>s</code> reversed by Unicode scalar. awkrs exposes gawk&#39;s <code>revoutput</code> demo as a plain function rather than an output wrapper (gawk <code>revoutput</code>).</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Neither fusevm route lowers it: the numeric-chunk offload treats the chunk as ineligible, and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend refuses to compile a program that calls it rather than lowering it to something approximate.</p>
+        <p><strong>Restrictions.</strong> Rejected as a non-POSIX extension under <code>-P</code>/<code>--posix</code> and <code>-c</code>/<code>--traditional</code>.</p>
+      </article>
+      <article class="doc-entry" id="doc-revtwoway">
+        <h3><a class="doc-anchor" href="#doc-revtwoway">#</a> <code>revtwoway</code></h3>
+        <pre><code class="lang-awk">revtwoway(s)
+</code></pre>
+        <p>Return <code>s</code> reversed by Unicode scalar — identical to <code>revoutput</code>. awkrs exposes gawk&#39;s <code>revtwoway</code> demo as a plain function rather than a two-way coprocess (gawk <code>revtwoway</code>).</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Neither fusevm route lowers it: the numeric-chunk offload treats the chunk as ineligible, and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend refuses to compile a program that calls it rather than lowering it to something approximate.</p>
+        <p><strong>Restrictions.</strong> Rejected as a non-POSIX extension under <code>-P</code>/<code>--posix</code> and <code>-c</code>/<code>--traditional</code>.</p>
+      </article>
+    </section>
+    <section class="tutorial-section" id="ch-file-and-directory-functions">
+      <h2>File and Directory Functions</h2>
+      <p class="chapter-meta">11 topics</p>
+      <article class="doc-entry" id="doc-stat">
+        <h3><a class="doc-anchor" href="#doc-stat">#</a> <code>stat</code></h3>
+        <pre><code class="lang-awk">stat(path, arr)
+</code></pre>
+        <p>Clear <code>arr</code> and fill it with <code>type</code>, <code>size</code>, <code>dev</code>, <code>ino</code>, <code>mode</code>, <code>nlink</code>, <code>uid</code>, <code>gid</code>, <code>rdev</code>, <code>blksize</code>, <code>blocks</code>, <code>atime</code>, <code>mtime</code>, <code>ctime</code>; returns 0, or -1 with <code>ERRNO</code> set (gawk <code>filefuncs</code>). <code>type</code> is one of <code>file</code>, <code>directory</code>, <code>symlink</code>, <code>other</code>.</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Neither fusevm route lowers it: the numeric-chunk offload treats the chunk as ineligible, and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend refuses to compile a program that calls it rather than lowering it to something approximate.</p>
+        <p><strong>Restrictions.</strong> Rejected as a non-POSIX extension under <code>-P</code>/<code>--posix</code> and <code>-c</code>/<code>--traditional</code>, and blocked under <code>-S</code>/<code>--sandbox</code>.</p>
+      </article>
+      <article class="doc-entry" id="doc-statvfs">
+        <h3><a class="doc-anchor" href="#doc-statvfs">#</a> <code>statvfs</code></h3>
+        <pre><code class="lang-awk">statvfs(path, arr)
+</code></pre>
+        <p>Clear <code>arr</code> and fill it with the <code>f_bsize</code>, <code>f_frsize</code>, <code>f_blocks</code>, <code>f_bfree</code>, <code>f_bavail</code>, <code>f_files</code>, <code>f_ffree</code>, <code>f_favail</code>, <code>f_fsid</code>, <code>f_flag</code>, <code>f_namemax</code> filesystem fields; returns 0, or -1 on non-Unix platforms and errors (gawk <code>filefuncs</code>).</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Neither fusevm route lowers it: the numeric-chunk offload treats the chunk as ineligible, and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend refuses to compile a program that calls it rather than lowering it to something approximate.</p>
+        <p><strong>Restrictions.</strong> Rejected as a non-POSIX extension under <code>-P</code>/<code>--posix</code> and <code>-c</code>/<code>--traditional</code>, and blocked under <code>-S</code>/<code>--sandbox</code>.</p>
+      </article>
+      <article class="doc-entry" id="doc-fts">
+        <h3><a class="doc-anchor" href="#doc-fts">#</a> <code>fts</code></h3>
+        <pre><code class="lang-awk">fts(root, arr)
+</code></pre>
+        <p>Walk <code>root</code> recursively and fill <code>arr[1]</code>…<code>arr[n]</code> with the sorted path list; returns the entry count, or -1 when <code>root</code> does not exist. awkrs returns a flat sorted path array rather than gawk&#39;s nested per-directory hierarchy (gawk <code>filefuncs</code>).</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Neither fusevm route lowers it: the numeric-chunk offload treats the chunk as ineligible, and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend refuses to compile a program that calls it rather than lowering it to something approximate.</p>
+        <p><strong>Restrictions.</strong> Rejected as a non-POSIX extension under <code>-P</code>/<code>--posix</code> and <code>-c</code>/<code>--traditional</code>, and blocked under <code>-S</code>/<code>--sandbox</code>.</p>
+      </article>
+      <article class="doc-entry" id="doc-readdir">
+        <h3><a class="doc-anchor" href="#doc-readdir">#</a> <code>readdir</code></h3>
+        <pre><code class="lang-awk">readdir(path, arr)
+</code></pre>
+        <p>Clear <code>arr</code> and fill <code>arr[1]</code>…<code>arr[n]</code> with <code>&quot;name/type&quot;</code> strings, where type is <code>f</code>, <code>d</code>, <code>l</code>, or <code>u</code>; returns the entry count, or -1 with <code>ERRNO</code> set (gawk <code>readdir</code>).</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Neither fusevm route lowers it: the numeric-chunk offload treats the chunk as ineligible, and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend refuses to compile a program that calls it rather than lowering it to something approximate.</p>
+        <p><strong>Restrictions.</strong> Rejected as a non-POSIX extension under <code>-P</code>/<code>--posix</code> and <code>-c</code>/<code>--traditional</code>, and blocked under <code>-S</code>/<code>--sandbox</code>.</p>
+      </article>
+      <article class="doc-entry" id="doc-readfile">
+        <h3><a class="doc-anchor" href="#doc-readfile">#</a> <code>readfile</code></h3>
+        <pre><code class="lang-awk">readfile(path)
+</code></pre>
+        <p>Whole contents of <code>path</code> as one string; empty string with <code>ERRNO</code> set on failure (gawk <code>readfile</code>).</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Neither fusevm route lowers it: the numeric-chunk offload treats the chunk as ineligible, and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend refuses to compile a program that calls it rather than lowering it to something approximate.</p>
+        <p><strong>Restrictions.</strong> Rejected as a non-POSIX extension under <code>-P</code>/<code>--posix</code> and <code>-c</code>/<code>--traditional</code>, and blocked under <code>-S</code>/<code>--sandbox</code>.</p>
+      </article>
+      <article class="doc-entry" id="doc-rename">
+        <h3><a class="doc-anchor" href="#doc-rename">#</a> <code>rename</code></h3>
+        <pre><code class="lang-awk">rename(old, new)
+</code></pre>
+        <p>Rename <code>old</code> to <code>new</code>; returns 0 on success or -1 with <code>ERRNO</code> set (gawk <code>filefuncs</code>).</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Neither fusevm route lowers it: the numeric-chunk offload treats the chunk as ineligible, and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend refuses to compile a program that calls it rather than lowering it to something approximate.</p>
+        <p><strong>Restrictions.</strong> Rejected as a non-POSIX extension under <code>-P</code>/<code>--posix</code> and <code>-c</code>/<code>--traditional</code>, and blocked under <code>-S</code>/<code>--sandbox</code>.</p>
+      </article>
+      <article class="doc-entry" id="doc-chdir">
+        <h3><a class="doc-anchor" href="#doc-chdir">#</a> <code>chdir</code></h3>
+        <pre><code class="lang-awk">chdir(path)
+</code></pre>
+        <p>Change the process working directory; returns 0 on success or -1 with <code>ERRNO</code> set (gawk <code>filefuncs</code>). Blocked under <code>-S</code>/<code>--sandbox</code>.</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Neither fusevm route lowers it: the numeric-chunk offload treats the chunk as ineligible, and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend refuses to compile a program that calls it rather than lowering it to something approximate.</p>
+        <p><strong>Restrictions.</strong> Rejected as a non-POSIX extension under <code>-P</code>/<code>--posix</code> and <code>-c</code>/<code>--traditional</code>, and blocked under <code>-S</code>/<code>--sandbox</code>.</p>
+      </article>
+      <article class="doc-entry" id="doc-inplace-tmpfile">
+        <h3><a class="doc-anchor" href="#doc-inplace-tmpfile">#</a> <code>inplace_tmpfile</code></h3>
+        <pre><code class="lang-awk">inplace_tmpfile(path)
+</code></pre>
+        <p>Create and return a unique sibling temp path next to <code>path</code> (<code>.NAME.awkrs_inplace.NANOS</code>) for the edit-then-rename cycle; empty string with <code>ERRNO</code> set on failure (gawk <code>inplace</code>).</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Neither fusevm route lowers it: the numeric-chunk offload treats the chunk as ineligible, and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend refuses to compile a program that calls it rather than lowering it to something approximate.</p>
+        <p><strong>Restrictions.</strong> Rejected as a non-POSIX extension under <code>-P</code>/<code>--posix</code> and <code>-c</code>/<code>--traditional</code>, and blocked under <code>-S</code>/<code>--sandbox</code>.</p>
+      </article>
+      <article class="doc-entry" id="doc-inplace-commit">
+        <h3><a class="doc-anchor" href="#doc-inplace-commit">#</a> <code>inplace_commit</code></h3>
+        <pre><code class="lang-awk">inplace_commit(tmp, dest)
+</code></pre>
+        <p>Atomically rename <code>tmp</code> over <code>dest</code>, completing an in-place edit; returns 0 or -1 with <code>ERRNO</code> set (gawk <code>inplace</code>).</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Neither fusevm route lowers it: the numeric-chunk offload treats the chunk as ineligible, and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend refuses to compile a program that calls it rather than lowering it to something approximate.</p>
+        <p><strong>Restrictions.</strong> Rejected as a non-POSIX extension under <code>-P</code>/<code>--posix</code> and <code>-c</code>/<code>--traditional</code>, and blocked under <code>-S</code>/<code>--sandbox</code>.</p>
+      </article>
+      <article class="doc-entry" id="doc-writea">
+        <h3><a class="doc-anchor" href="#doc-writea">#</a> <code>writea</code></h3>
+        <pre><code class="lang-awk">writea(file, arr)
+</code></pre>
+        <p>Write <code>arr</code> to <code>file</code> in awkrs&#39;s own <code>awkrs-rwarray-v1</code> text format (a magic line, then tab-separated escaped key/value lines); returns 0 or -1. Not binary-compatible with gawk&#39;s <code>rwarray</code> (gawk <code>rwarray</code>).</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Neither fusevm route lowers it: the numeric-chunk offload treats the chunk as ineligible, and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend refuses to compile a program that calls it rather than lowering it to something approximate.</p>
+        <p><strong>Restrictions.</strong> Rejected as a non-POSIX extension under <code>-P</code>/<code>--posix</code> and <code>-c</code>/<code>--traditional</code>, and blocked under <code>-S</code>/<code>--sandbox</code>.</p>
+      </article>
+      <article class="doc-entry" id="doc-reada">
+        <h3><a class="doc-anchor" href="#doc-reada">#</a> <code>reada</code></h3>
+        <pre><code class="lang-awk">reada(file, arr)
+</code></pre>
+        <p>Clear <code>arr</code> and reload it from an <code>awkrs-rwarray-v1</code> file written by <code>writea</code>; returns 0, or -1 when the file is missing or carries the wrong magic line (gawk <code>rwarray</code>).</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Neither fusevm route lowers it: the numeric-chunk offload treats the chunk as ineligible, and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend refuses to compile a program that calls it rather than lowering it to something approximate.</p>
+        <p><strong>Restrictions.</strong> Rejected as a non-POSIX extension under <code>-P</code>/<code>--posix</code> and <code>-c</code>/<code>--traditional</code>, and blocked under <code>-S</code>/<code>--sandbox</code>.</p>
+      </article>
+    </section>
+    <section class="tutorial-section" id="ch-localization-functions">
+      <h2>Localization Functions</h2>
+      <p class="chapter-meta">3 topics</p>
+      <article class="doc-entry" id="doc-bindtextdomain">
+        <h3><a class="doc-anchor" href="#doc-bindtextdomain">#</a> <code>bindtextdomain</code></h3>
+        <pre><code class="lang-awk">bindtextdomain(domain, dirname)
+</code></pre>
+        <p>Set <code>TEXTDOMAIN</code> to <code>domain</code>, point the catalog search at <code>dirname</code>, and load that catalog if present; returns <code>dirname</code>. Both arguments are required, and awkrs takes them in <code>(domain, dirname)</code> order.</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Neither fusevm route lowers it: the numeric-chunk offload treats the chunk as ineligible, and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend refuses to compile a program that calls it rather than lowering it to something approximate.</p>
+        <p><strong>Restrictions.</strong> Rejected as a non-POSIX extension under <code>-P</code>/<code>--posix</code> and <code>-c</code>/<code>--traditional</code>.</p>
+      </article>
+      <article class="doc-entry" id="doc-dcgettext">
+        <h3><a class="doc-anchor" href="#doc-dcgettext">#</a> <code>dcgettext</code></h3>
+        <pre><code class="lang-awk">dcgettext(string, domain, category)
+</code></pre>
+        <p>Translate <code>string</code> through the loaded <code>domain</code> catalog, returning <code>string</code> unchanged when no catalog is loaded. All three arguments are required and <code>category</code> is accepted but not used for lookup.</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Neither fusevm route lowers it: the numeric-chunk offload treats the chunk as ineligible, and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend refuses to compile a program that calls it rather than lowering it to something approximate.</p>
+        <p><strong>Restrictions.</strong> Rejected as a non-POSIX extension under <code>-P</code>/<code>--posix</code> and <code>-c</code>/<code>--traditional</code>.</p>
+      </article>
+      <article class="doc-entry" id="doc-dcngettext">
+        <h3><a class="doc-anchor" href="#doc-dcngettext">#</a> <code>dcngettext</code></h3>
+        <pre><code class="lang-awk">dcngettext(s1, s2, n, domain, category)
+</code></pre>
+        <p>Plural-aware translation of <code>s1</code>/<code>s2</code> for count <code>n</code> through the <code>domain</code> catalog; with no catalog loaded, returns <code>s1</code> when <code>n</code> is 1 and <code>s2</code> otherwise. All five arguments are required and <code>category</code> is accepted but not used for lookup.</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Neither fusevm route lowers it: the numeric-chunk offload treats the chunk as ineligible, and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend refuses to compile a program that calls it rather than lowering it to something approximate.</p>
+        <p><strong>Restrictions.</strong> Rejected as a non-POSIX extension under <code>-P</code>/<code>--posix</code> and <code>-c</code>/<code>--traditional</code>.</p>
+      </article>
+    </section>
+    <section class="tutorial-section" id="ch-the-intercept-engine">
+      <h2>The Intercept Engine</h2>
+      <p class="chapter-meta">9 topics</p>
+      <article class="doc-entry" id="doc-before-advice">
+        <h3><a class="doc-anchor" href="#doc-before-advice">#</a> <code>before advice</code></h3>
+        <pre><code class="lang-awk">intercept(&quot;before&quot;, pattern, code)
+</code></pre>
+        <p>Runs <code>code</code> before every matching user-function call, then lets normal dispatch run the original. Every matching *before* advice fires, in registration order. If only *before* advice matched, the call proceeds untouched — the advice cannot change the arguments or the result.</p>
+      </article>
+      <article class="doc-entry" id="doc-after-advice">
+        <h3><a class="doc-anchor" href="#doc-after-advice">#</a> <code>after advice</code></h3>
+        <pre><code class="lang-awk">intercept(&quot;after&quot;, pattern, code)
+</code></pre>
+        <p>Runs <code>code</code> after the original returns. The presence of *after* advice makes the intercept machinery call the original itself, so <code>INTERCEPT_MS</code> / <code>INTERCEPT_US</code> are populated with the measured duration before the advice runs. The original&#39;s return value reaches the caller unchanged.</p>
+      </article>
+      <article class="doc-entry" id="doc-around-advice">
+        <h3><a class="doc-anchor" href="#doc-around-advice">#</a> <code>around advice</code></h3>
+        <pre><code class="lang-awk">intercept(&quot;around&quot;, pattern, code)
+</code></pre>
+        <p>Wraps the call. The original does not run unless <code>code</code> calls <code>intercept_proceed()</code>. At most one *around* advice is honored per call — the first match wins. The value the caller receives is whatever <code>intercept_proceed()</code> captured, or the awk empty value when the advice never proceeded; the advice&#39;s own <code>return</code> value is discarded, so *around* advice can suppress a call but cannot rewrite its result.</p>
+      </article>
+      <article class="doc-entry" id="doc-intercept-patterns">
+        <h3><a class="doc-anchor" href="#doc-intercept-patterns">#</a> <code>intercept patterns</code></h3>
+        <pre><code class="lang-awk">intercept(kind, &quot;draw_*&quot;, code)
+</code></pre>
+        <p>A pattern matches by exact function name, or as a shell-style glob (<code>*</code> for any run including empty, <code>?</code> for one character) against both the bare function name and the <code>&quot;name arg1 arg2&quot;</code> call string. <code>&quot;*&quot;</code> and <code>&quot;all&quot;</code> match every call. Any other character, including <code>[</code>, matches literally — there are no bracket expressions.</p>
+      </article>
+      <article class="doc-entry" id="doc-intercept-name">
+        <h3><a class="doc-anchor" href="#doc-intercept-name">#</a> <code>INTERCEPT_NAME</code></h3>
+        <pre><code class="lang-awk">INTERCEPT_NAME
+</code></pre>
+        <p>Global exposed to advice for the span of an intercepted call: the name of the function being intercepted. Removed again when the call completes.</p>
+      </article>
+      <article class="doc-entry" id="doc-intercept-args">
+        <h3><a class="doc-anchor" href="#doc-intercept-args">#</a> <code>INTERCEPT_ARGS</code></h3>
+        <pre><code class="lang-awk">INTERCEPT_ARGS
+</code></pre>
+        <p>The call&#39;s arguments joined with single spaces, in their string forms. A lossy view — use it for logging and matching, not for reconstructing values.</p>
+      </article>
+      <article class="doc-entry" id="doc-intercept-cmd">
+        <h3><a class="doc-anchor" href="#doc-intercept-cmd">#</a> <code>INTERCEPT_CMD</code></h3>
+        <pre><code class="lang-awk">INTERCEPT_CMD
+</code></pre>
+        <p><code>INTERCEPT_NAME</code> and <code>INTERCEPT_ARGS</code> joined by a space, or just the name when the call had no arguments. This is the string glob patterns are matched against.</p>
+      </article>
+      <article class="doc-entry" id="doc-intercept-ms">
+        <h3><a class="doc-anchor" href="#doc-intercept-ms">#</a> <code>INTERCEPT_MS</code></h3>
+        <pre><code class="lang-awk">INTERCEPT_MS
+</code></pre>
+        <p>Wall-clock duration of the intercepted call in milliseconds, formatted to three decimals. Set only before *after* advice runs, so *before* and *around* advice never see it.</p>
+      </article>
+      <article class="doc-entry" id="doc-intercept-us">
+        <h3><a class="doc-anchor" href="#doc-intercept-us">#</a> <code>INTERCEPT_US</code></h3>
+        <pre><code class="lang-awk">INTERCEPT_US
+</code></pre>
+        <p>The same measurement in whole microseconds. Set alongside <code>INTERCEPT_MS</code>, with the same *after*-advice-only visibility.</p>
+      </article>
+    </section>
+    <section class="tutorial-section" id="ch-intercept-functions">
+      <h2>Intercept Functions</h2>
+      <p class="chapter-meta">5 topics</p>
+      <article class="doc-entry" id="doc-intercept">
+        <h3><a class="doc-anchor" href="#doc-intercept">#</a> <code>intercept</code></h3>
+        <pre><code class="lang-awk">intercept(kind, pattern, code)
+</code></pre>
+        <p>Register AOP advice (<code>kind</code>: &quot;before&quot;/&quot;after&quot;/&quot;around&quot;) on user-function calls matching <code>pattern</code>; returns the ID (awkrs extension).</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Neither fusevm route lowers it: the numeric-chunk offload treats the chunk as ineligible, and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend refuses to compile a program that calls it rather than lowering it to something approximate.</p>
+      </article>
+      <article class="doc-entry" id="doc-intercept-proceed">
+        <h3><a class="doc-anchor" href="#doc-intercept-proceed">#</a> <code>intercept_proceed</code></h3>
+        <pre><code class="lang-awk">intercept_proceed()
+</code></pre>
+        <p>From around advice: run the original function and return its value (awkrs extension).</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Neither fusevm route lowers it: the numeric-chunk offload treats the chunk as ineligible, and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend refuses to compile a program that calls it rather than lowering it to something approximate.</p>
+      </article>
+      <article class="doc-entry" id="doc-intercept-list">
+        <h3><a class="doc-anchor" href="#doc-intercept-list">#</a> <code>intercept_list</code></h3>
+        <pre><code class="lang-awk">intercept_list()
+</code></pre>
+        <p>List registered intercepts (to stderr); returns the count (awkrs extension).</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Neither fusevm route lowers it: the numeric-chunk offload treats the chunk as ineligible, and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend refuses to compile a program that calls it rather than lowering it to something approximate.</p>
+      </article>
+      <article class="doc-entry" id="doc-intercept-remove">
+        <h3><a class="doc-anchor" href="#doc-intercept-remove">#</a> <code>intercept_remove</code></h3>
+        <pre><code class="lang-awk">intercept_remove(id)
+</code></pre>
+        <p>Remove the intercept with <code>id</code>; returns 1 if removed, else 0 (awkrs extension).</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Neither fusevm route lowers it: the numeric-chunk offload treats the chunk as ineligible, and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend refuses to compile a program that calls it rather than lowering it to something approximate.</p>
+      </article>
+      <article class="doc-entry" id="doc-intercept-clear">
+        <h3><a class="doc-anchor" href="#doc-intercept-clear">#</a> <code>intercept_clear</code></h3>
+        <pre><code class="lang-awk">intercept_clear()
+</code></pre>
+        <p>Remove all intercepts; returns the number cleared (awkrs extension).</p>
+        <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Neither fusevm route lowers it: the numeric-chunk offload treats the chunk as ineligible, and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend refuses to compile a program that calls it rather than lowering it to something approximate.</p>
       </article>
     </section>
     <section class="tutorial-section" id="ch-special-variables">
       <h2>Special Variables</h2>
-      <p class="chapter-meta">25 topics</p>
+      <p class="chapter-meta">28 topics</p>
       <article class="doc-entry" id="doc-nr">
         <h3><a class="doc-anchor" href="#doc-nr">#</a> <code>NR</code></h3>
         <p><strong><code>NR</code></strong> — special variable</p>
@@ -451,6 +828,16 @@
         <h3><a class="doc-anchor" href="#doc-nf">#</a> <code>NF</code></h3>
         <p><strong><code>NF</code></strong> — special variable</p>
         <p>Number of fields in the current record.</p>
+      </article>
+      <article class="doc-entry" id="doc-fnr">
+        <h3><a class="doc-anchor" href="#doc-fnr">#</a> <code>FNR</code></h3>
+        <p><strong><code>FNR</code></strong> — special variable</p>
+        <p>Record number within the current input file.</p>
+      </article>
+      <article class="doc-entry" id="doc-filename">
+        <h3><a class="doc-anchor" href="#doc-filename">#</a> <code>FILENAME</code></h3>
+        <p><strong><code>FILENAME</code></strong> — special variable</p>
+        <p>Name of the current input file.</p>
       </article>
       <article class="doc-entry" id="doc-fs">
         <h3><a class="doc-anchor" href="#doc-fs">#</a> <code>FS</code></h3>
@@ -472,15 +859,15 @@
         <p><strong><code>RS</code></strong> — special variable</p>
         <p>Input record separator (default &quot;\n&quot;).</p>
       </article>
-      <article class="doc-entry" id="doc-filename">
-        <h3><a class="doc-anchor" href="#doc-filename">#</a> <code>FILENAME</code></h3>
-        <p><strong><code>FILENAME</code></strong> — special variable</p>
-        <p>Name of the current input file.</p>
+      <article class="doc-entry" id="doc-rt">
+        <h3><a class="doc-anchor" href="#doc-rt">#</a> <code>RT</code></h3>
+        <p><strong><code>RT</code></strong> — special variable</p>
+        <p>Text matched by RS for the current record (gawk).</p>
       </article>
-      <article class="doc-entry" id="doc-fnr">
-        <h3><a class="doc-anchor" href="#doc-fnr">#</a> <code>FNR</code></h3>
-        <p><strong><code>FNR</code></strong> — special variable</p>
-        <p>Record number within the current input file.</p>
+      <article class="doc-entry" id="doc-subsep">
+        <h3><a class="doc-anchor" href="#doc-subsep">#</a> <code>SUBSEP</code></h3>
+        <p><strong><code>SUBSEP</code></strong> — special variable</p>
+        <p>Subscript separator for multi-dimensional array keys.</p>
       </article>
       <article class="doc-entry" id="doc-rstart">
         <h3><a class="doc-anchor" href="#doc-rstart">#</a> <code>RSTART</code></h3>
@@ -492,10 +879,30 @@
         <p><strong><code>RLENGTH</code></strong> — special variable</p>
         <p>Length of the last match(), or -1.</p>
       </article>
-      <article class="doc-entry" id="doc-subsep">
-        <h3><a class="doc-anchor" href="#doc-subsep">#</a> <code>SUBSEP</code></h3>
-        <p><strong><code>SUBSEP</code></strong> — special variable</p>
-        <p>Subscript separator for multi-dimensional array keys.</p>
+      <article class="doc-entry" id="doc-convfmt">
+        <h3><a class="doc-anchor" href="#doc-convfmt">#</a> <code>CONVFMT</code></h3>
+        <p><strong><code>CONVFMT</code></strong> — special variable</p>
+        <p>Conversion format for numbers used as strings (default &quot;%.6g&quot;).</p>
+      </article>
+      <article class="doc-entry" id="doc-ofmt">
+        <h3><a class="doc-anchor" href="#doc-ofmt">#</a> <code>OFMT</code></h3>
+        <p><strong><code>OFMT</code></strong> — special variable</p>
+        <p>Output format for numbers in print (default &quot;%.6g&quot;).</p>
+      </article>
+      <article class="doc-entry" id="doc-fpat">
+        <h3><a class="doc-anchor" href="#doc-fpat">#</a> <code>FPAT</code></h3>
+        <p><strong><code>FPAT</code></strong> — special variable</p>
+        <p>Regexp describing field contents, as an alternative to FS (gawk).</p>
+      </article>
+      <article class="doc-entry" id="doc-fieldwidths">
+        <h3><a class="doc-anchor" href="#doc-fieldwidths">#</a> <code>FIELDWIDTHS</code></h3>
+        <p><strong><code>FIELDWIDTHS</code></strong> — special variable</p>
+        <p>Space-separated fixed field widths for parsing (gawk).</p>
+      </article>
+      <article class="doc-entry" id="doc-ignorecase">
+        <h3><a class="doc-anchor" href="#doc-ignorecase">#</a> <code>IGNORECASE</code></h3>
+        <p><strong><code>IGNORECASE</code></strong> — special variable</p>
+        <p>When non-zero, regex and string comparisons ignore case (gawk).</p>
       </article>
       <article class="doc-entry" id="doc-argc">
         <h3><a class="doc-anchor" href="#doc-argc">#</a> <code>ARGC</code></h3>
@@ -507,55 +914,35 @@
         <p><strong><code>ARGV</code></strong> — special variable</p>
         <p>Array of command-line arguments.</p>
       </article>
+      <article class="doc-entry" id="doc-argind">
+        <h3><a class="doc-anchor" href="#doc-argind">#</a> <code>ARGIND</code></h3>
+        <p><strong><code>ARGIND</code></strong> — special variable</p>
+        <p>Index in ARGV of the current input file (gawk).</p>
+      </article>
       <article class="doc-entry" id="doc-environ">
         <h3><a class="doc-anchor" href="#doc-environ">#</a> <code>ENVIRON</code></h3>
         <p><strong><code>ENVIRON</code></strong> — special variable</p>
         <p>Array of the process environment variables.</p>
-      </article>
-      <article class="doc-entry" id="doc-convfmt">
-        <h3><a class="doc-anchor" href="#doc-convfmt">#</a> <code>CONVFMT</code></h3>
-        <p><strong><code>CONVFMT</code></strong> — special variable</p>
-        <p>Conversion format for numbers used as strings (default &quot;%.6g&quot;).</p>
-      </article>
-      <article class="doc-entry" id="doc-ofmt">
-        <h3><a class="doc-anchor" href="#doc-ofmt">#</a> <code>OFMT</code></h3>
-        <p><strong><code>OFMT</code></strong> — special variable</p>
-        <p>Output format for numbers in print (default &quot;%.6g&quot;).</p>
-      </article>
-      <article class="doc-entry" id="doc-ignorecase">
-        <h3><a class="doc-anchor" href="#doc-ignorecase">#</a> <code>IGNORECASE</code></h3>
-        <p><strong><code>IGNORECASE</code></strong> — special variable</p>
-        <p>When non-zero, regex and string comparisons ignore case (gawk).</p>
-      </article>
-      <article class="doc-entry" id="doc-fieldwidths">
-        <h3><a class="doc-anchor" href="#doc-fieldwidths">#</a> <code>FIELDWIDTHS</code></h3>
-        <p><strong><code>FIELDWIDTHS</code></strong> — special variable</p>
-        <p>Space-separated fixed field widths for parsing (gawk).</p>
-      </article>
-      <article class="doc-entry" id="doc-fpat">
-        <h3><a class="doc-anchor" href="#doc-fpat">#</a> <code>FPAT</code></h3>
-        <p><strong><code>FPAT</code></strong> — special variable</p>
-        <p>Regexp describing field contents, as an alternative to FS (gawk).</p>
-      </article>
-      <article class="doc-entry" id="doc-procinfo">
-        <h3><a class="doc-anchor" href="#doc-procinfo">#</a> <code>PROCINFO</code></h3>
-        <p><strong><code>PROCINFO</code></strong> — special variable</p>
-        <p>Array of process/runtime information (gawk).</p>
-      </article>
-      <article class="doc-entry" id="doc-rt">
-        <h3><a class="doc-anchor" href="#doc-rt">#</a> <code>RT</code></h3>
-        <p><strong><code>RT</code></strong> — special variable</p>
-        <p>Text matched by RS for the current record (gawk).</p>
       </article>
       <article class="doc-entry" id="doc-errno">
         <h3><a class="doc-anchor" href="#doc-errno">#</a> <code>ERRNO</code></h3>
         <p><strong><code>ERRNO</code></strong> — special variable</p>
         <p>Description of the last getline/close/system error (gawk).</p>
       </article>
-      <article class="doc-entry" id="doc-textdomain">
-        <h3><a class="doc-anchor" href="#doc-textdomain">#</a> <code>TEXTDOMAIN</code></h3>
-        <p><strong><code>TEXTDOMAIN</code></strong> — special variable</p>
-        <p>Text domain for string translation (gawk).</p>
+      <article class="doc-entry" id="doc-procinfo">
+        <h3><a class="doc-anchor" href="#doc-procinfo">#</a> <code>PROCINFO</code></h3>
+        <p><strong><code>PROCINFO</code></strong> — special variable</p>
+        <p>Array of process/runtime information (gawk).</p>
+      </article>
+      <article class="doc-entry" id="doc-symtab">
+        <h3><a class="doc-anchor" href="#doc-symtab">#</a> <code>SYMTAB</code></h3>
+        <p><strong><code>SYMTAB</code></strong> — special variable</p>
+        <p>Array aliasing the program&#39;s global variables (gawk).</p>
+      </article>
+      <article class="doc-entry" id="doc-functab">
+        <h3><a class="doc-anchor" href="#doc-functab">#</a> <code>FUNCTAB</code></h3>
+        <p><strong><code>FUNCTAB</code></strong> — special variable</p>
+        <p>Array of the program&#39;s function names (gawk).</p>
       </article>
       <article class="doc-entry" id="doc-binmode">
         <h3><a class="doc-anchor" href="#doc-binmode">#</a> <code>BINMODE</code></h3>
@@ -567,9 +954,14 @@
         <p><strong><code>LINT</code></strong> — special variable</p>
         <p>Dynamic control of lint warnings (gawk).</p>
       </article>
+      <article class="doc-entry" id="doc-textdomain">
+        <h3><a class="doc-anchor" href="#doc-textdomain">#</a> <code>TEXTDOMAIN</code></h3>
+        <p><strong><code>TEXTDOMAIN</code></strong> — special variable</p>
+        <p>Text domain for string translation (gawk).</p>
+      </article>
     </section>
-    <section class="tutorial-section" id="ch-keywords-control-flow">
-      <h2>Keywords &amp; Control Flow</h2>
+    <section class="tutorial-section" id="ch-keywords-and-control-flow">
+      <h2>Keywords and Control Flow</h2>
       <p class="chapter-meta">21 topics</p>
       <article class="doc-entry" id="doc-begin">
         <h3><a class="doc-anchor" href="#doc-begin">#</a> <code>BEGIN</code></h3>
@@ -596,6 +988,11 @@
         <p><strong><code>function</code></strong> — keyword</p>
         <p>Define a user function: <code>function name(params) { body }</code>.</p>
       </article>
+      <article class="doc-entry" id="doc-return">
+        <h3><a class="doc-anchor" href="#doc-return">#</a> <code>return</code></h3>
+        <p><strong><code>return</code></strong> — keyword</p>
+        <p>Return from a user function, optionally with a value: <code>return [expr]</code>.</p>
+      </article>
       <article class="doc-entry" id="doc-if">
         <h3><a class="doc-anchor" href="#doc-if">#</a> <code>if</code></h3>
         <p><strong><code>if</code></strong> — keyword</p>
@@ -611,15 +1008,35 @@
         <p><strong><code>while</code></strong> — keyword</p>
         <p>Loop that repeats <code>stmt</code> while <code>cond</code> is true: <code>while (cond) stmt</code>.</p>
       </article>
+      <article class="doc-entry" id="doc-do">
+        <h3><a class="doc-anchor" href="#doc-do">#</a> <code>do</code></h3>
+        <p><strong><code>do</code></strong> — keyword</p>
+        <p>Do-while loop: <code>do stmt while (cond)</code>; the body runs at least once.</p>
+      </article>
       <article class="doc-entry" id="doc-for">
         <h3><a class="doc-anchor" href="#doc-for">#</a> <code>for</code></h3>
         <p><strong><code>for</code></strong> — keyword</p>
         <p>Loop: <code>for (init; cond; incr) stmt</code>, or <code>for (key in array) stmt</code>.</p>
       </article>
-      <article class="doc-entry" id="doc-do">
-        <h3><a class="doc-anchor" href="#doc-do">#</a> <code>do</code></h3>
-        <p><strong><code>do</code></strong> — keyword</p>
-        <p>Do-while loop: <code>do stmt while (cond)</code>; the body runs at least once.</p>
+      <article class="doc-entry" id="doc-in">
+        <h3><a class="doc-anchor" href="#doc-in">#</a> <code>in</code></h3>
+        <p><strong><code>in</code></strong> — keyword</p>
+        <p>Array membership test (<code>key in arr</code>) or iteration (<code>for (key in arr)</code>).</p>
+      </article>
+      <article class="doc-entry" id="doc-switch">
+        <h3><a class="doc-anchor" href="#doc-switch">#</a> <code>switch</code></h3>
+        <p><strong><code>switch</code></strong> — keyword</p>
+        <p>Multi-way branch on a value: <code>switch (expr) { case ...: ... }</code> (gawk).</p>
+      </article>
+      <article class="doc-entry" id="doc-case">
+        <h3><a class="doc-anchor" href="#doc-case">#</a> <code>case</code></h3>
+        <p><strong><code>case</code></strong> — keyword</p>
+        <p>A labeled branch inside a <code>switch</code> statement (gawk).</p>
+      </article>
+      <article class="doc-entry" id="doc-default">
+        <h3><a class="doc-anchor" href="#doc-default">#</a> <code>default</code></h3>
+        <p><strong><code>default</code></strong> — keyword</p>
+        <p>The fallback branch taken when no <code>case</code> matches in a <code>switch</code> (gawk).</p>
       </article>
       <article class="doc-entry" id="doc-break">
         <h3><a class="doc-anchor" href="#doc-break">#</a> <code>break</code></h3>
@@ -646,35 +1063,1136 @@
         <p><strong><code>exit</code></strong> — keyword</p>
         <p>Stop reading input and run <code>END</code>; <code>exit [expr]</code> sets the exit status.</p>
       </article>
-      <article class="doc-entry" id="doc-return">
-        <h3><a class="doc-anchor" href="#doc-return">#</a> <code>return</code></h3>
-        <p><strong><code>return</code></strong> — keyword</p>
-        <p>Return from a user function, optionally with a value: <code>return [expr]</code>.</p>
-      </article>
       <article class="doc-entry" id="doc-delete">
         <h3><a class="doc-anchor" href="#doc-delete">#</a> <code>delete</code></h3>
         <p><strong><code>delete</code></strong> — keyword</p>
         <p>Remove an array element (<code>delete arr[k]</code>) or clear it (<code>delete arr</code>).</p>
       </article>
-      <article class="doc-entry" id="doc-switch">
-        <h3><a class="doc-anchor" href="#doc-switch">#</a> <code>switch</code></h3>
-        <p><strong><code>switch</code></strong> — keyword</p>
-        <p>Multi-way branch on a value: <code>switch (expr) { case ...: ... }</code> (gawk).</p>
+    </section>
+    <section class="tutorial-section" id="ch-pattern-forms">
+      <h2>Pattern Forms</h2>
+      <p class="chapter-meta">6 topics</p>
+      <article class="doc-entry" id="doc-pattern-action">
+        <h3><a class="doc-anchor" href="#doc-pattern-action">#</a> <code>pattern { action }</code></h3>
+        <pre><code class="lang-awk">pattern { action }
+</code></pre>
+        <p>The rule form. For each input record, the pattern is evaluated and the action runs when it is true. A program is a sequence of these plus function definitions; there are no bare top-level statements.</p>
       </article>
-      <article class="doc-entry" id="doc-case">
-        <h3><a class="doc-anchor" href="#doc-case">#</a> <code>case</code></h3>
-        <p><strong><code>case</code></strong> — keyword</p>
-        <p>A labeled branch inside a <code>switch</code> statement (gawk).</p>
+      <article class="doc-entry" id="doc-action">
+        <h3><a class="doc-anchor" href="#doc-action">#</a> <code>{ action }</code></h3>
+        <pre><code class="lang-awk">{ action }
+</code></pre>
+        <p>Empty pattern — the action runs for every input record.</p>
       </article>
-      <article class="doc-entry" id="doc-default">
-        <h3><a class="doc-anchor" href="#doc-default">#</a> <code>default</code></h3>
-        <p><strong><code>default</code></strong> — keyword</p>
-        <p>The fallback branch taken when no <code>case</code> matches in a <code>switch</code> (gawk).</p>
+      <article class="doc-entry" id="doc-pattern-no-action">
+        <h3><a class="doc-anchor" href="#doc-pattern-no-action">#</a> <code>pattern (no action)</code></h3>
+        <pre><code class="lang-awk">/error/
+</code></pre>
+        <p>A rule with no action block prints <code>$0</code> whenever the pattern is true. <code>awkrs &#39;/error/&#39; log</code> is the grep-shaped form.</p>
       </article>
-      <article class="doc-entry" id="doc-in">
-        <h3><a class="doc-anchor" href="#doc-in">#</a> <code>in</code></h3>
-        <p><strong><code>in</code></strong> — keyword</p>
-        <p>Array membership test (<code>key in arr</code>) or iteration (<code>for (key in arr)</code>).</p>
+      <article class="doc-entry" id="doc-regexp">
+        <h3><a class="doc-anchor" href="#doc-regexp">#</a> <code>/regexp/</code></h3>
+        <pre><code class="lang-awk">/regexp/ { action }
+</code></pre>
+        <p>Regexp pattern: true when the ERE matches <code>$0</code>. Equivalent to <code>$0 ~ /regexp/</code>, and subject to <code>IGNORECASE</code> the same way.</p>
+      </article>
+      <article class="doc-entry" id="doc-expression-pattern">
+        <h3><a class="doc-anchor" href="#doc-expression-pattern">#</a> <code>expression pattern</code></h3>
+        <pre><code class="lang-awk">NF &gt; 3 &amp;&amp; $1 != &quot;#&quot; { action }
+</code></pre>
+        <p>Any expression works as a pattern; the action runs when the expression is true by awk&#39;s truth rules (non-zero number, or non-empty string for values that are not numeric strings).</p>
+      </article>
+      <article class="doc-entry" id="doc-range-pattern">
+        <h3><a class="doc-anchor" href="#doc-range-pattern">#</a> <code>range pattern</code></h3>
+        <pre><code class="lang-awk">pattern1, pattern2 { action }
+</code></pre>
+        <p>Inclusive range: the rule turns on at the record where <code>pattern1</code> is true and off after the record where <code>pattern2</code> is true, both records included. Either side may be a regexp or an expression.</p>
+      </article>
+    </section>
+    <section class="tutorial-section" id="ch-operators">
+      <h2>Operators</h2>
+      <p class="chapter-meta">24 topics</p>
+      <article class="doc-entry" id="doc-sym-3d">
+        <h3><a class="doc-anchor" href="#doc-sym-3d">#</a> <code>=</code></h3>
+        <pre><code class="lang-awk">lvalue = expr
+</code></pre>
+        <p>Assignment; right-associative and the loosest-binding operator, so <code>a = b = 1</code> assigns 1 to both. The target may be a variable, a field, or an array element. The expression&#39;s value is the assigned value.</p>
+      </article>
+      <article class="doc-entry" id="doc-sym-2b-3d-20-2d-3d-20-2a-3d-20-2f-3d-20-25-3d">
+        <h3><a class="doc-anchor" href="#doc-sym-2b-3d-20-2d-3d-20-2a-3d-20-2f-3d-20-25-3d">#</a> <code>+= -= *= /= %=</code></h3>
+        <pre><code class="lang-awk">lvalue += expr
+</code></pre>
+        <p>Compound assignment: read the target, apply the binary operator, store the result. <code>/=</code> and <code>%=</code> raise the same fatal division-by-zero error as their binary forms.</p>
+      </article>
+      <article class="doc-entry" id="doc-sym-5e-3d-20-2a-2a-3d">
+        <h3><a class="doc-anchor" href="#doc-sym-5e-3d-20-2a-2a-3d">#</a> <code>^= **=</code></h3>
+        <pre><code class="lang-awk">lvalue ^= expr
+</code></pre>
+        <p>Compound exponentiation. <code>**=</code> is accepted as a synonym for <code>^=</code>; the lexer emits one token for either spelling.</p>
+      </article>
+      <article class="doc-entry" id="doc-sym-3f-3a">
+        <h3><a class="doc-anchor" href="#doc-sym-3f-3a">#</a> <code>?:</code></h3>
+        <pre><code class="lang-awk">cond ? then : else
+</code></pre>
+        <p>Conditional expression; only the selected arm is evaluated. Binds tighter than assignment and looser than <code>||</code>. Newlines directly after <code>?</code> or <code>:</code> are treated as whitespace, so a ternary may be split across lines. The else arm is parsed as an assignment expression, so <code>c ? x = 1 : x = 2</code> parses.</p>
+      </article>
+      <article class="doc-entry" id="doc-sym-7c-7c">
+        <h3><a class="doc-anchor" href="#doc-sym-7c-7c">#</a> <code>||</code></h3>
+        <pre><code class="lang-awk">expr || expr
+</code></pre>
+        <p>Logical or; short-circuits, yielding 1 or 0. A newline after <code>||</code> is whitespace, so a condition may be continued on the next line without a backslash.</p>
+      </article>
+      <article class="doc-entry" id="doc-sym-26-26">
+        <h3><a class="doc-anchor" href="#doc-sym-26-26">#</a> <code>&amp;&amp;</code></h3>
+        <pre><code class="lang-awk">expr &amp;&amp; expr
+</code></pre>
+        <p>Logical and; short-circuits, yielding 1 or 0, and continues across a newline the same way <code>||</code> does. Binds tighter than <code>||</code>.</p>
+      </article>
+      <article class="doc-entry" id="doc-in-2">
+        <h3><a class="doc-anchor" href="#doc-in-2">#</a> <code>in</code></h3>
+        <pre><code class="lang-awk">key in array
+</code></pre>
+        <p>Membership test: 1 when <code>array[key]</code> exists, else 0. Unlike a plain subscript reference it does not create the element. Chains left to right at the same precedence level as the comparison operators.</p>
+      </article>
+      <article class="doc-entry" id="doc-i-j-in-array">
+        <h3><a class="doc-anchor" href="#doc-i-j-in-array">#</a> <code>(i, j) in array</code></h3>
+        <pre><code class="lang-awk">(i, j) in array
+</code></pre>
+        <p>Membership test for a multidimensional subscript: the index list is joined with <code>SUBSEP</code> and looked up as a single key. The parentheses are required — they are what distinguishes the form from a comma expression.</p>
+      </article>
+      <article class="doc-entry" id="doc-sym-3d-3d-20-21-3d">
+        <h3><a class="doc-anchor" href="#doc-sym-3d-3d-20-21-3d">#</a> <code>== !=</code></h3>
+        <pre><code class="lang-awk">expr == expr
+</code></pre>
+        <p>Equality and inequality. Both operands numeric (or numeric strings from input) compare numerically, so <code>$1 == 10</code> matches the field text <code>10.0</code>; a string literal operand forces a string comparison, which is why <code>&quot;10&quot; == 10</code> and <code>10 == &quot;10&quot;</code> can differ from a field comparison.</p>
+      </article>
+      <article class="doc-entry" id="doc-sym-3c-20-3c-3d-20-3e-20-3e-3d">
+        <h3><a class="doc-anchor" href="#doc-sym-3c-20-3c-3d-20-3e-20-3e-3d">#</a> <code>&lt; &lt;= &gt; &gt;=</code></h3>
+        <pre><code class="lang-awk">expr &lt; expr
+</code></pre>
+        <p>Relational comparison, with the same numeric-versus-string rule as <code>==</code>. Inside a <code>print</code> or <code>printf</code> argument list a bare <code>&gt;</code> is parsed as an output redirection, not a comparison — parenthesize the comparison to disambiguate.</p>
+      </article>
+      <article class="doc-entry" id="doc-sym-7e">
+        <h3><a class="doc-anchor" href="#doc-sym-7e">#</a> <code>~</code></h3>
+        <pre><code class="lang-awk">expr ~ /regexp/
+</code></pre>
+        <p>Regexp match: 1 when the right operand, taken as an ERE, matches the left operand&#39;s string form. The right side may be a <code>/re/</code> literal, an <code>@/re/</code> typed regexp, or any string-valued expression used as a dynamic regexp.</p>
+      </article>
+      <article class="doc-entry" id="doc-sym-21-7e">
+        <h3><a class="doc-anchor" href="#doc-sym-21-7e">#</a> <code>!~</code></h3>
+        <pre><code class="lang-awk">expr !~ /regexp/
+</code></pre>
+        <p>Negated regexp match — 1 when <code>~</code> would yield 0.</p>
+      </article>
+      <article class="doc-entry" id="doc-concatenation">
+        <h3><a class="doc-anchor" href="#doc-concatenation">#</a> <code>concatenation</code></h3>
+        <pre><code class="lang-awk">expr expr
+</code></pre>
+        <p>Juxtaposition concatenates the operands&#39; string forms; there is no operator symbol. It binds tighter than the comparisons and looser than <code>+</code>/<code>-</code>, which is why <code>print 1 &quot; &quot; 2+3</code> prints <code>1 5</code>.</p>
+      </article>
+      <article class="doc-entry" id="doc-sym-2b-20-2d">
+        <h3><a class="doc-anchor" href="#doc-sym-2b-20-2d">#</a> <code>+ -</code></h3>
+        <pre><code class="lang-awk">expr + expr
+</code></pre>
+        <p>Addition and subtraction on the operands&#39; numeric values. Under <code>-M</code>/<code>--bignum</code> these evaluate at MPFR precision instead of <code>f64</code>.</p>
+      </article>
+      <article class="doc-entry" id="doc-sym-2a">
+        <h3><a class="doc-anchor" href="#doc-sym-2a">#</a> <code>*</code></h3>
+        <pre><code class="lang-awk">expr * expr
+</code></pre>
+        <p>Multiplication, numeric.</p>
+      </article>
+      <article class="doc-entry" id="doc-sym-2f">
+        <h3><a class="doc-anchor" href="#doc-sym-2f">#</a> <code>/</code></h3>
+        <pre><code class="lang-awk">expr / expr
+</code></pre>
+        <p>Division. A zero divisor is a fatal runtime error (<code>division by zero attempted</code>), not an infinity — on the fusevm path this is why awkrs lowers to <code>Op::AwkDiv</code> rather than fusevm&#39;s shared <code>Op::Div</code>, which yields an undefined value instead.</p>
+      </article>
+      <article class="doc-entry" id="doc-sym-25">
+        <h3><a class="doc-anchor" href="#doc-sym-25">#</a> <code>%</code></h3>
+        <pre><code class="lang-awk">expr % expr
+</code></pre>
+        <p>Remainder, taking the sign of the left operand (<code>-7 % 3</code> is <code>-1</code>). A zero divisor is fatal, with the error naming <code>%</code>.</p>
+      </article>
+      <article class="doc-entry" id="doc-unary">
+        <h3><a class="doc-anchor" href="#doc-unary">#</a> <code>unary - +</code></h3>
+        <pre><code class="lang-awk">-expr
+</code></pre>
+        <p>Numeric negation and the no-op unary plus, which forces a numeric coercion. Both bind looser than <code>^</code>, so <code>-2^2</code> is <code>-4</code>.</p>
+      </article>
+      <article class="doc-entry" id="doc-sym-21">
+        <h3><a class="doc-anchor" href="#doc-sym-21">#</a> <code>!</code></h3>
+        <pre><code class="lang-awk">!expr
+</code></pre>
+        <p>Logical negation: 1 when the operand is false by awk&#39;s truth rules, else 0.</p>
+      </article>
+      <article class="doc-entry" id="doc-sym-5e-20-2a-2a">
+        <h3><a class="doc-anchor" href="#doc-sym-5e-20-2a-2a">#</a> <code>^ **</code></h3>
+        <pre><code class="lang-awk">expr ^ expr
+</code></pre>
+        <p>Exponentiation, right-associative — <code>2^3^2</code> is <code>2^(3^2)</code>, or 512. <code>**</code> is accepted as a synonym. Postfix <code>++</code>/<code>--</code> are applied to the base before the exponent, so <code>x++^2</code> squares the pre-increment value.</p>
+      </article>
+      <article class="doc-entry" id="doc-sym-2b-2b">
+        <h3><a class="doc-anchor" href="#doc-sym-2b-2b">#</a> <code>++</code></h3>
+        <pre><code class="lang-awk">++lvalue    lvalue++
+</code></pre>
+        <p>Increment by one. The prefix form yields the new value, the postfix form the old one. Valid on variables, fields, and array elements.</p>
+      </article>
+      <article class="doc-entry" id="doc-sym-2d-2d">
+        <h3><a class="doc-anchor" href="#doc-sym-2d-2d">#</a> <code>--</code></h3>
+        <pre><code class="lang-awk">--lvalue    lvalue--
+</code></pre>
+        <p>Decrement by one, with the same prefix/postfix distinction as <code>++</code>.</p>
+      </article>
+      <article class="doc-entry" id="doc-sym-24">
+        <h3><a class="doc-anchor" href="#doc-sym-24">#</a> <code>$</code></h3>
+        <pre><code class="lang-awk">$expr
+</code></pre>
+        <p>Field reference. <code>$0</code> is the whole record, <code>$1</code>…<code>$NF</code> the fields. Assigning to a field past <code>NF</code> extends the record and rebuilds <code>$0</code> with <code>OFS</code>; assigning to <code>$0</code> re-splits the record with the active field rule.</p>
+      </article>
+      <article class="doc-entry" id="doc-sym-28-20-29">
+        <h3><a class="doc-anchor" href="#doc-sym-28-20-29">#</a> <code>( )</code></h3>
+        <pre><code class="lang-awk">(expr)
+</code></pre>
+        <p>Grouping. A <code>(</code> immediately after an identifier with no intervening space is lexed as a function call instead — POSIX awk&#39;s rule that <code>name(arg)</code> calls and <code>name (arg)</code> concatenates, which awkrs implements with a distinct token.</p>
+      </article>
+    </section>
+    <section class="tutorial-section" id="ch-redirection-and-getline-forms">
+      <h2>Redirection and getline Forms</h2>
+      <p class="chapter-meta">13 topics</p>
+      <article class="doc-entry" id="doc-print-file">
+        <h3><a class="doc-anchor" href="#doc-print-file">#</a> <code>print &gt; file</code></h3>
+        <pre><code class="lang-awk">print expr-list &gt; file
+</code></pre>
+        <p>Write to <code>file</code>, truncating it the first time the program opens it and appending on every later write. Repeated <code>&gt;</code> to the same name within one run does not re-truncate; <code>close(file)</code> before the next write does.</p>
+      </article>
+      <article class="doc-entry" id="doc-print-file-2">
+        <h3><a class="doc-anchor" href="#doc-print-file-2">#</a> <code>print &gt;&gt; file</code></h3>
+        <pre><code class="lang-awk">print expr-list &gt;&gt; file
+</code></pre>
+        <p>Same as <code>&gt;</code> except the first open appends instead of truncating.</p>
+      </article>
+      <article class="doc-entry" id="doc-print-command">
+        <h3><a class="doc-anchor" href="#doc-print-command">#</a> <code>print | command</code></h3>
+        <pre><code class="lang-awk">print expr-list | command
+</code></pre>
+        <p>Run <code>command</code> through <code>sh -c</code> and write to its standard input. The pipe stays open until <code>close(command)</code> or program exit; the command string is the handle, so two redirections with the same text share one subprocess.</p>
+      </article>
+      <article class="doc-entry" id="doc-print-command-2">
+        <h3><a class="doc-anchor" href="#doc-print-command-2">#</a> <code>print |&amp; command</code></h3>
+        <pre><code class="lang-awk">print expr-list |&amp; command
+</code></pre>
+        <p>Two-way pipe (coprocess): the same <code>sh -c</code> command model, but both its standard input and standard output are connected. Read the other half back with <code>getline &lt;&amp; command</code>. Deadlocks are the caller&#39;s problem — flush or <code>close(command, &quot;to&quot;)</code> before reading.</p>
+      </article>
+      <article class="doc-entry" id="doc-getline-2">
+        <h3><a class="doc-anchor" href="#doc-getline-2">#</a> <code>getline</code></h3>
+        <pre><code class="lang-awk">getline
+</code></pre>
+        <p>Read the next record from the main input into <code>$0</code>, updating <code>NF</code>, <code>NR</code>, and <code>FNR</code>. Returns 1 on a record, 0 at end of input, -1 on error.</p>
+      </article>
+      <article class="doc-entry" id="doc-getline-var">
+        <h3><a class="doc-anchor" href="#doc-getline-var">#</a> <code>getline var</code></h3>
+        <pre><code class="lang-awk">getline var
+</code></pre>
+        <p>Read the next main-input record into <code>var</code>, leaving <code>$0</code> and <code>NF</code> alone; <code>NR</code> and <code>FNR</code> still advance. Same 1 / 0 / -1 return protocol.</p>
+      </article>
+      <article class="doc-entry" id="doc-getline-file">
+        <h3><a class="doc-anchor" href="#doc-getline-file">#</a> <code>getline &lt; file</code></h3>
+        <pre><code class="lang-awk">getline &lt; file
+</code></pre>
+        <p>Read the next record from <code>file</code> into <code>$0</code>, updating <code>NF</code> but not <code>NR</code> or <code>FNR</code>. Returns -1 when the file cannot be opened, which is how a missing input is distinguished from an empty one (0).</p>
+      </article>
+      <article class="doc-entry" id="doc-getline-var-file">
+        <h3><a class="doc-anchor" href="#doc-getline-var-file">#</a> <code>getline var &lt; file</code></h3>
+        <pre><code class="lang-awk">getline var &lt; file
+</code></pre>
+        <p>Read from <code>file</code> into <code>var</code>, touching neither the fields nor the record counters. The plainest form: no side effects beyond <code>var</code> and <code>ERRNO</code>.</p>
+      </article>
+      <article class="doc-entry" id="doc-command-getline">
+        <h3><a class="doc-anchor" href="#doc-command-getline">#</a> <code>command | getline</code></h3>
+        <pre><code class="lang-awk">command | getline
+</code></pre>
+        <p>Run <code>command</code> through <code>sh -c</code> and read its next output line into <code>$0</code>, updating <code>NF</code> and <code>NR</code>. Loop with <code>while ((cmd | getline) &gt; 0)</code> and finish with <code>close(cmd)</code>.</p>
+      </article>
+      <article class="doc-entry" id="doc-command-getline-var">
+        <h3><a class="doc-anchor" href="#doc-command-getline-var">#</a> <code>command | getline var</code></h3>
+        <pre><code class="lang-awk">command | getline var
+</code></pre>
+        <p>Read the command&#39;s next output line into <code>var</code>; <code>NR</code> advances, the fields do not change.</p>
+      </article>
+      <article class="doc-entry" id="doc-getline-var-command">
+        <h3><a class="doc-anchor" href="#doc-getline-var-command">#</a> <code>getline var &lt;&amp; command</code></h3>
+        <pre><code class="lang-awk">getline var &lt;&amp; command
+</code></pre>
+        <p>Read from the output half of the coprocess started by <code>|&amp;</code> with the same command string. The <code>&lt;&amp;</code> spelling is a distinct token, so it is never confused with <code>&lt;</code> followed by <code>&amp;</code>.</p>
+      </article>
+      <article class="doc-entry" id="doc-inet-tcp-lport-host-rport">
+        <h3><a class="doc-anchor" href="#doc-inet-tcp-lport-host-rport">#</a> <code>/inet/tcp/lport/host/rport</code></h3>
+        <pre><code class="lang-awk">print req |&amp; &quot;/inet/tcp/0/example.com/80&quot;
+</code></pre>
+        <p>A redirection target of this shape opens a TCP connection to <code>host:rport</code> instead of a file or a subprocess. A local port of 0 means an ephemeral client port; any other value is bound before connecting. Malformed paths — wrong field count, unparseable ports — are a runtime error, not a silent file open.</p>
+      </article>
+      <article class="doc-entry" id="doc-inet-udp-lport-host-rport">
+        <h3><a class="doc-anchor" href="#doc-inet-udp-lport-host-rport">#</a> <code>/inet/udp/lport/host/rport</code></h3>
+        <pre><code class="lang-awk">print msg &gt; &quot;/inet/udp/0/198.51.100.7/514&quot;
+</code></pre>
+        <p>The same path grammar over a connected UDP socket: writes send datagrams and reads receive them. An <code>/inet/</code> path that is neither <code>tcp</code> nor <code>udp</code> is rejected with an error naming the two supported forms.</p>
+      </article>
+    </section>
+    <section class="tutorial-section" id="ch-printf-conversions">
+      <h2>printf Conversions</h2>
+      <p class="chapter-meta">12 topics</p>
+      <article class="doc-entry" id="doc-d-i">
+        <h3><a class="doc-anchor" href="#doc-d-i">#</a> <code>%d, %i</code></h3>
+        <pre><code class="lang-awk">printf &quot;%d\n&quot;, expr
+</code></pre>
+        <p>Signed decimal integer; the value is truncated toward zero. Values outside <code>i64</code> fall back to a wider formatting path rather than wrapping, and under <code>-M</code>/<code>--bignum</code> the integer is taken from the MPFR value.</p>
+      </article>
+      <article class="doc-entry" id="doc-u">
+        <h3><a class="doc-anchor" href="#doc-u">#</a> <code>%u</code></h3>
+        <pre><code class="lang-awk">printf &quot;%u\n&quot;, expr
+</code></pre>
+        <p>Unsigned decimal integer.</p>
+      </article>
+      <article class="doc-entry" id="doc-o">
+        <h3><a class="doc-anchor" href="#doc-o">#</a> <code>%o</code></h3>
+        <pre><code class="lang-awk">printf &quot;%o\n&quot;, expr
+</code></pre>
+        <p>Unsigned octal. With the <code>#</code> flag the output carries a leading <code>0</code>.</p>
+      </article>
+      <article class="doc-entry" id="doc-x-x">
+        <h3><a class="doc-anchor" href="#doc-x-x">#</a> <code>%x, %X</code></h3>
+        <pre><code class="lang-awk">printf &quot;%x %X\n&quot;, expr, expr
+</code></pre>
+        <p>Unsigned hexadecimal, lower- and upper-case. With the <code>#</code> flag the output is prefixed <code>0x</code> or <code>0X</code>.</p>
+      </article>
+      <article class="doc-entry" id="doc-a-a">
+        <h3><a class="doc-anchor" href="#doc-a-a">#</a> <code>%a, %A</code></h3>
+        <pre><code class="lang-awk">printf &quot;%a\n&quot;, expr
+</code></pre>
+        <p>C99 hexadecimal floating point — <code>1.5</code> prints as <code>0x1.8p+0</code> (<code>%a</code>) or <code>0X1.8P+0</code> (<code>%A</code>). An exact, round-trippable rendering of the underlying double.</p>
+      </article>
+      <article class="doc-entry" id="doc-f-f">
+        <h3><a class="doc-anchor" href="#doc-f-f">#</a> <code>%f, %F</code></h3>
+        <pre><code class="lang-awk">printf &quot;%.2f\n&quot;, expr
+</code></pre>
+        <p>Fixed-point decimal, six fraction digits by default.</p>
+      </article>
+      <article class="doc-entry" id="doc-e-e">
+        <h3><a class="doc-anchor" href="#doc-e-e">#</a> <code>%e, %E</code></h3>
+        <pre><code class="lang-awk">printf &quot;%e\n&quot;, expr
+</code></pre>
+        <p>Scientific notation with six fraction digits by default; <code>%E</code> uses <code>E</code> for the exponent marker.</p>
+      </article>
+      <article class="doc-entry" id="doc-g-g">
+        <h3><a class="doc-anchor" href="#doc-g-g">#</a> <code>%g, %G</code></h3>
+        <pre><code class="lang-awk">printf &quot;%g\n&quot;, expr
+</code></pre>
+        <p>Shorter of <code>%e</code> and <code>%f</code> for the value, with trailing zeros removed unless the <code>#</code> flag is given. This is the conversion <code>CONVFMT</code> and <code>OFMT</code> default to (<code>%.6g</code>).</p>
+      </article>
+      <article class="doc-entry" id="doc-c">
+        <h3><a class="doc-anchor" href="#doc-c">#</a> <code>%c</code></h3>
+        <pre><code class="lang-awk">printf &quot;%c\n&quot;, expr
+</code></pre>
+        <p>A single character: the first character of a string argument, or the character for a numeric argument&#39;s code point. Padded with spaces even under the <code>0</code> flag, except in <code>--traditional</code> mode where the BSD awk zero-padding quirk is honored.</p>
+      </article>
+      <article class="doc-entry" id="doc-s">
+        <h3><a class="doc-anchor" href="#doc-s">#</a> <code>%s</code></h3>
+        <pre><code class="lang-awk">printf &quot;%.3s\n&quot;, expr
+</code></pre>
+        <p>String. A precision truncates to that many characters. Like <code>%c</code>, the <code>0</code> flag does not zero-pad strings except under <code>--traditional</code>.</p>
+      </article>
+      <article class="doc-entry" id="doc-sym-25-25">
+        <h3><a class="doc-anchor" href="#doc-sym-25-25">#</a> <code>%%</code></h3>
+        <pre><code class="lang-awk">printf &quot;100%%\n&quot;
+</code></pre>
+        <p>A literal percent sign. Consumes no argument.</p>
+      </article>
+      <article class="doc-entry" id="doc-unknown-conversions">
+        <h3><a class="doc-anchor" href="#doc-unknown-conversions">#</a> <code>unknown conversions</code></h3>
+        <pre><code class="lang-awk">printf &quot;[%q][%s]\n&quot;, &quot;x&quot;
+</code></pre>
+        <p>A conversion character outside the set above is emitted literally as <code>%q</code> and consumes no argument, so the following <code>%s</code> still receives the argument it was written for. The example prints <code>[%q][x]</code>.</p>
+      </article>
+    </section>
+    <section class="tutorial-section" id="ch-printf-flags-width-and-precision">
+      <h2>printf Flags, Width, and Precision</h2>
+      <p class="chapter-meta">12 topics</p>
+      <article class="doc-entry" id="doc-left-justify">
+        <h3><a class="doc-anchor" href="#doc-left-justify">#</a> <code>- (left justify)</code></h3>
+        <pre><code class="lang-awk">printf &quot;%-8s|\n&quot;, s
+</code></pre>
+        <p>Left-justify within the field width instead of right-justifying.</p>
+      </article>
+      <article class="doc-entry" id="doc-force-sign">
+        <h3><a class="doc-anchor" href="#doc-force-sign">#</a> <code>+ (force sign)</code></h3>
+        <pre><code class="lang-awk">printf &quot;%+d\n&quot;, n
+</code></pre>
+        <p>Always print a sign on a numeric conversion, <code>+</code> for non-negative values.</p>
+      </article>
+      <article class="doc-entry" id="doc-space-sign-placeholder">
+        <h3><a class="doc-anchor" href="#doc-space-sign-placeholder">#</a> <code>space (sign placeholder)</code></h3>
+        <pre><code class="lang-awk">printf &quot;% d\n&quot;, n
+</code></pre>
+        <p>Print a leading space where a non-negative value&#39;s sign would go, so positive and negative values align. Ignored when <code>+</code> is also given.</p>
+      </article>
+      <article class="doc-entry" id="doc-alternate-form">
+        <h3><a class="doc-anchor" href="#doc-alternate-form">#</a> <code># (alternate form)</code></h3>
+        <pre><code class="lang-awk">printf &quot;%#x %#o\n&quot;, n, n
+</code></pre>
+        <p>Alternate form: <code>0x</code>/<code>0X</code> prefix for <code>%x</code>/<code>%X</code>, a leading <code>0</code> for <code>%o</code>, and retained trailing zeros for <code>%g</code>/<code>%G</code>.</p>
+      </article>
+      <article class="doc-entry" id="doc-thousands-grouping">
+        <h3><a class="doc-anchor" href="#doc-thousands-grouping">#</a> <code>&#39; (thousands grouping)</code></h3>
+        <pre><code class="lang-awk">printf &quot;%&#39;d\n&quot;, 1234567
+</code></pre>
+        <p>Group the integer part with the locale&#39;s thousands separator. Under <code>-N</code>/<code>--use-lc-numeric</code> the separator comes from <code>localeconv()</code>; when the locale supplies none, the flag is a no-op rather than an error.</p>
+      </article>
+      <article class="doc-entry" id="doc-0-zero-pad">
+        <h3><a class="doc-anchor" href="#doc-0-zero-pad">#</a> <code>0 (zero pad)</code></h3>
+        <pre><code class="lang-awk">printf &quot;%05d\n&quot;, n
+</code></pre>
+        <p>Pad numeric conversions with zeros rather than spaces. The zeros go between the sign and the digits, so <code>%05d</code> of -42 is <code>-0042</code>. Ignored for <code>%s</code> and <code>%c</code> outside <code>--traditional</code>.</p>
+      </article>
+      <article class="doc-entry" id="doc-field-width">
+        <h3><a class="doc-anchor" href="#doc-field-width">#</a> <code>field width</code></h3>
+        <pre><code class="lang-awk">printf &quot;%8s|\n&quot;, s
+</code></pre>
+        <p>Minimum field width. Widths are capped at 100000 characters — beyond that the request is clamped instead of attempting the allocation.</p>
+      </article>
+      <article class="doc-entry" id="doc-width-from-argument">
+        <h3><a class="doc-anchor" href="#doc-width-from-argument">#</a> <code>* (width from argument)</code></h3>
+        <pre><code class="lang-awk">printf &quot;%*d|\n&quot;, 6, 42
+</code></pre>
+        <p>Take the field width from the next argument. A negative width means left-justify, exactly as if <code>-</code> had been written.</p>
+      </article>
+      <article class="doc-entry" id="doc-precision">
+        <h3><a class="doc-anchor" href="#doc-precision">#</a> <code>.precision</code></h3>
+        <pre><code class="lang-awk">printf &quot;%.3f %.2s\n&quot;, x, s
+</code></pre>
+        <p>Fraction digits for the floating conversions, significant digits for <code>%g</code>, maximum characters for <code>%s</code>. A bare <code>.</code> with no digits means precision zero.</p>
+      </article>
+      <article class="doc-entry" id="doc-precision-from-argument">
+        <h3><a class="doc-anchor" href="#doc-precision-from-argument">#</a> <code>.* (precision from argument)</code></h3>
+        <pre><code class="lang-awk">printf &quot;%.*f\n&quot;, 3, x
+</code></pre>
+        <p>Take the precision from the next argument; a negative value is treated as zero.</p>
+      </article>
+      <article class="doc-entry" id="doc-n-positional-argument">
+        <h3><a class="doc-anchor" href="#doc-n-positional-argument">#</a> <code>N$ (positional argument)</code></h3>
+        <pre><code class="lang-awk">printf &quot;%2$s %1$s\n&quot;, &quot;a&quot;, &quot;b&quot;
+</code></pre>
+        <p>Select the Nth argument explicitly instead of consuming the next one — the example prints <code>b a</code>. Useful when a translated format string needs a different argument order than the original.</p>
+      </article>
+      <article class="doc-entry" id="doc-h-l-l-length-modifiers">
+        <h3><a class="doc-anchor" href="#doc-h-l-l-length-modifiers">#</a> <code>h, l, L (length modifiers)</code></h3>
+        <pre><code class="lang-awk">printf &quot;%ld\n&quot;, n
+</code></pre>
+        <p>Accepted and skipped. awk has one numeric type, so the C length modifiers carry no information; they are consumed so that formats copied from C source still work.</p>
+      </article>
+    </section>
+    <section class="tutorial-section" id="ch-string-escape-sequences">
+      <h2>String Escape Sequences</h2>
+      <p class="chapter-meta">13 topics</p>
+      <article class="doc-entry" id="doc-n">
+        <h3><a class="doc-anchor" href="#doc-n">#</a> <code>\n</code></h3>
+        <pre><code class="lang-awk">&quot;line\n&quot;
+</code></pre>
+        <p>Newline (0x0A).</p>
+      </article>
+      <article class="doc-entry" id="doc-t">
+        <h3><a class="doc-anchor" href="#doc-t">#</a> <code>\t</code></h3>
+        <pre><code class="lang-awk">&quot;a\tb&quot;
+</code></pre>
+        <p>Horizontal tab (0x09).</p>
+      </article>
+      <article class="doc-entry" id="doc-r">
+        <h3><a class="doc-anchor" href="#doc-r">#</a> <code>\r</code></h3>
+        <pre><code class="lang-awk">&quot;a\rb&quot;
+</code></pre>
+        <p>Carriage return (0x0D).</p>
+      </article>
+      <article class="doc-entry" id="doc-a">
+        <h3><a class="doc-anchor" href="#doc-a">#</a> <code>\a</code></h3>
+        <pre><code class="lang-awk">&quot;\a&quot;
+</code></pre>
+        <p>Alert / bell (0x07).</p>
+      </article>
+      <article class="doc-entry" id="doc-b">
+        <h3><a class="doc-anchor" href="#doc-b">#</a> <code>\b</code></h3>
+        <pre><code class="lang-awk">&quot;\b&quot;
+</code></pre>
+        <p>Backspace (0x08).</p>
+      </article>
+      <article class="doc-entry" id="doc-f">
+        <h3><a class="doc-anchor" href="#doc-f">#</a> <code>\f</code></h3>
+        <pre><code class="lang-awk">&quot;\f&quot;
+</code></pre>
+        <p>Form feed (0x0C).</p>
+      </article>
+      <article class="doc-entry" id="doc-v">
+        <h3><a class="doc-anchor" href="#doc-v">#</a> <code>\v</code></h3>
+        <pre><code class="lang-awk">&quot;\v&quot;
+</code></pre>
+        <p>Vertical tab (0x0B).</p>
+      </article>
+      <article class="doc-entry" id="doc-sym-5c-5c">
+        <h3><a class="doc-anchor" href="#doc-sym-5c-5c">#</a> <code>\\</code></h3>
+        <pre><code class="lang-awk">&quot;C:\\path&quot;
+</code></pre>
+        <p>A literal backslash.</p>
+      </article>
+      <article class="doc-entry" id="doc-sym-5c-22">
+        <h3><a class="doc-anchor" href="#doc-sym-5c-22">#</a> <code>\&quot;</code></h3>
+        <pre><code class="lang-awk">&quot;say \&quot;hi\&quot;&quot;
+</code></pre>
+        <p>A literal double quote inside a string literal.</p>
+      </article>
+      <article class="doc-entry" id="doc-sym-5c-2f">
+        <h3><a class="doc-anchor" href="#doc-sym-5c-2f">#</a> <code>\/</code></h3>
+        <pre><code class="lang-awk">&quot;a\/b&quot;
+</code></pre>
+        <p>A literal forward slash. Redundant in a string but accepted, so a regexp copied into a string literal keeps working.</p>
+      </article>
+      <article class="doc-entry" id="doc-xhh">
+        <h3><a class="doc-anchor" href="#doc-xhh">#</a> <code>\xHH</code></h3>
+        <pre><code class="lang-awk">&quot;\x41&quot;
+</code></pre>
+        <p>One or two hexadecimal digits as a code point — <code>\x41</code> is <code>A</code>. With no hex digit following, the <code>\x</code> is kept as a literal <code>x</code>.</p>
+      </article>
+      <article class="doc-entry" id="doc-nnn">
+        <h3><a class="doc-anchor" href="#doc-nnn">#</a> <code>\NNN</code></h3>
+        <pre><code class="lang-awk">&quot;\101&quot;
+</code></pre>
+        <p>One to three octal digits as a byte value — <code>\101</code> is <code>A</code>. Values above 0xFF are masked to a single byte.</p>
+      </article>
+      <article class="doc-entry" id="doc-c-unrecognized">
+        <h3><a class="doc-anchor" href="#doc-c-unrecognized">#</a> <code>\c (unrecognized)</code></h3>
+        <pre><code class="lang-awk">&quot;\q&quot;
+</code></pre>
+        <p>An escape that is not in this table drops the backslash and keeps the character, so <code>&quot;\q&quot;</code> is <code>q</code>. gawk warns about this under <code>--lint</code>; awkrs accepts it silently.</p>
+      </article>
+    </section>
+    <section class="tutorial-section" id="ch-source-directives-and-inline-rust">
+      <h2>Source Directives and Inline Rust</h2>
+      <p class="chapter-meta">6 topics</p>
+      <article class="doc-entry" id="doc-include">
+        <h3><a class="doc-anchor" href="#doc-include">#</a> <code>@include</code></h3>
+        <pre><code class="lang-awk">@include &quot;lib.awk&quot;
+</code></pre>
+        <p>Splice another source file in at this point, before lexing. Includes are resolved once per path — a file already pulled in is skipped rather than duplicated, so a diamond of includes does not redefine its functions.</p>
+      </article>
+      <article class="doc-entry" id="doc-load">
+        <h3><a class="doc-anchor" href="#doc-load">#</a> <code>@load</code></h3>
+        <pre><code class="lang-awk">@load &quot;filefuncs&quot;
+</code></pre>
+        <p>gawk&#39;s dynamic-extension directive. awkrs implements gawk&#39;s bundled modules — <code>filefuncs</code>, <code>readdir</code>, <code>time</code>, <code>inplace</code>, <code>ordchr</code>, <code>readfile</code>, <code>revoutput</code>, <code>revtwoway</code>, <code>rwarray</code>, <code>intdiv</code> — natively in Rust, so loading one of those names (with or without a <code>.so</code> suffix or a directory prefix) is accepted and ignored; nothing is <code>dlopen</code>ed. Any other name is treated as an <code>@include</code> of that <code>.awk</code> file.</p>
+      </article>
+      <article class="doc-entry" id="doc-namespace">
+        <h3><a class="doc-anchor" href="#doc-namespace">#</a> <code>@namespace</code></h3>
+        <pre><code class="lang-awk">@namespace &quot;util&quot;
+</code></pre>
+        <p>Set the default namespace for the rest of the file: unqualified identifiers are rewritten to <code>util::name</code> in the AST. Builtin names, the special globals, and function-local names are never prefixed, and a name that already contains <code>::</code> is left alone.</p>
+      </article>
+      <article class="doc-entry" id="doc-regexp-2">
+        <h3><a class="doc-anchor" href="#doc-regexp-2">#</a> <code>@/regexp/</code></h3>
+        <pre><code class="lang-awk">r = @/^err/
+</code></pre>
+        <p>A typed regexp constant — a first-class value that can be assigned, passed, and used on the right of <code>~</code>. <code>typeof()</code> reports <code>&quot;regexp&quot;</code>, which is what distinguishes it from an ordinary string used as a dynamic regexp.</p>
+      </article>
+      <article class="doc-entry" id="doc-expr-args">
+        <h3><a class="doc-anchor" href="#doc-expr-args">#</a> <code>@expr(args)</code></h3>
+        <pre><code class="lang-awk">f = &quot;handler&quot;; @f(x)
+</code></pre>
+        <p>Indirect function call: the callee name comes from the value of <code>expr</code>. The callee may be a variable, an array element (<code>@a[k](…)</code>), a field (<code>@$1(…)</code>), or a parenthesized expression. Parsed so that the argument list belongs to the indirect call, not to the callee expression.</p>
+      </article>
+      <article class="doc-entry" id="doc-rust">
+        <h3><a class="doc-anchor" href="#doc-rust">#</a> <code>rust { … }</code></h3>
+        <pre><code class="lang-awk">rust {
+  pub extern &quot;C&quot; fn triple(a: i64) -&gt; i64 { a * 3 }
+}
+</code></pre>
+        <p>Inline Rust FFI. A top-level <code>rust { … }</code> block is rewritten before lexing into <code>BEGIN { __rust_compile(&quot;&lt;base64&gt;&quot;, &lt;line&gt;) }</code>, which compiles the block and registers its exported functions. Those exports are then callable as barewords from awk. Resolution order at a call site is user awk functions, then language builtins, then the FFI registry — so an export can never shadow either. The <code>BEGIN</code> wrapper is required because awk&#39;s top level admits only <code>pattern { action }</code> rules.</p>
+      </article>
+    </section>
+    <section class="tutorial-section" id="ch-procinfo-keys">
+      <h2>PROCINFO Keys</h2>
+      <p class="chapter-meta">26 topics</p>
+      <article class="doc-entry" id="doc-procinfo-version">
+        <h3><a class="doc-anchor" href="#doc-procinfo-version">#</a> <code>PROCINFO[&quot;version&quot;]</code></h3>
+        <pre><code class="lang-awk">PROCINFO[&quot;version&quot;]
+</code></pre>
+        <p>The awkrs package version.</p>
+      </article>
+      <article class="doc-entry" id="doc-procinfo-api">
+        <h3><a class="doc-anchor" href="#doc-procinfo-api">#</a> <code>PROCINFO[&quot;api&quot;]</code></h3>
+        <pre><code class="lang-awk">PROCINFO[&quot;api&quot;]
+</code></pre>
+        <p>Always the string <code>awkrs</code>. Where gawk reports its extension-API identity, awkrs names itself — the reliable way for a script to detect that it is running here.</p>
+      </article>
+      <article class="doc-entry" id="doc-procinfo-api-major-procinfo-api-minor">
+        <h3><a class="doc-anchor" href="#doc-procinfo-api-major-procinfo-api-minor">#</a> <code>PROCINFO[&quot;api_major&quot;], PROCINFO[&quot;api_minor&quot;]</code></h3>
+        <pre><code class="lang-awk">PROCINFO[&quot;api_major&quot;]
+</code></pre>
+        <p>The extension-API version awkrs reports, 4 and 1.</p>
+      </article>
+      <article class="doc-entry" id="doc-procinfo-program">
+        <h3><a class="doc-anchor" href="#doc-procinfo-program">#</a> <code>PROCINFO[&quot;program&quot;]</code></h3>
+        <pre><code class="lang-awk">PROCINFO[&quot;program&quot;]
+</code></pre>
+        <p>The name the binary was invoked as.</p>
+      </article>
+      <article class="doc-entry" id="doc-procinfo-platform">
+        <h3><a class="doc-anchor" href="#doc-procinfo-platform">#</a> <code>PROCINFO[&quot;platform&quot;]</code></h3>
+        <pre><code class="lang-awk">PROCINFO[&quot;platform&quot;]
+</code></pre>
+        <p><code>posix</code>, <code>mingw</code>, or <code>unknown</code> — gawk&#39;s vocabulary, deliberately not Rust&#39;s <code>std::env::consts::OS</code>, so a script testing for <code>posix</code> behaves the same here as under gawk.</p>
+      </article>
+      <article class="doc-entry" id="doc-procinfo-pid-procinfo-ppid">
+        <h3><a class="doc-anchor" href="#doc-procinfo-pid-procinfo-ppid">#</a> <code>PROCINFO[&quot;pid&quot;], PROCINFO[&quot;ppid&quot;]</code></h3>
+        <pre><code class="lang-awk">PROCINFO[&quot;pid&quot;]
+</code></pre>
+        <p>Process and parent-process IDs. <code>ppid</code> is Unix-only.</p>
+      </article>
+      <article class="doc-entry" id="doc-procinfo-uid-procinfo-euid">
+        <h3><a class="doc-anchor" href="#doc-procinfo-uid-procinfo-euid">#</a> <code>PROCINFO[&quot;uid&quot;], PROCINFO[&quot;euid&quot;]</code></h3>
+        <pre><code class="lang-awk">PROCINFO[&quot;euid&quot;]
+</code></pre>
+        <p>Real and effective user IDs (Unix only).</p>
+      </article>
+      <article class="doc-entry" id="doc-procinfo-gid-procinfo-egid">
+        <h3><a class="doc-anchor" href="#doc-procinfo-gid-procinfo-egid">#</a> <code>PROCINFO[&quot;gid&quot;], PROCINFO[&quot;egid&quot;]</code></h3>
+        <pre><code class="lang-awk">PROCINFO[&quot;gid&quot;]
+</code></pre>
+        <p>Real and effective group IDs (Unix only).</p>
+      </article>
+      <article class="doc-entry" id="doc-procinfo-pgrpid">
+        <h3><a class="doc-anchor" href="#doc-procinfo-pgrpid">#</a> <code>PROCINFO[&quot;pgrpid&quot;]</code></h3>
+        <pre><code class="lang-awk">PROCINFO[&quot;pgrpid&quot;]
+</code></pre>
+        <p>Process group ID (Unix only).</p>
+      </article>
+      <article class="doc-entry" id="doc-procinfo-groupn">
+        <h3><a class="doc-anchor" href="#doc-procinfo-groupn">#</a> <code>PROCINFO[&quot;groupN&quot;]</code></h3>
+        <pre><code class="lang-awk">PROCINFO[&quot;group1&quot;]
+</code></pre>
+        <p>One key per supplementary group, numbered from <code>group1</code> in the order <code>getgroups</code> returns them (Unix only).</p>
+      </article>
+      <article class="doc-entry" id="doc-procinfo-errno">
+        <h3><a class="doc-anchor" href="#doc-procinfo-errno">#</a> <code>PROCINFO[&quot;errno&quot;]</code></h3>
+        <pre><code class="lang-awk">PROCINFO[&quot;errno&quot;]
+</code></pre>
+        <p>The numeric errno behind the most recent failed I/O, the counterpart to <code>ERRNO</code>&#39;s message text.</p>
+      </article>
+      <article class="doc-entry" id="doc-procinfo-fs">
+        <h3><a class="doc-anchor" href="#doc-procinfo-fs">#</a> <code>PROCINFO[&quot;FS&quot;]</code></h3>
+        <pre><code class="lang-awk">PROCINFO[&quot;FS&quot;]
+</code></pre>
+        <p>Which field-splitting rule is currently active: <code>FS</code>, <code>FPAT</code>, <code>FIELDWIDTHS</code>, or <code>API</code> in CSV mode. Computed on each refresh from the live variables, not stored.</p>
+      </article>
+      <article class="doc-entry" id="doc-procinfo-strftime">
+        <h3><a class="doc-anchor" href="#doc-procinfo-strftime">#</a> <code>PROCINFO[&quot;strftime&quot;]</code></h3>
+        <pre><code class="lang-awk">PROCINFO[&quot;strftime&quot;]
+</code></pre>
+        <p>The format <code>strftime()</code> uses when called with no arguments; defaults to <code>%a %b %e %H:%M:%S %Z %Y</code>, gawk&#39;s <code>date(1)</code>-equivalent default.</p>
+      </article>
+      <article class="doc-entry" id="doc-procinfo-argv">
+        <h3><a class="doc-anchor" href="#doc-procinfo-argv">#</a> <code>PROCINFO[&quot;argv&quot;]</code></h3>
+        <pre><code class="lang-awk">PROCINFO[&quot;argv&quot;][0]
+</code></pre>
+        <p>A nested array of the full process command line, indexed from 0 — including the options that <code>ARGV</code> deliberately omits.</p>
+      </article>
+      <article class="doc-entry" id="doc-procinfo-identifiers">
+        <h3><a class="doc-anchor" href="#doc-procinfo-identifiers">#</a> <code>PROCINFO[&quot;identifiers&quot;]</code></h3>
+        <pre><code class="lang-awk">PROCINFO[&quot;identifiers&quot;][&quot;split&quot;]
+</code></pre>
+        <p>A nested array mapping every known name to <code>builtin</code>, <code>scalar</code>, <code>array</code>, or <code>user</code>. Built from the compiled program&#39;s slot, array, and function tables plus the builtin name list.</p>
+      </article>
+      <article class="doc-entry" id="doc-procinfo-mb-cur-max">
+        <h3><a class="doc-anchor" href="#doc-procinfo-mb-cur-max">#</a> <code>PROCINFO[&quot;mb_cur_max&quot;]</code></h3>
+        <pre><code class="lang-awk">PROCINFO[&quot;mb_cur_max&quot;]
+</code></pre>
+        <p>Maximum bytes per multibyte character in the current locale, best-effort.</p>
+      </article>
+      <article class="doc-entry" id="doc-procinfo-nproc">
+        <h3><a class="doc-anchor" href="#doc-procinfo-nproc">#</a> <code>PROCINFO[&quot;nproc&quot;]</code></h3>
+        <pre><code class="lang-awk">PROCINFO[&quot;nproc&quot;]
+</code></pre>
+        <p>Available CPU count. An awkrs addition, useful for choosing a <code>-j</code> value from inside a script that re-executes itself.</p>
+      </article>
+      <article class="doc-entry" id="doc-procinfo-sorted-in">
+        <h3><a class="doc-anchor" href="#doc-procinfo-sorted-in">#</a> <code>PROCINFO[&quot;sorted_in&quot;]</code></h3>
+        <pre><code class="lang-awk">PROCINFO[&quot;sorted_in&quot;] = &quot;@ind_num_asc&quot;
+</code></pre>
+        <p>Assignable: sets the traversal order for every subsequent <code>for (k in array)</code>. See the Array Traversal Order chapter for the accepted values. Defaults to the empty string, meaning unsorted.</p>
+      </article>
+      <article class="doc-entry" id="doc-procinfo-prec-procinfo-roundmode">
+        <h3><a class="doc-anchor" href="#doc-procinfo-prec-procinfo-roundmode">#</a> <code>PROCINFO[&quot;prec&quot;], PROCINFO[&quot;roundmode&quot;]</code></h3>
+        <pre><code class="lang-awk">PROCINFO[&quot;prec&quot;]
+</code></pre>
+        <p>Working precision in bits and the MPFR rounding mode. Outside <code>-M</code>/<code>--bignum</code> the precision reads 53, the width of a double; the rounding mode defaults to <code>N</code> (nearest). Both are assignable before the values that depend on them are computed.</p>
+      </article>
+      <article class="doc-entry" id="doc-procinfo-prec-min-procinfo-prec-max">
+        <h3><a class="doc-anchor" href="#doc-procinfo-prec-min-procinfo-prec-max">#</a> <code>PROCINFO[&quot;prec_min&quot;], PROCINFO[&quot;prec_max&quot;]</code></h3>
+        <pre><code class="lang-awk">PROCINFO[&quot;prec_min&quot;]
+</code></pre>
+        <p>MPFR&#39;s precision bounds. Present only under <code>-M</code>/<code>--bignum</code>.</p>
+      </article>
+      <article class="doc-entry" id="doc-procinfo-gmp-version-procinfo-mpfr-version">
+        <h3><a class="doc-anchor" href="#doc-procinfo-gmp-version-procinfo-mpfr-version">#</a> <code>PROCINFO[&quot;gmp_version&quot;], PROCINFO[&quot;mpfr_version&quot;]</code></h3>
+        <pre><code class="lang-awk">PROCINFO[&quot;mpfr_version&quot;]
+</code></pre>
+        <p>Versions of the linked GMP and MPFR libraries, queried from the libraries themselves. Present only under <code>-M</code>/<code>--bignum</code>.</p>
+      </article>
+      <article class="doc-entry" id="doc-procinfo-pma">
+        <h3><a class="doc-anchor" href="#doc-procinfo-pma">#</a> <code>PROCINFO[&quot;pma&quot;]</code></h3>
+        <pre><code class="lang-awk">PROCINFO[&quot;pma&quot;]
+</code></pre>
+        <p>gawk&#39;s persistent-memory-allocator version. awkrs is not built with PMA, so this key is absent — matching a gawk built without it, rather than reporting a value that would be false.</p>
+      </article>
+      <article class="doc-entry" id="doc-procinfo-read-timeout">
+        <h3><a class="doc-anchor" href="#doc-procinfo-read-timeout">#</a> <code>PROCINFO[&quot;READ_TIMEOUT&quot;]</code></h3>
+        <pre><code class="lang-awk">PROCINFO[&quot;READ_TIMEOUT&quot;] = 500
+</code></pre>
+        <p>Read timeout in milliseconds. Initialized from the <code>GAWK_READ_TIMEOUT</code> environment variable when the script has not set it, and only when that value is positive.</p>
+      </article>
+      <article class="doc-entry" id="doc-procinfo-input-read-timeout">
+        <h3><a class="doc-anchor" href="#doc-procinfo-input-read-timeout">#</a> <code>PROCINFO[input, &quot;READ_TIMEOUT&quot;]</code></h3>
+        <pre><code class="lang-awk">PROCINFO[&quot;-&quot;, &quot;READ_TIMEOUT&quot;] = 250
+</code></pre>
+        <p>Per-input override of the read timeout, keyed by the input name joined with <code>SUBSEP</code>. One entry is pre-seeded for every file in <code>ARGV</code> plus <code>-</code> for standard input, each defaulting to the global timeout.</p>
+      </article>
+      <article class="doc-entry" id="doc-procinfo-input-retry">
+        <h3><a class="doc-anchor" href="#doc-procinfo-input-retry">#</a> <code>PROCINFO[input, &quot;RETRY&quot;]</code></h3>
+        <pre><code class="lang-awk">PROCINFO[&quot;-&quot;, &quot;RETRY&quot;] = 1
+</code></pre>
+        <p>Per-input retry flag, pre-seeded to 0 alongside the per-input read timeouts.</p>
+      </article>
+      <article class="doc-entry" id="doc-procinfo-awkrs-binmode">
+        <h3><a class="doc-anchor" href="#doc-procinfo-awkrs-binmode">#</a> <code>PROCINFO[&quot;awkrs_binmode&quot;]</code></h3>
+        <pre><code class="lang-awk">PROCINFO[&quot;awkrs_binmode&quot;]
+</code></pre>
+        <p>The current numeric value of <code>BINMODE</code>, mirrored here on each refresh. An awkrs key, prefixed so it can never collide with a future gawk one.</p>
+      </article>
+    </section>
+    <section class="tutorial-section" id="ch-array-traversal-order">
+      <h2>Array Traversal Order</h2>
+      <p class="chapter-meta">13 topics</p>
+      <article class="doc-entry" id="doc-unsorted">
+        <h3><a class="doc-anchor" href="#doc-unsorted">#</a> <code>@unsorted</code></h3>
+        <pre><code class="lang-awk">PROCINFO[&quot;sorted_in&quot;] = &quot;@unsorted&quot;
+</code></pre>
+        <p>Hash order — whatever the array&#39;s internal iteration produces. The default, and the fastest.</p>
+      </article>
+      <article class="doc-entry" id="doc-ind-str-asc">
+        <h3><a class="doc-anchor" href="#doc-ind-str-asc">#</a> <code>@ind_str_asc</code></h3>
+        <pre><code class="lang-awk">PROCINFO[&quot;sorted_in&quot;] = &quot;@ind_str_asc&quot;
+</code></pre>
+        <p>By index, compared as strings, ascending.</p>
+      </article>
+      <article class="doc-entry" id="doc-ind-str-desc">
+        <h3><a class="doc-anchor" href="#doc-ind-str-desc">#</a> <code>@ind_str_desc</code></h3>
+        <pre><code class="lang-awk">PROCINFO[&quot;sorted_in&quot;] = &quot;@ind_str_desc&quot;
+</code></pre>
+        <p>By index, compared as strings, descending.</p>
+      </article>
+      <article class="doc-entry" id="doc-ind-num-asc">
+        <h3><a class="doc-anchor" href="#doc-ind-num-asc">#</a> <code>@ind_num_asc</code></h3>
+        <pre><code class="lang-awk">PROCINFO[&quot;sorted_in&quot;] = &quot;@ind_num_asc&quot;
+</code></pre>
+        <p>By index, compared as numbers, ascending.</p>
+      </article>
+      <article class="doc-entry" id="doc-ind-num-desc">
+        <h3><a class="doc-anchor" href="#doc-ind-num-desc">#</a> <code>@ind_num_desc</code></h3>
+        <pre><code class="lang-awk">PROCINFO[&quot;sorted_in&quot;] = &quot;@ind_num_desc&quot;
+</code></pre>
+        <p>By index, compared as numbers, descending.</p>
+      </article>
+      <article class="doc-entry" id="doc-val-str-asc">
+        <h3><a class="doc-anchor" href="#doc-val-str-asc">#</a> <code>@val_str_asc</code></h3>
+        <pre><code class="lang-awk">PROCINFO[&quot;sorted_in&quot;] = &quot;@val_str_asc&quot;
+</code></pre>
+        <p>By element value, compared as strings, ascending.</p>
+      </article>
+      <article class="doc-entry" id="doc-val-str-desc">
+        <h3><a class="doc-anchor" href="#doc-val-str-desc">#</a> <code>@val_str_desc</code></h3>
+        <pre><code class="lang-awk">PROCINFO[&quot;sorted_in&quot;] = &quot;@val_str_desc&quot;
+</code></pre>
+        <p>By element value, compared as strings, descending.</p>
+      </article>
+      <article class="doc-entry" id="doc-val-num-asc">
+        <h3><a class="doc-anchor" href="#doc-val-num-asc">#</a> <code>@val_num_asc</code></h3>
+        <pre><code class="lang-awk">PROCINFO[&quot;sorted_in&quot;] = &quot;@val_num_asc&quot;
+</code></pre>
+        <p>By element value, compared as numbers, ascending.</p>
+      </article>
+      <article class="doc-entry" id="doc-val-num-desc">
+        <h3><a class="doc-anchor" href="#doc-val-num-desc">#</a> <code>@val_num_desc</code></h3>
+        <pre><code class="lang-awk">PROCINFO[&quot;sorted_in&quot;] = &quot;@val_num_desc&quot;
+</code></pre>
+        <p>By element value, compared as numbers, descending.</p>
+      </article>
+      <article class="doc-entry" id="doc-val-type-asc">
+        <h3><a class="doc-anchor" href="#doc-val-type-asc">#</a> <code>@val_type_asc</code></h3>
+        <pre><code class="lang-awk">PROCINFO[&quot;sorted_in&quot;] = &quot;@val_type_asc&quot;
+</code></pre>
+        <p>By value type, ascending: uninitialized, then numbers, then strings, then subarrays.</p>
+      </article>
+      <article class="doc-entry" id="doc-val-type-desc">
+        <h3><a class="doc-anchor" href="#doc-val-type-desc">#</a> <code>@val_type_desc</code></h3>
+        <pre><code class="lang-awk">PROCINFO[&quot;sorted_in&quot;] = &quot;@val_type_desc&quot;
+</code></pre>
+        <p>By value type, descending.</p>
+      </article>
+      <article class="doc-entry" id="doc-custom-comparison-function">
+        <h3><a class="doc-anchor" href="#doc-custom-comparison-function">#</a> <code>custom comparison function</code></h3>
+        <pre><code class="lang-awk">PROCINFO[&quot;sorted_in&quot;] = &quot;my_cmp&quot;
+</code></pre>
+        <p>A bare identifier names a user function used as the comparator. It must take 2 parameters (the two indices) or 4 (index, value, index, value) and return a negative number, zero, or a positive number. A wrong arity is a runtime error naming the function. An unrecognized <code>@…</code> token falls back to unsorted with a one-time warning on standard error.</p>
+      </article>
+      <article class="doc-entry" id="doc-under-posix">
+        <h3><a class="doc-anchor" href="#doc-under-posix">#</a> <code>under --posix</code></h3>
+        <pre><code class="lang-sh">awkrs --posix -f prog.awk
+</code></pre>
+        <p><code>-P</code>/<code>--posix</code> forces unsorted traversal regardless of what <code>PROCINFO[&quot;sorted_in&quot;]</code> says — POSIX awk specifies no ordering, so the setting is ignored rather than rejected.</p>
+      </article>
+    </section>
+    <section class="tutorial-section" id="ch-command-line-options">
+      <h2>Command-Line Options</h2>
+      <p class="chapter-meta">42 topics</p>
+      <article class="doc-entry" id="doc-f-file">
+        <h3><a class="doc-anchor" href="#doc-f-file">#</a> <code>-f, --file</code></h3>
+        <pre><code class="lang-sh">awkrs -f prog.awk [-f more.awk] input
+</code></pre>
+        <p>Read the program from a file. Repeatable; the sources are concatenated in order. A single <code>-f</code> with no other source-shaping flag is also the only form eligible for the compiled-bytecode cache.</p>
+      </article>
+      <article class="doc-entry" id="doc-f-field-separator">
+        <h3><a class="doc-anchor" href="#doc-f-field-separator">#</a> <code>-F, --field-separator</code></h3>
+        <pre><code class="lang-sh">awkrs -F: &#39;{ print $1 }&#39; /etc/passwd
+</code></pre>
+        <p>Set <code>FS</code> before the program runs. Accepts the attached form <code>-F:</code> as well as the separated one.</p>
+      </article>
+      <article class="doc-entry" id="doc-v-assign">
+        <h3><a class="doc-anchor" href="#doc-v-assign">#</a> <code>-v, --assign</code></h3>
+        <pre><code class="lang-sh">awkrs -v n=3 &#39;{ print $n }&#39; input
+</code></pre>
+        <p>Assign a global before <code>BEGIN</code> runs, with escape sequences processed. Repeatable, and the attached form <code>-vn=3</code> works.</p>
+      </article>
+      <article class="doc-entry" id="doc-e-source">
+        <h3><a class="doc-anchor" href="#doc-e-source">#</a> <code>-e, --source</code></h3>
+        <pre><code class="lang-sh">awkrs -e &#39;BEGIN { print 1 }&#39; -e &#39;END { print 2 }&#39;
+</code></pre>
+        <p>Add program text on the command line. Repeatable, and mixable with <code>-f</code>.</p>
+      </article>
+      <article class="doc-entry" id="doc-i-include">
+        <h3><a class="doc-anchor" href="#doc-i-include">#</a> <code>-i, --include</code></h3>
+        <pre><code class="lang-sh">awkrs -i lib.awk -e &#39;BEGIN { helper() }&#39;
+</code></pre>
+        <p>Include a library file, the command-line equivalent of <code>@include</code>. Repeatable.</p>
+      </article>
+      <article class="doc-entry" id="doc-l-load">
+        <h3><a class="doc-anchor" href="#doc-l-load">#</a> <code>-l, --load</code></h3>
+        <pre><code class="lang-sh">awkrs -l mylib -e &#39;BEGIN { f() }&#39;
+</code></pre>
+        <p>Load an extension by name, resolved against <code>AWKPATH</code> (default <code>.</code>), trying <code>NAME.awk</code> then <code>NAME</code> in each directory. Not found is an error naming both candidates. Repeatable.</p>
+      </article>
+      <article class="doc-entry" id="doc-e-exec">
+        <h3><a class="doc-anchor" href="#doc-e-exec">#</a> <code>-E, --exec</code></h3>
+        <pre><code class="lang-sh">#!/usr/bin/env -S awkrs -E
+</code></pre>
+        <p>Read the program from a file and treat every remaining argument as data, never as an option. The safe form for <code>#!</code> scripts, since it stops a data filename that starts with <code>-</code> from being parsed as a flag.</p>
+      </article>
+      <article class="doc-entry" id="doc-b-characters-as-bytes">
+        <h3><a class="doc-anchor" href="#doc-b-characters-as-bytes">#</a> <code>-b, --characters-as-bytes</code></h3>
+        <pre><code class="lang-sh">awkrs -b &#39;{ print length($0) }&#39; input
+</code></pre>
+        <p>Treat input bytes as characters. <code>length</code>, <code>substr</code>, and <code>index</code> then count and slice bytes rather than Unicode scalars.</p>
+      </article>
+      <article class="doc-entry" id="doc-c-traditional">
+        <h3><a class="doc-anchor" href="#doc-c-traditional">#</a> <code>-c, --traditional</code></h3>
+        <pre><code class="lang-sh">awkrs -c &#39;BEGIN { print length(&quot;x&quot;) }&#39;
+</code></pre>
+        <p>Traditional awk compatibility: the gawk-extension builtins are refused, and the BSD awk zero-padding quirk for <code>%0Ns</code> / <code>%0Nc</code> is enabled.</p>
+      </article>
+      <article class="doc-entry" id="doc-p-posix">
+        <h3><a class="doc-anchor" href="#doc-p-posix">#</a> <code>-P, --posix</code></h3>
+        <pre><code class="lang-sh">awkrs -P -f prog.awk input
+</code></pre>
+        <p>Strict POSIX mode: refuses the same extension builtins as <code>--traditional</code> and forces unsorted array traversal.</p>
+      </article>
+      <article class="doc-entry" id="doc-n-non-decimal-data">
+        <h3><a class="doc-anchor" href="#doc-n-non-decimal-data">#</a> <code>-n, --non-decimal-data</code></h3>
+        <pre><code class="lang-sh">awkrs -n &#39;{ print $1 + 0 }&#39; hex.txt
+</code></pre>
+        <p>Recognize <code>0x…</code> and leading-zero octal numbers in input data, not just in program text.</p>
+      </article>
+      <article class="doc-entry" id="doc-m-bignum">
+        <h3><a class="doc-anchor" href="#doc-m-bignum">#</a> <code>-M, --bignum</code></h3>
+        <pre><code class="lang-sh">awkrs -M &#39;BEGIN { print 2 ^ 200 }&#39;
+</code></pre>
+        <p>Arbitrary-precision arithmetic through GMP/MPFR. Integer literals written without a decimal point keep their exact digits instead of rounding through a double, and <code>PROCINFO[&quot;prec&quot;]</code> / <code>PROCINFO[&quot;roundmode&quot;]</code> control the working precision.</p>
+      </article>
+      <article class="doc-entry" id="doc-n-use-lc-numeric">
+        <h3><a class="doc-anchor" href="#doc-n-use-lc-numeric">#</a> <code>-N, --use-lc-numeric</code></h3>
+        <pre><code class="lang-sh">awkrs -N &#39;BEGIN { printf &quot;%\x27d\n&quot;, 1234567 }&#39;
+</code></pre>
+        <p>Honor <code>LC_NUMERIC</code> in <code>printf</code>/<code>sprintf</code>/<code>print</code> output and in <code>CONVFMT</code>/<code>OFMT</code> formatting, including the <code>%&#39;</code> grouping flag. Input coercion is deliberately unaffected — <code>$1 + 0</code> still reads <code>.</code> as the radix point.</p>
+      </article>
+      <article class="doc-entry" id="doc-k-csv">
+        <h3><a class="doc-anchor" href="#doc-k-csv">#</a> <code>-k, --csv</code></h3>
+        <pre><code class="lang-sh">awkrs --csv &#39;{ print $2 }&#39; data.csv
+</code></pre>
+        <p>CSV mode: comma-separated with quoted fields and <code>&quot;&quot;</code> as the embedded-quote escape. Reported as <code>PROCINFO[&quot;FS&quot;] == &quot;API&quot;</code>.</p>
+      </article>
+      <article class="doc-entry" id="doc-r-re-interval">
+        <h3><a class="doc-anchor" href="#doc-r-re-interval">#</a> <code>-r, --re-interval</code></h3>
+        <pre><code class="lang-sh">awkrs -r &#39;/a{2,3}/&#39; input
+</code></pre>
+        <p>Accepted and ignored. <code>{m,n}</code> interval expressions are always available, so the flag exists only so that old command lines keep working.</p>
+      </article>
+      <article class="doc-entry" id="doc-o-optimize">
+        <h3><a class="doc-anchor" href="#doc-o-optimize">#</a> <code>-O, --optimize</code></h3>
+        <pre><code class="lang-sh">awkrs -O -f prog.awk input
+</code></pre>
+        <p>Accepted for gawk compatibility. Optimization and the JIT are on by default, so this changes nothing; <code>-s</code> is what turns them off.</p>
+      </article>
+      <article class="doc-entry" id="doc-s-no-optimize">
+        <h3><a class="doc-anchor" href="#doc-s-no-optimize">#</a> <code>-s, --no-optimize</code></h3>
+        <pre><code class="lang-sh">awkrs -s -f prog.awk input
+</code></pre>
+        <p>Disable optimization and the JIT, forcing the plain interpreter. The first thing to try when a program&#39;s results differ between runs — if <code>-s</code> changes the answer, the bug is in a compiled path.</p>
+      </article>
+      <article class="doc-entry" id="doc-j-threads">
+        <h3><a class="doc-anchor" href="#doc-j-threads">#</a> <code>-j, --threads</code></h3>
+        <pre><code class="lang-sh">awkrs -j 8 &#39;{ print $1 }&#39; big.log
+</code></pre>
+        <p>Worker threads for the parallel record engine (default 1). Only programs the parallel-safety analyzer accepts run in parallel; anything with cross-record state falls back to sequential execution.</p>
+      </article>
+      <article class="doc-entry" id="doc-read-ahead">
+        <h3><a class="doc-anchor" href="#doc-read-ahead">#</a> <code>--read-ahead</code></h3>
+        <pre><code class="lang-sh">awkrs -j 4 --read-ahead 4096 &#39;{ … }&#39;
+</code></pre>
+        <p>Lines per batch when reading standard input in parallel mode (default 1024). Each batch is processed in parallel and printed in order before the next is read, so output ordering is preserved.</p>
+      </article>
+      <article class="doc-entry" id="doc-s-sandbox">
+        <h3><a class="doc-anchor" href="#doc-s-sandbox">#</a> <code>-S, --sandbox</code></h3>
+        <pre><code class="lang-sh">awkrs -S -f untrusted.awk input
+</code></pre>
+        <p>Disable <code>system()</code>, the file-I/O extension functions, pipes, coprocesses, and the network pseudo-paths. Each blocked call fails with a <code>sandbox:</code> runtime error rather than silently doing nothing.</p>
+      </article>
+      <article class="doc-entry" id="doc-l-lint">
+        <h3><a class="doc-anchor" href="#doc-l-lint">#</a> <code>-L, --lint</code></h3>
+        <pre><code class="lang-sh">awkrs -L fatal -f prog.awk input
+</code></pre>
+        <p>Enable lint warnings. The optional value selects <code>fatal</code>, <code>invalid</code>, or <code>no-ext</code> behavior.</p>
+      </article>
+      <article class="doc-entry" id="doc-t-lint-old">
+        <h3><a class="doc-anchor" href="#doc-t-lint-old">#</a> <code>-t, --lint-old</code></h3>
+        <pre><code class="lang-sh">awkrs -t -f prog.awk input
+</code></pre>
+        <p>Warn about constructs that will not port to old awk implementations.</p>
+      </article>
+      <article class="doc-entry" id="doc-d-dump-variables">
+        <h3><a class="doc-anchor" href="#doc-d-dump-variables">#</a> <code>-d, --dump-variables</code></h3>
+        <pre><code class="lang-sh">awkrs -d vars.out -f prog.awk input
+</code></pre>
+        <p>After the run, dump the final global variable state. Takes an optional path; with no value, or <code>-</code>, the dump goes to standard output.</p>
+      </article>
+      <article class="doc-entry" id="doc-d-debug">
+        <h3><a class="doc-anchor" href="#doc-d-debug">#</a> <code>-D, --debug</code></h3>
+        <pre><code class="lang-sh">awkrs -D -f prog.awk input
+</code></pre>
+        <p>List the program&#39;s rules and functions for debugging. Optional path; defaults to standard error.</p>
+      </article>
+      <article class="doc-entry" id="doc-o-pretty-print">
+        <h3><a class="doc-anchor" href="#doc-o-pretty-print">#</a> <code>-o, --pretty-print</code></h3>
+        <pre><code class="lang-sh">awkrs -o formatted.awk -f prog.awk
+</code></pre>
+        <p>Emit a re-indented program listing rebuilt from the AST. Optional path; defaults to standard output. The layout is awkrs&#39;s own — it is not byte-compatible with gawk&#39;s <code>--pretty-print</code>.</p>
+      </article>
+      <article class="doc-entry" id="doc-p-profile">
+        <h3><a class="doc-anchor" href="#doc-p-profile">#</a> <code>-p, --profile</code></h3>
+        <pre><code class="lang-sh">awkrs -p prof.txt -f prog.awk input
+</code></pre>
+        <p>Wall-clock summary with per-rule hit counts. Optional path; defaults to standard output. An awkrs-format report, not gawk&#39;s <code>awkprof.out</code>.</p>
+      </article>
+      <article class="doc-entry" id="doc-g-gen-pot">
+        <h3><a class="doc-anchor" href="#doc-g-gen-pot">#</a> <code>-g, --gen-pot</code></h3>
+        <pre><code class="lang-sh">awkrs --gen-pot -f prog.awk
+</code></pre>
+        <p>Scan the program for translatable strings and emit a <code>.pot</code> template.</p>
+      </article>
+      <article class="doc-entry" id="doc-i-trace">
+        <h3><a class="doc-anchor" href="#doc-i-trace">#</a> <code>-I, --trace</code></h3>
+        <pre><code class="lang-sh">awkrs -I -f prog.awk input
+</code></pre>
+        <p>Trace opcode execution as the program runs.</p>
+      </article>
+      <article class="doc-entry" id="doc-c-copyright">
+        <h3><a class="doc-anchor" href="#doc-c-copyright">#</a> <code>-C, --copyright</code></h3>
+        <pre><code class="lang-sh">awkrs --copyright
+</code></pre>
+        <p>Print the copyright notice and exit.</p>
+      </article>
+      <article class="doc-entry" id="doc-w">
+        <h3><a class="doc-anchor" href="#doc-w">#</a> <code>-W</code></h3>
+        <pre><code class="lang-sh">awkrs -W version
+</code></pre>
+        <p>mawk/BusyBox-style option bundle, comma-separated. <code>help</code>/<code>usage</code>, <code>version</code>/<code>v</code>, and <code>dump</code> act and exit; <code>exec=FILE</code> behaves like <code>-E</code>; <code>sprintf=N</code>, <code>posix_space</code>, <code>interactive</code>, and <code>random</code> are accepted and ignored so mawk command lines keep working.</p>
+      </article>
+      <article class="doc-entry" id="doc-repl">
+        <h3><a class="doc-anchor" href="#doc-repl">#</a> <code>--repl</code></h3>
+        <pre><code class="lang-sh">awkrs --repl
+</code></pre>
+        <p>Launch the interactive REPL. Also the default when awkrs is started on a terminal with no program and no input files.</p>
+      </article>
+      <article class="doc-entry" id="doc-lsp">
+        <h3><a class="doc-anchor" href="#doc-lsp">#</a> <code>--lsp</code></h3>
+        <pre><code class="lang-sh">awkrs --lsp
+</code></pre>
+        <p>Run as a Language Server over stdio: diagnostics, completion, hover, document symbols, signature help, goto-definition, references, highlights, and folding ranges. Nothing is written to the terminal — the process speaks JSON-RPC only.</p>
+      </article>
+      <article class="doc-entry" id="doc-dap">
+        <h3><a class="doc-anchor" href="#doc-dap">#</a> <code>--dap</code></h3>
+        <pre><code class="lang-sh">awkrs --dap 127.0.0.1:4711 -f prog.awk input
+</code></pre>
+        <p>Run as a Debug Adapter. With no value it speaks DAP over stdio; with <code>HOST:PORT</code> it connects to that address instead, which leaves the debugged program&#39;s own standard output free — the mode IDE plugins use.</p>
+      </article>
+      <article class="doc-entry" id="doc-dump-tokens">
+        <h3><a class="doc-anchor" href="#doc-dump-tokens">#</a> <code>--dump-tokens</code></h3>
+        <pre><code class="lang-sh">awkrs --dump-tokens &#39;BEGIN { x = 1 + 2 }&#39;
+</code></pre>
+        <p>Print the lexer token stream, one <code>line&lt;TAB&gt;token</code> per line, and exit. Runs after <code>rust { }</code> desugaring, so an FFI block shows up as the <code>__rust_compile</code> call it becomes.</p>
+      </article>
+      <article class="doc-entry" id="doc-dump-ast">
+        <h3><a class="doc-anchor" href="#doc-dump-ast">#</a> <code>--dump-ast</code></h3>
+        <pre><code class="lang-sh">awkrs --dump-ast &#39;BEGIN { x = 1 + 2 }&#39;
+</code></pre>
+        <p>Print the parsed AST and exit.</p>
+      </article>
+      <article class="doc-entry" id="doc-dump-bytecode">
+        <h3><a class="doc-anchor" href="#doc-dump-bytecode">#</a> <code>--dump-bytecode</code></h3>
+        <pre><code class="lang-sh">awkrs --dump-bytecode &#39;BEGIN { x = 1 + 2 }&#39;
+</code></pre>
+        <p>Print the compiled bytecode ops, chunk by chunk, and exit.</p>
+      </article>
+      <article class="doc-entry" id="doc-disasm">
+        <h3><a class="doc-anchor" href="#doc-disasm">#</a> <code>--disasm</code></h3>
+        <pre><code class="lang-sh">awkrs --disasm &#39;BEGIN { x = 1 + 2 }&#39;
+</code></pre>
+        <p>Print a fusevm disassembly listing — index, line, and mnemonic per op, with the chunk&#39;s name table — and exit. The readable counterpart to <code>--dump-bytecode</code>.</p>
+      </article>
+      <article class="doc-entry" id="doc-tiers">
+        <h3><a class="doc-anchor" href="#doc-tiers">#</a> <code>--tiers</code></h3>
+        <pre><code class="lang-sh">awkrs --tiers -f prog.awk input
+</code></pre>
+        <p>Run the program on the fusevm backend and then report which execution tier actually took each chunk: op count, whether the chunk was block-JIT eligible and compiled, the largest JIT-eligible region, and per-loop trace status. The answers come from fusevm&#39;s own predicates after the run, so this distinguishes *the JIT was enabled* from *the JIT compiled this*. A program outside the backend&#39;s coverage says so instead of reporting a tier.</p>
+      </article>
+      <article class="doc-entry" id="doc-aot">
+        <h3><a class="doc-anchor" href="#doc-aot">#</a> <code>--aot</code></h3>
+        <pre><code class="lang-sh">awkrs --aot ./prog &#39;BEGIN { print 42 }&#39;
+</code></pre>
+        <p>Ahead-of-time compile a <code>BEGIN</code>-only program to a native executable at the given path, via a Cranelift object linked against the awk runtime.</p>
+      </article>
+      <article class="doc-entry" id="doc-h-help">
+        <h3><a class="doc-anchor" href="#doc-h-help">#</a> <code>-h, --help</code></h3>
+        <pre><code class="lang-sh">awkrs --help
+</code></pre>
+        <p>Print the help screen and exit.</p>
+      </article>
+      <article class="doc-entry" id="doc-v-version">
+        <h3><a class="doc-anchor" href="#doc-v-version">#</a> <code>-V, --version</code></h3>
+        <pre><code class="lang-sh">awkrs --version
+</code></pre>
+        <p>Print the version and exit.</p>
+      </article>
+      <article class="doc-entry" id="doc-sym-2d-2d-2">
+        <h3><a class="doc-anchor" href="#doc-sym-2d-2d-2">#</a> <code>--</code></h3>
+        <pre><code class="lang-sh">awkrs -- &#39;{ print }&#39; -weird-filename
+</code></pre>
+        <p>End option parsing. Everything after it is program text and input files, even if it begins with a dash.</p>
+      </article>
+    </section>
+    <section class="tutorial-section" id="ch-environment-variables">
+      <h2>Environment Variables</h2>
+      <p class="chapter-meta">13 topics</p>
+      <article class="doc-entry" id="doc-awkpath">
+        <h3><a class="doc-anchor" href="#doc-awkpath">#</a> <code>AWKPATH</code></h3>
+        <pre><code class="lang-sh">AWKPATH=/usr/local/share/awk:. awkrs -l mylib …
+</code></pre>
+        <p>Colon-separated search path for <code>-l</code>/<code>--load</code>, defaulting to <code>.</code>. Each directory is tried with <code>NAME.awk</code> and then bare <code>NAME</code>.</p>
+      </article>
+      <article class="doc-entry" id="doc-awkrs-cache">
+        <h3><a class="doc-anchor" href="#doc-awkrs-cache">#</a> <code>AWKRS_CACHE</code></h3>
+        <pre><code class="lang-sh">AWKRS_CACHE=0 awkrs -f prog.awk input
+</code></pre>
+        <p>Set to <code>0</code>, <code>false</code>, or <code>no</code> to disable the compiled-bytecode cache in <code>~/.awkrs/scripts.rkyv</code>. Any other value, or no value, leaves it enabled. The cache is keyed on the script&#39;s modification time and the awkrs binary&#39;s, so a rebuilt interpreter invalidates it automatically.</p>
+      </article>
+      <article class="doc-entry" id="doc-awkrs-jit">
+        <h3><a class="doc-anchor" href="#doc-awkrs-jit">#</a> <code>AWKRS_JIT</code></h3>
+        <pre><code class="lang-sh">AWKRS_JIT=0 awkrs -f prog.awk input
+</code></pre>
+        <p>Set to <code>0</code> to disable the JIT, the environment equivalent of <code>-s</code>/<code>--no-optimize</code>. <code>-s</code> wins regardless of this variable.</p>
+      </article>
+      <article class="doc-entry" id="doc-awkrs-fusevm">
+        <h3><a class="doc-anchor" href="#doc-awkrs-fusevm">#</a> <code>AWKRS_FUSEVM</code></h3>
+        <pre><code class="lang-sh">AWKRS_FUSEVM=0 awkrs -f prog.awk input
+</code></pre>
+        <p>Set to <code>0</code> to stop the interpreter offloading eligible numeric chunks to fusevm, forcing awkrs&#39;s own opcode loop. On by default, and read once per process — changing it mid-run has no effect.</p>
+      </article>
+      <article class="doc-entry" id="doc-awkrs-fusevm-native">
+        <h3><a class="doc-anchor" href="#doc-awkrs-fusevm-native">#</a> <code>AWKRS_FUSEVM_NATIVE</code></h3>
+        <pre><code class="lang-sh">AWKRS_FUSEVM_NATIVE=1 awkrs -f prog.awk input
+</code></pre>
+        <p>Set to <code>1</code> to compile and run the whole program on the fusevm backend rather than the <code>vm.rs</code> interpreter. The validation harness for the ongoing migration: coverage is partial, and a construct the backend does not support is an error rather than a silent fallback.</p>
+      </article>
+      <article class="doc-entry" id="doc-awkrs-aot-runtime-lib">
+        <h3><a class="doc-anchor" href="#doc-awkrs-aot-runtime-lib">#</a> <code>AWKRS_AOT_RUNTIME_LIB</code></h3>
+        <pre><code class="lang-sh">AWKRS_AOT_RUNTIME_LIB=/path/libawkrs_rt.a awkrs --aot ./prog …
+</code></pre>
+        <p>Override the runtime library the <code>--aot</code> linker step links against.</p>
+      </article>
+      <article class="doc-entry" id="doc-awkrs-repl-mode">
+        <h3><a class="doc-anchor" href="#doc-awkrs-repl-mode">#</a> <code>AWKRS_REPL_MODE</code></h3>
+        <pre><code class="lang-sh">AWKRS_REPL_MODE=vi awkrs --repl
+</code></pre>
+        <p>REPL edit mode, <code>emacs</code> or <code>vi</code> (<code>vim</code> is accepted for <code>vi</code>). Overrides the <code>[repl] mode</code> setting in <code>~/.awkrs/config.toml</code>; the default is emacs.</p>
+      </article>
+      <article class="doc-entry" id="doc-awkrs-no-config">
+        <h3><a class="doc-anchor" href="#doc-awkrs-no-config">#</a> <code>AWKRS_NO_CONFIG</code></h3>
+        <pre><code class="lang-sh">AWKRS_NO_CONFIG=1 awkrs --repl
+</code></pre>
+        <p>Set to any value to stop the REPL seeding a default <code>~/.awkrs/config.toml</code> on first launch. For CI and sandboxes that must not write to the home directory.</p>
+      </article>
+      <article class="doc-entry" id="doc-awkrs-dap-log">
+        <h3><a class="doc-anchor" href="#doc-awkrs-dap-log">#</a> <code>AWKRS_DAP_LOG</code></h3>
+        <pre><code class="lang-sh">AWKRS_DAP_LOG=1 awkrs --dap -f prog.awk input
+</code></pre>
+        <p>Set to any value to enable debug-adapter protocol logging.</p>
+      </article>
+      <article class="doc-entry" id="doc-gawk-read-timeout">
+        <h3><a class="doc-anchor" href="#doc-gawk-read-timeout">#</a> <code>GAWK_READ_TIMEOUT</code></h3>
+        <pre><code class="lang-sh">GAWK_READ_TIMEOUT=500 awkrs -f prog.awk
+</code></pre>
+        <p>Default read timeout in milliseconds, used to seed <code>PROCINFO[&quot;READ_TIMEOUT&quot;]</code> when the script has not set it. Values are clamped to a non-negative 32-bit range, and a non-positive value leaves the key unset.</p>
+      </article>
+      <article class="doc-entry" id="doc-lc-numeric">
+        <h3><a class="doc-anchor" href="#doc-lc-numeric">#</a> <code>LC_NUMERIC</code></h3>
+        <pre><code class="lang-sh">LC_NUMERIC=en_US.UTF-8 awkrs -N &#39;BEGIN { … }&#39;
+</code></pre>
+        <p>Under <code>-N</code>/<code>--use-lc-numeric</code>, supplies the decimal point and thousands separator for output formatting. A locale with no thousands separator makes the <code>%&#39;</code> flag a no-op.</p>
+      </article>
+      <article class="doc-entry" id="doc-language-lc-all-lc-messages-lang">
+        <h3><a class="doc-anchor" href="#doc-language-lc-all-lc-messages-lang">#</a> <code>LANGUAGE, LC_ALL, LC_MESSAGES, LANG</code></h3>
+        <pre><code class="lang-sh">LANG=fr_FR.UTF-8 awkrs -f prog.awk
+</code></pre>
+        <p>Consulted in that order to pick the gettext message catalog for <code>dcgettext</code> and <code>dcngettext</code>; the first one set wins.</p>
+      </article>
+      <article class="doc-entry" id="doc-no-color-clicolor-force">
+        <h3><a class="doc-anchor" href="#doc-no-color-clicolor-force">#</a> <code>NO_COLOR, CLICOLOR_FORCE</code></h3>
+        <pre><code class="lang-sh">NO_COLOR=1 awkrs --help
+</code></pre>
+        <p>Control the colorized help output. <code>NO_COLOR</code> set to anything disables color entirely; otherwise color is used when standard output is a terminal, or when <code>CLICOLOR_FORCE</code> is set.</p>
       </article>
     </section>
   </main>
