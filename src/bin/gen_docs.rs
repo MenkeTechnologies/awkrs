@@ -1687,7 +1687,7 @@ const CLI_OPTIONS: &[Entry] = &[
         name: "-I, --trace",
         sig: "awkrs -I -f prog.awk input",
         lang: "sh",
-        desc: "Trace opcode execution as the program runs.",
+        desc: "Accepted for gawk CLI compatibility. Parsed and stored, but no opcode trace is emitted today — the flag has no runtime effect (like `-r`/`--re-interval`).",
     },
     Entry {
         name: "-C, --copyright",

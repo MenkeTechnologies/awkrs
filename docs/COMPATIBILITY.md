@@ -40,9 +40,12 @@ References: special variables and builtins lists in `src/compiler.rs` (`SPECIAL_
 | `-e` / `-i` | — | — | **Part** | Yes | **Match** (multiple `-e`/`-i`) |
 | `-b` characters-as-bytes | — | — | — | Yes | **Part** (wired into runtime; verify vs release I/O paths) |
 | `-c` traditional | — | — | — | Yes | **Part** (reserved; stricter rules incremental) |
+| `-C` copyright | — | — | — | Yes | **Match** (prints the awkrs copyright line and exits) |
 | `-d` dump-variables | — | — | — | Yes | **Part** (dump after run; format awkrs-specific) |
 | `-D` debug | — | — | — | Yes | **Part** (listing/dump; not gawk’s debugger) |
+| `-E` exec | — | — | — | Yes | **Match** (program from FILE; remaining args are data) |
 | `-g` gen-pot | — | — | — | Yes | **Match** (awkrs POT generator) |
+| `-I` trace | — | — | — | Yes | **No** (parsed for CLI compatibility; no runtime effect — `Args::trace` is never read outside `src/cli.rs`) |
 | `-k` / `--csv` | — | — | — | Yes | **Match** (CSV / `FPAT` mode per `Runtime::csv_mode`) |
 | `-l` load / `AWKPATH` | — | — | — | Yes | **Part** (library search; no dynamic `.so`) |
 | `-L` lint | — | — | — | Yes | **Part** (`lint_warn` / fatal modes) |
@@ -60,6 +63,12 @@ References: special variables and builtins lists in `src/compiler.rs` (`SPECIAL_
 | `-W opt` (mawk) | — | — | Yes | — | **Part** (`help`/`version`/`exec=` merged; other tokens ignored) |
 | `-j` / `--threads` | — | — | — | — | **Ext** (awkrs parallel pool) |
 | `--read-ahead` | — | — | — | — | **Ext** (stdin chunking with `-j`) |
+| `--repl` | — | — | — | — | **Ext** (reedline REPL; also the default on a bare tty) |
+| `--lsp` | — | — | — | — | **Ext** (Language Server over stdio) |
+| `--dap [HOST:PORT]` | — | — | — | — | **Ext** (Debug Adapter over stdio or TCP) |
+| `--aot OUT` | — | — | — | — | **Ext** (AOT-compile a `BEGIN`-only program to a native executable) |
+| `--dump-tokens` / `--dump-ast` / `--dump-bytecode` / `--disasm` | — | — | — | — | **Ext** (compiler introspection; each prints and exits) |
+| `--tiers` | — | — | — | — | **Ext** (reports which fusevm execution tier took each chunk) |
 
 ---
 

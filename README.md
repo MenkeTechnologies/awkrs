@@ -68,7 +68,26 @@
 | `-s`/`--no-optimize` | Disable peephole/JIT optimization (forces the plain bytecode interpreter) |
 | `-c`/`-P` | Stored on runtime; minimal effect today |
 | `-r`/`--re-interval` | Parsed; no runtime effect (regex crate already supports `{m,n}`) |
+| `-I`/`--trace` | Parsed; no runtime effect today (accepted so gawk command lines keep working) |
 | `-N`/`--use-lc-numeric` | Locale decimal radix and `%'` grouping in `sprintf`/`printf`/`print`. Does **not** affect string→number parsing |
+| `-C`/`--copyright` | Print the copyright/license line and exit |
+| `-E file`/`--exec` | Read the program from `file`; remaining args are data (never program text) |
+
+**awkrs-only modes and flags** (no gawk/mawk counterpart):
+
+| Flag | Behavior |
+|---|---|
+| `-j N`/`--threads` | Parallel record processing via rayon (default `1`) — see [§0x04](#0x04-multithreading--parallel-execution-grid) |
+| `--read-ahead N` | Stdin lines per parallel batch (default `1024`) |
+| `--repl` | Interactive reedline REPL; also the default when started with no program on a terminal — see [§0x02](#0x02-installation) |
+| `--lsp` | Run as a Language Server over stdio (same doc corpus that generates [`docs/reference.html`](docs/reference.html)) |
+| `--dap [HOST:PORT]` | Run as a DAP debug adapter — stdio by default, or connect to `HOST:PORT` so the debugged program keeps its own stdout |
+| `--aot OUT` | AOT-compile a `BEGIN`-only program to a native standalone executable at `OUT` (Cranelift object linked against `libawkrs.a`) |
+| `--dump-tokens` | Print the lexer token stream and exit |
+| `--dump-ast` | Print the parsed AST and exit |
+| `--dump-bytecode` | Print the compiled fusevm bytecode and exit |
+| `--disasm` | Print a fusevm bytecode disassembly and exit |
+| `--tiers` | Run the program, then report which fusevm tier took each chunk — see [§0x05](#0x05-bytecode-vm--execution-core) |
 
 **Gawk parity gaps to know:**
 

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="awkrs — fast AWK in Rust. 96-opcode bytecode VM, Cranelift JIT, rkyv-cached compiled scripts, parallel records, 3,848 tests, 2,116 parity files vs gawk/mawk/BSD awk.">
+  <meta name="description" content="awkrs — fast AWK in Rust. 96-opcode bytecode VM, Cranelift JIT, rkyv-cached compiled scripts, parallel records, 3,852 tests, 2,116 parity files vs gawk/mawk/BSD awk.">
   <title>awkrs — Documentation</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -221,11 +221,11 @@ aw '/error/i { print FILENAME ":" NR ":" $0 }' *.log</pre>
             <tr><td>Persistent bytecode cache</td><td style="color:#0f0;">&#10003;</td><td>&#10007;</td><td>&#10007;</td><td>&#10007;</td></tr>
             <tr><td>Unicode support</td><td style="color:#0f0;">&#10003;</td><td>&#10003;</td><td>partial</td><td>&#10007;</td></tr>
             <tr><td>CSV mode</td><td style="color:#0f0;">&#10003;</td><td>&#10003;</td><td>&#10007;</td><td>&#10007;</td></tr>
-            <tr><td>Regex backrefs</td><td style="color:#0f0;">&#10003;</td><td>&#10003;</td><td>&#10007;</td><td>&#10007;</td></tr>
+            <tr><td>Regex backrefs (<code>gensub</code> replacement)</td><td style="color:#0f0;">&#10003;</td><td>&#10003;</td><td>&#10007;</td><td>&#10007;</td></tr>
             <tr><td>Time functions</td><td style="color:#0f0;">&#10003;</td><td>&#10003;</td><td>&#10007;</td><td>&#10007;</td></tr>
             <tr><td>I18N (gettext)</td><td style="color:#0f0;">&#10003;</td><td>&#10003;</td><td>&#10007;</td><td>&#10007;</td></tr>
             <tr><td>Network I/O</td><td style="color:#0f0;">&#10003;</td><td>&#10003;</td><td>&#10007;</td><td>&#10007;</td></tr>
-            <tr><td>Single binary</td><td style="color:#0f0;">~8MB</td><td>pkg</td><td>~200KB</td><td>pkg</td></tr>
+            <tr><td>Single binary</td><td style="color:#0f0;">~9MB</td><td>pkg</td><td>~200KB</td><td>pkg</td></tr>
             <tr><td>Memory safety</td><td style="color:#0f0;">Rust</td><td>C</td><td>C</td><td>C</td></tr>
           </tbody>
         </table>
@@ -236,11 +236,11 @@ aw '/error/i { print FILENAME ":" NR ":" $0 }' *.log</pre>
         <ul>
           <li><strong>Parser &amp; compiler</strong> — recursive-descent parser producing an AST, compiled to bytecode for the VM. Hot paths can be JIT-compiled via Cranelift.</li>
           <li><strong>Values</strong> — AWK values (string/number/uninitialized) with automatic coercion. Arrays are associative (hash maps).</li>
-          <li><strong>Regex</strong> — three-tier engine: Rust <code>regex</code> → <code>fancy-regex</code> (backrefs) → <code>pcre2</code> (advanced).</li>
+          <li><strong>Regex</strong> — the Rust <a href="https://crates.io/crates/regex"><code>regex</code></a> crate, compiled once and cached per pattern. Linear-time by construction, so <em>pattern-side</em> backreferences (<code>/(.)\1/</code>) are not supported; <code>gensub</code> still expands <code>\1</code>..<code>\9</code> and <code>&amp;</code> in <strong>replacement</strong> text. All patterns are built with <code>dot_matches_new_line(true)</code> to follow the gawk ERE convention.</li>
           <li><strong>fusevm offload</strong> — eligible numeric bytecode chunks lower to the shared <a href="https://crates.io/crates/fusevm">fusevm</a> VM (also used by zshrs and stryke) and JIT-compile via Cranelift; <code>AWKRS_FUSEVM=0</code> forces the bytecode interpreter for every chunk.</li>
           <li><strong>Parallelism</strong> — <code>-j N</code> / <code>--threads N</code> (default 1) processes records in parallel via rayon when the program is parallel-safe; output is reordered to input order.</li>
           <li><strong>Bytecode cache</strong> — <code>-f script.awk</code> runs memoize the compiled program to <code>~/.awkrs/scripts.rkyv</code>; repeat invocations skip lex/parse/compile.</li>
-          <li><strong>Binary size</strong> — single binary built with LTO; see the comparison table below.</li>
+          <li><strong>Binary size</strong> — one self-contained executable, no runtime deps. Release builds use the stock <code>cargo build --release</code> profile (see <code>.github/workflows/release.yml</code>) and are stripped before packaging; the v0.4.21 aarch64-apple-darwin binary is 9.0 MB.</li>
         </ul>
       </section>
 
@@ -287,7 +287,7 @@ aw '/error/i { print FILENAME ":" NR ":" $0 }' *.log</pre>
 
       <section class="tutorial-section">
         <h2>Built-in Functions</h2>
-        <p>The 61 builtin names are pinned in <code>src/namespace.rs</code> (<code>BUILTIN_NAMES</code>) and are exempt from <code>@namespace</code> prefixing.</p>
+        <p>The 68 builtin names are pinned in <code>src/namespace.rs</code> (<code>BUILTIN_NAMES</code>) and are exempt from <code>@namespace</code> prefixing.</p>
         <div class="cat-grid">
           <div class="cat-card"><h4>String</h4><p><code>length substr index split sprintf tolower toupper</code></p></div>
           <div class="cat-card"><h4>Regex / substitution</h4><p><code>gsub sub match gensub patsplit</code> — <code>gensub</code> expands <code>\N</code> capture-group backrefs</p></div>
@@ -367,7 +367,7 @@ aw --csv 'BEGIN { OFS="," } { print $1, $3 }' in.csv</pre>
 -D, --debug[FILE]          # rule / function listing to stderr or FILE
 -E, --exec FILE            # run program FILE (gawk -E)
 -g, --gen-pot              # extract gettext strings to a .pot template
--I, --trace                # trace mode
+-I, --trace                # accepted for gawk compat; no runtime effect today
 -k, --csv                  # CSV mode: comma FS + FPAT quoting ("" escape)
 -L, --lint[fatal|invalid|no-ext]  # enable lint diagnostics
 -M, --bignum               # arbitrary-precision math via MPFR (rug)
@@ -388,6 +388,15 @@ aw --csv 'BEGIN { OFS="," } { print $1, $3 }' in.csv</pre>
 # awkrs-specific
 -j, --threads N            # worker threads for parallel records (default 1)
     --read-ahead N         # stdin lines per parallel batch (default 1024)
+    --repl                 # interactive reedline REPL (also the default on a bare tty)
+    --lsp                  # run as a Language Server over stdio
+    --dap[HOST:PORT]       # run as a DAP debug adapter (stdio, or connect HOST:PORT)
+    --aot OUT              # AOT-compile a BEGIN-only program to native executable OUT
+    --dump-tokens          # print the lexer token stream and exit
+    --dump-ast             # print the parsed AST and exit
+    --dump-bytecode        # print the compiled fusevm bytecode and exit
+    --disasm               # print a fusevm bytecode disassembly and exit
+    --tiers                # run, then report which fusevm tier took each chunk
 -h, --help                 # cyberpunk HUD help
 -V, --version              # print version</pre>
       </section>

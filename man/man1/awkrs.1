@@ -94,7 +94,8 @@ Generate gettext
 output and exit before execution.
 .TP
 .BR \-I ", " \-\-trace
-Trace execution.
+Accepted for gawk CLI compatibility. Parsed but currently has no runtime effect;
+no opcode trace is emitted.
 .TP
 .BR \-k ", " \-\-csv
 CSV mode. Sets
@@ -276,6 +277,26 @@ Print a fusevm bytecode disassembly listing for every compiled chunk (via the
 shared
 .B fusevm::Chunk::disassemble )
 and exit without reading input.
+.TP
+.BR \-\-lsp
+Run as a Language Server (LSP over stdio) for editor integration. Serves
+diagnostics, hover, and completion from the same corpus that generates
+.IR docs/reference.html .
+.TP
+.BR \-\-dap " [\fIHOST:PORT\fR]"
+Run as a Debug Adapter (DAP) for editor debuggers. With no argument the adapter
+speaks DAP over stdio; with
+.I HOST:PORT
+it connects to that address instead, leaving the debugged program's own stdout
+free.
+.TP
+.BI \-\-aot " OUT"
+AOT\-compile a \fBBEGIN\fR\-only program to a native standalone executable at
+.IR OUT :
+the program is lowered through
+.B fusevm
+to a Cranelift object file and linked against the awk runtime
+.RB ( libawkrs.a ).
 .TP
 .BR \-h ", " \-\-help
 Print the cyberpunk HUD help and exit.

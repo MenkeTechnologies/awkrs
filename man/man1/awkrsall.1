@@ -170,7 +170,8 @@ Generate gettext
 output and exit.
 .TP
 .BR \-I ", " \-\-trace
-Trace execution.
+Accepted for gawk CLI compatibility. Parsed but currently has no runtime effect;
+no opcode trace is emitted.
 .TP
 .BR \-k ", " \-\-csv
 CSV mode.  Sets
@@ -244,12 +245,47 @@ when the program is parallel-safe (see
 .TP
 .BR \-\-read-ahead " \fILINES\fR"
 Stdin parallel batch size.  Default 1024.
+.PP
+There is no flag to switch off the JIT or the bytecode cache.  Use
+.BR \-s / \-\-no-optimize
+(above) or the environment variables
+.BR AWKRS_JIT=0 ,
+.BR AWKRS_FUSEVM=0 ,
+and
+.BR AWKRS_CACHE=0 .
 .TP
-.B \-\-no-jit
-Force the bytecode interpreter even when JIT is available.
+.B \-\-repl
+Launch the interactive REPL.  Also the default when awkrs is started with no
+program on a terminal.
 .TP
-.B \-\-no-cache
-Disable bytecode cache for this invocation.
+.B \-\-lsp
+Run as a Language Server (LSP over stdio) for editor integration.
+.TP
+.BR \-\-dap " [\fIHOST:PORT\fR]"
+Run as a Debug Adapter (DAP).  With no argument the adapter speaks DAP over
+stdio; with
+.I HOST:PORT
+it connects to that address so the program's own stdout stays free.
+.TP
+.BR \-\-aot " \fIOUT\fR"
+AOT\-compile a \fBBEGIN\fR\-only program to a native standalone executable at
+.IR OUT .
+.TP
+.B \-\-dump\-tokens
+Print the lexer token stream and exit.
+.TP
+.B \-\-dump\-ast
+Print the parsed AST and exit.
+.TP
+.B \-\-dump\-bytecode
+Print the compiled fusevm bytecode and exit.
+.TP
+.B \-\-disasm
+Print a fusevm bytecode disassembly listing and exit.
+.TP
+.B \-\-tiers
+Run the program on the fusevm backend, then report which fusevm execution tier
+took each of its chunks.
 .SH "2.  PROGRAM TEXT"
 .SS Rules
 .BR BEGIN ,
