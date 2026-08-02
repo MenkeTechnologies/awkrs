@@ -788,7 +788,7 @@ fn position_to_offset(text: &str, pos: Position) -> Option<usize> {
 /// Signature + one-line description for an AWK builtin, if known.
 /// Sourced from the POSIX awk spec, the gawk extensions awkrs accepts, and
 /// awkrs's own intercept engine. Covers every name in
-/// [`crate::namespace::BUILTIN_NAMES`] — `builtin_signature_covers_every_name`
+/// `crate::namespace::BUILTIN_NAMES` — `builtin_signature_covers_every_name`
 /// keeps the two in lockstep — so completion, hover, and signature help never
 /// show a bare name with no detail.
 ///
