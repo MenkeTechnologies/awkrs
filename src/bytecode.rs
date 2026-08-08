@@ -196,7 +196,7 @@ pub enum Op {
     NextFile,
     /// Pop exit code from stack.
     ExitWithCode,
-    /// Exit with code 0.
+    /// Exit leaving the current exit status unchanged (POSIX bare `exit`).
     ExitDefault,
     /// Pop return value from stack.
     ReturnVal,

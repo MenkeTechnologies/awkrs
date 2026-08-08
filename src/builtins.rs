@@ -859,9 +859,18 @@ pub fn awk_typeof_value(v: &Value) -> &'static str {
 }
 
 /// `typeof(arr[key])` when `arr` is a known array name in the runtime.
+///
+/// gawk distinguishes an element that does not exist from one that exists but
+/// holds no value: reading `a["k"]` auto-creates the element, and `typeof` then
+/// reports **`"unassigned"`** rather than `"untyped"`. `"untyped"` is reserved
+/// for a key that was never created — `typeof` itself does not create it.
 pub fn awk_typeof_array_elem(rt: &Runtime, name: &str, key: &str) -> &'static str {
     match rt.get_global_var(name) {
-        Some(Value::Array(a)) => a.get(key).map(|v| awk_typeof_value(v)).unwrap_or("untyped"),
+        Some(Value::Array(a)) => match a.get(key) {
+            Some(Value::Uninit) => "unassigned",
+            Some(v) => awk_typeof_value(v),
+            None => "untyped",
+        },
         _ => "untyped",
     }
 }

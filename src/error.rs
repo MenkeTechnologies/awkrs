@@ -29,6 +29,26 @@ pub enum Error {
     #[error("exit {0}")]
     Exit(i32),
 }
+impl Error {
+    /// Process exit status this error should produce, matching the reference awks.
+    ///
+    /// * **2** — every *fatal* condition: runtime faults (`1/0`, calling an
+    ///   undefined function), an unreadable `-f` program file, an input file that
+    ///   cannot be opened, and I/O failures on output redirection. gawk, mawk and
+    ///   one-true-awk all exit 2 for these.
+    /// * **1** — parse diagnostics. Here the references disagree (gawk 1,
+    ///   mawk and one-true-awk 2); awkrs follows gawk.
+    ///
+    /// [`Error::Exit`] carries the program's own status and never reaches this.
+    pub fn exit_status(&self) -> i32 {
+        match self {
+            Error::Parse { .. } => 1,
+            Error::Exit(code) => *code,
+            Error::Io(_) | Error::Runtime(_) | Error::ProgramFile(..) | Error::InputFile(..) => 2,
+        }
+    }
+}
+
 /// `Result` type alias.
 pub type Result<T> = std::result::Result<T, Error>;
 

@@ -1706,7 +1706,11 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 return Ok(VmSignal::ExitPending);
             }
             Op::ExitDefault => {
-                ctx.rt.exit_code = 0;
+                // POSIX: `exit` with no expression leaves the exit status
+                // unchanged. `BEGIN { exit 3 } END { exit }` therefore still
+                // exits 3 — gawk, mawk and one-true-awk all agree. Zeroing
+                // `exit_code` here would discard the status an earlier
+                // `exit <expr>` had already set.
                 ctx.rt.exit_pending = true;
                 return Ok(VmSignal::ExitPending);
             }

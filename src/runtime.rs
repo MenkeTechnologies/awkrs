@@ -1002,12 +1002,21 @@ fn split_csv_gawk_fields(record: &str, field_ranges: &mut Vec<(u32, u32)>) {
 }
 
 /// Split `record` into `field_ranges` (replaces contents). Shared by lazy split and stdin path.
+/// Split `record` into field byte-ranges using `fs`.
+///
+/// `paragraph_mode` is `RS == ""`. POSIX: *"When RS is null … <newline> shall
+/// always be a field separator, no matter what the value of FS is."* In practice
+/// gawk and one-true-awk apply that only to a **single-character** FS (gawk
+/// rewrites FS to `[<fs>\n]` there and leaves a regex FS untouched); mawk does
+/// not apply it at all. The default `FS == " "` needs nothing extra — newline is
+/// already whitespace — so the flag is only consulted in the single-char branch.
 fn split_fields_into(
     record: &str,
     fs: &str,
     field_ranges: &mut Vec<(u32, u32)>,
     ignore_case: bool,
     characters_as_bytes: bool,
+    paragraph_mode: bool,
 ) {
     field_ranges.clear();
     // Rough NF estimate from record length reduces per-line `Vec` growth for whitespace/FS splits.
@@ -1051,14 +1060,19 @@ fn split_fields_into(
         let bytes = record.as_bytes();
         let mut start = 0;
         for (i, &b) in bytes.iter().enumerate() {
-            if b == sep {
+            if b == sep || (paragraph_mode && b == b'\n') {
                 field_ranges.push((start as u32, i as u32));
                 start = i + 1;
             }
         }
         field_ranges.push((start as u32, bytes.len() as u32));
     } else {
-        // POSIX: multi-character FS is treated as a regular expression.
+        // POSIX: multi-character FS is treated as a regular expression. The
+        // paragraph-mode newline rule deliberately does NOT apply here — gawk,
+        // mawk and one-true-awk all leave a regex FS alone (gawk only rewrites
+        // FS to `[<fs>\n]` in the single-character branch), so
+        // `RS=""; FS="[0-9]+"` on "a12b\nc345d" is three fields in every
+        // reference, with "b\nc" as $2.
         let mut b = RegexBuilder::new(fs);
         b.case_insensitive(ignore_case);
         // gawk: `.` in ERE matches any byte including `\n` (matters when RS != "\n"
@@ -1128,6 +1142,11 @@ pub struct Runtime {
     pub exit_code: i32,
     /// Primary input stream for `getline` without `< file` (same as main record loop).
     pub input_reader: Option<SharedInputReader>,
+    /// Set once the main record loop has run the primary stream to completion and
+    /// detached it. A later plain `getline` (typically in `END`) is then at EOF and
+    /// must return `0`, not raise "only valid during normal input" — gawk, mawk and
+    /// one-true-awk all return `0` there.
+    pub primary_input_done: bool,
     /// Open files for `getline < path` / `close`.
     pub file_handles: HashMap<String, BufReader<File>>,
     /// Directory iteration for `getline var < dir` (gawk **readdir** extension semantics).
@@ -1387,6 +1406,7 @@ impl Runtime {
             exit_pending: false,
             exit_code: 0,
             input_reader: None,
+            primary_input_done: false,
             inet_tcp_read: HashMap::new(),
             inet_tcp_write: HashMap::new(),
             inet_udp: HashMap::new(),
@@ -1827,6 +1847,7 @@ impl Runtime {
             exit_pending: false,
             exit_code: 0,
             input_reader: None,
+            primary_input_done: false,
             inet_tcp_read: HashMap::new(),
             inet_tcp_write: HashMap::new(),
             inet_udp: HashMap::new(),
@@ -2244,6 +2265,8 @@ impl Runtime {
     /// `detach_input_reader` — see implementation for the contract.
     pub fn detach_input_reader(&mut self) {
         self.input_reader = None;
+        // The primary stream is now spent; a later plain `getline` is at EOF.
+        self.primary_input_done = true;
         #[cfg(unix)]
         {
             self.primary_input_poll_fd = None;
@@ -2263,6 +2286,15 @@ impl Runtime {
     }
 
     /// Current [`RS`](https://www.gnu.org/software/gawk/manual/html_node/Built_002din-Variables.html) value.
+    /// `RS == ""` — awk's paragraph mode. Records are separated by blank lines and
+    /// <newline> is an additional field separator regardless of `FS`.
+    pub fn paragraph_mode(&self) -> bool {
+        match self.get_global_var("RS") {
+            Some(v) => v.as_str_cow().is_empty(),
+            None => false,
+        }
+    }
+
     pub fn rs_string(&self) -> String {
         match self.get_global_var("RS") {
             Some(Value::Str(s)) => s.clone(),
@@ -2401,6 +2433,12 @@ impl Runtime {
     /// Next **record** from the primary input stream (respects `RS`), used by `getline` with no redirection.
     pub fn read_line_primary(&mut self) -> Result<Option<String>> {
         let Some(reader) = self.input_reader.clone() else {
+            if self.primary_input_done {
+                // Main input already ran to completion (we are in `END`, or after
+                // an `exit`). POSIX makes this an ordinary end-of-file: `getline`
+                // yields 0. gawk / mawk / one-true-awk all agree.
+                return Ok(None);
+            }
             return Err(Error::Runtime(
                 "`getline` with no file is only valid during normal input".into(),
             ));
@@ -2775,14 +2813,27 @@ impl Runtime {
         }
         // Use cached_fs (set by set_field_sep_split) to avoid HashMap lookup + String clone.
         let cab = self.characters_as_bytes;
+        // Paragraph mode (`RS == ""`) makes <newline> an extra field separator for
+        // a single-character FS. `FS == " "` already splits on newline and a regex
+        // FS is left alone, so RS is only looked up in the one case that needs it —
+        // the common paths keep their single global lookup.
         if !self.cached_fs.is_empty() {
-            split_fields_into(record, &self.cached_fs, &mut self.field_ranges, ic, cab);
+            let para = self.cached_fs.len() == 1 && self.cached_fs != " " && self.paragraph_mode();
+            split_fields_into(
+                record,
+                &self.cached_fs,
+                &mut self.field_ranges,
+                ic,
+                cab,
+                para,
+            );
         } else {
             match self.get_global_var("FS") {
-                None => split_fields_into(record, " ", &mut self.field_ranges, ic, cab),
+                None => split_fields_into(record, " ", &mut self.field_ranges, ic, cab, false),
                 Some(v) => {
                     let fs = v.as_str_cow().into_owned();
-                    split_fields_into(record, &fs, &mut self.field_ranges, ic, cab);
+                    let para = fs.len() == 1 && fs != " " && self.paragraph_mode();
+                    split_fields_into(record, &fs, &mut self.field_ranges, ic, cab, para);
                 }
             }
         }
@@ -3548,6 +3599,7 @@ impl Clone for Runtime {
             exit_pending: self.exit_pending,
             exit_code: self.exit_code,
             input_reader: None,
+            primary_input_done: false,
             inet_tcp_read: HashMap::new(),
             inet_tcp_write: HashMap::new(),
             inet_udp: HashMap::new(),
@@ -4579,7 +4631,7 @@ mod extra_runtime_tests {
     #[test]
     fn split_fields_whitespace() {
         let mut ranges = Vec::new();
-        split_fields_into("  a  b   c  ", " ", &mut ranges, false, false);
+        split_fields_into("  a  b   c  ", " ", &mut ranges, false, false, false);
         assert_eq!(ranges.len(), 3);
         assert_eq!(ranges[0], (2, 3)); // "a"
         assert_eq!(ranges[1], (5, 6)); // "b"
@@ -4589,7 +4641,7 @@ mod extra_runtime_tests {
     #[test]
     fn split_fields_comma() {
         let mut ranges = Vec::new();
-        split_fields_into("a,b,,c", ",", &mut ranges, false, false);
+        split_fields_into("a,b,,c", ",", &mut ranges, false, false, false);
         assert_eq!(ranges.len(), 4);
         assert_eq!(ranges[0], (0, 1)); // "a"
         assert_eq!(ranges[1], (2, 3)); // "b"
@@ -4600,7 +4652,7 @@ mod extra_runtime_tests {
     #[test]
     fn split_fields_regex() {
         let mut ranges = Vec::new();
-        split_fields_into("a1b22c", "[0-9]+", &mut ranges, false, false);
+        split_fields_into("a1b22c", "[0-9]+", &mut ranges, false, false, false);
         assert_eq!(ranges.len(), 3);
         assert_eq!(ranges[0], (0, 1)); // "a"
         assert_eq!(ranges[1], (2, 3)); // "b"

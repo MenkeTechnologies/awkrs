@@ -211,6 +211,13 @@ Columns: **P** = POSIX / universal core, **B** = BSD awk, **M** = mawk, **G** = 
 - **Dynamic extensions**: gawk `@load "foo.so"` has no equivalent in awkrs.
 - **Process / locale / OS**: `PROCINFO["platform"]` mapping uses `posix`/`mingw` style (`procinfo.rs`), not necessarily gawk’s host string for every OS.
 - **For-in order**: Without `-P`, gawk-style `sorted_in` and user comparators apply; hash order still differs across engines when sorting is off.
+- **Exit status**: fatal conditions (runtime faults, an unreadable `-f` file, an input file that cannot be opened, output-redirection I/O errors) exit **2**, matching all three reference awks. Parse diagnostics exit **1**, matching gawk; mawk and one-true-awk exit 2 there. See `Error::exit_status` in `src/error.rs`.
+- **`printf "%c"` with an empty string**: emits nothing, matching POSIX ("the first character of the string value") and one-true-awk. gawk and mawk emit a NUL byte.
+- **`"0x10" + 0`**: `0`, matching POSIX, gawk and mawk. one-true-awk's `strtod` accepts the `0x` prefix and yields 16.
+- **`printf` unsigned conversions of a negative argument** (`%x` `%o` `%X`): converted as a 64-bit unsigned value (`printf "%x", -3` → `fffffffffffffffd`), matching gawk. one-true-awk and mawk both print `0`.
+- **`OFMT` / `CONVFMT` set to a non-floating-point conversion** (e.g. `"%d"`): undefined by POSIX, and all three references differ — one-true-awk ignores the setting, mawk prints a garbage integer, gawk warns and prints `0`. awkrs produces gawk's value without the warning.
+- **Paragraph mode field splitting**: with `RS == ""` a single-character `FS` gains `<newline>` as an additional separator (gawk and one-true-awk both do this; mawk does not). A regex `FS` is left alone in every reference, so an embedded newline stays inside the field.
+- **Character semantics are UTF-8, not locale-driven**: `length`/`substr`/`index`/`toupper`/`tolower` count and fold Unicode scalar values regardless of `LC_ALL`, so `length("é")` is 1 even under `LC_ALL=C` where gawk reports 2. `-b` selects byte semantics explicitly.
 
 ---
 

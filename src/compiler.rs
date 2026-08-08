@@ -1916,7 +1916,16 @@ fn peephole_optimize(ops: &mut Vec<Op>, strings: &StringPool) {
             if let (Op::PushNum(n), Op::GetField) = (ops[i], ops[i + 1]) {
                 let field = n as u16;
                 if n >= 0.0 && n == field as f64 {
-                    // Check if next op consumes the value numerically
+                    // Check if next op consumes the value numerically.
+                    //
+                    // The relational operators are deliberately NOT on this list.
+                    // A field is a *strnum*: `<` `<=` `>` `>=` compare numerically
+                    // only when BOTH sides look numeric, and as strings otherwise.
+                    // Fusing to `PushFieldNum` would coerce the field to a number
+                    // before the comparator ever sees it, so `$1 < $2` on the
+                    // record `a b` compared 0 against 0 and answered 0 where every
+                    // reference awk answers 1. Arithmetic and compound assignment
+                    // always coerce, so they keep the fusion.
                     let next = if i + 2 < ops.len() {
                         Some(ops[i + 2])
                     } else {
@@ -1929,10 +1938,6 @@ fn peephole_optimize(ops: &mut Vec<Op>, strings: &StringPool) {
                             | Some(Op::Mul)
                             | Some(Op::Div)
                             | Some(Op::Mod)
-                            | Some(Op::CmpLt)
-                            | Some(Op::CmpLe)
-                            | Some(Op::CmpGt)
-                            | Some(Op::CmpGe)
                             | Some(Op::CompoundAssignSlot(_, _))
                             | Some(Op::CompoundAssignVar(_, _))
                     );
