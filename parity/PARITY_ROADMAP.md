@@ -2,6 +2,11 @@
 
 **Goal:** Lock observable behavior to reference implementations on shared inputs: **gawk**, **mawk**, and **BSD awk** all run the **same** corpus (`parity/cases/` + `parity/cases_portable/`) — so compatibility work is driven by failing parity cases, not guesswork.
 
+## Two harnesses
+
+- **`parity/run_parity.sh`** (this document) — **replays** a fixed corpus of ~2 100 committed cases. It is the regression gate.
+- **`scripts/fuzz_parity.sh`** — **finds** new gaps. Curated probes (`scripts/fuzz/probes.awkc`) plus a seeded generator (`scripts/fuzz/gen_awk.pl`), compared on stdout bytes + exit status against gawk / mawk / one-true-awk. Run it before adding cases here: a divergence it reports is what a new case should pin.
+
 ## Harness
 
 - `parity/run_parity.sh` runs a reference **`awk -f`** and **`awkrs -f`** on the same program, then compares **combined stdout+stderr** (exact bytes, `LC_ALL=C`).

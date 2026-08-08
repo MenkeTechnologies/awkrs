@@ -506,7 +506,24 @@ cargo test
 
 CI runs on pushes and pull requests to `main` via [GitHub Actions](.github/workflows/ci.yml): one Ubuntu lint job (`cargo fmt --check`, `cargo clippy -D warnings`, `cargo doc` with `RUSTDOCFLAGS=-D warnings`) plus a build/test matrix on Ubuntu and macOS.
 
-Coverage spans library unit tests for every module (lexer, parser, format, builtins, vm, compiler, runtime, locale_numeric, cli, cyber_help) and integration suites under `tests/` that exercise the gawk-style additions, the slurped-input path, parallel record behavior, and the full CLI surface. Cross-feature combinations (CSV + ENDFILE, paragraph `RS=""` + getline, `FIELDWIDTHS` + NF reassignment, ...) live in [`tests/cross_feature_integration.rs`](tests/cross_feature_integration.rs).
+Coverage spans library unit tests for every module (lexer, parser, format, builtins, vm, compiler, runtime, locale_numeric, cli, cyber_help) and integration suites under `tests/` that exercise the gawk-style additions, the slurped-input path, parallel record behavior, and the full CLI surface. Cross-feature combinations (CSV + ENDFILE, paragraph `RS=""` + getline, `FIELDWIDTHS` + NF reassignment, ...) live in [`tests/cross_feature_integration.rs`](tests/cross_feature_integration.rs). Behavior pinned by a reference awk — strnum relational comparison, `exit` status propagation, `getline` at end of input, paragraph-mode field splitting, fatal exit codes — lives in [`tests/posix_parity_regressions.rs`](tests/posix_parity_regressions.rs) and needs no awk installed.
+
+### Differential harness
+
+[`scripts/fuzz_parity.sh`](scripts/fuzz_parity.sh) runs a corpus under **both** a reference awk and `awkrs` and reports every case whose **stdout bytes** or **exit status** differ. stderr is not compared — each awk words its diagnostics differently, so the exit status is what a caller can actually observe.
+
+```bash
+cargo build                              # the harness uses target/debug/awkrs
+bash scripts/fuzz_parity.sh              # curated probes, gawk
+bash scripts/fuzz_parity.sh -r all       # gawk, then mawk, then one-true-awk
+bash scripts/fuzz_parity.sh -n 800 -s 3  # plus 800 generated cases, seed 3
+```
+
+The corpus has two halves. [`scripts/fuzz/probes.awkc`](scripts/fuzz/probes.awkc) is hand-written and covers the semantics where awk implementations actually differ: field splitting (`FS`/`OFS`/`RS`/`ORS`, the single-space rule, regex separators, paragraph mode), number↔string coercion and `OFMT`/`CONVFMT`, uninitialized values, `printf` conversions, the `substr`/`index`/`split`/`sub`/`gsub`/`match` family with `RSTART`/`RLENGTH`, arrays with `in`/`delete`/`SUBSEP`, the `getline` forms, and `NF`/`NR`/`FNR` assignment side effects. [`scripts/fuzz/gen_awk.pl`](scripts/fuzz/gen_awk.pl) generates the other half from seeded templates over the same areas, so a divergence reproduces exactly from its seed.
+
+A probe may carry `#--- only <ref>[,<ref>]`. That is **not** a failure allowlist — it marks the few probes where the reference awks disagree with *each other* (`printf "%c", ""`, `"0x10" + 0`, `substr` with a negative start) and records which reference defines the behavior awkrs targets.
+
+This is separate from [`parity/run_parity.sh`](parity/run_parity.sh), which replays a fixed ~2 100-case corpus; the differential harness exists to **find** new gaps rather than replay known ones.
 
 ---
 

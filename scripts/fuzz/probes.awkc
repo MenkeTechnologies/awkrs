@@ -1,0 +1,374 @@
+# Curated differential probes — read by scripts/fuzz_parity.sh.
+#
+# Format:
+#   #=== <name>                 starts a case
+#   #--- prog                   program text follows, up to the next directive
+#   #--- in                     stdin text follows (optional)
+#   #--- only <ref>[,<ref>]     restrict this probe to the named reference awks
+#
+# `#--- only` is NOT a failure allowlist. It exists for the handful of probes
+# where the reference implementations disagree with *each other*, so there is no
+# single ground truth to compare against; the directive records which references
+# define the behavior awkrs targets. Every probe without it must match all three.
+# Never add `only` to a probe to make a failure disappear — the divergence is the
+# finding, and suppressing it destroys the point of the harness.
+#
+# Each case runs in its own working directory containing `input.txt`
+# (three lines: L1, L2, L3) so getline-from-file probes have something to read.
+#
+# One trailing blank line is stripped from each section — the blank line between
+# cases is layout, not data. A case that must end in a blank line writes two.
+
+#=== printf_conversions
+#--- prog
+BEGIN {
+  printf "%c|%c|\n", 65, "hello"
+  printf "%i %d %d\n", 3.9, -3.9, "12abc"
+  printf "%*d|%-*d|%.*f|\n", 5, 42, 5, 42, 2, 3.14159
+  printf "%5.2s|%-5s|%05d|%+d|% d|\n", "abcdef", "ab", 42, 42, 42
+  printf "%o %x %X %e %E %g %G\n", 8, 255, 255, 1234.5, 1234.5, 0.0001234, 123456789
+  printf "%%|%d|\n", 2147483648
+  printf "%.30g\n", 0.1
+}
+
+#=== printf_uninitialized
+# An uninitialized value is a number for %c, and every awk emits NUL for it.
+#--- prog
+BEGIN { printf "%s|%d|%c|%f|\n", x, x, x, x }
+
+#=== printf_unsigned_conversions_of_negative
+# Reference disagreement, recorded rather than hidden: gawk converts a negative
+# argument to %x / %o / %X as a 64-bit unsigned value; one-true-awk and mawk
+# both print 0. awkrs follows gawk.
+#--- only gawk
+#--- prog
+BEGIN { printf "%x %o %X\n", -3, -3, -3 }
+
+#=== printf_c_empty_string
+# Three-way disagreement, recorded rather than hidden: POSIX says %c outputs the
+# first character of a string value, and an empty string has none. one-true-awk
+# emits nothing (and awkrs follows it); gawk and mawk emit a stray NUL byte.
+# Checked against the reference that agrees with POSIX.
+#--- only bsd
+#--- prog
+BEGIN { printf "[%c]\n", "" }
+
+#=== ofmt_convfmt
+#--- prog
+BEGIN {
+  OFMT = "%.2f"; x = 3.14159; print x; print x ""
+  CONVFMT = "%.2f"; print x ""; print length(x "")
+  print 100000, 1e17, 2^53, 2147483647
+}
+
+#=== integral_values_bypass_ofmt
+#--- prog
+BEGIN { OFMT = "%.2f"; CONVFMT = "%.2f"; print 5, 5 "", 5.0, -0 }
+
+#=== strnum_comparison
+#--- prog
+{ print ($1 == 10), ($1 < 9), ($1 == "10.0"), ($1 "" == "10") }
+#--- in
+10
+ 10
+10.0
+
+#=== relational_field_vs_field
+# Regression pin: `<` `<=` `>` `>=` between two fields must honour the strnum
+# rule — string compare when either side is not numeric-looking, numeric compare
+# when both are. A peephole that treated the relational ops as numeric consumers
+# used to coerce the right-hand field to a number first, so "a" < "b" answered 0.
+#--- prog
+{ print ($1 < $2), ($2 < $1), ($1 > $2), ($2 > $1), ($1 <= $2), ($1 >= $2), ($1 == $2) }
+#--- in
+a b
+2 10
+10 9
+b a
+
+
+x
+
+#=== uninitialized_semantics
+#--- prog
+BEGIN { print "[" x "]", x + 0, length(x), (x == 0), (x == "") }
+
+#=== string_to_number
+#--- prog
+BEGIN { print "010" + 0, " 12 " + 0, "1e3" + 0, "+5" + 0, ".5" + 0, "5." + 0 }
+
+#=== string_to_number_hex_literal
+# Reference disagreement, recorded rather than hidden: POSIX string-to-number
+# conversion has no hex form, so `"0x10" + 0` is 0. gawk and mawk agree on 0;
+# one-true-awk's strtod accepts the 0x prefix and yields 16. awkrs follows POSIX.
+#--- only gawk,mawk
+#--- prog
+BEGIN { print "0x10" + 0 }
+
+#=== fs_default_whitespace
+#--- prog
+{ print NF "|" $1 "|" $2 "|" }
+#--- in
+  a	 b
+
+#=== fs_single_char_is_literal
+#--- prog
+BEGIN { FS = "." } { print NF "|" $1 "|" $2 "|" $3 "|" }
+#--- in
+a.b.c
+
+#=== fs_regex
+#--- prog
+BEGIN { FS = "[0-9]+" } { print NF "|" $1 "|" $2 "|" $3 "|" }
+#--- in
+a12b345c
+
+#=== fs_change_takes_effect_next_record
+#--- prog
+NR == 1 { FS = ":" } { print NR, NF, $1 }
+#--- in
+a:b
+c:d
+
+#=== ofs_rebuild_on_field_assign
+#--- prog
+BEGIN { OFS = "-" } { print; $1 = $1; print; print $1, $2 }
+#--- in
+a b c
+
+#=== ors
+#--- prog
+BEGIN { ORS = "|" } { print } END { printf "\n" }
+#--- in
+a
+b
+
+#=== rs_single_char
+#--- prog
+BEGIN { RS = ":" } { print NR "[" $0 "]" } END { print "NR=" NR }
+#--- in
+a:b:c
+
+#=== rs_paragraph_mode_default_fs
+#--- prog
+BEGIN { RS = "" } { print NR "[" $0 "]", NF } END { print "NR=" NR }
+#--- in
+a b
+c
+
+
+d
+
+#=== rs_paragraph_mode_newline_is_field_sep
+# gawk and one-true-awk make <newline> an extra separator for a single-char FS
+# (gawk rewrites FS to `[<fs>\n]`); mawk does not implement that rule.
+#--- only gawk,bsd
+#--- prog
+BEGIN { RS = ""; FS = ":" } { print NF "|" $1 "|" $2 "|" $3 "|" $4 "|" }
+#--- in
+a:b
+c:d
+
+#=== rs_paragraph_mode_regex_fs_keeps_newline
+# The newline rule stops at single-char FS: with a regex FS every reference awk
+# leaves the embedded newline inside $2.
+#--- prog
+BEGIN { RS = ""; FS = "[0-9]+" } { print NF "|" $1 "|" $2 "|" $3 "|" }
+#--- in
+a12b
+c345d
+
+#=== nf_assignment_truncates_and_extends
+#--- prog
+BEGIN { OFS = "-" } { NF = 2; print NF, "[" $0 "]" }
+#--- in
+a b c d
+
+#=== field_assignment_beyond_nf
+#--- prog
+{ $6 = "x"; print NF, "[" $0 "]" }
+#--- in
+a b c
+
+#=== dollar0_assignment_resplits
+#--- prog
+{ $0 = "p q r"; print NF, $2 }
+#--- in
+a
+
+#=== substr_out_of_range
+#--- prog
+BEGIN {
+  print "[" substr("hello", 0) "]"
+  print "[" substr("hello", 2, -1) "]"
+  print "[" substr("hello", 1.5, 2.4) "]"
+  print "[" substr("hello", 10) "]"
+}
+
+#=== substr_negative_start_and_huge_length
+# Reference disagreement, recorded rather than hidden: POSIX clamps the
+# character range to the intersection of [m, m+n) with [1, length]. gawk and
+# one-true-awk both do that (`substr("hello",-1,3)` is "hel", and a length of
+# 1e300 simply runs to the end); mawk counts differently and overflows the huge
+# length to an empty result. awkrs follows gawk / one-true-awk.
+#--- only gawk,bsd
+#--- prog
+BEGIN { printf "[%s][%s]\n", substr("hello", -1, 3), substr("hello", 2, 1e300) }
+
+#=== index_and_length
+#--- prog
+BEGIN { print index("abc", ""), index("", "a"), index("abc", "c"), length("abc"), length() }
+
+#=== split_forms
+#--- prog
+BEGIN {
+  print split("a:b:c", A, ":"), A[1], A[3]
+  print split("  a  b  ", B), "[" B[1] "]", "[" B[2] "]"
+  print split("", C, ":")
+  print split(":a:", D, ":"), "[" D[1] "]", "[" D[2] "]", "[" D[3] "]"
+  print split("a1b22c", E, /[0-9]+/), E[1], E[2], E[3]
+}
+
+#=== gsub_ampersand
+#--- prog
+BEGIN {
+  s = "hello"; print gsub(/l/, "[&]", s), s
+  t = "hello"; print gsub(/l/, "[\\&]", t), t
+  u = "abc";   print gsub(/x*/, "-", u), u
+  v = "banana"; print gsub(/ana/, "X", v), v
+}
+
+#=== sub_on_field_rebuilds_record
+#--- prog
+{ sub(/o/, "X", $2); print; print NF }
+#--- in
+foo bar boo
+
+#=== match_rstart_rlength
+#--- prog
+BEGIN {
+  print match("hello world", /o w/), RSTART, RLENGTH
+  print match("hello", /xyz/), RSTART, RLENGTH
+  print match("hello", //), RSTART, RLENGTH
+}
+
+#=== arrays_in_delete_subsep
+#--- prog
+BEGIN {
+  A[1] = 1
+  print (1 in A), ("1" in A), (2 in A), length(A)
+  if (B["x"] == "") print "reference created it:", length(B), ("x" in B)
+  C[1, 2] = "v"
+  print ((1, 2) in C), length(C)
+  delete C[1, 2]
+  print length(C)
+}
+
+#=== typeof_unassigned_vs_untyped
+# gawk separates an array element that does not exist ("untyped") from one a
+# bare read auto-created but never assigned ("unassigned"). `typeof` itself does
+# not create the element. Not a POSIX builtin, so gawk is the only reference.
+#--- only gawk
+#--- prog
+BEGIN {
+  print typeof(a["k"])
+  y = a["k"]
+  print typeof(a["k"]), typeof(a["never"])
+  a["n"] = 1; a["s"] = ""
+  print typeof(a["n"]), typeof(a["s"]), typeof(a)
+}
+
+#=== array_key_uses_convfmt
+#--- prog
+BEGIN { CONVFMT = "%.2f"; A[1.5] = 1; for (k in A) print k; B[2] = 1; for (k in B) print k }
+
+#=== getline_from_file
+#--- prog
+BEGIN {
+  while ((getline line < "input.txt") > 0) n++
+  print n, NR, FNR
+  print (getline line < "input.txt")
+  close("input.txt")
+  print (getline line < "input.txt"), line
+}
+
+#=== getline_dollar0_from_file
+#--- prog
+BEGIN { print (getline < "input.txt"), NF, "[" $0 "]", NR, FNR }
+
+#=== getline_missing_file_returns_minus_one
+#--- prog
+BEGIN { print (getline x < "/nonexistent/awkrs-parity-probe") }
+
+#=== getline_plain_updates_nr
+#--- prog
+NR == 1 { print "r=" getline, "NR=" NR, "NF=" NF, "[" $0 "]" }
+{ print "body:" NR ":" $0 }
+#--- in
+a b
+c d
+e f
+
+#=== getline_at_eof_returns_zero
+#--- prog
+END { print "eof=" getline, "NR=" NR }
+#--- in
+a
+b
+
+#=== getline_from_command
+#--- prog
+BEGIN {
+  "echo hi there" | getline
+  print "[" $0 "]", NF, NR
+  "echo 7" | getline v
+  print v, NR, NF
+}
+
+#=== exit_bare_in_end_preserves_status
+#--- prog
+BEGIN { print "b"; exit 3 }
+END { print "e"; exit }
+
+#=== exit_expression_in_end_overrides
+#--- prog
+BEGIN { exit 3 }
+END { exit 5 }
+
+#=== exit_from_main_rule
+#--- prog
+{ exit 4 }
+END { print "e", NR }
+#--- in
+a
+b
+
+#=== range_and_regex_patterns
+#--- prog
+/a/, /c/ { print "R:" $0 }
+#--- in
+a
+b
+c
+d
+a
+
+#=== user_function_locals_and_arrays
+#--- prog
+function f(a, b) { b = 5; return a + b }
+function g(arr) { arr["k"] = "v"; return length(arr) }
+BEGIN { b = 1; print f(1), b; print g(A), A["k"] }
+
+#=== assignment_operators
+#--- prog
+BEGIN { x = 10; x += 1; x -= 2; x *= 3; x /= 2; x %= 7; x ^= 2; print x }
+
+#=== modulo_and_exponent
+#--- prog
+BEGIN { print 7 % 3, -7 % 3, 7 % -3, 7.5 % 2, 2 ^ 3 ^ 2, -2 ^ 2 }
+
+#=== increment_on_field
+#--- prog
+{ $1++; print; print NF }
+#--- in
+5 b
