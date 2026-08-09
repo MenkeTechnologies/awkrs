@@ -12,7 +12,7 @@
 #   bash scripts/fuzz_parity.sh -r all              # gawk, then mawk, then bsd
 #   bash scripts/fuzz_parity.sh -n 500 -s 7         # 500 generated cases, seed 7
 #   bash scripts/fuzz_parity.sh -n 500 -P           # generated cases only
-#   bash scripts/fuzz_parity.sh -c target/fuzz/corpus.awkc   # re-check a corpus
+#   bash scripts/fuzz_parity.sh -c target/fuzz/PID/corpus.awkc  # re-check a corpus
 #   bash scripts/fuzz_parity.sh -v                  # print every case, not just fails
 #
 #   -n N       generated cases to append to the corpus (default 0 — probes only)
@@ -38,12 +38,13 @@
 # Each case runs in its own working directory holding an `input.txt` fixture, so
 # getline-from-file cases have something deterministic to read.
 #
-# Exit status is the number of diverging cases plus oracle failures (0 = parity),
-# capped at 250. A case counts only when the reference produced an answer: if the
-# reference itself times out it is reported as ORACLE-FAIL and scored neither way,
-# so a case where both awks hang can never be mistaken for a pass. The summary
-# line accounts for every case in the corpus and warns when the buckets do not
-# add up to the corpus size.
+# Exit status is the number of diverging cases, plus oracle failures, plus any
+# case that never ran (0 = parity), capped at 250. A case counts only when the
+# reference produced an answer: if the reference itself times out it is reported
+# as ORACLE-FAIL and scored neither way, so a case where both awks hang can
+# never be mistaken for a pass. The summary line accounts for every case in the
+# corpus, and a shortfall is scored as failure — otherwise a run whose case tree
+# went missing would print `PARITY: 0/0 cases match` and exit 0.
 
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 2
@@ -98,9 +99,17 @@ resolve_ref() {
   esac
 }
 
-OUT=$ROOT/target/fuzz
-command rm -rf "$OUT/cases" "$OUT/work"
+# Each run gets its own scratch directory. The path used to be a fixed
+# `target/fuzz`, which two concurrent invocations in the same checkout silently
+# destroyed for each other: the second run's `rm -rf` deleted the case tree the
+# first was still iterating, so the first reported "PARITY: 0/0 cases match" —
+# a wiped corpus reading as a clean run. `$$` is the shell's own pid, so runs
+# cannot collide; the directory is left in place afterwards because divergence
+# reports cite paths inside it.
+OUT=$ROOT/target/fuzz/$$
+command rm -rf "$OUT"
 mkdir -p "$OUT/cases" "$OUT/work"
+say "scratch: $OUT"
 
 # ── build the corpus ────────────────────────────────────────────────────────
 if [ -n "$CORPUS" ]; then
@@ -226,12 +235,18 @@ run_ref() {
   fi
   printf ' (%d skipped by `only`, %d oracle failures, %d of %d accounted)\n' \
     "$skip" "$oracle" "$((scored + skip + oracle))" "$TOTAL"
-  if [ "$((scored + skip + oracle))" -ne "$TOTAL" ]; then
+  # A shortfall is a failure, not a note. Cases that never ran shrink the
+  # denominator "N/N match" is measured against, so a run that lost its whole
+  # corpus used to print `PARITY: 0/0 cases match` and exit 0 — the strongest
+  # possible green light for the weakest possible evidence. Counting the
+  # missing cases as failures makes an unusable run exit non-zero.
+  local missing=$((TOTAL - scored - skip - oracle))
+  if [ "$missing" -ne 0 ]; then
     printf '%sWARNING%s: %d case(s) in the corpus were never run — the corpus is malformed\n' \
-      "$R" "$N_" "$((TOTAL - scored - skip - oracle))"
+      "$R" "$N_" "$missing"
   fi
   # Oracle failures are not parity, so they must not read as success either.
-  return "$((diverge + oracle))"
+  return "$((diverge + oracle + missing))"
 }
 
 REFS=$REF
