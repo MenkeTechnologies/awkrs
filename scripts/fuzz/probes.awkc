@@ -939,3 +939,20 @@ BEGIN {
 #--- in
 1.23456
 
+
+#=== undefined_escape_in_a_string_literal
+# POSIX leaves `\$` in a string literal undefined, and the references split two
+# to one: gawk warns and treats it as a plain `$` (so the regex still anchors at
+# end of string) and one-true-awk does the same silently, while mawk keeps the
+# backslash and matches a literal `$` instead — answering `0 0 -1` here. awkrs
+# follows gawk and one-true-awk. Pinned rather than generated: the dynamic-regex
+# template used to emit this shape by accident on every draw of its `c$` entry,
+# which reported this one known mawk deviation over and over instead of finding
+# new gaps.
+#--- only gawk,bsd
+#--- prog
+BEGIN {
+  r = "c\$"
+  print match("a:b:c", r), RSTART, RLENGTH
+  print ("a:b:c" ~ r), ("c$" ~ r)
+}

@@ -282,7 +282,17 @@ my @TEMPLATES = (
     },
     # dynamic regex held in a variable vs the same text as a literal
     sub {
-        my $re = pick('"^a"', '"a.c"', '"[0-9]+"', '"\\\\."', '"c\$"', '"x*"', '"(ab)+"');
+        # `'"c$"'` is single-quoted, so perl does not interpolate `$` and the
+        # backslash this entry used to carry was not an escape *for perl* — it
+        # went straight into the awk source as `"c\$"`. That is an undefined
+        # escape sequence, not an end anchor: gawk warns and treats it as plain
+        # `$`, one-true-awk agrees, and mawk keeps the backslash and matches a
+        # literal `$`. So every draw of this entry reported the same known mawk
+        # deviation while the end-anchor-in-a-dynamic-regex case it was written
+        # to cover was never generated at all. The escape behaviour is pinned
+        # once, deliberately, by `undefined_escape_in_a_string_literal` in
+        # probes.awkc.
+        my $re = pick('"^a"', '"a.c"', '"[0-9]+"', '"\\\\."', '"c$"', '"x*"', '"(ab)+"');
         my $s  = str();
         my $k  = rnd(3);
         return (qq{BEGIN { r = $re; print ($s ~ r), ($s !~ r) }}, undef)            if $k == 0;
