@@ -513,6 +513,81 @@ BEGIN {
   delete B[1, 2]; print length(B)
 }
 
+#=== printf_zero_precision_d_of_a_zero_value
+# POSIX (and ISO C) for the `d` conversion: "The result of converting a zero
+# value with a precision of 0 shall be no characters." mawk, one-true-awk, the
+# C library's own printf and awkrs all print nothing. **gawk deviates**, but
+# only when the operand is a non-integral double that truncates to zero:
+# `printf "%.0d", 0` is empty in gawk too, while `printf "%.0d", 1e-3` prints
+# `0`. The seeded generator reaches this shape through `%.*d` with a fractional
+# operand, so the disagreement is pinned here once, against the references that
+# implement the standard, rather than rediscovered on every gawk run.
+#--- prog
+BEGIN {
+  printf "[%.0d][%.0d][%.0d]\n", 0, 1e-3, -0.4
+  printf "[%.*d][%.*d][%.*d]\n", 0, 0, 0, 1e-3, 0, -0.4
+  printf "[%.0d][%.*d]\n", 5, 0, 5
+}
+#--- only mawk,bsd
+
+#=== single_subscript_convfmt_is_the_same_key_everywhere
+# Every operation that takes a subscript must convert it the *same* way the
+# store did, or `a[x] = 1` and `x in a` name different entries. Only the store
+# and the plain read were checked before: `in`, `delete`, `a[x] += 1`, `a[x]++`
+# and `typeof(a[x])` each converted the key their own way, and the existing
+# coverage could not see it — every probed `in`/`delete` used either an
+# integral subscript (which bypasses CONVFMT and so round-trips whatever the
+# conversion is) or the *multidimensional* form, where the SUBSEP join has
+# already turned the key into a string before the op ever sees it. A
+# non-integral single subscript is the one shape that exposes the difference.
+#--- prog
+BEGIN {
+  CONVFMT = "%.2f"
+  x = 1.23456
+  A[x] = 5
+  print (x in A), ("1.23" in A), ("1.23456" in A)
+  A[x] += 1
+  A[x]++
+  print length(A), A[x], A["1.23"]
+  print typeof(A[x])
+  delete A[x]
+  print length(A), (x in A)
+}
+#--- only gawk
+
+#=== single_subscript_convfmt_is_the_same_key_everywhere_portable
+# The same invariant without `typeof`, so mawk and one-true-awk run it too.
+#--- prog
+BEGIN {
+  CONVFMT = "%.3g"
+  x = 2 / 3
+  A[x] = 1
+  print (x in A), length(A)
+  A[x] += 10
+  A[x]--
+  print length(A), A[x]
+  for (k in A) print "[" k "]"
+  delete A[x]
+  print length(A), (x in A)
+}
+
+#=== computed_subscript_round_trips_under_every_convfmt
+# The subscript is a *computed* double whose exact decimal expansion is longer
+# than any CONVFMT rendering of it, so a key built at full precision can never
+# equal the stored one.
+#--- prog
+BEGIN {
+  split("%.2f %.6g %.17g %.3e", F, " ")
+  for (i = 1; i <= 4; i++) {
+    CONVFMT = F[i]
+    delete A
+    v = 0.1 + 0.2
+    A[v] = 1
+    A[v] += 1
+    print F[i], (v in A), length(A), A[v]
+  }
+}
+
 #=== delete_whole_array
 #--- prog
 function clear(a) { delete a; return length(a) }

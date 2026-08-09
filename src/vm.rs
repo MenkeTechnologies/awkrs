@@ -1147,12 +1147,14 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                     ));
                 }
                 let key_val = ctx.pop();
-                let k = key_val.as_str_cow();
+                // POSIX: numeric subscripts are stringified via CONVFMT — the
+                // same conversion `Op::SetArrayElem` used to store the entry.
+                let k = ctx.rt.value_to_array_key(&key_val);
                 let name = ctx.str_ref(arr);
                 let t = if name == "SYMTAB" {
-                    ctx.typeof_scalar_name(k.as_ref())
+                    ctx.typeof_scalar_name(&k)
                 } else {
-                    Value::StrLit(builtins::awk_typeof_array_elem(ctx.rt, name, k.as_ref()).into())
+                    Value::StrLit(builtins::awk_typeof_array_elem(ctx.rt, name, &k).into())
                 };
                 ctx.push(t);
             }
@@ -1257,13 +1259,16 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             Op::CompoundAssignIndex(arr, bop) => {
                 let rhs = ctx.pop();
                 let key_val = ctx.pop();
+                // POSIX: numeric subscripts are stringified via CONVFMT. Read
+                // and write must use the *same* conversion: this op used to
+                // read through `as_str_cow` and write through `into_string`, so
+                // `CONVFMT = "%.2f"; a[1.23456] = 5; a[1.23456] += 1` read the
+                // "1.23" entry, then stored the result under a second key
+                // "1.23456" — one array, two entries, increment lost.
+                let key = ctx.rt.value_to_array_key(&key_val);
                 let name = ctx.cp.strings.get(arr);
-                let old = {
-                    let k = key_val.as_str_cow();
-                    ctx.array_elem_get(name, k.as_ref())
-                };
+                let old = ctx.array_elem_get(name, &key);
                 let new_val = apply_binop(bop, &old, &rhs, ctx.rt.bignum, ctx.rt)?;
-                let key = key_val.into_string();
                 ctx.array_elem_set(name, key, new_val.clone());
                 ctx.push(new_val);
             }
@@ -1404,7 +1409,12 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 }
             }
             Op::IncDecIndex(arr, kind) => {
-                let key = ctx.pop().into_string();
+                // POSIX: numeric subscripts are stringified via CONVFMT, the
+                // same conversion the store path uses. `into_string` renders
+                // the number at full precision instead, so `a[x]++` targeted a
+                // different entry from the `a[x] = …` that created it.
+                let key_val = ctx.pop();
+                let key = ctx.rt.value_to_array_key(&key_val);
                 let name = ctx.cp.strings.get(arr);
                 let delta = incdec_delta(kind);
                 if ctx.rt.bignum {
@@ -1804,7 +1814,10 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             // ── Array ops ───────────────────────────────────────────────
             Op::InArray(arr) => {
                 let key_val = ctx.pop();
-                let k = key_val.as_str_cow();
+                // POSIX: numeric subscripts are stringified via CONVFMT — the
+                // same conversion the store path uses, so that `a[x] = 1;
+                // (x in a)` is true for every x.
+                let k = ctx.rt.value_to_array_key(&key_val);
                 let name = ctx.str_ref(arr).to_string();
                 // gawk parity: `key in x` on a scalar `x` raises "attempt to
                 // use scalar `x' as an array". Earlier awkrs returned 0.
@@ -1821,7 +1834,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                     for frame in ctx.locals.iter().rev() {
                         match frame.get(name.as_str()) {
                             Some(Value::Array(a)) => {
-                                found = Some(a.contains_key(k.as_ref()));
+                                found = Some(a.contains_key(k.as_str()));
                                 break;
                             }
                             Some(Value::Uninit) | None => {}
@@ -1874,7 +1887,10 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             }
             Op::DeleteElem(arr) => {
                 let key_val = ctx.pop();
-                let k = key_val.as_str_cow();
+                // POSIX: numeric subscripts are stringified via CONVFMT — the
+                // same conversion the store path uses, so `delete a[x]` removes
+                // the entry `a[x] = …` created.
+                let k = ctx.rt.value_to_array_key(&key_val);
                 let name = ctx.cp.strings.get(arr);
                 if name == "SYMTAB" {
                     ctx.symtab_delete(k.as_ref());
@@ -1889,7 +1905,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                     for frame in ctx.locals.iter_mut().rev() {
                         match frame.get_mut(name) {
                             Some(Value::Array(map)) => {
-                                map.remove(k.as_ref());
+                                map.remove(k.as_str());
                                 handled = true;
                                 break;
                             }

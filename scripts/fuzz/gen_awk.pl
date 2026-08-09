@@ -70,6 +70,11 @@ my @STARS = ('0', '1', '3', '6', '-1', '-4', '-8');
 # swamp the harness output with one known mawk bug instead of finding new gaps.
 # The `%.*s` case is pinned once, deliberately, by
 # `printf_star_negative_precision_string` in probes.awkc.
+# `%.*d` with a *fractional* operand that truncates to zero reaches a known gawk
+# deviation: POSIX, ISO C, mawk and one-true-awk all print nothing for a zero
+# value at precision 0, while gawk prints `0` when the operand was not integral.
+# It stays in the vocabulary — the shape is worth generating — and is pinned by
+# `printf_zero_precision_d_of_a_zero_value` in probes.awkc.
 my @STAR_NUM_CONV = ('"%.*f"', '"%.*e"', '"%.*g"', '"%.*d"');
 # Strings that look like numbers in one form but not another — the raw material
 # for POSIX numeric-string ("strnum") questions.
@@ -423,6 +428,24 @@ my @TEMPLATES = (
         return (qq{{ \$1 = $s; print (\$1 == 6), (\$1 < 7) }}, "42 7\n")               if $k == 1;
         return (qq{{ \$1 = \$2; print (\$1 < 7), (\$1 == \$2) }}, "42 6\n")            if $k == 2;
         return (qq{BEGIN { \$0 = $s; print (\$0 == 6), (\$0 < 7), NF, "[" \$1 "]" }}, undef);
+    },
+    # Every op that takes a **single, non-integral** subscript, under a CONVFMT
+    # that does not round-trip it. Until this template existed the corpus could
+    # not reach the bug it finds: each generated `in`/`delete` used either an
+    # integral subscript — which bypasses CONVFMT entirely, so any conversion
+    # round-trips — or the multidimensional form, where the SUBSEP join has
+    # already reduced the key to a string before the op runs. `in`, `delete`,
+    # `a[k] += v`, `a[k]++` and a plain read each converted the key their own
+    # way, so `a[x] = 1; (x in a)` was false and `a[x] += 1` created a *second*
+    # entry instead of updating the first.
+    sub {
+        my $c = pick(@CONV);
+        my $v = pick('1.23456', '2 / 3', '0.1 + 0.2', '1 / 3', '3.14159265', '1e-3 + 1e-4');
+        my $k = rnd(4);
+        return (qq{BEGIN { CONVFMT = $c; x = $v; A[x] = 1; print (x in A), length(A); delete A[x]; print length(A), (x in A) }}, undef)      if $k == 0;
+        return (qq{BEGIN { CONVFMT = $c; x = $v; A[x] = 5; A[x] += 2; print length(A), A[x]; for (j in A) print "[" j "]" }}, undef)         if $k == 1;
+        return (qq{BEGIN { CONVFMT = $c; x = $v; A[x] = 5; A[x]++; --A[x]; print length(A), A[x] }}, undef)                                  if $k == 2;
+        return (qq{BEGIN { CONVFMT = $c; x = $v; A[x] = "v"; print (x in A), ((x "") in A), A[x], length(A) }}, undef);
     },
     # RS as a regex / multi-character literal, and the empty-record field count
     sub {

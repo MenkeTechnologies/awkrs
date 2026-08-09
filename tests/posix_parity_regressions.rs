@@ -672,3 +672,101 @@ fn assigning_fs_in_a_rule_affects_the_next_record_on_the_file_path() {
     }
     let _ = std::fs::remove_file(&path);
 }
+
+/// POSIX: a numeric array subscript is converted to a string with `CONVFMT`
+/// (integral values excepted — those convert exactly). That conversion is the
+/// array's *identity function*, so every operation that takes a subscript has to
+/// use it, or two spellings of the same subscript name two different entries.
+///
+/// Five of the eight subscript-taking opcodes did not: `in`, `delete a[k]`,
+/// `a[k] op= v`, `a[k]++` and `typeof(a[k])` each rendered the key their own way
+/// while the store used `CONVFMT`. gawk 5.4.1, mawk 1.3.4 and one-true-awk
+/// 20200816 all agree with the assertions below.
+///
+/// The gap survived a large probe corpus and a seeded generator because every
+/// case they contained used either an **integral** subscript — which bypasses
+/// `CONVFMT`, so any rendering round-trips — or the **multidimensional** form,
+/// where the `SUBSEP` join has already reduced the key to a string before the
+/// opcode runs. A non-integral *single* subscript is the shape that shows it.
+#[test]
+fn every_subscript_operation_uses_the_convfmt_key() {
+    // `x in a` must be true for the entry `a[x] = …` just created.
+    let (code, stdout, _) = run_awkrs_stdin(
+        r#"BEGIN { CONVFMT = "%.2f"; x = 1.23456; A[x] = 1; print (x in A), ("1.23" in A) }"#,
+        "",
+    );
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "1 1\n");
+
+    // `delete a[x]` must remove that same entry, not miss it.
+    let (code, stdout, _) = run_awkrs_stdin(
+        r#"BEGIN { CONVFMT = "%.2f"; x = 1.23456; A[x] = 1; delete A[x]; print length(A) }"#,
+        "",
+    );
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "0\n");
+
+    // A compound assignment read through one key and wrote through another, so
+    // it left the array with two entries and the increment on the wrong one.
+    let (code, stdout, _) = run_awkrs_stdin(
+        r#"BEGIN { CONVFMT = "%.2f"; x = 1.23456; A[x] = 5; A[x] += 1; print length(A), A[x] }"#,
+        "",
+    );
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "1 6\n");
+
+    // Same for the increment/decrement forms, pre and post.
+    let (code, stdout, _) = run_awkrs_stdin(
+        r#"BEGIN { CONVFMT = "%.2f"; x = 1.23456; A[x] = 5; A[x]++; ++A[x]; --A[x]; print length(A), A[x] }"#,
+        "",
+    );
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "1 6\n");
+
+    // `typeof` looked up an entry that was never stored and reported the
+    // "untyped" of a missing element instead of the value's own type.
+    let (code, stdout, _) = run_awkrs_stdin(
+        r#"BEGIN { CONVFMT = "%.2f"; x = 1.23456; A[x] = "s"; B[x] = 7; print typeof(A[x]), typeof(B[x]) }"#,
+        "",
+    );
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "string number\n");
+}
+
+/// The same invariant has to hold whatever `CONVFMT` is, including formats that
+/// round to fewer digits than the subscript needs and formats that keep more.
+/// A single hard-coded `CONVFMT` would pass on a lucky value that round-trips.
+#[test]
+fn convfmt_subscript_round_trips_under_every_format() {
+    for fmt in ["%.2f", "%.6g", "%.17g", "%.3e", "%.1g"] {
+        let program = format!(
+            r#"BEGIN {{ CONVFMT = "{fmt}"; x = 0.1 + 0.2; A[x] = 1; A[x] += 1; A[x]++; print (x in A), length(A), A[x] }}"#
+        );
+        let (code, stdout, stderr) = run_awkrs_stdin(&program, "");
+        assert_eq!(code, 0, "CONVFMT={fmt}: stderr {stderr:?}");
+        assert_eq!(stdout, "1 1 3\n", "CONVFMT={fmt}");
+    }
+}
+
+/// The JIT and the plain VM must not disagree about the key either: `-O` and
+/// `-s` select different execution tiers, and the subscript conversion lives in
+/// the interpreter's opcode handlers, so a fix applied to one tier only would
+/// leave the other answering differently for the same program.
+#[test]
+fn convfmt_subscript_key_agrees_across_execution_tiers() {
+    let program = r#"BEGIN { CONVFMT = "%.2f"; x = 1.23456; A[x] = 5; A[x] += 1; print (x in A), length(A), A[x] }"#;
+    let bin = env!("CARGO_BIN_EXE_awkrs");
+    let mut seen = Vec::new();
+    for flag in ["-s", "-O"] {
+        let out = std::process::Command::new(bin)
+            .arg(flag)
+            .arg(program)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("run awkrs");
+        assert!(out.status.success(), "{flag}: {:?}", String::from_utf8_lossy(&out.stderr));
+        seen.push(String::from_utf8_lossy(&out.stdout).into_owned());
+    }
+    assert_eq!(seen[0], "1 1 6\n", "-s (no JIT)");
+    assert_eq!(seen[1], seen[0], "-O (JIT) disagrees with -s");
+}
