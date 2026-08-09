@@ -21,8 +21,16 @@
 #   -c FILE    use this corpus instead of probes + generator
 #   -P         skip the curated probes (generated cases only)
 #   -t SECS    per-process timeout (default 10)
+#   -F         feed the input as a *file argument* instead of on stdin
 #   -v         verbose: report OK cases too
 #   -h         this message
+#
+# `-F` exists because awk reads a named file and a pipe through different code:
+# awkrs mmaps/slurps a file argument and splits fields lazily, while stdin is
+# streamed. Every case here is fed on stdin by default — and so is every case in
+# `parity/run_parity.sh` — which left the whole file path unexercised. It was
+# hiding a record-destroying bug: assigning any field before reading one dropped
+# every other field, because the deferred split had not run yet. Run both modes.
 #
 # Corpus format (scripts/fuzz/probes.awkc documents it in full):
 #   #=== <name> / #--- prog / #--- in / #--- only <ref>[,<ref>]
@@ -30,14 +38,19 @@
 # Each case runs in its own working directory holding an `input.txt` fixture, so
 # getline-from-file cases have something deterministic to read.
 #
-# Exit status is the number of diverging cases (0 = parity), capped at 250.
+# Exit status is the number of diverging cases plus oracle failures (0 = parity),
+# capped at 250. A case counts only when the reference produced an answer: if the
+# reference itself times out it is reported as ORACLE-FAIL and scored neither way,
+# so a case where both awks hang can never be mistaken for a pass. The summary
+# line accounts for every case in the corpus and warns when the buckets do not
+# add up to the corpus size.
 
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 2
 ROOT=$(pwd)
 export LC_ALL=C LANG=C
 
-N=0 SEED=1 REF=gawk NO_PROBES=0 TMO=10 VERBOSE=0
+N=0 SEED=1 REF=gawk NO_PROBES=0 TMO=10 VERBOSE=0 FILE_INPUT=0
 CORPUS=''
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -46,6 +59,7 @@ while [ $# -gt 0 ]; do
     -r) REF="$2"; shift 2 ;;
     -c) CORPUS="$2"; shift 2 ;;
     -P) NO_PROBES=1; shift ;;
+    -F) FILE_INPUT=1; shift ;;
     -t) TMO="$2"; shift 2 ;;
     -v) VERBOSE=1; shift ;;
     -h) grep '^#' "$0" | cut -c3-; exit 0 ;;
@@ -138,7 +152,7 @@ TOTAL=$(command cat "$OUT/count")
 # ── run one reference over the whole corpus ─────────────────────────────────
 run_ref() {
   local refname=$1 refbin=$2
-  local pass=0 skip=0 diverge=0
+  local pass=0 skip=0 diverge=0 oracle=0
   say "$TOTAL cases: $refbin (reference) vs $AWKRS"
 
   local case name only work rexit sexit
@@ -156,10 +170,31 @@ run_ref() {
     printf 'L1\nL2\nL3\n' >"$work/input.txt"
     [ -f "$case/in.txt" ] && cp "$case/in.txt" "$work/stdin" || : >"$work/stdin"
 
-    ( builtin cd "$work" && run_bounded "$refbin" -f "$case/prog.awk" <stdin >ref.out 2>ref.err )
-    rexit=$?
-    ( builtin cd "$work" && run_bounded "$AWKRS" -f "$case/prog.awk" <stdin >sub.out 2>sub.err )
-    sexit=$?
+    if [ "$FILE_INPUT" -eq 1 ]; then
+      # Same bytes, handed over as a named operand instead of a pipe. Both awks
+      # see the same FILENAME, so anything printing it still compares equal.
+      ( builtin cd "$work" && run_bounded "$refbin" -f "$case/prog.awk" stdin >ref.out 2>ref.err )
+      rexit=$?
+      ( builtin cd "$work" && run_bounded "$AWKRS" -f "$case/prog.awk" stdin >sub.out 2>sub.err )
+      sexit=$?
+    else
+      ( builtin cd "$work" && run_bounded "$refbin" -f "$case/prog.awk" <stdin >ref.out 2>ref.err )
+      rexit=$?
+      ( builtin cd "$work" && run_bounded "$AWKRS" -f "$case/prog.awk" <stdin >sub.out 2>sub.err )
+      sexit=$?
+    fi
+
+    # A case only counts once the *reference* actually produced an answer. When
+    # the oracle is killed by the timeout (124 from `timeout`, 137 from a
+    # follow-up KILL) it has no opinion, and if awkrs happens to hang too the
+    # two empty outputs and equal statuses would compare equal and be scored a
+    # pass. Those are reported on their own line instead, never as parity.
+    if [ "$rexit" = 124 ] || [ "$rexit" = 137 ]; then
+      oracle=$((oracle + 1))
+      printf '%sORACLE-FAIL%s [%s] (%s) reference timed out after %ss; awkrs exit=%s — not scored\n' \
+        "$R" "$N_" "$name" "$refname" "$TMO" "$sexit"
+      continue
+    fi
 
     if cmp -s "$work/ref.out" "$work/sub.out" && [ "$rexit" = "$sexit" ]; then
       pass=$((pass + 1))
@@ -179,14 +214,24 @@ run_ref() {
     fi
   done
 
+  # Every case in the corpus must land in exactly one bucket. Printing the
+  # accounting makes a silent shortfall — cases lost to a malformed corpus, say
+  # — visible instead of shrinking the denominator that "N/N match" is measured
+  # against.
+  local scored=$((pass + diverge))
   if [ "$diverge" -eq 0 ]; then
-    printf '%sPARITY (%s): %d/%d cases match%s (%d skipped by `only`)\n' \
-      "$G" "$refname" "$pass" "$((pass + diverge))" "$N_" "$skip"
+    printf '%sPARITY (%s): %d/%d cases match%s' "$G" "$refname" "$pass" "$scored" "$N_"
   else
-    printf '%s%d of %d cases diverge from %s%s (%d skipped by `only`)\n' \
-      "$R" "$diverge" "$((pass + diverge))" "$refname" "$N_" "$skip"
+    printf '%s%d of %d cases diverge from %s%s' "$R" "$diverge" "$scored" "$refname" "$N_"
   fi
-  return "$diverge"
+  printf ' (%d skipped by `only`, %d oracle failures, %d of %d accounted)\n' \
+    "$skip" "$oracle" "$((scored + skip + oracle))" "$TOTAL"
+  if [ "$((scored + skip + oracle))" -ne "$TOTAL" ]; then
+    printf '%sWARNING%s: %d case(s) in the corpus were never run — the corpus is malformed\n' \
+      "$R" "$N_" "$((TOTAL - scored - skip - oracle))"
+  fi
+  # Oracle failures are not parity, so they must not read as success either.
+  return "$((diverge + oracle))"
 }
 
 REFS=$REF

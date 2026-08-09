@@ -2335,18 +2335,48 @@ fn peephole_optimize(ops: &mut Vec<Op>, strings: &StringPool) {
     }
 }
 
+/// Where a statement sits relative to the enclosing `break`/`continue` targets.
+///
+/// `break` needs a loop **or** a `switch`; `continue` needs a loop. Carried by
+/// value through [`validate_stmt`] because it is two bits and the walker is
+/// recursive.
+#[derive(Clone, Copy, Default)]
+struct BreakCtx {
+    in_loop: bool,
+    in_switch: bool,
+}
+
+impl BreakCtx {
+    /// Inside a loop body: both `break` and `continue` have a target.
+    fn in_loop(self) -> Self {
+        Self {
+            in_loop: true,
+            in_switch: self.in_switch,
+        }
+    }
+    /// Inside a `switch` arm: `break` has a target, `continue` still needs an
+    /// enclosing loop and so keeps whatever `in_loop` the context already had.
+    fn in_switch(self) -> Self {
+        Self {
+            in_loop: self.in_loop,
+            in_switch: true,
+        }
+    }
+}
+
 /// Static checks before codegen: tuple contexts, minimum builtin arities,
-/// and function names used as variables.
+/// function names used as variables, and `break`/`continue` placement.
 pub fn validate_program(prog: &Program) -> Result<()> {
+    let top = BreakCtx::default();
     for rule in &prog.rules {
         validate_pattern(&rule.pattern)?;
         for st in &rule.stmts {
-            validate_stmt(st)?;
+            validate_stmt(st, top)?;
         }
     }
     for f in prog.funcs.values() {
         for st in &f.body {
-            validate_stmt(st)?;
+            validate_stmt(st, top)?;
         }
     }
     reject_function_name_as_variable(prog)?;
@@ -2434,29 +2464,29 @@ fn validate_print_redir(r: &PrintRedir) -> Result<()> {
     }
 }
 
-fn validate_stmt(st: &Stmt) -> Result<()> {
+fn validate_stmt(st: &Stmt, ctx: BreakCtx) -> Result<()> {
     match st {
         Stmt::SrcLine(_) => Ok(()),
         Stmt::If { cond, then_, else_ } => {
             validate_expr(cond, false)?;
             for s in then_ {
-                validate_stmt(s)?;
+                validate_stmt(s, ctx)?;
             }
             for s in else_ {
-                validate_stmt(s)?;
+                validate_stmt(s, ctx)?;
             }
             Ok(())
         }
         Stmt::While { cond, body } => {
             validate_expr(cond, false)?;
             for s in body {
-                validate_stmt(s)?;
+                validate_stmt(s, ctx.in_loop())?;
             }
             Ok(())
         }
         Stmt::DoWhile { body, cond } => {
             for s in body {
-                validate_stmt(s)?;
+                validate_stmt(s, ctx.in_loop())?;
             }
             validate_expr(cond, false)?;
             Ok(())
@@ -2477,19 +2507,19 @@ fn validate_stmt(st: &Stmt) -> Result<()> {
                 validate_expr(e, false)?;
             }
             for s in body {
-                validate_stmt(s)?;
+                validate_stmt(s, ctx.in_loop())?;
             }
             Ok(())
         }
         Stmt::ForIn { body, .. } => {
             for s in body {
-                validate_stmt(s)?;
+                validate_stmt(s, ctx.in_loop())?;
             }
             Ok(())
         }
         Stmt::Block(ss) => {
             for s in ss {
-                validate_stmt(s)?;
+                validate_stmt(s, ctx)?;
             }
             Ok(())
         }
@@ -2512,7 +2542,30 @@ fn validate_stmt(st: &Stmt) -> Result<()> {
             }
             Ok(())
         }
-        Stmt::Break | Stmt::Continue | Stmt::Next | Stmt::NextFile => Ok(()),
+        // gawk, mawk and one-true-awk all reject `break` / `continue` outside a
+        // loop before running anything (`BEGIN { print "a"; break }` prints
+        // nothing in all three). awkrs used to accept them: the compiler emits a
+        // placeholder `Op::Jump(0)` and patches it when the enclosing loop
+        // closes, so with no enclosing loop the placeholder survived and the
+        // program jumped to instruction 0 — an infinite loop, forever, on a
+        // program every reference awk refuses to run.
+        Stmt::Break => {
+            if ctx.in_loop || ctx.in_switch {
+                Ok(())
+            } else {
+                Err(Error::Runtime("`break` outside a loop or switch".into()))
+            }
+        }
+        // `continue` needs a real loop: gawk rejects it inside a `switch` that
+        // has no enclosing loop even though `break` is legal there.
+        Stmt::Continue => {
+            if ctx.in_loop {
+                Ok(())
+            } else {
+                Err(Error::Runtime("`continue` outside a loop".into()))
+            }
+        }
+        Stmt::Next | Stmt::NextFile => Ok(()),
         Stmt::Exit(e) => {
             if let Some(ex) = e {
                 validate_expr(ex, false)?;
@@ -2546,6 +2599,7 @@ fn validate_stmt(st: &Stmt) -> Result<()> {
         }
         Stmt::Switch { expr, arms } => {
             validate_expr(expr, false)?;
+            let arm_ctx = ctx.in_switch();
             for arm in arms {
                 match arm {
                     SwitchArm::Case { label, stmts } => {
@@ -2553,12 +2607,12 @@ fn validate_stmt(st: &Stmt) -> Result<()> {
                             validate_expr(le, false)?;
                         }
                         for s in stmts {
-                            validate_stmt(s)?;
+                            validate_stmt(s, arm_ctx)?;
                         }
                     }
                     SwitchArm::Default { stmts } => {
                         for s in stmts {
-                            validate_stmt(s)?;
+                            validate_stmt(s, arm_ctx)?;
                         }
                     }
                 }

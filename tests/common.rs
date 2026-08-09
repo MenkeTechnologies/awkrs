@@ -115,3 +115,53 @@ pub fn run_awkrs_file(program: &str, path: &Path) -> (i32, String, String) {
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     (code, stdout, stderr)
 }
+
+/// Like [`run_awkrs_stdin`] but kills the child after `secs` and reports that it
+/// had to. Tests for programs every reference awk *rejects* need this: a
+/// regression that made awkrs accept and loop on one would otherwise wedge the
+/// whole test binary instead of failing, and a wedged run reads as "still
+/// running" rather than as a bug. Returns `None` on timeout.
+#[allow(dead_code)] // Only `posix_parity_regressions` needs the bounded form.
+pub fn run_awkrs_stdin_bounded(
+    program: &str,
+    stdin: &str,
+    secs: u64,
+) -> Option<(i32, String, String)> {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let bin = env!("CARGO_BIN_EXE_awkrs");
+    let mut child = Command::new(bin)
+        .arg(program)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn awkrs");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(stdin.as_bytes())
+        .expect("write stdin");
+
+    // `wait_with_output` consumes the child, so the wait happens on a helper
+    // thread and the timeout is enforced by giving up on the channel.
+    let (tx, rx) = mpsc::channel();
+    let handle = std::thread::spawn(move || {
+        let out = child.wait_with_output();
+        let _ = tx.send(out);
+    });
+    match rx.recv_timeout(Duration::from_secs(secs)) {
+        Ok(Ok(out)) => {
+            let _ = handle.join();
+            Some((
+                out.status.code().unwrap_or(-1),
+                String::from_utf8_lossy(&out.stdout).into_owned(),
+                String::from_utf8_lossy(&out.stderr).into_owned(),
+            ))
+        }
+        Ok(Err(e)) => panic!("wait awkrs: {e}"),
+        Err(_) => None,
+    }
+}

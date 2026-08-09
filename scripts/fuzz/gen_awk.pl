@@ -335,6 +335,95 @@ my @TEMPLATES = (
                  :           'if (0) ; else print "C"';
         return (qq{BEGIN { $body }}, undef);
     },
+    # `break` / `continue` in every loop form. Until these templates existed the
+    # whole corpus — 77 curated probes and 32 templates — contained not one
+    # `continue` and not one `break` outside the boilerplate prelude of the
+    # parity cases, so no generated program could ever have exercised the
+    # per-loop-form patch lists the compiler keeps for them.
+    sub {
+        my $n = rnd(4) + 2;
+        my $hit = rnd($n);
+        my $jump = pick('break', 'continue');
+        my $k = rnd(4);
+        my $body = "if (i == $hit) $jump; print i";
+        return (qq{BEGIN { for (i = 0; i < $n; i++) { $body } print "after", i }}, undef) if $k == 0;
+        return (qq{BEGIN { i = 0; while (i < $n) { i++; $body } print "after", i }}, undef) if $k == 1;
+        return (qq{BEGIN { i = 0; do { i++; $body } while (i < $n); print "after", i }}, undef) if $k == 2;
+        # `for (k in a)` needs a body that does not depend on the iteration
+        # order, which awk leaves unspecified — mawk and awkrs really do visit
+        # a two-element array in opposite orders. Branching on the *visit
+        # counter* rather than on the key keeps the result well-defined.
+        return (qq{BEGIN { for (j = 0; j < $n; j++) a[j] = j; c = 0; for (k in a) { c++; if (c == 2) $jump; c += 10 } print c }}, undef);
+    },
+    # `break` / `continue` two loop forms deep, and inside a function body —
+    # the shape where a signal escaping the wrong chunk shows up.
+    sub {
+        my $jump = pick('break', 'continue');
+        my $k = rnd(3);
+        return (qq{BEGIN { for (i = 0; i < 3; i++) { for (j = 0; j < 3; j++) { if (j == 1) $jump; print i, j } } }}, undef) if $k == 0;
+        return (qq{BEGIN { i = 0; while (i < 3) { i++; j = 0; do { j++; if (j == 2) $jump; if (j > 4) break; print i, j } while (j < 4) } }}, undef) if $k == 1;
+        return (qq{function f(n,   i, s) { for (i = 0; i < n; i++) { if (i == 2) $jump; s = s i } return s } BEGIN { print "[" f(5) "]" }}, undef);
+    },
+    # `next` / `nextfile` from a rule, including from inside a loop, plus the
+    # `END` block that still has to run afterwards.
+    sub {
+        my $d = pick(@DATA);
+        my $k = rnd(4);
+        return (qq{NR == 2 { next } { print NR, "[" \$0 "]" } END { print "END", NR }}, $d)                     if $k == 0;
+        return (qq{{ for (i = 0; i < 3; i++) if (i == 1) next; print "kept", NR } END { print "END", NR }}, $d) if $k == 1;
+        return (qq{{ i = 0; while (i < 3) { i++; if (i == 2) next }; print "kept", NR } END { print "END", NR }}, $d) if $k == 2;
+        return (qq{{ nextfile } END { print "END", NR, FNR }}, $d);
+    },
+    # `exit` with and without a status, from every block, including from a
+    # function and from inside a loop. `END` still runs, and a bare `exit` there
+    # preserves the status the first `exit` set.
+    sub {
+        my $c = rnd(4);
+        my $k = rnd(5);
+        return (qq{BEGIN { for (i = 0; i < 5; i++) if (i == 2) exit $c; print "no" } END { print "end" }}, undef) if $k == 0;
+        return (qq{function f(n) { if (n == 2) exit $c; return n } BEGIN { for (i = 0; i < 5; i++) f(i); print "no" } END { print "end" }}, undef) if $k == 1;
+        return (qq{{ print NR; if (NR == 2) exit $c } END { print "end" }}, "a\nb\nc\n")                        if $k == 2;
+        return (qq{{ exit $c } END { print "end"; exit }}, "a\nb\n")                                            if $k == 3;
+        return (qq{END { i = 0; do { i++; if (i == 2) exit $c } while (i < 5); print "no" }}, "a\n");
+    },
+    # Arithmetic builtins and the operators that had no coverage at all:
+    # int/sqrt/exp/log/sin/cos/atan2, `^`, unary minus on a string, `?:`,
+    # pre/post increment, and the compound assignments.
+    sub {
+        my $v = num();
+        my $k = rnd(5);
+        return (qq{BEGIN { print int($v), int(-($v)), int("12abc"), int("") }}, undef)                       if $k == 0;
+        # sqrt/log of a negative are NaN / -inf and every awk spells those
+        # differently, so the arguments are kept in the defined domain.
+        return (qq{BEGIN { x = ($v < 0 ? -($v) : $v); print sqrt(x), exp(0), log(1), atan2(0, -1) }}, undef) if $k == 1;
+        return (qq{BEGIN { print sin(0), cos(0), 2 ^ 10, 2 ^ 0.5, (-2) ^ 3 }}, undef)                        if $k == 2;
+        return (qq{BEGIN { x = $v; print x++, x, ++x, x--, x, --x }}, undef)                                 if $k == 3;
+        return (qq{BEGIN { x = 10; x += 3; print x; x -= 2; print x; x *= 2; print x; x /= 4; print x; x %= 3; print x; x ^= 3; print x }}, undef);
+    },
+    # Short-circuit `&&` / `||` must not evaluate the right operand, and `!`
+    # applies awk's own truthiness (a non-empty *string* "0" is true; a numeric
+    # string "0" from input is false).
+    sub {
+        my $d = pick("0 0\n", "1 x\n", "00 a\n");
+        my $k = rnd(2);
+        # The side effect is a counter, not a `print`: one-true-awk orders the
+        # output of a `print` whose arguments themselves print differently from
+        # gawk and mawk, which would report that ordering difference on every
+        # case instead of the short-circuit behaviour this is here to check.
+        return (qq{function f() { n++; return 1 } BEGIN { r1 = (0 && f()); r2 = (1 || f()); r3 = (1 && f()); r4 = (0 || f()); print r1, r2, r3, r4, n }}, undef) if $k == 0;
+        return (qq{{ print !\$1, !\$2, !"0", !"", !0, !1 }}, $d);
+    },
+    # A field or `$0` **assigned** a plain string stops being a POSIX numeric
+    # string, so a later relational compares as text. Assigning a number or
+    # another field keeps it numeric. Splitting always yields numeric strings.
+    sub {
+        my $s = pick(@NUMISH);
+        my $k = rnd(4);
+        return (qq{{ \$0 = $s; print (\$0 == 6), (\$0 < 7), (\$1 == 6) }}, "42\n")     if $k == 0;
+        return (qq{{ \$1 = $s; print (\$1 == 6), (\$1 < 7) }}, "42 7\n")               if $k == 1;
+        return (qq{{ \$1 = \$2; print (\$1 < 7), (\$1 == \$2) }}, "42 6\n")            if $k == 2;
+        return (qq{BEGIN { \$0 = $s; print (\$0 == 6), (\$0 < 7), NF, "[" \$1 "]" }}, undef);
+    },
     # RS as a regex / multi-character literal, and the empty-record field count
     sub {
         my $rs = pick('"[0-9]+"', '"ab"', '":"', '"\\n\\n+"');
@@ -352,6 +441,18 @@ for my $i (1 .. $n) {
     my ($prog, $in) = $t->();
     printf {$fh} "#=== gen%05d\n", $i;
     print {$fh} "#--- prog\n", $prog, "\n";
-    if (defined $in) { print {$fh} "#--- in\n", $in }
+    if (defined $in) {
+        # The corpus reader only recognises `#=== name` at the start of a line,
+        # so a stdin block that does not end in a newline glues the *next*
+        # case's header onto its last record: both cases are then read as one
+        # and the second one silently disappears from the run. `RS = "[0-9]+"`
+        # data like "a1b22c" did exactly that, so three of every four hundred
+        # generated cases were being lost. The format cannot express a final
+        # record without a terminator anyway — that is what the curated probes
+        # are for — so the newline is added here rather than trusted to each
+        # template.
+        $in .= "\n" unless $in =~ /\n\z/;
+        print {$fh} "#--- in\n", $in;
+    }
 }
 close $fh if defined $out;

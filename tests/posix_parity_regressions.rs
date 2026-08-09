@@ -8,7 +8,8 @@
 
 mod common;
 
-use common::run_awkrs_stdin;
+use common::{run_awkrs_file, run_awkrs_stdin, run_awkrs_stdin_bounded};
+use std::io::Write;
 
 /// `<` `<=` `>` `>=` between two fields follow awk's strnum rule: a string
 /// comparison unless both sides look numeric. A peephole used to fuse
@@ -330,4 +331,344 @@ fn split_of_an_empty_string_still_creates_the_array() {
         run_awkrs_stdin(r#"BEGIN { print split("", z), typeof(z), length(z) }"#, "");
     assert_eq!(code, 0, "stderr: {err}");
     assert_eq!(out, "0 array 0\n");
+}
+
+// ── `break` / `continue` outside a loop ─────────────────────────────────────
+
+/// gawk, mawk and one-true-awk all refuse a program that uses `break` outside a
+/// loop, before running any of it. awkrs used to accept it: the compiler emits
+/// `break` as a placeholder `Op::Jump(0)` and patches the target when the
+/// enclosing loop closes, so with no enclosing loop the placeholder survived and
+/// the program jumped to instruction 0 — looping forever on a program every
+/// reference rejects outright. The bounded runner is what keeps a regression a
+/// test failure instead of a wedged test binary.
+#[test]
+fn break_outside_a_loop_is_rejected_instead_of_looping_forever() {
+    for program in [
+        r#"BEGIN { break }"#,
+        r#"BEGIN { print "never"; break }"#,
+        r#"BEGIN { if (1) break }"#,
+        r#"BEGIN { { { break } } }"#,
+        r#"{ break }"#,
+        r#"END { break }"#,
+        r#"function f() { break } BEGIN { f() }"#,
+    ] {
+        let got = run_awkrs_stdin_bounded(program, "x\n", 10);
+        let (code, out, err) = got.unwrap_or_else(|| panic!("{program}: did not terminate"));
+        assert_eq!(code, 2, "{program}: stdout {out:?} stderr {err:?}");
+        assert!(out.is_empty(), "{program}: rejected programs run nothing");
+        assert!(err.contains("break"), "{program}: stderr {err:?}");
+    }
+}
+
+/// Same for `continue`, which additionally may not target a `switch`: gawk
+/// accepts `break` inside a switch with no enclosing loop but rejects
+/// `continue` there.
+#[test]
+fn continue_outside_a_loop_is_rejected_instead_of_looping_forever() {
+    for program in [
+        r#"BEGIN { continue }"#,
+        r#"BEGIN { print "never"; continue }"#,
+        r#"{ continue }"#,
+        r#"END { continue }"#,
+        r#"function f() { continue } BEGIN { f() }"#,
+        r#"BEGIN { switch (1) { case 1: continue } }"#,
+    ] {
+        let got = run_awkrs_stdin_bounded(program, "x\n", 10);
+        let (code, out, err) = got.unwrap_or_else(|| panic!("{program}: did not terminate"));
+        assert_eq!(code, 2, "{program}: stdout {out:?} stderr {err:?}");
+        assert!(out.is_empty(), "{program}: rejected programs run nothing");
+        assert!(err.contains("continue"), "{program}: stderr {err:?}");
+    }
+}
+
+/// The rejection must not swallow the legal uses. Every loop form, both jumps,
+/// nested and inside a function.
+#[test]
+fn break_and_continue_still_work_in_every_loop_form() {
+    let (code, out, err) = run_awkrs_stdin(
+        r#"function f(n,   i, s) { for (i = 0; i < n; i++) { if (i == 2) continue; s = s i } return s }
+BEGIN {
+  for (i = 0; i < 5; i++) { if (i == 3) break; s1 = s1 i }
+  i = 0; while (i < 5) { i++; if (i == 3) continue; s2 = s2 i }
+  i = 0; do { i++; if (i == 4) break; s3 = s3 i } while (i < 5)
+  for (j = 0; j < 3; j++) a[j] = j
+  c = 0; for (k in a) { c++; if (k == 1) continue; c += 10 }
+  for (p = 0; p < 3; p++) for (q = 0; q < 3; q++) { if (q == 1) break; s4 = s4 p q }
+  print s1, s2, s3, c, s4, f(5)
+}"#,
+        "",
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    assert_eq!(out, "012 1245 123 23 001020 0134\n");
+}
+
+/// gawk allows `break` to leave a `switch` that has no enclosing loop, and
+/// inside a loop `break` leaves only the switch while `continue` reaches the
+/// loop. (mawk and one-true-awk have no `switch` at all.)
+#[test]
+fn break_targets_the_switch_and_continue_targets_the_loop() {
+    let (code, out, err) = run_awkrs_stdin(
+        r#"BEGIN {
+  switch (1) { case 1: break }
+  for (i = 0; i < 3; i++) { switch (i) { case 1: break }; b = b i }
+  for (i = 0; i < 3; i++) { switch (i) { case 1: continue }; c = c i }
+  print b, c
+}"#,
+        "",
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    assert_eq!(out, "012 02\n");
+}
+
+// ── `exit` raised inside a user function ────────────────────────────────────
+
+/// `exit` from inside a user function is still an ordinary exit: `END` runs and
+/// the status is kept. All three references print `end`. awkrs transported the
+/// signal out of the call as `Error::Exit`, and an error escaping the run made
+/// the driver skip `END` — so the status was right and the output was missing.
+#[test]
+fn exit_inside_a_function_still_runs_end() {
+    for (program, stdin, want_code) in [
+        (
+            r#"function f() { exit 3 } BEGIN { f(); print "never" } END { print "end" }"#,
+            "",
+            3,
+        ),
+        (
+            r#"function g() { exit 6 } function f() { g() } BEGIN { f() } END { print "end" }"#,
+            "",
+            6,
+        ),
+        (
+            r#"function f(n) { exit 5; return 1 } BEGIN { x = f(1); print "never" } END { print "end" }"#,
+            "",
+            5,
+        ),
+        (
+            r#"function f(n) { if (n == 2) exit 2; return n } BEGIN { for (i = 0; i < 5; i++) f(i) } END { print "end" }"#,
+            "",
+            2,
+        ),
+        (
+            r#"function f() { exit 4 } { f(); print "never" } END { print "end" }"#,
+            "one\n",
+            4,
+        ),
+        (
+            r#"function f() { exit } BEGIN { f() } END { print "end" }"#,
+            "",
+            0,
+        ),
+    ] {
+        let (code, out, err) = run_awkrs_stdin(program, stdin);
+        assert_eq!(code, want_code, "{program}: stderr {err:?}");
+        assert_eq!(out, "end\n", "{program}");
+    }
+}
+
+/// `exit` inside a function called *from* `END` still just stops `END`.
+#[test]
+fn exit_inside_a_function_called_from_end_stops_end() {
+    let (code, out, err) = run_awkrs_stdin(
+        r#"function f() { exit 5 } END { f(); print "never" }"#,
+        "",
+    );
+    assert_eq!(code, 5, "stderr: {err}");
+    assert_eq!(out, "");
+}
+
+// ── assigned fields and records are not numeric strings ─────────────────────
+
+/// POSIX: only input-derived values are numeric strings. A field assigned a
+/// string literal or any computed string compares as *text*, so `$1 = "42"`
+/// makes `$1 < 7` true — `"42" < "7"`. gawk, mawk and one-true-awk all agree.
+/// awkrs stored fields as plain text and re-derived numeric-string status from
+/// the characters, so every assignment laundered a computed string back into a
+/// numeric string.
+#[test]
+fn a_field_assigned_a_plain_string_is_not_a_numeric_string() {
+    let (code, out, err) = run_awkrs_stdin(
+        r#"{ $1 = "42"; print ($1 < 7), ($1 == 42)
+     $2 = "4" "2"; print ($2 < 7)
+     $3 = substr("42", 1); print ($3 < 7)
+     $4 = sprintf("%d", 42); print ($4 < 7) }"#,
+        "9 9 9 9\n",
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    assert_eq!(out, "1 1\n1\n1\n1\n");
+}
+
+/// The other half of the rule: a number or another field keeps numeric-string
+/// status, so those stay numeric comparisons.
+#[test]
+fn a_field_assigned_a_number_or_another_field_stays_numeric() {
+    let (code, out, err) = run_awkrs_stdin(
+        r#"{ $1 = 42; print ($1 < 7)
+     $2 = $1; print ($2 < 7)
+     $3 = $3; print ($3 < 7)
+     $4 += 0; print ($4 < 7) }"#,
+        "1 2 42 42\n",
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    assert_eq!(out, "0\n0\n0\n0\n");
+}
+
+/// Same rule for `$0`. Re-splitting an assigned record still yields numeric
+/// string *fields* — only `$0` itself loses the status — and `$0 = $0` keeps it.
+#[test]
+fn an_assigned_record_is_not_a_numeric_string_but_its_fields_are() {
+    let (code, out, err) = run_awkrs_stdin(
+        r#"{ print ($0 < 7)
+     $0 = "42"; print ($0 < 7), ($0 == 42), ($1 < 7)
+     $0 = "06"; print ($0 == 6), ($1 == 6)
+     $0 = " 42 "; print ($0 < 7)
+     $0 = 42; print ($0 < 7) }"#,
+        "42\n",
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    assert_eq!(out, "0\n1 1 0\n0 1\n1\n0\n");
+}
+
+/// `gsub` rewriting `$0` produces a computed string even when the replacement
+/// leaves the text identical, so the later relational compares as text. A `sub`
+/// that matches nothing leaves the record — and its status — alone.
+#[test]
+fn a_rewritten_record_is_not_a_numeric_string() {
+    let (code, out, err) = run_awkrs_stdin(
+        r#"{ sub(/x/, "y"); print ($0 < 7); gsub(/2/, "2"); print ($0 < 7) }"#,
+        "42\n",
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    assert_eq!(out, "0\n1\n");
+}
+
+// ── `typeof($0)` before the record exists ───────────────────────────────────
+
+/// gawk reports `$0` as `"unassigned"` until the record is first given a value.
+/// Reading `$0` does not give it one — matching a regex against it, taking its
+/// length or splitting it all leave it unassigned — while assigning `$0`, a
+/// field, or `NF` makes it a `"string"`.
+#[test]
+fn typeof_dollar_zero_is_unassigned_until_the_record_is_set() {
+    let (code, out, err) = run_awkrs_stdin(
+        r#"BEGIN {
+  print typeof($0)
+  x = $0 ""; print typeof($0), length($0)
+  if ($0 ~ /x/) q = 1
+  n = split($0, A); print typeof($0), n
+  print typeof($1)
+  $0 = "abc"; print typeof($0)
+}"#,
+        "",
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    assert_eq!(
+        out,
+        "unassigned\nunassigned 0\nunassigned 0\nunassigned\nstring\n"
+    );
+}
+
+/// Once a record has been read, `$0` is a `"string"` in every block.
+#[test]
+fn typeof_dollar_zero_is_string_once_a_record_has_been_read() {
+    let (code, out, err) = run_awkrs_stdin(
+        r#"{ print typeof($0) } END { print typeof($0) }"#,
+        "hello\n",
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    assert_eq!(out, "string\nstring\n");
+}
+
+// ── field assignment on the file-input path ─────────────────────────────────
+
+/// Assigning a field before any field has been *read* must not lose the rest of
+/// the record.
+///
+/// awk splits a record lazily, so a record whose first use is `$1 = "Z"` still
+/// has no split recorded. `set_field` materialised its owned field vector from
+/// that empty split, which produced zero fields — `$2`, `$3` and most of `$0`
+/// simply vanished, and `NF` collapsed to the assigned index. Only the file /
+/// mmap input path deferred the split that long; the streaming path split early
+/// enough to hide it. Both differential corpora feed every case on **stdin**, so
+/// nothing exercised it. `scripts/fuzz_parity.sh -F` now runs the same corpus
+/// with the input as a file argument.
+#[test]
+fn assigning_a_field_before_reading_one_keeps_the_rest_of_the_record() {
+    let dir = std::env::temp_dir();
+    let path = dir.join(format!("awkrs_lazy_split_{}.txt", std::process::id()));
+    let mut f = std::fs::File::create(&path).expect("create fixture");
+    f.write_all(b"9 42 42 42 42\n").expect("write fixture");
+    drop(f);
+
+    for (program, want) in [
+        (r#"{ $1 = "Z"; print $2, $3, NF }"#, "42 42 5\n"),
+        (r#"{ $1 = "Z"; print $0 }"#, "Z 42 42 42 42\n"),
+        (r#"{ $3 = "Z"; print $2, $4, NF }"#, "42 42 5\n"),
+        (r#"{ $1 = 1; print $2, NF }"#, "42 5\n"),
+        (r#"{ $2 = $2; print $0, NF }"#, "9 42 42 42 42 5\n"),
+        // The strnum rule has to hold on this path too: assigning a plain string
+        // then assigning a field back makes it numeric again.
+        (
+            r#"{ $1 = "42"; print ($1 < 7); $1 = $2; print ($1 < 7) }"#,
+            "1\n0\n",
+        ),
+    ] {
+        let (code, out, err) = run_awkrs_file(program, &path);
+        assert_eq!(code, 0, "{program}: stderr {err:?}");
+        assert_eq!(out, want, "{program}");
+    }
+    let _ = std::fs::remove_file(&path);
+}
+
+/// The same programs on stdin, so the two input paths are pinned to the same
+/// answers rather than only being individually plausible.
+#[test]
+fn field_assignment_agrees_between_the_file_and_stdin_paths() {
+    let dir = std::env::temp_dir();
+    let path = dir.join(format!("awkrs_lazy_split_agree_{}.txt", std::process::id()));
+    let mut f = std::fs::File::create(&path).expect("create fixture");
+    f.write_all(b"9 42 42 42 42\n").expect("write fixture");
+    drop(f);
+
+    for program in [
+        r#"{ $1 = "Z"; print $2, $3, NF }"#,
+        r#"{ $1 = "Z"; print $0 }"#,
+        r#"{ $7 = "x"; print NF, $0 }"#,
+        r#"{ $1 = "42"; print ($1 < 7); $1 = $2; print ($1 < 7) }"#,
+    ] {
+        let (fc, fout, ferr) = run_awkrs_file(program, &path);
+        let (sc, sout, serr) = run_awkrs_stdin(program, "9 42 42 42 42\n");
+        assert_eq!(fc, sc, "{program}: file {ferr:?} stdin {serr:?}");
+        assert_eq!(fout, sout, "{program}: file vs stdin");
+    }
+    let _ = std::fs::remove_file(&path);
+}
+
+/// A rule assigning `FS` changes how the *next* record is split. The file /
+/// mmap input path read `FS` once before the record loop and reused it for
+/// every record, so `NR == 1 { FS = ":" }` never took effect on a file argument
+/// even though it worked when the same bytes arrived on stdin. gawk, mawk and
+/// one-true-awk all resplit from record 2 onward.
+#[test]
+fn assigning_fs_in_a_rule_affects_the_next_record_on_the_file_path() {
+    let dir = std::env::temp_dir();
+    let path = dir.join(format!("awkrs_fs_next_{}.txt", std::process::id()));
+    let mut f = std::fs::File::create(&path).expect("create fixture");
+    f.write_all(b"a:b\nc:d\n").expect("write fixture");
+    drop(f);
+
+    for (program, want) in [
+        (r#"NR == 1 { FS = ":" } { print NR, NF, $1 }"#, "1 1 a:b\n2 2 c\n"),
+        (r#"{ FS = ":"; print NR, NF, $1 }"#, "1 1 a:b\n2 2 c\n"),
+        (r#"BEGIN { FS = ":" } { print NF, $1 }"#, "2 a\n2 c\n"),
+    ] {
+        let (fc, fout, ferr) = run_awkrs_file(program, &path);
+        assert_eq!(fc, 0, "{program}: stderr {ferr:?}");
+        assert_eq!(fout, want, "{program}: file path");
+        // The two input paths must not disagree about it either.
+        let (_, sout, _) = run_awkrs_stdin(program, "a:b\nc:d\n");
+        assert_eq!(sout, want, "{program}: stdin path");
+    }
+    let _ = std::fs::remove_file(&path);
 }

@@ -1301,15 +1301,24 @@ fn dispatch_slurp_record(
     cp: &CompiledProgram,
     range_state: &mut [bool],
     rt: &mut Runtime,
-    fs: &str,
     chunk: &[u8],
     rt_bytes: &[u8],
 ) -> Result<bool> {
     rt.nr += 1.0;
     rt.fnr += 1.0;
     rt.set_rt_from_bytes(rt_bytes);
+    // `FS` is read per record, not hoisted out of the record loop: POSIX says a
+    // rule assigning `FS` affects the *next* record, and this path used to reuse
+    // the value captured before the loop, so `NR == 1 { FS = ":" }` never took
+    // effect on a file argument at all. The streaming path re-syncs `FS` per
+    // record already; this keeps the two paths on the same rule.
+    let fs = rt
+        .vars
+        .get("FS")
+        .map(|v| v.as_str())
+        .unwrap_or_else(|| " ".into());
     let line = String::from_utf8_lossy(chunk);
-    rt.set_field_sep_split(fs, line.as_ref());
+    rt.set_field_sep_split(&fs, line.as_ref());
     dispatch_rules(cp, range_state, rt)
 }
 
@@ -1350,13 +1359,13 @@ fn process_file_slurp(
             let chunk = &data[last..m.start()];
             last = m.end();
             count += 1;
-            if dispatch_slurp_record(cp, range_state, rt, &fs, chunk, m.as_bytes())? {
+            if dispatch_slurp_record(cp, range_state, rt, chunk, m.as_bytes())? {
                 return Ok(count);
             }
         }
         let chunk = &data[last..];
         count += 1;
-        if dispatch_slurp_record(cp, range_state, rt, &fs, chunk, b"")? {
+        if dispatch_slurp_record(cp, range_state, rt, chunk, b"")? {
             return Ok(count);
         }
         return Ok(count);
@@ -1366,7 +1375,7 @@ fn process_file_slurp(
     for chunk in chunks {
         count += 1;
         let rtb: &[u8] = if rs.is_empty() { b"\n" } else { rs.as_bytes() };
-        if dispatch_slurp_record(cp, range_state, rt, &fs, chunk, rtb)? {
+        if dispatch_slurp_record(cp, range_state, rt, chunk, rtb)? {
             break;
         }
     }

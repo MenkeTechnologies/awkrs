@@ -638,3 +638,152 @@ BEGIN {
   print length(x "")
   print 100000, 2147483647
 }
+
+#=== break_outside_a_loop_is_rejected
+# All three references refuse the program outright and run nothing: gawk exits 1,
+# mawk and one-true-awk exit 2. awkrs follows the two-reference majority (and its
+# own `return` outside function convention) with exit 2, so gawk is excluded on
+# the *status* alone — stdout is empty in all four. Before this was checked, the
+# compiler left `break`'s placeholder `Op::Jump(0)` unpatched when no loop
+# enclosed it and the program looped on instruction 0 forever.
+#--- only mawk,bsd
+#--- prog
+BEGIN { print "never"; break }
+
+#=== continue_outside_a_loop_is_rejected
+# Same rejection, same status split, same former infinite loop.
+#--- only mawk,bsd
+#--- prog
+BEGIN { print "never"; continue }
+
+#=== break_outside_a_loop_in_a_function_is_rejected
+#--- only mawk,bsd
+#--- prog
+function f() { break }
+BEGIN { f() }
+
+#=== break_and_continue_in_every_loop_form
+# `for`, `while`, `do-while` and `for-in`, each with both jumps, plus the nested
+# and in-function forms. `for (k in a)` prints only order-independent counters
+# because the iteration order is unspecified.
+#--- prog
+function f(n,   i, s) { for (i = 0; i < n; i++) { if (i == 2) continue; s = s i } return s }
+BEGIN {
+  for (i = 0; i < 5; i++) { if (i == 3) break; print "for", i }
+  i = 0; while (i < 5) { i++; if (i == 3) continue; print "while", i }
+  i = 0; do { i++; if (i == 4) break; print "do", i } while (i < 5)
+  for (j = 0; j < 3; j++) a[j] = j
+  c = 0; for (k in a) { c++; if (k == 1) continue; c += 10 }
+  print "forin", c
+  for (p = 0; p < 3; p++) { for (q = 0; q < 3; q++) { if (q == 1) break; print "nest", p, q } }
+  print "fn", f(5)
+}
+
+#=== break_and_continue_target_the_switch_then_the_loop
+# gawk only: mawk and one-true-awk have no `switch`. `break` leaves the switch,
+# `continue` skips to the enclosing loop's next iteration.
+#--- only gawk
+#--- prog
+BEGIN {
+  for (i = 0; i < 3; i++) { switch (i) { case 1: break }; print "b", i }
+  for (i = 0; i < 3; i++) { switch (i) { case 1: continue }; print "c", i }
+}
+
+#=== exit_inside_a_function_still_runs_end
+# `exit` raised inside a user function has to unwind to the driver as an ordinary
+# exit, not as a fatal error: all three references print `end` and exit 3. awkrs
+# used to transport it as `Error::Exit` out of the call, which skipped `END`.
+#--- prog
+function g() { exit 3 }
+function f() { g() }
+BEGIN { f(); print "never" }
+END { print "end" }
+
+#=== exit_inside_a_function_from_a_main_rule_still_runs_end
+#--- prog
+function f() { exit 4 }
+{ f(); print "never" }
+END { print "end" }
+#--- in
+one
+
+#=== exit_inside_a_function_assigned_from_a_call_still_runs_end
+#--- prog
+function f(n) { exit 5; return 1 }
+BEGIN { x = f(1); print "never", x }
+END { print "end" }
+
+#=== next_and_nextfile_from_inside_a_loop
+#--- prog
+NR == 2 { for (i = 0; i < 3; i++) if (i == 1) next }
+{ print NR, "[" $0 "]" }
+END { print "END", NR }
+#--- in
+a
+b
+c
+
+#=== assigned_field_is_not_a_numeric_string
+# POSIX: only input-derived values are numeric strings. A field assigned a string
+# literal or any computed string compares as text, so `$1 = "42"` makes `$1 < 7`
+# true ("42" < "7"). Assigning a number or another field keeps it numeric.
+# gawk, mawk and one-true-awk all agree on every line here.
+#--- prog
+{
+  $1 = "42"; print ($1 < 7), ($1 == 42)
+  $2 = 42;   print ($2 < 7)
+  $3 = $2;   print ($3 < 7)
+  $4 = "4" "2"; print ($4 < 7)
+  $5 = substr("42", 1); print ($5 < 7)
+}
+#--- in
+9 9 9 9 9
+
+#=== assigned_record_is_not_a_numeric_string
+# Same rule for `$0`, and re-splitting an assigned record still yields numeric
+# string *fields* — only `$0` itself loses the status.
+#--- prog
+{
+  $0 = "42"; print ($0 < 7), ($0 == 42), ($1 < 7)
+  $0 = "06"; print ($0 == 6), ($1 == 6)
+  $0 = " 42 "; print ($0 < 7)
+}
+#--- in
+9
+
+#=== rewritten_record_is_not_a_numeric_string
+# `gsub` rewriting `$0` produces a computed string even when the text is
+# unchanged, so the later relational compares as text.
+#--- prog
+{ gsub(/2/, "2"); print ($0 < 7) }
+#--- in
+42
+
+#=== record_assignment_keeps_numeric_string_from_a_numeric_string_source
+# The other half of the rule: assigning a value that *is* a numeric string keeps
+# it one, so these must stay numeric comparisons.
+#--- prog
+{
+  print ($0 < 7)
+  $0 = $0; print ($0 < 7)
+  $0 = $1; print ($0 < 7)
+  sub(/x/, "y"); print ($0 < 7)
+}
+#--- in
+42
+
+#=== typeof_dollar0_before_any_record
+# gawk reports `$0` as "unassigned" until the record is first given a value, and
+# a bare *read* of `$0` does not count as giving it one. `typeof` is a gawk
+# extension; mawk and one-true-awk have no such builtin.
+#--- only gawk
+#--- prog
+BEGIN {
+  print typeof($0)
+  x = $0 ""
+  print typeof($0), length($0)
+  if ($0 ~ /x/) q = 1
+  print typeof($0)
+  $0 = "abc"
+  print typeof($0)
+}

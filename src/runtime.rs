@@ -1129,6 +1129,29 @@ pub struct Runtime {
     pub cached_fs: String,
     /// `record` field.
     pub record: String,
+    /// True once `$0` has ever been given a value — by reading a record, by
+    /// `getline`, or by assigning `$0` / `$n` / `NF`. Only `typeof($0)` reads
+    /// it: gawk reports `"unassigned"` for `$0` in a `BEGIN` that has not
+    /// touched the record yet and `"string"` afterwards, and merely *reading*
+    /// `$0` does not flip it (`BEGIN { x = $0 ""; print typeof($0) }` is still
+    /// `"unassigned"`). Every write goes through one of the four places that
+    /// assign `self.record`, so the flag is set there rather than at each caller.
+    pub record_assigned: bool,
+    /// Whether `$0` is a POSIX *numeric string* (see [`Value::Str`] vs
+    /// [`Value::StrLit`]). A record read from input is; a record **assigned** a
+    /// plain string is not, so `$0 = "42"` makes `$0 < 7` a *string* compare —
+    /// `"42" < "7"` — in gawk, mawk and one-true-awk alike, where awkrs used to
+    /// re-derive numeric-string-ness from the text and answer numerically.
+    /// Rebuilding `$0` from fields (`$n = …`, `NF = …`) also produces a plain
+    /// string in gawk and one-true-awk; mawk keeps it a numeric string there and
+    /// is the outlier, so this follows the two-reference majority.
+    pub record_strnum: bool,
+    /// Per-field counterpart of [`record_strnum`](Self::record_strnum), parallel
+    /// to `fields` and only consulted while `fields_dirty` — fields produced by
+    /// *splitting* a record are always numeric strings, whatever the record was.
+    /// An index past the end reads as `true`, so leaving this empty preserves
+    /// the split-derived default.
+    pub field_strnum: Vec<bool>,
     /// Reusable buffer for input line reading (avoids per-line allocation).
     pub line_buf: Vec<u8>,
     /// Bytes read past the previous record's terminator that belong to the next
@@ -1412,6 +1435,9 @@ impl Runtime {
             fields_pending_split: false,
             cached_fs: " ".into(),
             record: String::new(),
+            record_assigned: false,
+            record_strnum: true,
+            field_strnum: Vec::new(),
             line_buf: Vec::with_capacity(256),
             read_leftover: Vec::new(),
             nr: 0.0,
@@ -1854,6 +1880,9 @@ impl Runtime {
             fields_pending_split: false,
             cached_fs: " ".into(),
             record: String::new(),
+            record_assigned: false,
+            record_strnum: true,
+            field_strnum: Vec::new(),
             line_buf: Vec::new(),
             read_leftover: Vec::new(),
             nr: 0.0,
@@ -2748,6 +2777,9 @@ impl Runtime {
     pub fn set_field_sep_split(&mut self, fs: &str, line: &str) {
         self.record.clear();
         self.record.push_str(line);
+        self.record_assigned = true;
+        self.record_strnum = true;
+        self.field_strnum.clear();
         self.fields_dirty = false;
         self.fields_pending_split = true;
         self.cached_fs.clear();
@@ -2760,6 +2792,9 @@ impl Runtime {
     /// copies when the caller already has a `String`, e.g. `gsub` replacing `$0`).
     pub fn set_field_sep_split_owned(&mut self, fs: &str, line: String) {
         self.record = line;
+        self.record_assigned = true;
+        self.record_strnum = true;
+        self.field_strnum.clear();
         self.fields_dirty = false;
         self.fields_pending_split = true;
         self.cached_fs.clear();
@@ -2910,15 +2945,27 @@ impl Runtime {
         }
         let idx = i as usize;
         if idx == 0 {
-            return Ok(Value::Str(self.record.clone()));
+            let rec = self.record.clone();
+            // A record assigned a plain string is not a numeric string, so it
+            // must come back as `StrLit` — that is what makes `$0 < 7` compare
+            // as text after `$0 = "42"`.
+            return Ok(if self.record_strnum {
+                Value::Str(rec)
+            } else {
+                Value::StrLit(rec)
+            });
         }
         self.ensure_fields_split();
         if self.fields_dirty {
+            // Same rule per field: only a field *assigned* a plain string loses
+            // numeric-string status; everything the splitter produced keeps it.
+            let strnum = self.field_strnum.get(idx - 1).copied().unwrap_or(true);
+            let make = if strnum { Value::Str } else { Value::StrLit };
             Ok(self
                 .fields
                 .get(idx - 1)
                 .cloned()
-                .map(Value::Str)
+                .map(make)
                 .unwrap_or_else(|| Value::Str(String::new())))
         } else {
             Ok(self
@@ -3032,13 +3079,26 @@ impl Runtime {
     }
 
     /// Assign `$0` — replace the record and re-split fields / `NF` per POSIX.
+    ///
+    /// The new record keeps numeric-string status, which is right for the
+    /// callers that hand over an input-derived line. Assignments from awk source
+    /// go through [`set_record_str_strnum`](Self::set_record_str_strnum) so a
+    /// plain string like `$0 = "42"` stays a plain string.
     pub fn set_record_str(&mut self, val: &str) {
+        self.set_record_str_strnum(val, true);
+    }
+
+    /// [`set_record_str`](Self::set_record_str), stating whether the assigned
+    /// text is a POSIX numeric string. Splitting always yields numeric-string
+    /// fields, so only `$0` itself is affected.
+    pub fn set_record_str_strnum(&mut self, val: &str, strnum: bool) {
         let fs = self
             .get_global_var("FS")
             .map(|v| v.as_str())
             .unwrap_or_else(|| " ".into());
         self.set_field_sep_split(&fs, val);
         self.ensure_fields_split();
+        self.record_strnum = strnum;
         let nf = self.nf() as f64;
         self.vars.insert("NF".into(), Value::Num(nf));
     }
@@ -3070,9 +3130,24 @@ impl Runtime {
         Ok(())
     }
     /// `set_field` — see implementation for the contract.
+    ///
+    /// Treats `val` as a numeric string; [`set_field_strnum`](Self::set_field_strnum)
+    /// is the form that says otherwise.
     pub fn set_field(&mut self, i: i32, val: &str) -> crate::error::Result<()> {
+        self.set_field_strnum(i, val, true)
+    }
+
+    /// [`set_field`](Self::set_field), stating whether the assigned text is a
+    /// POSIX numeric string. `$1 = "42"` is not one, so `$1 < 7` compares as
+    /// text in gawk, mawk and one-true-awk; `$1 = $2` and `$1 = 42` are.
+    pub fn set_field_strnum(
+        &mut self,
+        i: i32,
+        val: &str,
+        strnum: bool,
+    ) -> crate::error::Result<()> {
         if i == 0 {
-            self.set_record_str(val);
+            self.set_record_str_strnum(val, strnum);
             return Ok(());
         }
         if i < 1 {
@@ -3080,6 +3155,14 @@ impl Runtime {
                 "attempt to access field number -1".into(),
             ));
         }
+        // Force the pending lazy split *before* materializing. Splitting is
+        // deferred until a field is read, so a record whose first use is an
+        // assignment still has an empty `field_ranges`: materializing from it
+        // produced zero fields and `$1 = "Z"` silently destroyed every other
+        // field and most of `$0`. Only the streaming input path split eagerly
+        // enough to hide it, and the differential corpora feed every case on
+        // stdin, so the file/mmap path never showed the loss.
+        self.ensure_fields_split();
         // Materialize owned fields from ranges if needed
         if !self.fields_dirty {
             self.fields.clear();
@@ -3094,6 +3177,14 @@ impl Runtime {
             self.fields.resize(idx + 1, String::new());
         }
         self.fields[idx] = val.to_string();
+        // Absent entries read as `true`, so only a non-numeric-string assignment
+        // has to be recorded — and the vec has to reach `idx` to record it.
+        if !strnum || self.field_strnum.len() > idx {
+            if self.field_strnum.len() <= idx {
+                self.field_strnum.resize(idx + 1, true);
+            }
+            self.field_strnum[idx] = strnum;
+        }
         self.rebuild_record();
         let nf = self.fields.len() as f64;
         self.vars.insert("NF".into(), Value::Num(nf));
@@ -3117,6 +3208,8 @@ impl Runtime {
                 "attempt to access field number -1".into(),
             ));
         }
+        // Same pending-split hazard as [`set_field_strnum`](Self::set_field_strnum).
+        self.ensure_fields_split();
         if !self.fields_dirty {
             self.fields.clear();
             for &(s, e) in &self.field_ranges {
@@ -3151,6 +3244,12 @@ impl Runtime {
             .map(|v| v.as_str())
             .unwrap_or_else(|| " ".into());
         self.record = self.fields.join(&ofs);
+        self.record_assigned = true;
+        // A record joined back together from fields is a computed string. gawk
+        // and one-true-awk both treat it that way (`$1 = $1` then `$0 < 7` is a
+        // string compare on a record of `42`); mawk keeps it a numeric string
+        // and is the outlier here.
+        self.record_strnum = false;
     }
     /// `set_record_from_line` — see implementation for the contract.
     pub fn set_record_from_line(&mut self, line: &str) {
@@ -3178,6 +3277,9 @@ impl Runtime {
         }
         // Copy the trimmed line into record (reuses allocation)
         self.record.clear();
+        self.record_assigned = true;
+        self.record_strnum = true;
+        self.field_strnum.clear();
         // Valid UTF-8 fast path (common for text data)
         match std::str::from_utf8(&self.line_buf[..end]) {
             Ok(s) => self.record.push_str(s),
@@ -3658,6 +3760,9 @@ impl Clone for Runtime {
             fields_pending_split: self.fields_pending_split,
             cached_fs: self.cached_fs.clone(),
             record: self.record.clone(),
+            record_assigned: self.record_assigned,
+            record_strnum: self.record_strnum,
+            field_strnum: self.field_strnum.clone(),
             line_buf: Vec::new(),
             read_leftover: Vec::new(),
             nr: self.nr,

@@ -402,6 +402,23 @@ impl<'a> VmCtx<'a> {
 
 static EMPTY_STR: Value = Value::Str(String::new());
 
+/// Turn the [`Error::Exit`] a user function raises for `exit` back into the
+/// ordinary [`VmSignal::ExitPending`] that a top-level `exit` produces.
+///
+/// A function body runs in its own `execute` call, so its `exit` cannot return a
+/// signal to the caller — the two `exec_call_user` implementations transport it
+/// as `Error::Exit` instead. Left as an error it escapes the whole run, and the
+/// driver skips `END`: `function f() { exit 4 } BEGIN { f() } END { print "end" }`
+/// printed nothing where gawk, mawk and one-true-awk all print `end` and still
+/// exit 4. Converting it back at the call boundary puts `exit` on the same path
+/// whatever depth it was raised at. Every other error keeps propagating.
+fn exit_signal_or(e: Error) -> Result<VmSignal> {
+    match e {
+        Error::Exit(_) => Ok(VmSignal::ExitPending),
+        other => Err(other),
+    }
+}
+
 // ── Signal from VM execution ────────────────────────────────────────────────
 
 enum VmSignal {
@@ -1070,7 +1087,12 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                     Value::Mpfr(f) => ctx.rt.mpfr_to_string_convfmt(f),
                     _ => val.as_str(),
                 };
-                ctx.rt.set_field(idx, &s)?;
+                // The assigned value's own type decides whether the field is a
+                // POSIX numeric string: `$1 = $2` and `$1 = 42` stay numeric,
+                // `$1 = "42"` and every computed string (`substr`, concatenation,
+                // `sprintf`, …) do not — those already arrive as `StrLit`.
+                let strnum = !matches!(&val, Value::StrLit(_) | Value::Regexp(_));
+                ctx.rt.set_field_strnum(idx, &s, strnum)?;
                 ctx.push(val);
             }
             Op::GetArrayElem(arr) => {
@@ -1148,7 +1170,15 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 // gawk parity: fields are "strnum" if their string value parses
                 // as a number (`$1` of "  42 " is "strnum"), "string" otherwise,
                 // and "unassigned" when the field index is beyond NF.
-                let t = if ctx.rt.field_is_unassigned(i) {
+                //
+                // `$0` is its own case: it is "unassigned" only until the record
+                // is first given a value. `BEGIN { print typeof($0) }` is
+                // "unassigned" in gawk, and stays that way through a bare *read*
+                // (`x = $0 ""`); reading a record, `getline`, or assigning `$0` /
+                // `$n` / `NF` makes it "string".
+                let t = if i == 0 && !ctx.rt.record_assigned {
+                    "unassigned"
+                } else if ctx.rt.field_is_unassigned(i) {
                     "unassigned"
                 } else {
                     let v = ctx.rt.field(i)?;
@@ -1739,21 +1769,36 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             Op::ReturnEmpty => return Ok(VmSignal::Return(Value::Uninit)),
 
             // ── Function calls ──────────────────────────────────────────
+            // `exec_call_builtin` also dispatches *user* functions — the
+            // compiler emits `CallBuiltin` for a call whose arguments need no
+            // array binding — so this path raises `Error::Exit` for `exit` too.
             Op::CallBuiltin(name_idx, argc) => {
                 let name = ctx.str_ref(name_idx).to_string();
-                exec_call_builtin(ctx, &name, argc)?;
+                match exec_call_builtin(ctx, &name, argc) {
+                    Ok(()) => {}
+                    Err(e) => return exit_signal_or(e),
+                }
             }
             Op::CallIndirect(argc) => {
                 let name = ctx.pop().into_string();
-                exec_call_builtin(ctx, &name, argc)?;
+                match exec_call_builtin(ctx, &name, argc) {
+                    Ok(()) => {}
+                    Err(e) => return exit_signal_or(e),
+                }
             }
             Op::CallUser(name_idx, argc) => {
                 let name = ctx.str_ref(name_idx).to_string();
-                exec_call_user(ctx, &name, argc)?;
+                match exec_call_user(ctx, &name, argc) {
+                    Ok(()) => {}
+                    Err(e) => return exit_signal_or(e),
+                }
             }
             Op::CallUserBindArrays(name_idx, argc) => {
                 let name = ctx.str_ref(name_idx).to_string();
-                exec_call_user_bind_arrays(ctx, &name, argc)?;
+                match exec_call_user_bind_arrays(ctx, &name, argc) {
+                    Ok(()) => {}
+                    Err(e) => return exit_signal_or(e),
+                }
             }
 
             // ── Array ops ───────────────────────────────────────────────
@@ -2808,7 +2853,10 @@ pub(crate) fn exec_sub_from_values(
                 builtins::sub_fn(ctx.rt, re.as_ref(), repl.as_ref(), Some(&mut s))?
             };
             if n > 0.0 {
-                ctx.rt.set_field(i, &s)?;
+                // The rewritten text is a computed string, so the field stops
+                // being a numeric string — `gsub(/2/, "2")` on a record of `42`
+                // makes `$0 < 7` a string compare in all three references.
+                ctx.rt.set_field_strnum(i, &s, false)?;
             }
             n
         }

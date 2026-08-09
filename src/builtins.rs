@@ -134,6 +134,8 @@ pub fn gsub(
             .map(|v| v.as_str())
             .unwrap_or_else(|| " ".into());
         rt.set_field_sep_split_owned(&fs, new_s);
+        // A rewritten record is a computed string, not a numeric string.
+        rt.record_strnum = false;
         c
     };
     Ok(n as f64)
@@ -183,6 +185,8 @@ pub fn sub_fn(
                 .map(|v| v.as_str())
                 .unwrap_or_else(|| " ".into());
             rt.set_field_sep_split_owned(&fs, out);
+            // A rewritten record is a computed string, not a numeric string.
+            rt.record_strnum = false;
             1.0
         } else {
             rt.record = cur;
