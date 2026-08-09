@@ -61,6 +61,22 @@ my @FMTS  = ('"%d"', '"%i"', '"%5d"', '"%-5d|"', '"%05d"', '"%+d"', '"% d"',
 # ignores it, mawk prints a garbage integer, gawk warns and prints 0), so it
 # would generate noise rather than findings.
 my @CONV  = ('"%.6g"', '"%.2f"', '"%.17g"', '"%.3e"');
+# Width / precision supplied through `*`. Negative values are the interesting
+# half — C reads a negative width as "left-justify" and a negative precision as
+# "precision omitted" — so they are deliberately in range.
+my @STARS = ('0', '1', '3', '6', '-1', '-4', '-8');
+# `*` precision is exercised on the numeric conversions only: mawk mishandles a
+# negative `*` precision on `%s` and emits megabytes of filler, which would
+# swamp the harness output with one known mawk bug instead of finding new gaps.
+# The `%.*s` case is pinned once, deliberately, by
+# `printf_star_negative_precision_string` in probes.awkc.
+my @STAR_NUM_CONV = ('"%.*f"', '"%.*e"', '"%.*g"', '"%.*d"');
+# Strings that look like numbers in one form but not another — the raw material
+# for POSIX numeric-string ("strnum") questions.
+my @NUMISH = ('"06"', '"6"', '"6.0"', '" 6 "', '"+6"', '"6e0"', '"0x6"', '"6abc"');
+# Builtins that return a *computed* string. POSIX says a computed string is
+# never a numeric string, so comparing one to a number is a string compare.
+my @STRFN = ('substr(%s, 1)', 'sprintf("%%s", %s)', 'toupper(%s)', 'tolower(%s)', '(%s "")');
 my @DATA  = (
     "a b c\n",
     "1 2 3\n4 5 6\n",
@@ -229,6 +245,102 @@ my @TEMPLATES = (
                  : $k == 1 ? qq{$re, /z/ { print "r:" \$0 }}
                  :           qq{NR % 2 { print "o:" \$0 }};
         return ($prog, $d);
+    },
+    # `*` width and precision, including the negative forms
+    sub {
+        my $w = pick(@STARS);
+        my $p = pick(@STARS);
+        my $c = pick(@STAR_NUM_CONV);
+        my $v = num();
+        my $k = rnd(3);
+        return (qq{BEGIN { printf "[%*d]\\n", $w, $v }}, undef)          if $k == 0;
+        return (qq{BEGIN { printf "[" $c "]\\n", $p, $v }}, undef)       if $k == 1;
+        return (qq{BEGIN { printf "[%*.*f]\\n", $w, $p, $v }}, undef);
+    },
+    # `%c` over numeric, string-literal and *field* (numeric-string) operands
+    sub {
+        my $d = pick("65 A 65.9\n", "97 z 0\n", "48 0 9\n");
+        my $k = rnd(2);
+        return (qq{BEGIN { printf "[%c][%c][%c]\\n", 65, "65", "A" }}, undef) if $k == 0;
+        return (qq{{ printf "[%c][%c][%c]\\n", \$1, \$2, \$3 }}, $d);
+    },
+    # POSIX numeric strings: only input-derived values are strnum, so a computed
+    # string compares to a number as a string. Concatenation always yields a
+    # plain string, even of two numeric-looking fields.
+    sub {
+        my $s  = pick(@NUMISH);
+        my $fn = pick(@STRFN);
+        my $expr = sprintf($fn, $s);
+        my $k = rnd(2);
+        return (qq{BEGIN { print ($expr == 6), ($expr == "6"), ($expr < 6) }}, undef) if $k == 0;
+        return (qq{{ print (\$1 == 6), (\$1 "" == 6), (\$1 \$2 == 6), (\$1 < \$2) }}, "06 6\n");
+    },
+    # dynamic regex held in a variable vs the same text as a literal
+    sub {
+        my $re = pick('"^a"', '"a.c"', '"[0-9]+"', '"\\\\."', '"c\$"', '"x*"', '"(ab)+"');
+        my $s  = str();
+        my $k  = rnd(3);
+        return (qq{BEGIN { r = $re; print ($s ~ r), ($s !~ r) }}, undef)            if $k == 0;
+        return (qq{BEGIN { r = $re; print match($s, r), RSTART, RLENGTH }}, undef)  if $k == 1;
+        return (qq{BEGIN { r = $re; s = $s; print sub(r, "X", s), s }}, undef);
+    },
+    # split: regex literal vs string separator vs the single-space shorthand
+    sub {
+        my $s   = pick('"  a  b  "', '"a.b.c"', '"a1b22c"', '"a:b::c"', '"abc"');
+        my $lit = pick('/ /', '/\\./', '/[0-9]+/', '/:/', '//');
+        my $str = pick('" "', '"."', '"[0-9]+"', '":"', '""');
+        my $k   = rnd(2);
+        my $sep = $k == 0 ? $lit : $str;
+        return (qq{BEGIN { n = split($s, A, $sep); print n; for (i = 1; i <= n; i++) print i, "[" A[i] "]" }}, undef);
+    },
+    # SUBSEP, multidimensional `in`, and CONVFMT applied to numeric subscripts
+    sub {
+        my $c  = pick(@CONV);
+        my $ss = pick('"-"', '"\\034"', '"::"');
+        my $k  = rnd(3);
+        my $body = $k == 0 ? qq{CONVFMT = $c; A[1.234, 2] = 1; for (k in A) print k; print ((1.234, 2) in A)}
+                 : $k == 1 ? qq{SUBSEP = $ss; A[1, 2] = "v"; print ((1, 2) in A), ((2, 1) in A), length(A); delete A[1, 2]; print length(A)}
+                 :           qq{A[1, 2] = 1; A[1, 3] = 2; delete A; print length(A), ((1, 2) in A)};
+        return (qq{BEGIN { $body }}, undef);
+    },
+    # `delete arr` on a whole array, including through a function parameter
+    sub {
+        my $k = rnd(2);
+        return (qq{function clear(a) { delete a; return length(a) } BEGIN { A[1] = 1; A[2] = 2; print clear(A), length(A) }}, undef) if $k == 0;
+        return (qq{BEGIN { A[1] = 1; delete A; print length(A), (1 in A); delete B; print length(B) }}, undef);
+    },
+    # print redirection: overwrite vs append, and the close() return value
+    sub {
+        my $k = rnd(2);
+        my $body = $k == 0
+            ? q{print "a" > "f"; print "b" > "f"; close("f"); while ((getline l < "f") > 0) print "W:" l}
+            : q{print "a" > "f"; close("f"); print "b" >> "f"; close("f"); while ((getline l < "f") > 0) print "A:" l};
+        return (qq{BEGIN { $body; print (close("never-opened") < 0) }}, undef);
+    },
+    # system() must flush pending stdout before the child runs
+    sub {
+        my $c = rnd(4);
+        return (qq{BEGIN { print "b"; system("echo m"); printf "n"; system(""); print "a"; print system("exit $c") }}, undef);
+    },
+    # srand() returns the *previous* seed
+    sub {
+        my ($a, $b) = (rnd(100), rnd(100));
+        return (qq{BEGIN { srand($a); print srand($b), srand($a) }}, undef);
+    },
+    # empty statement as a control-flow body (POSIX `terminated_statement`)
+    sub {
+        my $k = rnd(3);
+        my $body = $k == 0 ? 'if (1) ; print "A"'
+                 : $k == 1 ? 'for (i = 0; i < 2; i++) ; print i'
+                 :           'if (0) ; else print "C"';
+        return (qq{BEGIN { $body }}, undef);
+    },
+    # RS as a regex / multi-character literal, and the empty-record field count
+    sub {
+        my $rs = pick('"[0-9]+"', '"ab"', '":"', '"\\n\\n+"');
+        my $fs = pick('" "', '":"', '"[0-9]+"', '"\\t"');
+        my $d  = pick("a1b22c", "XabYabZ\n", "a:b:\n", "\na:b\n\n", "\n\n");
+        return (qq{BEGIN { RS = $rs; FS = $fs } { print NR, NF, "<" \$0 ">" } END { print "NR=" NR }}, $d);
     },
 );
 

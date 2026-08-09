@@ -388,7 +388,11 @@ fn parse_conversion_rest(
             i += '*'.len_utf8();
             let (p, i2) = parse_star_value(fmt, i, vals, vi)?;
             i = i2;
-            prec = Some(if p < 0.0 { 0 } else { p as usize });
+            // ISO C 7.21.6.1: "A negative precision argument is taken as if the
+            // precision were omitted." gawk, mawk and one-true-awk all follow
+            // that, so `printf "%.*f", -2, 3.14159` prints `3.141590` (the
+            // default six places). awkrs used to clamp to 0 and print `3`.
+            prec = if p < 0.0 { None } else { Some(p as usize) };
         } else {
             let mut p = 0usize;
             let mut any = false;
@@ -732,6 +736,14 @@ fn format_g_decimal_significant_f64(mut n: f64, p: usize) -> String {
 
 fn sprintf_c_char(v: &Value) -> String {
     match v {
+        // POSIX: `%c` prints the first character of a *string* argument and the
+        // character with the given code for a *numeric* one. A numeric string
+        // (a field, a `getline` variable, a `split` element) counts as numeric,
+        // so `echo 65 | awk '{printf "%c", $1}'` prints `A` in gawk, mawk and
+        // one-true-awk alike — awkrs used to print `6`.
+        Value::Str(s) if v.is_numeric_str() => char::from_u32(v.as_number() as u32)
+            .unwrap_or('\u{fffd}')
+            .to_string(),
         Value::Str(s) | Value::StrLit(s) | Value::Regexp(s) => {
             s.chars().next().map(|c| c.to_string()).unwrap_or_default()
         }

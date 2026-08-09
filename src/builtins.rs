@@ -556,7 +556,7 @@ pub fn awk_strftime(args: &[Value]) -> std::result::Result<Value, String> {
             .map_err(|_| format!("strftime: unsupported format string `{fmt}`"))?;
         buf
     };
-    Ok(Value::Str(out))
+    Ok(Value::StrLit(out))
 }
 
 /// gawk-style `mktime(datespec)` — `"YYYY MM DD HH MM SS"` (whitespace-separated).
@@ -846,12 +846,19 @@ pub fn asorti(rt: &mut Runtime, src: &str, dest: Option<&str>) -> Result<f64> {
 }
 
 /// Classify a [`Value`] for the `typeof()` builtin (`"untyped"` only for [`Value::Uninit`]).
+///
+/// [`Value::Str`] is the *numeric-string* carrier (fields, `getline` variables,
+/// `split` results, `ARGV` / `ENVIRON`), so one that parses cleanly as a number
+/// is gawk's **`"strnum"`** — the same classification the relational operators
+/// already use via [`Value::is_numeric_str`]. [`Value::StrLit`] is a plain
+/// string (program literal or a computed builtin result) and never `strnum`.
 #[inline]
 pub fn awk_typeof_value(v: &Value) -> &'static str {
     match v {
         Value::Uninit => "untyped",
         Value::Num(_) => "number",
         Value::Mpfr(_) => "number",
+        Value::Str(_) if v.is_numeric_str() => "strnum",
         Value::Str(_) | Value::StrLit(_) => "string",
         Value::Regexp(_) => "regexp",
         Value::Array(_) => "array",

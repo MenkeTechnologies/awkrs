@@ -163,7 +163,7 @@ pub(crate) fn exec_builtin_dispatch(
             let len_opt = if let Some(v) = args.get(2) {
                 let l = v.as_number() as i64;
                 if l <= 0 {
-                    return Ok(Value::Str(String::new()));
+                    return Ok(Value::StrLit(String::new()));
                 }
                 Some(l)
             } else {
@@ -187,10 +187,10 @@ pub(crate) fn exec_builtin_dispatch(
                         String::from_utf8_lossy(&rest[..take]).into_owned()
                     })
                     .unwrap_or_default();
-                Value::Str(slice)
+                Value::StrLit(slice)
             } else {
                 let slice: String = s.chars().skip(start0).take(len).collect();
-                Value::Str(slice)
+                Value::StrLit(slice)
             }
         }
         "tolower" => {
@@ -201,7 +201,7 @@ pub(crate) fn exec_builtin_dispatch(
                     "{argc} is invalid as number of arguments for tolower"
                 )));
             }
-            Value::Str(args[0].as_str().to_lowercase())
+            Value::StrLit(args[0].as_str().to_lowercase())
         }
         "toupper" => {
             if argc != 1 {
@@ -209,7 +209,7 @@ pub(crate) fn exec_builtin_dispatch(
                     "{argc} is invalid as number of arguments for toupper"
                 )));
             }
-            Value::Str(args[0].as_str().to_uppercase())
+            Value::StrLit(args[0].as_str().to_uppercase())
         }
         "int" => {
             if argc != 1 {
@@ -598,7 +598,7 @@ pub(crate) fn exec_builtin_dispatch(
                     "{argc} is invalid as number of arguments for typeof"
                 )));
             }
-            Value::Str(builtins::awk_typeof_value(&args[0]).into())
+            Value::StrLit(builtins::awk_typeof_value(&args[0]).into())
         }
         "gensub" => {
             if !(3..=4).contains(&argc) {
@@ -618,7 +618,7 @@ pub(crate) fn exec_builtin_dispatch(
                 &args[2],
                 target,
             )?;
-            Value::Str(out)
+            Value::StrLit(out)
         }
         "isarray" => {
             if argc != 1 {

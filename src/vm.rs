@@ -383,16 +383,20 @@ impl<'a> VmCtx<'a> {
         }
         for frame in self.locals.iter().rev() {
             if let Some(v) = frame.get(name) {
-                return Value::Str(builtins::awk_typeof_value(v).into());
+                return Value::StrLit(builtins::awk_typeof_value(v).into());
             }
         }
         if let Some(&slot) = self.cp.slot_map.get(name) {
-            return Value::Str(builtins::awk_typeof_value(&self.rt.slots[slot as usize]).into());
+            let s = slot as usize;
+            if matches!(self.rt.slots[s], Value::Uninit) && self.rt.slot_was_touched(s) {
+                return Value::StrLit("unassigned".into());
+            }
+            return Value::StrLit(builtins::awk_typeof_value(&self.rt.slots[s]).into());
         }
         if let Some(v) = self.rt.get_global_var(name) {
-            return Value::Str(builtins::awk_typeof_value(v).into());
+            return Value::StrLit(builtins::awk_typeof_value(v).into());
         }
-        Value::Str("untyped".into())
+        Value::StrLit("untyped".into())
     }
 }
 
@@ -1043,10 +1047,12 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                     Value::Num(n) => Value::Num(*n),
                     other => other.clone(),
                 };
+                ctx.rt.touch_slot(slot as usize);
                 ctx.push(v);
             }
             Op::SetSlot(slot) => {
                 ctx.rt.slots[slot as usize] = ctx.peek().clone();
+                ctx.rt.touch_slot(slot as usize);
             }
             Op::GetField => {
                 let i = ctx.pop().as_number() as i32;
@@ -1102,8 +1108,14 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                             .into(),
                     ));
                 }
-                let t = builtins::awk_typeof_value(&ctx.rt.slots[slot as usize]);
-                ctx.push(Value::Str(t.into()));
+                let t = if matches!(ctx.rt.slots[slot as usize], Value::Uninit)
+                    && ctx.rt.slot_was_touched(slot as usize)
+                {
+                    "unassigned"
+                } else {
+                    builtins::awk_typeof_value(&ctx.rt.slots[slot as usize])
+                };
+                ctx.push(Value::StrLit(t.into()));
             }
             Op::TypeofArrayElem(arr) => {
                 if ctx.rt.posix || ctx.rt.traditional {
@@ -1118,7 +1130,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 let t = if name == "SYMTAB" {
                     ctx.typeof_scalar_name(k.as_ref())
                 } else {
-                    Value::Str(builtins::awk_typeof_array_elem(ctx.rt, name, k.as_ref()).into())
+                    Value::StrLit(builtins::awk_typeof_array_elem(ctx.rt, name, k.as_ref()).into())
                 };
                 ctx.push(t);
             }
@@ -1146,7 +1158,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                         "string"
                     }
                 };
-                ctx.push(Value::Str(t.into()));
+                ctx.push(Value::StrLit(t.into()));
             }
             Op::TypeofValue => {
                 if ctx.rt.posix || ctx.rt.traditional {
@@ -1157,7 +1169,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 }
                 let v = ctx.pop();
                 let t = builtins::awk_typeof_value(&v);
-                ctx.push(Value::Str(t.into()));
+                ctx.push(Value::StrLit(t.into()));
             }
             Op::SetArrayElem(arr) => {
                 let val = ctx.pop();
@@ -1577,7 +1589,6 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 let a = ctx.pop();
                 a.reject_if_array_scalar()?;
                 b.reject_if_array_scalar()?;
-                let both_lit = matches!(&a, Value::StrLit(_)) && matches!(&b, Value::StrLit(_));
                 let mut s = match a {
                     Value::Str(s) => s,
                     Value::StrLit(s) => s,
@@ -1596,12 +1607,13 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                     Value::Uninit => {}
                     Value::Array(_) => {}
                 }
-                let out = if both_lit {
-                    Value::StrLit(s)
-                } else {
-                    Value::Str(s)
-                };
-                ctx.push(out);
+                // POSIX: the result of a concatenation is a *string*, never a
+                // numeric string — even when both operands were. So
+                // `$1 ""` of a field holding "06" compares against 6 as a
+                // string and answers 0, which is what gawk, mawk and
+                // one-true-awk all do. awkrs used to keep the strnum-carrying
+                // `Value::Str` unless *both* sides were literals.
+                ctx.push(Value::StrLit(s));
             }
             Op::RegexMatch => {
                 let pat_v = ctx.pop();
@@ -1718,7 +1730,13 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 let v = ctx.pop();
                 return Ok(VmSignal::Return(v));
             }
-            Op::ReturnEmpty => return Ok(VmSignal::Return(Value::Str(String::new()))),
+            // A bare `return` (and falling off the end of a function) yields the
+            // *uninitialized* value, not the empty string: gawk, mawk and
+            // one-true-awk all print 1 for
+            // `function f(){ return } BEGIN{ print (f() == 0) }`. Returning
+            // `Str("")` made that 0 because a real string never compares equal
+            // to a number.
+            Op::ReturnEmpty => return Ok(VmSignal::Return(Value::Uninit)),
 
             // ── Function calls ──────────────────────────────────────────
             Op::CallBuiltin(name_idx, argc) => {
@@ -1867,7 +1885,14 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                     .unwrap_or_else(|| "\x1c".into());
                 let n = n as usize;
                 let start = ctx.stack.len() - n;
-                let parts: Vec<String> = ctx.stack.drain(start..).map(|v| v.as_str()).collect();
+                // POSIX: each subscript is converted the same way a single
+                // subscript is — integral values exactly, everything else via
+                // CONVFMT. `as_str()` bypassed CONVFMT, so
+                // `CONVFMT="%.2f"; A[1.234,2]` keyed on "1.234" where gawk,
+                // mawk and one-true-awk all key on "1.23".
+                let vals: Vec<Value> = ctx.stack.drain(start..).collect();
+                let parts: Vec<String> =
+                    vals.iter().map(|v| ctx.rt.value_to_array_key(v)).collect();
                 ctx.push(Value::Str(parts.join(&sep)));
             }
 
@@ -1884,8 +1909,14 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
 
             // ── Split ───────────────────────────────────────────────────
             Op::Split { arr, has_fs, seps } => {
+                // A regex *literal* separator (`split(s, a, /re/)`) is always a
+                // regex; only a string separator goes through the FS shorthands
+                // (" " = whitespace runs, single char = literal).
+                let mut fs_is_regex = false;
                 let fs = if has_fs {
-                    ctx.pop().as_str()
+                    let v = ctx.pop();
+                    fs_is_regex = matches!(v, Value::Regexp(_));
+                    v.as_str()
                 } else {
                     ctx.rt
                         .vars
@@ -1896,8 +1927,12 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 let s = ctx.pop().as_str();
                 let arr_name = ctx.str_ref(arr).to_string();
                 let seps_name = seps.map(|i| ctx.str_ref(i).to_string());
-                let (parts, seps_vec) =
-                    crate::runtime::split_string_with_seps(&s, &fs, ctx.rt.ignore_case_flag());
+                let ic = ctx.rt.ignore_case_flag();
+                let (parts, seps_vec) = if fs_is_regex {
+                    crate::runtime::split_string_with_seps_regex(&s, &fs, ic)
+                } else {
+                    crate::runtime::split_string_with_seps(&s, &fs, ic)
+                };
                 let n = parts.len();
                 ctx.rt.split_into_array(&arr_name, &parts);
                 if let Some(name) = seps_name {
@@ -2028,7 +2063,6 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 // which ignores CONVFMT; we must dispatch on `Value::Num`/
                 // `Value::Mpfr` here to honor the user-visible format global.
                 let v = ctx.pop();
-                let lit = matches!(v, Value::StrLit(_));
                 let mut s = match v {
                     Value::Num(n) => ctx.rt.num_to_string_convfmt(n),
                     Value::Mpfr(ref f) => ctx.rt.mpfr_to_string_convfmt(f),
@@ -2036,7 +2070,9 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 };
                 let pool_str = ctx.cp.strings.get(idx);
                 s.push_str(pool_str);
-                ctx.push(if lit { Value::StrLit(s) } else { Value::Str(s) });
+                // Same rule as `Op::Concat`: a concatenation result is a plain
+                // string, so it never participates in a numeric comparison.
+                ctx.push(Value::StrLit(s));
             }
             Op::GetNR => ctx.push(Value::Num(ctx.rt.nr)),
             Op::GetFNR => ctx.push(Value::Num(ctx.rt.fnr)),
@@ -2594,8 +2630,11 @@ fn sprintf_simple(
         .get_global_var("CONVFMT")
         .map(|v| v.as_str())
         .unwrap_or_else(|| "%.6g".to_string());
+    // `StrLit`, not `Str`: a computed string is **not** a POSIX numeric string.
+    // `sprintf("%s","06") == 6` is 0 in gawk, mawk and one-true-awk; returning
+    // `Str` made awkrs compare it numerically and answer 1.
     format::awk_sprintf_with_convfmt(fmt, vals, dec, thousands_sep, mpfr, &convfmt)
-        .map(Value::Str)
+        .map(Value::StrLit)
         .map_err(Error::Runtime)
 }
 
@@ -2710,6 +2749,13 @@ pub(crate) fn exec_sub_from_values(
     let repl = repl_v.as_str_cow();
     let re = re_v.as_str_cow();
 
+    // gawk / mawk / one-true-awk all leave the target **completely untouched**
+    // when nothing matched: `BEGIN{ sub(/x/,"y",z); print (z==0) }` still prints
+    // 1 because `z` is still uninitialized, and `x=1; sub(/z/,"y",x)` leaves `x`
+    // a number. awkrs used to store the (unchanged) string back unconditionally,
+    // which turned an `Uninit` into `Str("")` — a strnum→string demotion that
+    // silently flipped `z == 0` from 1 to 0. Every write-back below is therefore
+    // gated on `n > 0`.
     let count = match target {
         SubTarget::Record => {
             if is_global {
@@ -2729,7 +2775,9 @@ pub(crate) fn exec_sub_from_values(
             } else {
                 builtins::sub_fn(ctx.rt, re.as_ref(), repl.as_ref(), Some(&mut s))?
             };
-            ctx.set_var(&name, Value::Str(s))?;
+            if n > 0.0 {
+                ctx.set_var(&name, Value::Str(s))?;
+            }
             n
         }
         SubTarget::SlotVar(slot) => {
@@ -2746,7 +2794,9 @@ pub(crate) fn exec_sub_from_values(
             } else {
                 builtins::sub_fn(ctx.rt, re.as_ref(), repl.as_ref(), Some(&mut s))?
             };
-            ctx.rt.slots[slot as usize] = Value::Str(s);
+            if n > 0.0 {
+                ctx.rt.slots[slot as usize] = Value::Str(s);
+            }
             n
         }
         SubTarget::Field => {
@@ -2757,7 +2807,9 @@ pub(crate) fn exec_sub_from_values(
             } else {
                 builtins::sub_fn(ctx.rt, re.as_ref(), repl.as_ref(), Some(&mut s))?
             };
-            ctx.rt.set_field(i, &s)?;
+            if n > 0.0 {
+                ctx.rt.set_field(i, &s)?;
+            }
             n
         }
         SubTarget::Index(arr_idx) => {
@@ -2769,7 +2821,9 @@ pub(crate) fn exec_sub_from_values(
             } else {
                 builtins::sub_fn(ctx.rt, re.as_ref(), repl.as_ref(), Some(&mut s))?
             };
-            ctx.array_elem_set(&arr_name, key, Value::Str(s));
+            if n > 0.0 {
+                ctx.array_elem_set(&arr_name, key, Value::Str(s));
+            }
             n
         }
     };

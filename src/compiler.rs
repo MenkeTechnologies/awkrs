@@ -1411,12 +1411,12 @@ fn collect_array_names(prog: &Program) -> HashSet<String> {
     let mut names = HashSet::new();
     for rule in &prog.rules {
         for s in &rule.stmts {
-            collect_array_names_stmt(s, &mut names);
+            collect_names_stmt(s, &mut names, false);
         }
     }
     for fd in prog.funcs.values() {
         for s in &fd.body {
-            collect_array_names_stmt(s, &mut names);
+            collect_names_stmt(s, &mut names, false);
         }
     }
     // gawk parity for array call-by-reference: if function `f`'s parameter at
@@ -1577,28 +1577,44 @@ fn propagate_array_call_args(
     visit_stmt(s, user_fns, names);
 }
 
-fn collect_array_names_stmt(s: &Stmt, names: &mut HashSet<String>) {
+/// Walk a statement collecting names used as **arrays** (`scalars == false`,
+/// the array-slot pre-pass) or, with `scalars == true`, every name used in any
+/// variable position — scalar reads/writes, `for`-in loop variables and
+/// `getline` targets included. One traversal serves both so the two views can
+/// never drift apart.
+fn collect_names_stmt(s: &Stmt, names: &mut HashSet<String>, scalars: bool) {
+    if scalars {
+        match s {
+            Stmt::ForIn { var, .. } => {
+                names.insert(var.clone());
+            }
+            Stmt::GetLine { var: Some(v), .. } => {
+                names.insert(v.clone());
+            }
+            _ => {}
+        }
+    }
     match s {
         Stmt::SrcLine(_) => {}
         Stmt::If { cond, then_, else_ } => {
-            collect_array_names_expr(cond, names);
+            collect_names_expr(cond, names, scalars);
             for t in then_ {
-                collect_array_names_stmt(t, names);
+                collect_names_stmt(t, names, scalars);
             }
             for t in else_ {
-                collect_array_names_stmt(t, names);
+                collect_names_stmt(t, names, scalars);
             }
         }
         Stmt::While { cond, body } => {
-            collect_array_names_expr(cond, names);
+            collect_names_expr(cond, names, scalars);
             for t in body {
-                collect_array_names_stmt(t, names);
+                collect_names_stmt(t, names, scalars);
             }
         }
         Stmt::DoWhile { cond, body } => {
-            collect_array_names_expr(cond, names);
+            collect_names_expr(cond, names, scalars);
             for t in body {
-                collect_array_names_stmt(t, names);
+                collect_names_stmt(t, names, scalars);
             }
         }
         Stmt::ForC {
@@ -1608,40 +1624,40 @@ fn collect_array_names_stmt(s: &Stmt, names: &mut HashSet<String>) {
             body,
         } => {
             if let Some(e) = init {
-                collect_array_names_expr(e, names);
+                collect_names_expr(e, names, scalars);
             }
             if let Some(e) = cond {
-                collect_array_names_expr(e, names);
+                collect_names_expr(e, names, scalars);
             }
             if let Some(e) = iter {
-                collect_array_names_expr(e, names);
+                collect_names_expr(e, names, scalars);
             }
             for t in body {
-                collect_array_names_stmt(t, names);
+                collect_names_stmt(t, names, scalars);
             }
         }
         Stmt::ForIn { arr, body, .. } => {
             names.insert(arr.clone());
             for t in body {
-                collect_array_names_stmt(t, names);
+                collect_names_stmt(t, names, scalars);
             }
         }
         Stmt::Block(stmts) => {
             for t in stmts {
-                collect_array_names_stmt(t, names);
+                collect_names_stmt(t, names, scalars);
             }
         }
-        Stmt::Expr(e) => collect_array_names_expr(e, names),
+        Stmt::Expr(e) => collect_names_expr(e, names, scalars),
         Stmt::Print { args, redir } | Stmt::Printf { args, redir } => {
             for a in args {
-                collect_array_names_expr(a, names);
+                collect_names_expr(a, names, scalars);
             }
             if let Some(r) = redir {
                 match r {
                     PrintRedir::Overwrite(e)
                     | PrintRedir::Append(e)
                     | PrintRedir::Pipe(e)
-                    | PrintRedir::Coproc(e) => collect_array_names_expr(e, names),
+                    | PrintRedir::Coproc(e) => collect_names_expr(e, names, scalars),
                 }
             }
         }
@@ -1649,39 +1665,39 @@ fn collect_array_names_stmt(s: &Stmt, names: &mut HashSet<String>) {
             names.insert(name.clone());
             if let Some(ixs) = indices {
                 for e in ixs {
-                    collect_array_names_expr(e, names);
+                    collect_names_expr(e, names, scalars);
                 }
             }
         }
-        Stmt::Exit(Some(e)) | Stmt::Return(Some(e)) => collect_array_names_expr(e, names),
+        Stmt::Exit(Some(e)) | Stmt::Return(Some(e)) => collect_names_expr(e, names, scalars),
         Stmt::GetLine {
             pipe_cmd, redir, ..
         } => {
             if let Some(p) = pipe_cmd {
-                collect_array_names_expr(p, names);
+                collect_names_expr(p, names, scalars);
             }
             match redir {
                 GetlineRedir::File(e) | GetlineRedir::Coproc(e) => {
-                    collect_array_names_expr(e, names)
+                    collect_names_expr(e, names, scalars)
                 }
                 GetlineRedir::Primary => {}
             }
         }
         Stmt::Switch { expr, arms } => {
-            collect_array_names_expr(expr, names);
+            collect_names_expr(expr, names, scalars);
             for arm in arms {
                 match arm {
                     SwitchArm::Case { label, stmts } => {
                         if let SwitchLabel::Expr(e) = label {
-                            collect_array_names_expr(e, names);
+                            collect_names_expr(e, names, scalars);
                         }
                         for t in stmts {
-                            collect_array_names_stmt(t, names);
+                            collect_names_stmt(t, names, scalars);
                         }
                     }
                     SwitchArm::Default { stmts } => {
                         for t in stmts {
-                            collect_array_names_stmt(t, names);
+                            collect_names_stmt(t, names, scalars);
                         }
                     }
                 }
@@ -1696,12 +1712,32 @@ fn collect_array_names_stmt(s: &Stmt, names: &mut HashSet<String>) {
     }
 }
 
-fn collect_array_names_expr(e: &Expr, names: &mut HashSet<String>) {
+fn collect_names_expr(e: &Expr, names: &mut HashSet<String>, scalars: bool) {
+    if scalars {
+        match e {
+            Expr::Var(n) => {
+                names.insert(n.clone());
+            }
+            Expr::Assign { name, .. } => {
+                names.insert(name.clone());
+            }
+            Expr::IncDec {
+                target: IncDecTarget::Var(n),
+                ..
+            } => {
+                names.insert(n.clone());
+            }
+            Expr::GetLine { var: Some(v), .. } => {
+                names.insert(v.clone());
+            }
+            _ => {}
+        }
+    }
     match e {
         Expr::Index { name, indices } => {
             names.insert(name.clone());
             for ix in indices {
-                collect_array_names_expr(ix, names);
+                collect_names_expr(ix, names, scalars);
             }
         }
         Expr::AssignIndex {
@@ -1709,25 +1745,25 @@ fn collect_array_names_expr(e: &Expr, names: &mut HashSet<String>) {
         } => {
             names.insert(name.clone());
             for ix in indices {
-                collect_array_names_expr(ix, names);
+                collect_names_expr(ix, names, scalars);
             }
-            collect_array_names_expr(rhs, names);
+            collect_names_expr(rhs, names, scalars);
         }
         Expr::In { arr, key } => {
             names.insert(arr.clone());
-            collect_array_names_expr(key, names);
+            collect_names_expr(key, names, scalars);
         }
         Expr::Binary { left, right, .. } => {
-            collect_array_names_expr(left, names);
-            collect_array_names_expr(right, names);
+            collect_names_expr(left, names, scalars);
+            collect_names_expr(right, names, scalars);
         }
-        Expr::Unary { expr, .. } => collect_array_names_expr(expr, names),
-        Expr::Assign { rhs, .. } => collect_array_names_expr(rhs, names),
+        Expr::Unary { expr, .. } => collect_names_expr(expr, names, scalars),
+        Expr::Assign { rhs, .. } => collect_names_expr(rhs, names, scalars),
         Expr::AssignField { field, rhs, .. } => {
-            collect_array_names_expr(field, names);
-            collect_array_names_expr(rhs, names);
+            collect_names_expr(field, names, scalars);
+            collect_names_expr(rhs, names, scalars);
         }
-        Expr::Field(inner) => collect_array_names_expr(inner, names),
+        Expr::Field(inner) => collect_names_expr(inner, names, scalars),
         Expr::Call { name, args } => {
             // gawk parity: certain builtins take array-typed parameters by
             // name. Mark the corresponding `Expr::Var(n)` args so they're
@@ -1755,46 +1791,46 @@ fn collect_array_names_expr(e: &Expr, names: &mut HashSet<String>) {
                         names.insert(n.clone());
                     }
                 }
-                collect_array_names_expr(a, names);
+                collect_names_expr(a, names, scalars);
             }
         }
         Expr::IndirectCall { callee, args } => {
-            collect_array_names_expr(callee, names);
+            collect_names_expr(callee, names, scalars);
             for a in args {
-                collect_array_names_expr(a, names);
+                collect_names_expr(a, names, scalars);
             }
         }
         Expr::Ternary { cond, then_, else_ } => {
-            collect_array_names_expr(cond, names);
-            collect_array_names_expr(then_, names);
-            collect_array_names_expr(else_, names);
+            collect_names_expr(cond, names, scalars);
+            collect_names_expr(then_, names, scalars);
+            collect_names_expr(else_, names, scalars);
         }
         Expr::IncDec { target, .. } => match target {
             IncDecTarget::Index { name, indices } => {
                 names.insert(name.clone());
                 for ix in indices {
-                    collect_array_names_expr(ix, names);
+                    collect_names_expr(ix, names, scalars);
                 }
             }
-            IncDecTarget::Field(e) => collect_array_names_expr(e, names),
+            IncDecTarget::Field(e) => collect_names_expr(e, names, scalars),
             IncDecTarget::Var(_) => {}
         },
         Expr::GetLine {
             pipe_cmd, redir, ..
         } => {
             if let Some(p) = pipe_cmd {
-                collect_array_names_expr(p, names);
+                collect_names_expr(p, names, scalars);
             }
             match redir {
                 GetlineRedir::File(e) | GetlineRedir::Coproc(e) => {
-                    collect_array_names_expr(e, names)
+                    collect_names_expr(e, names, scalars)
                 }
                 GetlineRedir::Primary => {}
             }
         }
         Expr::Tuple(parts) => {
             for p in parts {
-                collect_array_names_expr(p, names);
+                collect_names_expr(p, names, scalars);
             }
         }
         Expr::Number(_)
@@ -2299,7 +2335,8 @@ fn peephole_optimize(ops: &mut Vec<Op>, strings: &StringPool) {
     }
 }
 
-/// Static checks before codegen: tuple contexts, minimum builtin arities.
+/// Static checks before codegen: tuple contexts, minimum builtin arities,
+/// and function names used as variables.
 pub fn validate_program(prog: &Program) -> Result<()> {
     for rule in &prog.rules {
         validate_pattern(&rule.pattern)?;
@@ -2312,7 +2349,68 @@ pub fn validate_program(prog: &Program) -> Result<()> {
             validate_stmt(st)?;
         }
     }
+    reject_function_name_as_variable(prog)?;
     Ok(())
+}
+
+/// gawk, mawk and one-true-awk all reject a program that uses a function's name
+/// as a scalar or an array — `function f(){} BEGIN{ f = 1 }` is fatal in every
+/// one of them (gawk: "used as a variable or an array"; one-true-awk: "can't
+/// assign to f; it's a function"). awkrs used to accept it silently and run,
+/// which is worse than a wrong value: a program every reference awk refuses
+/// produces output here.
+///
+/// The check is program-wide because `BEGIN{ f = 1 } function f(){}` is fatal
+/// too, and it skips names that are *parameters* of the enclosing function —
+/// `function f(){} function g(f){ f = 1 }` is legal in all three.
+fn reject_function_name_as_variable(prog: &Program) -> Result<()> {
+    if prog.funcs.is_empty() {
+        return Ok(());
+    }
+    let check = |used: &HashSet<String>, params: &[String]| -> Result<()> {
+        for name in prog.funcs.keys() {
+            if used.contains(name) && !params.iter().any(|p| p == name) {
+                return Err(Error::Runtime(format!(
+                    "function `{name}` used as a variable or an array"
+                )));
+            }
+        }
+        Ok(())
+    };
+    for rule in &prog.rules {
+        let mut used = HashSet::new();
+        // The pattern counts too: `function f(){} f { print }` is fatal in gawk
+        // and mawk exactly like `f = 1` is.
+        collect_names_pattern(&rule.pattern, &mut used, true);
+        for st in &rule.stmts {
+            // `scalars = true`: array positions *and* scalar positions. A
+            // function name is legal in exactly one place — as the callee of
+            // `Expr::Call`, which this walker never records.
+            collect_names_stmt(st, &mut used, true);
+        }
+        check(&used, &[])?;
+    }
+    for f in prog.funcs.values() {
+        let mut used = HashSet::new();
+        for st in &f.body {
+            collect_names_stmt(st, &mut used, true);
+        }
+        check(&used, &f.params)?;
+    }
+    Ok(())
+}
+
+/// Names used in a rule's pattern, with the same `scalars` meaning as
+/// [`collect_names_stmt`].
+fn collect_names_pattern(pat: &Pattern, names: &mut HashSet<String>, scalars: bool) {
+    match pat {
+        Pattern::Expr(e) => collect_names_expr(e, names, scalars),
+        Pattern::Range(a, b) => {
+            collect_names_pattern(a, names, scalars);
+            collect_names_pattern(b, names, scalars);
+        }
+        _ => {}
+    }
 }
 
 fn validate_pattern(pat: &Pattern) -> Result<()> {

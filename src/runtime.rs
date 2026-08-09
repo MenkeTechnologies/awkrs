@@ -1019,12 +1019,17 @@ fn split_fields_into(
     paragraph_mode: bool,
 ) {
     field_ranges.clear();
+    // POSIX: an empty record has zero fields, whatever FS is. Without this the
+    // single-char and regex branches below both push one empty range and report
+    // `NF == 1` for a blank line under `FS=":"` — gawk, mawk and one-true-awk
+    // all report 0. Only the default (" ") and empty-FS branches got this right.
+    if record.is_empty() {
+        return;
+    }
     // Rough NF estimate from record length reduces per-line `Vec` growth for whitespace/FS splits.
-    if !record.is_empty() {
-        let want = (record.len() / 16).saturating_add(4).clamp(8, 2048);
-        if field_ranges.capacity() < want {
-            field_ranges.reserve(want - field_ranges.capacity());
-        }
+    let want = (record.len() / 16).saturating_add(4).clamp(8, 2048);
+    if field_ranges.capacity() < want {
+        field_ranges.reserve(want - field_ranges.capacity());
     }
     if fs.is_empty() {
         if characters_as_bytes {
@@ -1183,6 +1188,15 @@ pub struct Runtime {
     pub numeric_thousands_sep: Option<char>,
     /// Indexed variable slots for the bytecode VM (fast Vec access instead of HashMap).
     pub slots: Vec<Value>,
+    /// Parallel to [`Self::slots`]: has this slot ever been *used* — read as a
+    /// value or written to? Slots are allocated at compile time and start
+    /// [`Value::Uninit`], so without this bit a name the program never mentions
+    /// outside `typeof` is indistinguishable from one that was read or assigned
+    /// an uninitialized value. gawk separates the two: the first is
+    /// **`"untyped"`**, the second **`"unassigned"`**. `typeof` itself does not
+    /// set the bit — `BEGIN{ print typeof(z); print typeof(z) }` stays
+    /// `untyped` twice in gawk.
+    pub slot_touched: Vec<bool>,
     /// Compiled regex cache (case-sensitive) — avoids recompiling the same pattern every record.
     pub regex_cache_cs: AwkMap<String, Regex>,
     /// Compiled regex cache when [`Self::ignore_case_flag`] is true.
@@ -1428,6 +1442,7 @@ impl Runtime {
             // gawk under `LC_ALL=C`.
             numeric_thousands_sep: crate::locale_numeric::thousands_sep_from_locale(),
             slots: Vec::new(),
+            slot_touched: Vec::new(),
             regex_cache_cs: AwkMap::default(),
             regex_cache_ci: AwkMap::default(),
             memmem_finder_cache: AwkMap::default(),
@@ -1865,6 +1880,7 @@ impl Runtime {
             numeric_decimal,
             numeric_thousands_sep,
             slots: Vec::new(),
+            slot_touched: Vec::new(),
             regex_cache_cs: AwkMap::default(),
             regex_cache_ci: AwkMap::default(),
             memmem_finder_cache: AwkMap::default(),
@@ -2988,6 +3004,24 @@ impl Runtime {
         }
     }
 
+    /// Mark a slot as used (read as a value, or written). See
+    /// [`Self::slot_touched`]. Grows the bit vector on demand so the many
+    /// places that rebuild `slots` wholesale need no matching update — an
+    /// absent bit means "never touched", which is the right default.
+    #[inline]
+    pub fn touch_slot(&mut self, slot: usize) {
+        if self.slot_touched.len() <= slot {
+            self.slot_touched.resize(slot + 1, false);
+        }
+        self.slot_touched[slot] = true;
+    }
+
+    /// Has this slot ever been read or written? See [`Self::touch_slot`].
+    #[inline]
+    pub fn slot_was_touched(&self, slot: usize) -> bool {
+        self.slot_touched.get(slot).copied().unwrap_or(false)
+    }
+
     /// True when `$i` is out of range for the current record (`i >= 1` and `i > NF`).
     #[inline]
     pub fn field_is_unassigned(&mut self, i: i32) -> bool {
@@ -3469,6 +3503,12 @@ impl Runtime {
     /// `split_into_array` — see implementation for the contract.
     pub fn split_into_array(&mut self, arr_name: &str, parts: &[String]) {
         self.array_delete(arr_name, None);
+        // `split()` makes the target an array even when it produces no fields:
+        // gawk reports `typeof(z)` as `"array"` after `split("", z)`. Without
+        // this the name stays absent and reads back as `untyped`.
+        self.vars
+            .entry(arr_name.to_string())
+            .or_insert_with(|| Value::Array(AwkMap::default()));
         for (i, p) in parts.iter().enumerate() {
             self.array_set(arr_name, format!("{}", i + 1), Value::Str(p.clone()));
         }
@@ -3488,16 +3528,43 @@ pub fn split_string_by_field_separator(s: &str, fs: &str, ignore_case: bool) -> 
 /// separator strings between consecutive fields (gawk 4-arg extension).
 /// `seps.len() == fields.len().saturating_sub(1)` on a non-empty record.
 pub fn split_string_with_seps(s: &str, fs: &str, ignore_case: bool) -> (Vec<String>, Vec<String>) {
+    split_string_impl(s, fs, ignore_case, false)
+}
+
+/// `split(s, a, /re/ [, seps])` — the separator came from a **regex literal**,
+/// so the FS shorthands never apply: `/ /` splits on one literal space (not on
+/// runs of whitespace with leading blanks stripped), and `/./` is the
+/// any-character regex (not a literal dot). gawk, mawk and one-true-awk all
+/// take the regex path for a literal; awkrs used to stringify it and re-enter
+/// the FS rules, so `split("  a  b  ", A, / /)` answered 2 instead of 7.
+pub fn split_string_with_seps_regex(
+    s: &str,
+    re: &str,
+    ignore_case: bool,
+) -> (Vec<String>, Vec<String>) {
+    split_string_impl(s, re, ignore_case, true)
+}
+
+fn split_string_impl(
+    s: &str,
+    fs: &str,
+    ignore_case: bool,
+    fs_is_regex: bool,
+) -> (Vec<String>, Vec<String>) {
     if s.is_empty() {
         return (Vec::new(), Vec::new());
     }
+    // An empty separator splits into characters whether it was written `""` or
+    // `//`: gawk, mawk and one-true-awk all return 3 for
+    // `split("abc", a, //)`. Only the `" "` and single-character shorthands are
+    // string-FS rules that a regex literal must bypass.
     if fs.is_empty() {
         // Empty FS: each character becomes a field; separators between them are empty.
         let parts: Vec<String> = s.chars().map(|c| c.to_string()).collect();
         let seps = vec![String::new(); parts.len().saturating_sub(1)];
         return (parts, seps);
     }
-    if fs == " " {
+    if !fs_is_regex && fs == " " {
         // Default whitespace: leading whitespace is stripped (no leading empty field).
         let mut parts: Vec<String> = Vec::new();
         let mut seps: Vec<String> = Vec::new();
@@ -3527,7 +3594,7 @@ pub fn split_string_with_seps(s: &str, fs: &str, ignore_case: bool) -> (Vec<Stri
     // does not apply** to a single-char string FS (only multi-char regex FS
     // honors it), so the literal split is always correct here regardless of
     // `ignore_case`.
-    if fs.chars().count() == 1 {
+    if !fs_is_regex && fs.chars().count() == 1 {
         let parts: Vec<String> = s.split(fs).map(String::from).collect();
         let seps = vec![fs.to_string(); parts.len().saturating_sub(1)];
         return (parts, seps);
@@ -3617,6 +3684,7 @@ impl Clone for Runtime {
             numeric_decimal: self.numeric_decimal,
             numeric_thousands_sep: self.numeric_thousands_sep,
             slots: self.slots.clone(),
+            slot_touched: self.slot_touched.clone(),
             regex_cache_cs: self.regex_cache_cs.clone(),
             regex_cache_ci: self.regex_cache_ci.clone(),
             memmem_finder_cache: self.memmem_finder_cache.clone(),

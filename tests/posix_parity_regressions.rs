@@ -145,3 +145,189 @@ fn parse_error_exits_one() {
     let (code, _, stderr) = run_awkrs_stdin("BEGIN {", "");
     assert_eq!(code, 1, "stderr: {stderr}");
 }
+
+/// An empty record has zero fields under every `FS`. The single-character and
+/// regex splitters used to push one empty range unconditionally, so a blank line
+/// under `FS=":"` reported `NF == 1` where gawk, mawk and one-true-awk all
+/// report 0 — a wrong answer on the most ordinary shape there is, a blank line
+/// in a delimited file.
+#[test]
+fn empty_record_has_zero_fields_under_any_fs() {
+    for fs in ["\":\"", "\",\"", "\"[0-9]+\"", "\"\\t\""] {
+        let prog = format!("BEGIN {{ FS = {fs} }} {{ print NF }}");
+        let (code, out, err) = run_awkrs_stdin(&prog, "\n");
+        assert_eq!(code, 0, "FS={fs} stderr: {err}");
+        assert_eq!(out, "0\n", "FS={fs}");
+    }
+    // Assigning an empty `$0` resplits to zero fields too.
+    let (_, out, _) = run_awkrs_stdin(r#"BEGIN { FS = ":" } { $0 = ""; print NF }"#, "a:b\n");
+    assert_eq!(out, "0\n");
+}
+
+/// A `sub`/`gsub` that matches nothing leaves the target completely alone. Every
+/// reference keeps an uninitialized variable uninitialized, so it still compares
+/// equal to 0; awkrs used to store the unchanged string back, turning `Uninit`
+/// into `Str("")` and flipping `z == 0` from 1 to 0.
+#[test]
+fn sub_with_no_match_does_not_disturb_the_target() {
+    let (code, out, err) = run_awkrs_stdin(
+        r#"BEGIN { print sub(/x/, "y", z), (z == 0), (z == ""); n = 1; print gsub(/q/, "r", n), (n == 1) }"#,
+        "",
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    assert_eq!(out, "0 1 1\n0 1\n");
+}
+
+/// A bare `return` yields the uninitialized value, which compares equal to both
+/// `0` and `""`. Returning `Str("")` made `f() == 0` false, because a real
+/// string never compares numerically against a number.
+#[test]
+fn bare_return_yields_the_uninitialized_value() {
+    let (code, out, err) = run_awkrs_stdin(
+        r#"function f() { return } function g() { } BEGIN { print (f() == 0), (f() == ""), (g() == 0) }"#,
+        "",
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    assert_eq!(out, "1 1 1\n");
+}
+
+/// POSIX numeric strings come from input only. A string a builtin computed is a
+/// plain string, so comparing it against a number is a *string* comparison:
+/// `substr("065",1,2) == 6` is 0 because "06" and "6" differ as text. awkrs used
+/// to return the strnum-carrying `Value::Str` from these builtins and answer 1.
+#[test]
+fn computed_strings_are_not_numeric_strings() {
+    let (code, out, err) = run_awkrs_stdin(
+        r#"BEGIN { print (substr("065",1,2) == 6), (sprintf("%s","06") == 6), (toupper("06") == 6), (tolower("06") == 6) }"#,
+        "",
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    assert_eq!(out, "0 0 0 0\n");
+}
+
+/// Concatenation always produces a plain string, even of two numeric-looking
+/// fields — so `$1 ""` of a field holding "06" compares against 6 as text. The
+/// field itself stays a numeric string, so `$1 == 6` is still 1.
+#[test]
+fn concatenation_result_is_never_a_numeric_string() {
+    let (code, out, err) = run_awkrs_stdin(
+        r#"{ print ($1 == 6), ($1 "" == 6), ($1 $2 == 66) }"#,
+        "06 6\n",
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    assert_eq!(out, "1 0 0\n");
+}
+
+/// A regex *literal* separator for `split` is always a regex, so neither the
+/// `" "` whitespace-run rule nor the single-character-literal rule applies:
+/// `/ /` splits on one space and `/./` matches any character. An empty
+/// separator still splits into characters however it was written.
+#[test]
+fn split_with_a_regex_literal_bypasses_the_fs_shorthands() {
+    let (code, out, err) = run_awkrs_stdin(
+        r#"BEGIN { print split("  a  b  ", A, " "), split("  a  b  ", B, / /), split("a.b", C, "."), split("a.b", D, /./), split("abc", E, //) }"#,
+        "",
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    assert_eq!(out, "2 7 2 4 3\n");
+}
+
+/// Each subscript of a multidimensional key converts the way a single subscript
+/// does: integral values exactly, everything else through `CONVFMT`. The join
+/// used the default number formatting and ignored `CONVFMT` entirely.
+#[test]
+fn multidimensional_subscripts_honour_convfmt() {
+    let (code, out, err) = run_awkrs_stdin(
+        r#"BEGIN { CONVFMT = "%.2f"; SUBSEP = "-"; A[1.234, 2] = 1; for (k in A) print k; print ((1.234, 2) in A) }"#,
+        "",
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    assert_eq!(out, "1.23-2\n1\n");
+}
+
+/// `%c` prints the character with the given code for a numeric operand and the
+/// first character for a string one. A field is a numeric string, hence numeric:
+/// `echo 65 | awk '{printf "%c", $1}'` prints `A` in every reference. The string
+/// literal `"65"` stays a string and prints `6`.
+#[test]
+fn printf_percent_c_treats_a_numeric_string_as_a_number() {
+    let (code, out, err) =
+        run_awkrs_stdin(r#"{ printf "[%c][%c][%c]\n", $1, $2, "65" }"#, "65 A\n");
+    assert_eq!(code, 0, "stderr: {err}");
+    assert_eq!(out, "[A][A][6]\n");
+}
+
+/// ISO C: "A negative precision argument is taken as if the precision were
+/// omitted." awkrs clamped a negative `*` precision to zero, so `%.*f` with -2
+/// printed `3` where every reference prints the default six places.
+#[test]
+fn printf_negative_star_precision_means_precision_omitted() {
+    let (code, out, err) = run_awkrs_stdin(
+        r#"BEGIN { printf "[%.*f][%.*d]\n", -2, 3.14159, -2, 42 }"#,
+        "",
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    assert_eq!(out, "[3.141590][42]\n");
+}
+
+/// POSIX makes `;` a statement in its own right, so it is a legal empty body for
+/// every control-flow header. awkrs rejected all of them with a parse error.
+#[test]
+fn semicolon_is_a_legal_empty_control_flow_body() {
+    let (code, out, err) = run_awkrs_stdin(
+        r#"BEGIN { if (1) ; print "A"; for (i = 0; i < 2; i++) ; print i; while (0) ; if (0) ; else print "C" }"#,
+        "",
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    assert_eq!(out, "A\n2\nC\n");
+}
+
+/// Using a function's name as a scalar or an array is fatal in gawk, mawk and
+/// one-true-awk alike; awkrs used to accept it and run the program. The check is
+/// program-wide (a use before the definition is just as fatal) and does not fire
+/// for a *parameter* that shadows a function name, which is legal everywhere.
+#[test]
+fn function_name_used_as_a_variable_is_rejected() {
+    for prog in [
+        "function f(){} BEGIN{ f = 1 }",
+        "function f(){} BEGIN{ f[1] = 1 }",
+        "function f(){} BEGIN{ print f }",
+        "function f(){} BEGIN{ split(\"a\", f) }",
+        "function f(){} BEGIN{ getline f }",
+        "function f(){} f { print }",
+        "function f(){} $0 ~ f { print }",
+        "BEGIN{ f = 1 } function f(){}",
+    ] {
+        let (code, out, _) = run_awkrs_stdin(prog, "");
+        assert_ne!(code, 0, "should be rejected: {prog}");
+        assert_eq!(out, "", "should not have run: {prog}");
+    }
+    let (code, out, err) = run_awkrs_stdin(
+        "function f(){ return 7 } function g(f) { f = 1; return f } BEGIN{ print f(), g(2) }",
+        "",
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    assert_eq!(out, "7 1\n");
+}
+
+/// gawk separates a name the program never mentions (`"untyped"`) from one that
+/// was read or assigned an uninitialized value (`"unassigned"`). `typeof` itself
+/// does not make that transition, so asking twice still reports `"untyped"`.
+#[test]
+fn typeof_separates_untyped_from_unassigned() {
+    let (code, out, err) = run_awkrs_stdin(
+        r#"BEGIN { print typeof(z); print typeof(z); x = z; print typeof(z), typeof(x); print typeof(never) }"#,
+        "",
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    assert_eq!(out, "untyped\nuntyped\nunassigned unassigned\nuntyped\n");
+}
+
+/// `split()` makes its target an array even when it produces no fields.
+#[test]
+fn split_of_an_empty_string_still_creates_the_array() {
+    let (code, out, err) =
+        run_awkrs_stdin(r#"BEGIN { print split("", z), typeof(z), length(z) }"#, "");
+    assert_eq!(code, 0, "stderr: {err}");
+    assert_eq!(out, "0 array 0\n");
+}

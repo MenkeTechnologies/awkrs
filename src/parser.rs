@@ -884,6 +884,14 @@ impl<'a> Parser<'a> {
         // `else <NL> stmt`, and similar control-flow bodies allow a newline
         // before the body. Skip leading newlines so the no-brace form parses.
         self.skip_newlines()?;
+        // POSIX grammar: `;` on its own is a `terminated_statement`, so
+        // `if (c) ;`, `while (c) ;`, `for (...) ;` and `else ;` are all legal
+        // empty bodies. gawk, mawk and one-true-awk accept every one of them;
+        // awkrs used to reject the lot with "unexpected token in expression".
+        if self.cur == Token::Semi {
+            self.bump(true)?;
+            return Ok(Vec::new());
+        }
         if self.cur == Token::LBrace {
             self.bump(false)?;
             let b = self.parse_stmt_list()?;
@@ -1674,7 +1682,21 @@ impl<'a> Parser<'a> {
                     if self.cur != Token::RParen {
                         loop {
                             let re_for_arg = builtin_regex_pattern_arg(&name, args.len());
-                            args.push(self.parse_expr_allow_gt(false, re_for_arg)?);
+                            // `split(s, a, /re/)` — a regex *literal* separator
+                            // keeps its regex identity all the way to `Op::Split`,
+                            // because the FS shorthands must not apply to it:
+                            // `/ /` is one literal space, not "split on runs of
+                            // whitespace", and `/./` is any-character, not a
+                            // literal dot. Every other regex-pattern argument
+                            // (`sub`, `gsub`, `match`, `patsplit`) is compiled as
+                            // a regex regardless, so only `split` needs the marker.
+                            let literal_re =
+                                name == "split" && matches!(self.cur, Token::Regexp(_));
+                            let arg = self.parse_expr_allow_gt(false, re_for_arg)?;
+                            args.push(match arg {
+                                Expr::Str(s) if literal_re => Expr::RegexpLiteral(s),
+                                other => other,
+                            });
                             if self.cur == Token::Comma {
                                 self.bump(true)?;
                                 self.skip_newlines()?;

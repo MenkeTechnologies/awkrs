@@ -372,3 +372,269 @@ BEGIN { print 7 % 3, -7 % 3, 7 % -3, 7.5 % 2, 2 ^ 3 ^ 2, -2 ^ 2 }
 { $1++; print; print NF }
 #--- in
 5 b
+
+#=== printf_star_width_and_precision
+#--- prog
+BEGIN {
+  printf "[%*d][%-*d][%.*f][%.*s]\n", 5, 42, 5, 42, 2, 3.14159, 3, "abcdef"
+  printf "[%*.*f]\n", 10, 3, 3.14159
+  printf "[%*d]\n", -6, 42
+}
+
+#=== printf_star_negative_precision_is_omitted
+# ISO C: "A negative precision argument is taken as if the precision were
+# omitted." `%.*f` with -2 is therefore the default six places, not zero.
+# `%.*s` is left to its own probe — mawk loops on it.
+#--- prog
+BEGIN { printf "[%.*f][%.*d]\n", -2, 3.14159, -2, 42 }
+
+#=== printf_star_negative_precision_string
+# Same rule for `%s`, but mawk mishandles a negative `*` precision there and
+# emits megabytes of garbage, so this half is checked against the two
+# references that implement the C rule.
+#--- only gawk,bsd
+#--- prog
+BEGIN { printf "[%.*s]\n", -2, "abcdef" }
+
+#=== printf_c_numeric_vs_string
+# `%c` prints the first character of a string and the character with the given
+# code for a number. A *numeric string* — here `$1` read from input — counts as
+# numeric in every reference, so `65` prints `A`, while the string literal "65"
+# prints `6`.
+#--- prog
+BEGIN { printf "[%c][%c][%c]\n", 65, "65", "A" }
+{ printf "[%c][%c]\n", $1, $2 }
+#--- in
+65 A
+
+#=== strnum_only_from_input_not_from_builtins
+# POSIX numeric strings come from input (fields, getline, split, ARGV/ENVIRON),
+# never from a computed string. `substr("065",1,2)` is the string "06", so
+# comparing it to 6 is a *string* compare and answers 0.
+#--- prog
+BEGIN { print (substr("065", 1, 2) == 6), (sprintf("%s", "06") == 6), (toupper("06") == 6), (tolower("06") == 6) }
+{ print ($1 == 6), ($1 "" == 6) }
+#--- in
+06
+
+#=== sub_no_match_leaves_target_untouched
+# A `sub`/`gsub` that matches nothing must not rewrite the target: an
+# uninitialized variable stays uninitialized (so `z == 0` is still true) and a
+# number stays a number.
+#--- prog
+BEGIN {
+  print sub(/x/, "y", z), (z == 0), (z == "")
+  x = 1; print gsub(/q/, "r", x), (x == 1), (x == "1")
+}
+
+#=== bare_return_yields_uninitialized
+# `return` with no expression yields the uninitialized value, which compares
+# equal to both 0 and "".
+#--- prog
+function f() { return }
+function g() { }
+BEGIN { print (f() == 0), (f() == ""), (g() == 0), (g() == "") }
+
+#=== empty_record_has_zero_fields
+# An empty record has NF == 0 under every FS, not one empty field.
+#--- prog
+BEGIN { FS = ":" } { print NR, NF, "[" $1 "]" }
+#--- in
+a:b
+
+
+#=== empty_record_zero_fields_regex_fs
+#--- prog
+BEGIN { FS = "[0-9]+" } { print NR, NF } END { print "NR=" NR }
+#--- in
+
+a1b
+
+#=== dollar0_assigned_empty_has_zero_fields
+#--- prog
+BEGIN { FS = ":" } { $0 = ""; print NF, "[" $0 "]" }
+#--- in
+a:b
+
+#=== empty_statement_as_control_flow_body
+# POSIX grammar: `;` alone is a statement, so every control-flow header accepts
+# it as an empty body.
+#--- prog
+BEGIN {
+  if (1) ; print "A"
+  for (i = 0; i < 2; i++) ; print i
+  while (0) ; print "B"
+  if (0) ; else print "C"
+}
+
+#=== split_regex_literal_is_never_an_fs_shorthand
+# `split(s, a, / /)` splits on one literal space (7 fields here), unlike
+# `split(s, a, " ")` which is the whitespace-run rule (2 fields). `/./` is the
+# any-character regex, unlike the single-character literal ".". An *empty*
+# separator splits into characters either way.
+#--- prog
+BEGIN {
+  print split("  a  b  ", A, " "), "[" A[1] "]"
+  print split("  a  b  ", B, / /), "[" B[1] "]"
+  print split("a.b", C, "."), "[" C[1] "]"
+  print split("a.b", D, /./), "[" D[1] "]"
+  print split("abc", E, //), E[1], E[3]
+}
+
+#=== split_regex_from_a_variable
+# A separator held in a *variable* is a dynamic regex string, so the FS
+# shorthands apply to it exactly as they do to a literal string.
+#--- prog
+BEGIN {
+  fs = "[0-9]+"; print split("a1b22c", A, fs), A[1], A[2], A[3]
+  one = "."; print split("a.b", B, one), "[" B[1] "]"
+}
+
+#=== dynamic_regex_from_variable
+#--- prog
+BEGIN {
+  r = "^a"; print ("abc" ~ r), ("bac" ~ r)
+  s = "[0-9]+"; print match("ab123", s), RSTART, RLENGTH
+  d = "a.c"; print ("abc" ~ d), ("a.c" ~ d)
+  e = "\\."; print ("a.c" ~ e), ("abc" ~ e)
+}
+
+#=== subsep_multidimensional_in_and_convfmt
+# Each subscript of a multidimensional key is converted the same way a single
+# subscript is: integral values exactly, everything else through CONVFMT.
+#--- prog
+BEGIN {
+  CONVFMT = "%.2f"
+  A[1.234, 2] = 1
+  for (k in A) print k
+  print ((1.234, 2) in A), ((1, 2) in A)
+  SUBSEP = "-"
+  B[1, 2] = "v"; print ((1, 2) in B), ("1-2" in B), length(B)
+  delete B[1, 2]; print length(B)
+}
+
+#=== delete_whole_array
+#--- prog
+function clear(a) { delete a; return length(a) }
+BEGIN {
+  A[1] = 1; A[2] = 2
+  delete A
+  print length(A), (1 in A)
+  B[1] = 1; print clear(B), length(B)
+  delete C; print length(C)
+}
+
+#=== rs_regex_and_multichar
+#--- prog
+BEGIN { RS = "[0-9]+" } { print NR "[" $0 "]" } END { print "NR=" NR }
+#--- in
+a1b22c
+
+#=== rs_multichar_literal
+#--- prog
+BEGIN { RS = "ab" } { print NR "[" $0 "]" } END { print "NR=" NR }
+#--- in
+XabYabZ
+
+#=== fs_tab_versus_default_leading_blanks
+#--- prog
+BEGIN { FS = "\t" } { print NR, NF, "[" $1 "]", "[" $2 "]" }
+#--- in
+	a	b	
+
+#=== fs_default_strips_leading_and_trailing_blanks
+#--- prog
+{ print NF, "[" $1 "]", "[" $NF "]" }
+#--- in
+   a	 b   
+
+#=== fs_single_space_class_keeps_empty_fields
+# `FS = "[ ]"` is a one-character *regex*, not the whitespace-run default, so
+# leading and trailing blanks produce empty fields.
+#--- prog
+BEGIN { FS = "[ ]" } { print NF, "[" $1 "]", "[" $NF "]" }
+#--- in
+ a b 
+
+#=== getline_all_forms_return_values
+#--- prog
+BEGIN {
+  print "1:" (getline < "input.txt"), NF, "[" $0 "]", NR, FNR
+  print "2:" (getline line < "input.txt"), line
+  print "3:" (getline x < "/nonexistent/awkrs-parity-probe")
+  print "4:" ("echo p q" | getline), NF, "[" $0 "]", NR
+  print "5:" ("echo z" | getline v), v, NR
+  close("echo p q"); close("echo z"); close("input.txt")
+}
+NR == 1 { print "6:" getline, "NR=" NR, "[" $0 "]" }
+END { print "7:" getline, "NR=" NR }
+#--- in
+r1
+r2
+
+#=== close_return_values
+# `close()` of a never-opened name is negative in every reference; the exit
+# status of a closed pipe is reported by gawk and mawk (one-true-awk returns 0),
+# which its own probe covers.
+#--- prog
+BEGIN {
+  print (close("never-opened-by-this-probe") < 0)
+  getline x < "input.txt"
+  print close("input.txt")
+  print (close("input.txt") < 0)
+}
+
+#=== close_pipe_reports_command_status
+# gawk and mawk return the command's exit status from `close()` on a pipe;
+# one-true-awk returns 0. Recorded rather than hidden.
+#--- only gawk,mawk
+#--- prog
+BEGIN { "exit 3" | getline; print close("exit 3") }
+
+#=== print_redirect_overwrite_versus_append
+#--- prog
+BEGIN {
+  print "a" > "out"; print "b" > "out"; close("out")
+  while ((getline l < "out") > 0) print "W:" l
+  close("out")
+  print "c" >> "out"; close("out")
+  while ((getline l < "out") > 0) print "A:" l
+}
+
+#=== system_flushes_pending_output_first
+#--- prog
+BEGIN {
+  print "before"
+  system("echo middle")
+  printf "no-newline"
+  system("")
+  print "after"
+  print system("exit 7")
+}
+
+#=== srand_returns_previous_seed
+#--- prog
+BEGIN { srand(1); print srand(2), srand(3) }
+
+#=== nf_assignment_rebuilds_record
+#--- prog
+BEGIN { OFS = "-" }
+{
+  NF = 2; print; print NF
+  NF = 4; print "[" $0 "]", NF
+  $0 = "p q r"; print NF, $2
+}
+#--- in
+a b c d
+
+#=== ofmt_applies_to_print_convfmt_to_concatenation
+#--- prog
+BEGIN {
+  OFMT = "%.2f"; CONVFMT = "%.4f"
+  x = 3.14159
+  print x
+  print x ""
+  printf "%s\n", x
+  print length(x "")
+  print 100000, 2147483647
+}

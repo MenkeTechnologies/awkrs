@@ -98,6 +98,7 @@
 - **`@load`** — non-`.awk` paths only accepted for **gawk's bundled extension names** (`filefuncs`, `readdir`, `time`, …) as no-ops; the builtins are native. Arbitrary `.so`/gawkapi modules error at parse time.
 - **`-M`/`--bignum`** — MPFR via `rug` (default 256 bits, `PROCINFO["prec"]`/`["roundmode"]` apply). Arithmetic, `sprintf`/`printf` integer formats (no f64/i64 clamp), `int`/`intdiv`/`strtonum`/`++`/`--`, bit ops, transcendentals, `srand` (low 32 bits of previous seed), `CONVFMT`/`OFMT`/`%s`/concat/regex coercion all use MPFR. Default `CONVFMT`-style number→string for scalars uses each `Float`'s own precision for the MPFR `sprintf` path (so raising `PROCINFO["prec"]` is not undermined by a hardcoded bit count at display time). JIT is disabled in `-M` mode.
 - **Unicode vs bytes:** `-b` honored for `length`/`substr`/`index`. Full multibyte field-splitting parity is not audited.
+- **`getline < <directory>`** reads the directory's entries, sorted, one file name per record — an awkrs extension. gawk and mawk return `-1` for a directory and one-true-awk reports an I/O error.
 
 #### HELP // SYSTEM INTERFACE
 <img src="assets/awkrs-help.png" alt="awkrs -h cyberpunk help (termshot)" width="100%">
@@ -506,7 +507,7 @@ cargo test
 
 CI runs on pushes and pull requests to `main` via [GitHub Actions](.github/workflows/ci.yml): one Ubuntu lint job (`cargo fmt --check`, `cargo clippy -D warnings`, `cargo doc` with `RUSTDOCFLAGS=-D warnings`) plus a build/test matrix on Ubuntu and macOS.
 
-Coverage spans library unit tests for every module (lexer, parser, format, builtins, vm, compiler, runtime, locale_numeric, cli, cyber_help) and integration suites under `tests/` that exercise the gawk-style additions, the slurped-input path, parallel record behavior, and the full CLI surface. Cross-feature combinations (CSV + ENDFILE, paragraph `RS=""` + getline, `FIELDWIDTHS` + NF reassignment, ...) live in [`tests/cross_feature_integration.rs`](tests/cross_feature_integration.rs). Behavior pinned by a reference awk — strnum relational comparison, `exit` status propagation, `getline` at end of input, paragraph-mode field splitting, fatal exit codes — lives in [`tests/posix_parity_regressions.rs`](tests/posix_parity_regressions.rs) and needs no awk installed.
+Coverage spans library unit tests for every module (lexer, parser, format, builtins, vm, compiler, runtime, locale_numeric, cli, cyber_help) and integration suites under `tests/` that exercise the gawk-style additions, the slurped-input path, parallel record behavior, and the full CLI surface. Cross-feature combinations (CSV + ENDFILE, paragraph `RS=""` + getline, `FIELDWIDTHS` + NF reassignment, ...) live in [`tests/cross_feature_integration.rs`](tests/cross_feature_integration.rs). Behavior pinned by a reference awk — strnum relational comparison and which values are numeric strings at all, `exit` status propagation, `getline` at end of input, paragraph-mode field splitting, the field count of an empty record, `sub` with no match, regex-literal `split` separators, `printf` `%c` and negative `*` precision, and fatal exit codes — lives in [`tests/posix_parity_regressions.rs`](tests/posix_parity_regressions.rs) and needs no awk installed.
 
 ### Differential harness
 
@@ -519,11 +520,11 @@ bash scripts/fuzz_parity.sh -r all       # gawk, then mawk, then one-true-awk
 bash scripts/fuzz_parity.sh -n 800 -s 3  # plus 800 generated cases, seed 3
 ```
 
-The corpus has two halves. [`scripts/fuzz/probes.awkc`](scripts/fuzz/probes.awkc) is hand-written and covers the semantics where awk implementations actually differ: field splitting (`FS`/`OFS`/`RS`/`ORS`, the single-space rule, regex separators, paragraph mode), number↔string coercion and `OFMT`/`CONVFMT`, uninitialized values, `printf` conversions, the `substr`/`index`/`split`/`sub`/`gsub`/`match` family with `RSTART`/`RLENGTH`, arrays with `in`/`delete`/`SUBSEP`, the `getline` forms, and `NF`/`NR`/`FNR` assignment side effects. [`scripts/fuzz/gen_awk.pl`](scripts/fuzz/gen_awk.pl) generates the other half from seeded templates over the same areas, so a divergence reproduces exactly from its seed.
+The corpus has two halves. [`scripts/fuzz/probes.awkc`](scripts/fuzz/probes.awkc) is hand-written and covers the semantics where awk implementations actually differ: field splitting (`FS`/`OFS`/`RS`/`ORS`, the single-space rule, regex separators, paragraph mode, the field count of an empty record), number↔string coercion including which values are POSIX *numeric strings*, `OFMT` vs `CONVFMT`, uninitialized values, `printf` conversions with `*` width/precision and `%c` over numeric/string/strnum operands, the `substr`/`index`/`split`/`sub`/`gsub`/`match` family with `RSTART`/`RLENGTH`, dynamic regexes from variables versus regex literals, arrays with `in`/`delete`/`SUBSEP` and multidimensional subscripts, all six `getline` forms with their return values, output redirection and `close()` returns, `system()` flush ordering, `srand()`'s return, and `NF`/`NR`/`FNR`/`$0` assignment side effects. [`scripts/fuzz/gen_awk.pl`](scripts/fuzz/gen_awk.pl) generates the other half from seeded templates over the same areas, so a divergence reproduces exactly from its seed.
 
-A probe may carry `#--- only <ref>[,<ref>]`. That is **not** a failure allowlist — it marks the few probes where the reference awks disagree with *each other* (`printf "%c", ""`, `"0x10" + 0`, `substr` with a negative start) and records which reference defines the behavior awkrs targets.
+A probe may carry `#--- only <ref>[,<ref>]`. That is **not** a failure allowlist — it marks the few probes where the reference awks disagree with *each other* (`printf "%c", ""`, `"0x10" + 0`, `substr` with a negative start, `close()` on a pipe) and records which reference defines the behavior awkrs targets.
 
-This is separate from [`parity/run_parity.sh`](parity/run_parity.sh), which replays a fixed ~2 100-case corpus; the differential harness exists to **find** new gaps rather than replay known ones.
+This is separate from [`parity/run_parity.sh`](parity/run_parity.sh), which replays a fixed corpus of example programs; the differential harness exists to **find** new gaps rather than replay known ones.
 
 ---
 
