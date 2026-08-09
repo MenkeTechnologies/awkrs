@@ -2401,6 +2401,35 @@ impl Runtime {
         .unwrap_or_else(|_| format_number(n))
     }
 
+    /// POSIX string coercion of an arbitrary scalar: the **one** conversion every
+    /// user-visible "this value is used as a string" site must go through.
+    ///
+    /// Only `Num` / `Mpfr` are affected — they render through `CONVFMT` (integral
+    /// values bypass it inside [`Self::num_to_string_convfmt`]). Everything else
+    /// delegates to `as_str_cow`, which matters as much as the numeric case: a
+    /// field is a `Value::Str` carrying the *original input text*, so `$1` of the
+    /// record `1.23456` stays `"1.23456"` under `CONVFMT="%.2f"` in all three
+    /// reference awks rather than being re-rendered to `"1.23"`.
+    ///
+    /// The conversion is deliberately performed **at the point of use**, not
+    /// cached at assignment: `CONVFMT="%.2f"; x=1.23456; a=length(x);
+    /// CONVFMT="%.4f"; b=length(x)` yields `4 6` in gawk, mawk and one-true-awk
+    /// alike, so re-reading `CONVFMT` on every coercion is the observable
+    /// behaviour, not an optimisation to hoist away.
+    ///
+    /// `Value::as_str` / `as_str_cow` render a number via `format_number` (full
+    /// f64 precision) and are therefore **not** a substitute here; they remain
+    /// correct only for values that are already strings, and for the internal
+    /// bookkeeping that must not be reshaped by a user-settable format.
+    #[inline]
+    pub fn value_to_str_convfmt<'a>(&self, v: &'a Value) -> Cow<'a, str> {
+        match v {
+            Value::Num(n) => Cow::Owned(self.num_to_string_convfmt(*n)),
+            Value::Mpfr(f) => Cow::Owned(self.mpfr_to_string_convfmt(f)),
+            _ => v.as_str_cow(),
+        }
+    }
+
     /// POSIX: `print` formats numbers with **`OFMT`** (distinct from [`Self::num_to_string_convfmt`]).
     /// Integer-valued numbers bypass OFMT and display in integer form so e.g.
     /// `print 999999999999` produces `"999999999999"` not `"1e+12"`. Large

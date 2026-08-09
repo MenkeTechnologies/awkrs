@@ -95,7 +95,11 @@ pub(crate) fn exec_builtin_dispatch(
                 match &args[0] {
                     Value::Array(a) => Value::Num(a.len() as f64),
                     v => {
-                        let s = v.as_str();
+                        // `length` measures the *string* value, so a number is
+                        // rendered through CONVFMT first: `CONVFMT="%.2f";
+                        // length(1.23456)` is 4 ("1.23") in all three references,
+                        // not 7 from the full-precision spelling.
+                        let s = ctx.rt.value_to_str_convfmt(v);
                         let n = if ctx.rt.characters_as_bytes {
                             s.len()
                         } else {
@@ -112,8 +116,8 @@ pub(crate) fn exec_builtin_dispatch(
                     "{argc} is invalid as number of arguments for index"
                 )));
             }
-            let hay = args[0].as_str();
-            let needle = args[1].as_str();
+            let hay = ctx.rt.value_to_str_convfmt(&args[0]).into_owned();
+            let needle = ctx.rt.value_to_str_convfmt(&args[1]).into_owned();
             if needle.is_empty() {
                 Value::Num(1.0)
             } else {
@@ -157,7 +161,7 @@ pub(crate) fn exec_builtin_dispatch(
                     "{argc} is invalid as number of arguments for substr"
                 )));
             }
-            let s = args[0].as_str();
+            let s = ctx.rt.value_to_str_convfmt(&args[0]).into_owned();
             let start_raw = args[1].as_number();
             let mut m = start_raw as i64;
             let len_opt = if let Some(v) = args.get(2) {
@@ -201,7 +205,7 @@ pub(crate) fn exec_builtin_dispatch(
                     "{argc} is invalid as number of arguments for tolower"
                 )));
             }
-            Value::StrLit(args[0].as_str().to_lowercase())
+            Value::StrLit(ctx.rt.value_to_str_convfmt(&args[0]).to_lowercase())
         }
         "toupper" => {
             if argc != 1 {
@@ -209,7 +213,7 @@ pub(crate) fn exec_builtin_dispatch(
                     "{argc} is invalid as number of arguments for toupper"
                 )));
             }
-            Value::StrLit(args[0].as_str().to_uppercase())
+            Value::StrLit(ctx.rt.value_to_str_convfmt(&args[0]).to_uppercase())
         }
         "int" => {
             if argc != 1 {
@@ -607,14 +611,14 @@ pub(crate) fn exec_builtin_dispatch(
                 )));
             }
             let target = if argc == 4 {
-                Some(args[3].as_str())
+                Some(ctx.rt.value_to_str_convfmt(&args[3]).into_owned())
             } else {
                 None
             };
             let out = builtins::awk_gensub(
                 ctx.rt,
-                &args[0].as_str(),
-                &args[1].as_str(),
+                &ctx.rt.value_to_str_convfmt(&args[0]),
+                &ctx.rt.value_to_str_convfmt(&args[1]),
                 &args[2],
                 target,
             )?;

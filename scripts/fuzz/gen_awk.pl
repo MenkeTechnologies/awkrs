@@ -447,6 +447,30 @@ my @TEMPLATES = (
         return (qq{BEGIN { CONVFMT = $c; x = $v; A[x] = 5; A[x]++; --A[x]; print length(A), A[x] }}, undef)                                  if $k == 2;
         return (qq{BEGIN { CONVFMT = $c; x = $v; A[x] = "v"; print (x in A), ((x "") in A), A[x], length(A) }}, undef);
     },
+    # A **number** reaching a string builtin or a dynamic-regex position, under a
+    # CONVFMT that does not round-trip it. Until this template existed the two
+    # halves of the vocabulary never met: every `substr`/`index`/`length`/`split`/
+    # `sub`/`match` template above draws its subject from @STRS and its separator
+    # from @FSES/@REGEX — all string literals — while `num()` only ever reached
+    # arithmetic, comparison, concatenation and array subscripts. CONVFMT was
+    # therefore varied *only* in templates whose coercions already honoured it,
+    # so no generated program could observe that the string builtins and the
+    # dynamic-regex operands were reading numbers at full f64 precision instead.
+    sub {
+        my $c = pick(@CONV);
+        my $v = pick('1.23456', '2 / 3', '0.1 + 0.2', '1 / 3', '3.14159265', '1e-3 + 1e-4');
+        my $k = rnd(5);
+        my $pre = qq{CONVFMT = $c; x = $v;};
+        # `s` is the CONVFMT rendering of `x` by construction, so `s ~ x` asks
+        # whether both sides converted the same way. The answer depends on
+        # whether the rendering happens to contain regex metacharacters — every
+        # awk must still agree on it, which is what the harness compares.
+        return (qq{BEGIN { $pre print length(x), "[" substr(x, 3) "]", index(x, "3"), toupper(x) }}, undef) if $k == 0;
+        return (qq{BEGIN { $pre n = split(x, A, "z"); print n, "[" A[1] "]" }}, undef)                      if $k == 1;
+        return (qq{BEGIN { $pre s = (x ""); print (s ~ x), (s !~ x), match(s, x), RSTART, RLENGTH }}, undef) if $k == 2;
+        return (qq{BEGIN { $pre y = x; n = sub(/[0-9]/, "Z", y); print n, "[" y "]" }}, undef)              if $k == 3;
+        return (qq{BEGIN { $pre s = "aXb"; n = gsub(/X/, x, s); print n, "[" s "]" }}, undef);
+    },
     # RS as a regex / multi-character literal, and the empty-record field count
     sub {
         my $rs = pick('"[0-9]+"', '"ab"', '":"', '"\\n\\n+"');

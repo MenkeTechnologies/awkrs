@@ -1658,14 +1658,15 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             Op::RegexMatch => {
                 let pat_v = ctx.pop();
                 pat_v.reject_if_array_scalar()?;
-                let pat = pat_v.as_str();
+                // A *dynamic* regex is the string value of the operand, so a
+                // number becomes a pattern through CONVFMT exactly like any
+                // other coercion: `CONVFMT="%.2f"; x=1.23456; "a1.23b" ~ x` is
+                // the pattern `1.23` and matches in all three references. Only
+                // the subject side used to convert this way.
+                let pat = ctx.rt.value_to_str_convfmt(&pat_v).into_owned();
                 let v = ctx.pop();
                 v.reject_if_array_scalar()?;
-                let s = match &v {
-                    Value::Num(n) => ctx.rt.num_to_string_convfmt(*n),
-                    Value::Mpfr(f) => ctx.rt.mpfr_to_string_convfmt(f),
-                    _ => v.as_str(),
-                };
+                let s = ctx.rt.value_to_str_convfmt(&v).into_owned();
                 ctx.rt.ensure_regex(&pat).map_err(Error::Runtime)?;
                 let m = ctx.rt.regex_ref(&pat).is_match(&s);
                 ctx.push(Value::Num(if m { 1.0 } else { 0.0 }));
@@ -1673,14 +1674,10 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             Op::RegexNotMatch => {
                 let pat_v = ctx.pop();
                 pat_v.reject_if_array_scalar()?;
-                let pat = pat_v.as_str();
+                let pat = ctx.rt.value_to_str_convfmt(&pat_v).into_owned();
                 let v = ctx.pop();
                 v.reject_if_array_scalar()?;
-                let s = match &v {
-                    Value::Num(n) => ctx.rt.num_to_string_convfmt(*n),
-                    Value::Mpfr(f) => ctx.rt.mpfr_to_string_convfmt(f),
-                    _ => v.as_str(),
-                };
+                let s = ctx.rt.value_to_str_convfmt(&v).into_owned();
                 ctx.rt.ensure_regex(&pat).map_err(Error::Runtime)?;
                 let m = ctx.rt.regex_ref(&pat).is_match(&s);
                 ctx.push(Value::Num(if !m { 1.0 } else { 0.0 }));
@@ -1977,15 +1974,18 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 let fs = if has_fs {
                     let v = ctx.pop();
                     fs_is_regex = matches!(v, Value::Regexp(_));
-                    v.as_str()
+                    ctx.rt.value_to_str_convfmt(&v).into_owned()
                 } else {
                     ctx.rt
                         .vars
                         .get("FS")
-                        .map(|v| v.as_str())
+                        .map(|v| ctx.rt.value_to_str_convfmt(v).into_owned())
                         .unwrap_or_else(|| " ".into())
                 };
-                let s = ctx.pop().as_str();
+                let s = {
+                    let v = ctx.pop();
+                    ctx.rt.value_to_str_convfmt(&v).into_owned()
+                };
                 let arr_name = ctx.str_ref(arr).to_string();
                 let seps_name = seps.map(|i| ctx.str_ref(i).to_string());
                 let ic = ctx.rt.ignore_case_flag();
@@ -2005,11 +2005,15 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             // ── Patsplit ────────────────────────────────────────────────
             Op::Patsplit { arr, has_fp, seps } => {
                 let fp = if has_fp {
-                    Some(ctx.pop().as_str())
+                    let v = ctx.pop();
+                    Some(ctx.rt.value_to_str_convfmt(&v).into_owned())
                 } else {
                     None
                 };
-                let s = ctx.pop().as_str();
+                let s = {
+                    let v = ctx.pop();
+                    ctx.rt.value_to_str_convfmt(&v).into_owned()
+                };
                 let arr_name = ctx.str_ref(arr).to_string();
                 let seps_name = seps.map(|i| ctx.str_ref(i).to_string());
                 let n =
@@ -2019,8 +2023,14 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
 
             // ── Match builtin ───────────────────────────────────────────
             Op::MatchBuiltin { arr } => {
-                let re = ctx.pop().as_str();
-                let s = ctx.pop().as_str();
+                let re = {
+                    let v = ctx.pop();
+                    ctx.rt.value_to_str_convfmt(&v).into_owned()
+                };
+                let s = {
+                    let v = ctx.pop();
+                    ctx.rt.value_to_str_convfmt(&v).into_owned()
+                };
                 let arr_name = arr.map(|i| ctx.str_ref(i).to_string());
                 let r = builtins::match_fn(ctx.rt, &s, &re, arr_name.as_deref())?;
                 ctx.push(Value::Num(r));
@@ -2492,16 +2502,12 @@ fn awk_cmp_eq(a: &Value, b: &Value, ignore_case: bool, rt: &Runtime) -> Value {
 }
 
 /// Stringify a value for the string-compare fallback path of `==` / `<` / etc.
-/// Num and Mpfr use the runtime's `CONVFMT`; everything else delegates to
-/// `as_str_cow`. Integer-valued numbers bypass CONVFMT inside
-/// `num_to_string_convfmt`.
+/// Argument-order shim over [`Runtime::value_to_str_convfmt`], which is the single
+/// definition of POSIX string coercion shared by the comparison path, the string
+/// builtins and the dynamic-regex operands.
 #[inline]
 fn value_to_str_convfmt<'a>(v: &'a Value, rt: &Runtime) -> Cow<'a, str> {
-    match v {
-        Value::Num(n) => Cow::Owned(rt.num_to_string_convfmt(*n)),
-        Value::Mpfr(f) => Cow::Owned(rt.mpfr_to_string_convfmt(f)),
-        _ => v.as_str_cow(),
-    }
+    rt.value_to_str_convfmt(v)
 }
 
 fn awk_cmp_rel(op: BinOp, a: &Value, b: &Value, ignore_case: bool, rt: &Runtime) -> Value {
@@ -2741,9 +2747,14 @@ fn exec_getline(
     push_result: bool,
 ) -> Result<()> {
     let file_path = match source {
-        GetlineSource::File => Some(ctx.pop().as_str()),
-        GetlineSource::Coproc => Some(ctx.pop().as_str()),
-        GetlineSource::Pipe => Some(ctx.pop().as_str()),
+        // The redirect operand names a file or command as a *string*, so a
+        // numeric one converts through CONVFMT: `CONVFMT="%.2f"; x=1.23456;
+        // getline l < x` reads the file `1.23` in all three references, where
+        // awkrs used to look for `1.23456` and return -1.
+        GetlineSource::File | GetlineSource::Coproc | GetlineSource::Pipe => {
+            let v = ctx.pop();
+            Some(ctx.rt.value_to_str_convfmt(&v).into_owned())
+        }
         GetlineSource::Primary => None,
     };
 
@@ -2807,8 +2818,12 @@ pub(crate) fn exec_sub_from_values(
     extra_key: Option<String>,
     extra_field_idx: Option<i32>,
 ) -> Result<f64> {
-    let repl = repl_v.as_str_cow();
-    let re = re_v.as_str_cow();
+    // Regex, replacement text and target all reach `sub`/`gsub` as *strings*, so
+    // each converts through CONVFMT. Every one of the three was previously read
+    // at full f64 precision, which showed up as `CONVFMT="%.2f"; x=1.23456;
+    // gsub(/3/,"9",x)` leaving `1.29456` where all three references leave `1.29`.
+    let repl = ctx.rt.value_to_str_convfmt(&repl_v).into_owned();
+    let re = ctx.rt.value_to_str_convfmt(&re_v).into_owned();
 
     // gawk / mawk / one-true-awk all leave the target **completely untouched**
     // when nothing matched: `BEGIN{ sub(/x/,"y",z); print (z==0) }` still prints
@@ -2827,9 +2842,14 @@ pub(crate) fn exec_sub_from_values(
         }
         SubTarget::Var(name_idx) => {
             let name = ctx.str_ref(name_idx).to_string();
-            let mut s = match ctx.var_value_cow(&name) {
-                Cow::Borrowed(v) => v.as_str(),
-                Cow::Owned(v) => v.as_str(),
+            // Taken by value so the borrow of `ctx` ends before `ctx.rt` is read
+            // for CONVFMT. Matching on the owned value also keeps the string
+            // case to a single move rather than a clone.
+            let cur = ctx.var_value_cow(&name).into_owned();
+            let mut s = match cur {
+                Value::Num(n) => ctx.rt.num_to_string_convfmt(n),
+                Value::Mpfr(ref f) => ctx.rt.mpfr_to_string_convfmt(f),
+                other => other.into_string(),
             };
             let n = if is_global {
                 builtins::gsub(ctx.rt, re.as_ref(), repl.as_ref(), Some(&mut s))?
@@ -2849,7 +2869,10 @@ pub(crate) fn exec_sub_from_values(
             // chunk-entry prep. Reading via slot_value_live_for_jit would then
             // decode Uninit and run sub on an empty string, silently zeroing
             // out the variable.
-            let mut s = ctx.rt.slots[slot as usize].as_str();
+            let mut s = ctx
+                .rt
+                .value_to_str_convfmt(&ctx.rt.slots[slot as usize])
+                .into_owned();
             let n = if is_global {
                 builtins::gsub(ctx.rt, re.as_ref(), repl.as_ref(), Some(&mut s))?
             } else {
@@ -2862,7 +2885,8 @@ pub(crate) fn exec_sub_from_values(
         }
         SubTarget::Field => {
             let i = extra_field_idx.expect("field index for SubTarget::Field");
-            let mut s = ctx.rt.field(i)?.as_str();
+            let fv = ctx.rt.field(i)?;
+            let mut s = ctx.rt.value_to_str_convfmt(&fv).into_owned();
             let n = if is_global {
                 builtins::gsub(ctx.rt, re.as_ref(), repl.as_ref(), Some(&mut s))?
             } else {
@@ -2879,7 +2903,10 @@ pub(crate) fn exec_sub_from_values(
         SubTarget::Index(arr_idx) => {
             let key = extra_key.expect("key for SubTarget::Index");
             let arr_name = ctx.str_ref(arr_idx).to_string();
-            let mut s = ctx.array_elem_get(&arr_name, &key).as_str();
+            let mut s = {
+                let v = ctx.array_elem_get(&arr_name, &key);
+                ctx.rt.value_to_str_convfmt(&v).into_owned()
+            };
             let n = if is_global {
                 builtins::gsub(ctx.rt, re.as_ref(), repl.as_ref(), Some(&mut s))?
             } else {

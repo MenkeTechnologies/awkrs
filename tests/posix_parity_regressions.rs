@@ -770,3 +770,173 @@ fn convfmt_subscript_key_agrees_across_execution_tiers() {
     assert_eq!(seen[0], "1 1 6\n", "-s (no JIT)");
     assert_eq!(seen[1], seen[0], "-O (JIT) disagrees with -s");
 }
+
+// ── CONVFMT string coercion at every use site ───────────────────────────────
+//
+// POSIX gives one rule for turning a number into a string outside `print`: it
+// renders through `CONVFMT` (integral values excepted). `Value::as_str` renders
+// at full f64 precision instead, and it was reaching every string builtin and
+// every dynamic-regex operand — so `CONVFMT` was honoured by concatenation,
+// comparison and array subscripts but ignored by `length`, `substr`, `index`,
+// `toupper`, `tolower`, `split`, `match`, `sub`, `gsub`, `gensub`, `~`, `!~`
+// and the `getline` redirect target. gawk 5.4.1, mawk 1.3.4 and one-true-awk
+// 20200816 agree on every case pinned below.
+
+/// The string builtins measure and slice the **CONVFMT rendering** of a number.
+/// `1.23456` under `%.2f` is the four-character string `1.23`, so `length` is 4
+/// and `substr(x, 3)` is `23` — not `23456` off the full-precision spelling.
+#[test]
+fn convfmt_applies_to_every_string_builtin() {
+    let cases: &[(&str, &str)] = &[
+        ("print length(x)", "4\n"),
+        ("print substr(x, 3), substr(x, 1, 99)", "23 1.23\n"),
+        (
+            "print index(x, \"456\"), index(x, \"23\"), index(\"a1.23b\", x)",
+            "0 3 2\n",
+        ),
+        ("print toupper(x), tolower(x)", "1.23 1.23\n"),
+        ("n = split(x, A, \"z\"); print n, A[1]", "1 1.23\n"),
+    ];
+    for (body, want) in cases {
+        let program = format!("BEGIN {{ CONVFMT = \"%.2f\"; x = 1.23456; {body} }}");
+        let (code, stdout, stderr) = run_awkrs_stdin(&program, "");
+        assert_eq!(code, 0, "{body}: stderr {stderr:?}");
+        assert_eq!(stdout, *want, "{body}");
+    }
+}
+
+/// A **dynamic regex** is the string value of its operand, so a number becomes a
+/// pattern through CONVFMT too. Only the subject side of `~` / `!~` used to
+/// convert this way, which made `"a1.23b" ~ x` false while `"a1.23b" == x` — the
+/// same coercion, one operator apart — was true.
+#[test]
+fn convfmt_applies_to_dynamic_regex_operands() {
+    let cases: &[(&str, &str)] = &[
+        ("print (\"a1.23b\" ~ x), (\"a1.23b\" !~ x)", "1 0\n"),
+        ("print match(\"a1.23b\", x), RSTART, RLENGTH", "2 2 4\n"),
+        ("print split(\"a1.23b\", A, x)", "2\n"),
+        ("s = \"a1.23b\"; print sub(x, \"Z\", s), s", "1 aZb\n"),
+        ("s = \"a1.23b\"; print gsub(x, \"Z\", s), s", "1 aZb\n"),
+    ];
+    for (body, want) in cases {
+        let program = format!("BEGIN {{ CONVFMT = \"%.2f\"; x = 1.23456; {body} }}");
+        let (code, stdout, stderr) = run_awkrs_stdin(&program, "");
+        assert_eq!(code, 0, "{body}: stderr {stderr:?}");
+        assert_eq!(stdout, *want, "{body}");
+    }
+}
+
+/// `sub` / `gsub` read the **subject** as a string and write a string back, so a
+/// numeric target is rewritten from its CONVFMT rendering: substituting in
+/// `1.23456` under `%.2f` edits `1.23` and can never leave the `456` behind.
+/// The replacement text converts the same way. Every target kind the compiler
+/// emits is covered — a bare variable, an array element, and a field.
+#[test]
+fn convfmt_applies_to_sub_target_and_replacement() {
+    let cases: &[(&str, &str)] = &[
+        ("gsub(/3/, \"9\", x); print x", "1.29\n"),
+        ("sub(/2/, \"9\", x); print x", "1.93\n"),
+        ("A[1] = x; gsub(/3/, \"9\", A[1]); print A[1]", "1.29\n"),
+        ("s = \"aXb\"; sub(/X/, x, s); print s", "a1.23b\n"),
+        ("s = \"aXb\"; gsub(/X/, x, s); print s", "a1.23b\n"),
+    ];
+    for (body, want) in cases {
+        let program = format!("BEGIN {{ CONVFMT = \"%.2f\"; x = 1.23456; {body} }}");
+        let (code, stdout, stderr) = run_awkrs_stdin(&program, "");
+        assert_eq!(code, 0, "{body}: stderr {stderr:?}");
+        assert_eq!(stdout, *want, "{body}");
+    }
+}
+
+/// A field target goes through the same path: `$1` holding a computed number is
+/// rewritten from its CONVFMT rendering, not from the full-precision spelling.
+#[test]
+fn convfmt_applies_to_sub_on_a_field_target() {
+    let (code, stdout, stderr) = run_awkrs_stdin(
+        "{ CONVFMT = \"%.2f\"; $1 = 1.23456 + 0; gsub(/3/, \"9\", $1); print $1 }",
+        "a\n",
+    );
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "1.29\n");
+}
+
+/// The `getline < expr` redirect names a file as a *string*, so a numeric
+/// operand opens the CONVFMT rendering of it. awkrs used to look for a file
+/// named `1.23456` and return -1 where the references read `1.23` and return 1.
+#[test]
+fn convfmt_applies_to_getline_redirect_filename() {
+    let dir = std::env::temp_dir().join(format!("awkrs-convfmt-getline-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create scratch dir");
+    std::fs::write(dir.join("1.23"), "hi\n").expect("write fixture");
+    let bin = env!("CARGO_BIN_EXE_awkrs");
+    let out = std::process::Command::new(bin)
+        .arg(r#"BEGIN { CONVFMT = "%.2f"; x = 1.23456; r = (getline l < x); print r, l }"#)
+        .current_dir(&dir)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("run awkrs");
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    std::fs::remove_dir_all(&dir).ok();
+    assert_eq!(stdout, "1 hi\n");
+}
+
+/// The coercion is performed **at the point of use**, never cached at
+/// assignment: changing `CONVFMT` between two reads of the same variable changes
+/// both answers. Pinning this rules out "convert once when the value is stored",
+/// which would pass every single-format test above and still be wrong.
+#[test]
+fn convfmt_coercion_is_read_at_each_use_not_cached() {
+    let (code, stdout, stderr) = run_awkrs_stdin(
+        r#"BEGIN { CONVFMT = "%.2f"; x = 1.23456; a = length(x); CONVFMT = "%.4f"; b = length(x); print a, b }"#,
+        "",
+    );
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "4 6\n");
+}
+
+/// Two values that must NOT be reshaped by `CONVFMT`, guarding the fix from
+/// overreaching. An integral number bypasses the format entirely, and a field is
+/// a string carrying the original input text — so `$1` of the record `1.23456`
+/// stays seven characters under `%.2f` in all three references.
+#[test]
+fn convfmt_leaves_integral_numbers_and_input_text_alone() {
+    let (code, stdout, stderr) = run_awkrs_stdin(
+        r#"BEGIN { CONVFMT = "%.2f"; x = 100000; print length(x), toupper(x), index(x, "00000") }"#,
+        "",
+    );
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "6 100000 2\n");
+
+    let (code, stdout, stderr) = run_awkrs_stdin(
+        r#"{ CONVFMT = "%.2f"; print length($1), toupper($1), substr($1, 3) }"#,
+        "1.23456\n",
+    );
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "7 1.23456 23456\n");
+}
+
+/// The conversion lives in the interpreter's opcode handlers and builtin
+/// dispatch, so a fix applied to one execution tier only would leave `-s` and
+/// `-O` answering differently for the same program.
+#[test]
+fn convfmt_string_coercion_agrees_across_execution_tiers() {
+    let program = r#"BEGIN { CONVFMT = "%.2f"; x = 1.23456; gsub(/3/, "9", x); print length(x), x, ("a1.23b" ~ x) }"#;
+    let bin = env!("CARGO_BIN_EXE_awkrs");
+    let mut seen = Vec::new();
+    for flag in ["-s", "-O"] {
+        let out = std::process::Command::new(bin)
+            .arg(flag)
+            .arg(program)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("run awkrs");
+        assert!(
+            out.status.success(),
+            "{flag}: {:?}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        seen.push(String::from_utf8_lossy(&out.stdout).into_owned());
+    }
+    assert_eq!(seen[0], "4 1.29 0\n", "-s (no JIT)");
+    assert_eq!(seen[1], seen[0], "-O (JIT) disagrees with -s");
+}
