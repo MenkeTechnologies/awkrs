@@ -131,7 +131,7 @@ pub(crate) const BUILTIN_ARRAY_LEN: u16 = 2002;
 fn awk_keys_builtin(vm: &mut fusevm::VM, _argc: u8) -> fusevm::Value {
     let name = vm.pop().to_str();
     let keys = with_runtime(|rt| rt.array_keys(&name));
-    fusevm::Value::Array(keys.into_iter().map(fusevm::Value::str).collect())
+    fusevm::Value::array(keys.into_iter().map(fusevm::Value::str).collect())
 }
 
 fn array_len_builtin(vm: &mut fusevm::VM, _argc: u8) -> fusevm::Value {
