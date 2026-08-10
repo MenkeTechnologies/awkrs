@@ -921,21 +921,26 @@ fn eager_jit_div_mod_loops_match_interpreter() {
 
 #[test]
 fn eager_jit_div_by_zero_in_loop_traps() {
-    // A zero divisor reached inside an offloaded/JIT-compiled loop must raise the
-    // POSIX fatal (exit 1), not hang or produce garbage — the guarded early-exit
-    // in the AwkDivJit/AwkModJit codegen fires the trap libcall.
+    // A zero divisor reached inside an offloaded/JIT-compiled loop must raise a
+    // fatal, not hang or produce garbage — the guarded early-exit in the
+    // AwkDivJit/AwkModJit codegen fires the trap libcall.
+    //
+    // The status is 2, matching both references: `awk 'BEGIN{x=1/0}'` (BWK) and
+    // `gawk 'BEGIN{x=1/0}'` each exit 2. POSIX only requires >0 for a fatal, so
+    // the 1 this used to assert was not a POSIX rule and matched no awk on the
+    // machine.
     let (c, _o, e) = run_awkrs_stdin(
         r#"BEGIN { x = 1; d = 1; for (i = 0; i < 10; i++) { if (i == 5) d = 0; x = x / d } print x }"#,
         "",
     );
-    assert_eq!(c, 1, "div-by-zero must exit 1; stderr={e}");
+    assert_eq!(c, 2, "div-by-zero must exit 2; stderr={e}");
     assert!(e.contains("division by zero"), "stderr={e}");
 
     let (c2, _o2, e2) = run_awkrs_stdin(
         r#"BEGIN { x = 1; d = 1; for (i = 0; i < 10; i++) { if (i == 5) d = 0; x = x % d } print x }"#,
         "",
     );
-    assert_eq!(c2, 1, "mod-by-zero must exit 1; stderr={e2}");
+    assert_eq!(c2, 2, "mod-by-zero must exit 2; stderr={e2}");
     assert!(e2.contains("division by zero"), "stderr={e2}");
 }
 
