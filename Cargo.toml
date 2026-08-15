@@ -14,14 +14,9 @@ exclude = [
     "/examples/",
     "/docs/",
     "/assets/",
-    "/bench/",
-    "/benches/",
     "/benchmarks/",
     "/parity/",
     "/scripts/",
-    "/vendor/",
-    "/tools/",
-    "/fuzz/",
     "/BUGS.md",
 ]
 description = "Awk implementation in Rust with broad CLI compatibility, parallel records, and experimental Cranelift JIT"
