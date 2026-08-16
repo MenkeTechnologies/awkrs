@@ -10,6 +10,11 @@
 #
 # Env:
 #   AWKRS=path/to/awkrs
+#     Left unset, this defaults to target/release/awkrs and the script runs
+#     `cargo build --release` for you — right for CI, slow for a local check.
+#     Point it at a dev build to skip that entirely; the release build is only
+#     ever triggered when AWKRS still holds its default value:
+#       cargo build && AWKRS=target/debug/awkrs bash parity/run_parity.sh
 #   GAWK=gawk   MAWK=mawk
 #   BSD_AWK=    Reference for bsd mode: if unset, try nawk, then original-awk (Linux), else /usr/bin/awk (Darwin).
 
@@ -66,6 +71,15 @@ run_one_ref() {
   # with a tiny program before the main loop; only flip `--traditional` when
   # the reference itself exhibits the quirk. Gawk/mawk modes never run this
   # probe.
+  #
+  # Expanded below through bash's `${name[@]+...}` guard rather than as a bare
+  # quoted expansion: under `set -u`, bash 3.2 — still the `/bin/bash` on macOS
+  # — treats an *empty* array as unset and aborts with
+  # `awkrs_flags[@]: unbound variable`. Every mode but `bsd` leaves this array
+  # empty, so the script died on its very first case under the system bash
+  # while running fine under a newer bash from Homebrew, which made the whole
+  # suite unrunnable there rather than merely noisy. The guarded form expands
+  # to nothing when the array is empty and to the quoted elements otherwise.
   local -a awkrs_flags=()
   if [[ "$ref_name" == "bsd" ]]; then
     local probe
@@ -93,13 +107,13 @@ run_one_ref() {
 
     if [[ -f "$dat" ]]; then
       "$ref_cmd" -f "$f" "$dat" >"$p_out" 2>&1 || true
-      "$AWKRS" "${awkrs_flags[@]}" -f "$f" "$dat" >"$r_out" 2>&1 || true
+      "$AWKRS" ${awkrs_flags[@]+"${awkrs_flags[@]}"} -f "$f" "$dat" >"$r_out" 2>&1 || true
     elif [[ -f "$inp" ]]; then
       "$ref_cmd" -f "$f" <"$inp" >"$p_out" 2>&1 || true
-      "$AWKRS" "${awkrs_flags[@]}" -f "$f" <"$inp" >"$r_out" 2>&1 || true
+      "$AWKRS" ${awkrs_flags[@]+"${awkrs_flags[@]}"} -f "$f" <"$inp" >"$r_out" 2>&1 || true
     else
       "$ref_cmd" -f "$f" </dev/null >"$p_out" 2>&1 || true
-      "$AWKRS" "${awkrs_flags[@]}" -f "$f" </dev/null >"$r_out" 2>&1 || true
+      "$AWKRS" ${awkrs_flags[@]+"${awkrs_flags[@]}"} -f "$f" </dev/null >"$r_out" 2>&1 || true
     fi
 
     if ! cmp -s "$p_out" "$r_out"; then
