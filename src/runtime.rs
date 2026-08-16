@@ -1336,45 +1336,52 @@ pub struct Runtime {
 /// surface is small. The function tracks bracket-expression state by counting
 /// unescaped `[` / `]` and only translates at top level.
 fn translate_awk_re_to_rust(pat: &str) -> String {
-    let bytes = pat.as_bytes();
+    // Iterate characters, not bytes. Every rule below keys off an ASCII
+    // character, but a byte loop that ends in `byte as char` latin-1-widens
+    // each half of a multi-byte sequence: `é` (0xC3 0xA9) came out as `Ã©`,
+    // which re-encodes to four bytes and can never match the two-byte `é` in
+    // the subject. `"café" ~ /é/` was therefore false in every locale, while
+    // `gsub(/é/, ...)` worked because a metacharacter-free pattern takes the
+    // literal-substring fast path and never reaches this translator.
+    let chars: Vec<char> = pat.chars().collect();
     let mut out = String::with_capacity(pat.len() + 4);
     let mut i = 0;
     let mut in_bracket = false;
-    while i < bytes.len() {
-        let c = bytes[i];
-        if c == b'\\' && i + 1 < bytes.len() && !in_bracket {
-            let next = bytes[i + 1];
-            if (b'1'..=b'9').contains(&next) {
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '\\' && i + 1 < chars.len() && !in_bracket {
+            let next = chars[i + 1];
+            if ('1'..='9').contains(&next) {
                 // gawk: literal `\N`; Rust would treat as backref. Escape so
                 // Rust sees a literal backslash followed by the digit.
                 out.push('\\');
                 out.push('\\');
-                out.push(next as char);
+                out.push(next);
                 i += 2;
                 continue;
             }
-            if matches!(next, b'd' | b'D') {
+            if matches!(next, 'd' | 'D') {
                 // gawk doesn't support `\d`/`\D` (only `\w`/`\W`/`\s`/`\S`):
                 // it emits "regexp escape sequence `\d' is not a known regexp
                 // operator" and treats `\d` as the literal letter. Rust regex
                 // would interpret as digit class — strip the `\` to literal.
-                out.push(next as char);
+                out.push(next);
                 i += 2;
                 continue;
             }
             // Other escapes (`\.`, `\(`, `\n`, `\t`, `\<`, `\>`, `\b`, `\B`,
             // `\xHH`, etc.) — pass through unchanged.
             out.push('\\');
-            out.push(next as char);
+            out.push(next);
             i += 2;
             continue;
         }
-        if c == b'[' && !in_bracket {
+        if c == '[' && !in_bracket {
             in_bracket = true;
-        } else if c == b']' && in_bracket {
+        } else if c == ']' && in_bracket {
             in_bracket = false;
         }
-        out.push(c as char);
+        out.push(c);
         i += 1;
     }
     out

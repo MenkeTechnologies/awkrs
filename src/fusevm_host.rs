@@ -431,12 +431,14 @@ impl fusevm::AwkHost for AwkRuntimeHost {
 
     /// `tolower(s)`. Port of the `tolower` arm.
     fn tolower(&mut self, s: &fusevm::Value) -> fusevm::Value {
-        fusevm::Value::str(s.to_str().to_lowercase())
+        let as_bytes = with_runtime(|rt| rt.characters_as_bytes);
+        fusevm::Value::str(crate::builtins::awk_to_lower(&s.to_str(), as_bytes))
     }
 
     /// `toupper(s)`. Port of the `toupper` arm.
     fn toupper(&mut self, s: &fusevm::Value) -> fusevm::Value {
-        fusevm::Value::str(s.to_str().to_uppercase())
+        let as_bytes = with_runtime(|rt| rt.characters_as_bytes);
+        fusevm::Value::str(crate::builtins::awk_to_upper(&s.to_str(), as_bytes))
     }
 
     // ── Bit ops + misc builtins (ports of vm_builtins.rs) ─────────────────

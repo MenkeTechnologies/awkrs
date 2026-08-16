@@ -8,7 +8,10 @@
 
 mod common;
 
-use common::{run_awkrs_file, run_awkrs_stdin, run_awkrs_stdin_bounded};
+use common::{
+    run_awkrs_file, run_awkrs_stdin, run_awkrs_stdin_args, run_awkrs_stdin_args_env,
+    run_awkrs_stdin_bounded,
+};
 use std::io::Write;
 
 /// `<` `<=` `>` `>=` between two fields follow awk's strnum rule: a string
@@ -470,10 +473,8 @@ fn exit_inside_a_function_still_runs_end() {
 /// `exit` inside a function called *from* `END` still just stops `END`.
 #[test]
 fn exit_inside_a_function_called_from_end_stops_end() {
-    let (code, out, err) = run_awkrs_stdin(
-        r#"function f() { exit 5 } END { f(); print "never" }"#,
-        "",
-    );
+    let (code, out, err) =
+        run_awkrs_stdin(r#"function f() { exit 5 } END { f(); print "never" }"#, "");
     assert_eq!(code, 5, "stderr: {err}");
     assert_eq!(out, "");
 }
@@ -659,7 +660,10 @@ fn assigning_fs_in_a_rule_affects_the_next_record_on_the_file_path() {
     drop(f);
 
     for (program, want) in [
-        (r#"NR == 1 { FS = ":" } { print NR, NF, $1 }"#, "1 1 a:b\n2 2 c\n"),
+        (
+            r#"NR == 1 { FS = ":" } { print NR, NF, $1 }"#,
+            "1 1 a:b\n2 2 c\n",
+        ),
         (r#"{ FS = ":"; print NR, NF, $1 }"#, "1 1 a:b\n2 2 c\n"),
         (r#"BEGIN { FS = ":" } { print NF, $1 }"#, "2 a\n2 c\n"),
     ] {
@@ -764,7 +768,11 @@ fn convfmt_subscript_key_agrees_across_execution_tiers() {
             .stdin(std::process::Stdio::null())
             .output()
             .expect("run awkrs");
-        assert!(out.status.success(), "{flag}: {:?}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "{flag}: {:?}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         seen.push(String::from_utf8_lossy(&out.stdout).into_owned());
     }
     assert_eq!(seen[0], "1 1 6\n", "-s (no JIT)");
@@ -938,5 +946,377 @@ fn convfmt_string_coercion_agrees_across_execution_tiers() {
         seen.push(String::from_utf8_lossy(&out.stdout).into_owned());
     }
     assert_eq!(seen[0], "4 1.29 0\n", "-s (no JIT)");
+    assert_eq!(seen[1], seen[0], "-O (JIT) disagrees with -s");
+}
+
+/// POSIX `printf`: the `+` and space flags prefix a sign onto a *non-negative*
+/// value for every signed conversion, not just the integer ones. awkrs applied
+/// them to `%d`/`%i` and dropped them everywhere else, so `printf "% .2e", 1234.5`
+/// printed `1.23e+03` where gawk, mawk and one-true-awk all print ` 1.23e+03`.
+/// A leading space is invisible in a terminal but shifts every column of a
+/// report, so this silently misformatted output rather than failing loudly.
+#[test]
+fn printf_sign_flags_apply_to_every_float_conversion() {
+    let (code, stdout, stderr) = run_awkrs_stdin(
+        r#"BEGIN { printf "[% f][% e][% g][%+f][%+e][%+g]\n", 1.5, 1.5, 1.5, 1.5, 1.5, 1.5 }"#,
+        "",
+    );
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(
+        stdout,
+        "[ 1.500000][ 1.500000e+00][ 1.5][+1.500000][+1.500000e+00][+1.5]\n"
+    );
+}
+
+/// Zero is non-negative, so it takes the sign prefix too — the flags key off the
+/// absence of a `-`, not off the value being greater than zero.
+#[test]
+fn printf_sign_flags_apply_to_zero() {
+    let (code, stdout, stderr) = run_awkrs_stdin(
+        r#"BEGIN { printf "[%+f][% f][%+e][% g][%+d]\n", 0, 0, 0, 0, 0 }"#,
+        "",
+    );
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "[+0.000000][ 0.000000][+0.000000e+00][ 0][+0]\n");
+}
+
+/// A negative value already carries its own `-`, so neither flag may add a
+/// second sign character.
+#[test]
+fn printf_sign_flags_leave_negative_values_alone() {
+    let (code, stdout, stderr) = run_awkrs_stdin(
+        r#"BEGIN { printf "[%+f][% f][%+g][% e]\n", -1.5, -1.5, -1.5, -1.5 }"#,
+        "",
+    );
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "[-1.500000][-1.500000][-1.5][-1.500000e+00]\n");
+}
+
+/// The sign counts toward the field width, and under `0` padding the zeros go
+/// *between* the sign and the magnitude. Left justification pushes the padding
+/// to the right of the whole signed number.
+#[test]
+fn printf_sign_flags_combine_with_width_and_zero_padding() {
+    let (code, stdout, stderr) = run_awkrs_stdin(
+        r#"BEGIN { printf "[%010.2f][% 010.2f][%+010.2f][%-+10.2f][%- 10.2f]\n", 3.5, 3.5, 3.5, 3.5, 3.5 }"#,
+        "",
+    );
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(
+        stdout,
+        "[0000003.50][ 000003.50][+000003.50][+3.50     ][ 3.50     ]\n"
+    );
+}
+
+/// The flags survive a `*`-supplied width and precision, which take a different
+/// path through the conversion parser than literal digits do.
+#[test]
+fn printf_sign_flags_survive_star_width_and_precision() {
+    let (code, stdout, stderr) = run_awkrs_stdin(
+        r#"BEGIN { printf "[%+*.*f][% *.*e]\n", 10, 2, 3.5, 12, 3, 3.5 }"#,
+        "",
+    );
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "[     +3.50][   3.500e+00]\n");
+}
+
+/// A non-finite value is spelled `+inf`/`-nan` and already carries a sign, so
+/// the `+` flag must not produce `++inf`. This is the one path where re-signing
+/// the formatted magnitude would be wrong.
+#[test]
+fn printf_sign_flags_do_not_double_sign_infinity() {
+    let (code, stdout, stderr) = run_awkrs_stdin(
+        r#"BEGIN { i = 1e308 * 10; printf "[%+f][% f][%+g][%+e][%+a]\n", i, i, i, i, i }"#,
+        "",
+    );
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "[+inf][+inf][+inf][+inf][+inf]\n");
+}
+
+/// C's `#` (alternate form) flag forces the radix point onto a floating
+/// conversion even when the precision leaves no fractional digits. awkrs
+/// honoured `#` for `%x`/`%o`/`%a` and ignored it for `%f`/`%e`/`%g`, so
+/// `printf "%#.0f", 2` printed `2` where all three references print `2.`.
+#[test]
+fn printf_alt_flag_forces_radix_point_on_float_conversions() {
+    let (code, stdout, stderr) = run_awkrs_stdin(
+        r#"BEGIN { printf "[%#.0f][%#.1f][%#.0e][%#.0E][%#.1g][%#.0g]\n", 2, 2, 2, 2, 2.0, 5 }"#,
+        "",
+    );
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "[2.][2.0][2.e+00][2.E+00][2.][5.]\n");
+}
+
+/// For `%g` the `#` flag additionally suppresses the removal of trailing zeros,
+/// so the full significant-digit count survives in both the fixed and the
+/// exponent form. `%#g` of 0.0001 keeps six significant digits.
+#[test]
+fn printf_alt_flag_keeps_trailing_zeros_on_g() {
+    let (code, stdout, stderr) = run_awkrs_stdin(
+        r#"BEGIN { printf "[%#.6g][%#.3g][%#g][%#G]\n", 1.5, 100.0, 0.0001, 2.0 }"#,
+        "",
+    );
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "[1.50000][100.][0.000100000][2.00000]\n");
+}
+
+/// `%g` precision is a count of *significant* digits, so a zero under `#` keeps
+/// p-1 fractional digits — `%#g` of 0 is `0.00000`, five zeros, not six. The
+/// non-alternate path trims the fraction away entirely and never exposed this.
+#[test]
+fn printf_alt_flag_on_g_of_zero_keeps_significant_digit_count() {
+    let (code, stdout, stderr) =
+        run_awkrs_stdin(r#"BEGIN { printf "[%#g][%#.3g][%#.1g]\n", 0, 0, 0 }"#, "");
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "[0.00000][0.00][0.]\n");
+}
+
+/// In the exponent form the point is inserted before the `e`, not appended to
+/// the field, and the two-digit exponent is preserved.
+#[test]
+fn printf_alt_flag_inserts_radix_point_before_the_exponent() {
+    let (code, stdout, stderr) = run_awkrs_stdin(
+        r#"BEGIN { printf "[%#.3g][%#g][%#.1g][%#.10g]\n", 0.0000001, 1e20, 1e20, 1.5 }"#,
+        "",
+    );
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "[1.00e-07][1.00000e+20][1.e+20][1.500000000]\n");
+}
+
+/// `#` and a sign flag apply together, and the radix point counts toward the
+/// field width so zero padding still lands between the sign and the digits.
+#[test]
+fn printf_alt_and_sign_flags_combine() {
+    let (code, stdout, stderr) = run_awkrs_stdin(
+        r#"BEGIN { printf "[% #.0f][%+#.0e][% #g][%#010.0f][% #010.0f][%+#010.0e]\n", 1, 1, 1.0, 2, 2, 2 }"#,
+        "",
+    );
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(
+        stdout,
+        "[ 1.][+1.e+00][ 1.00000][000000002.][ 00000002.][+0002.e+00]\n"
+    );
+}
+
+/// awkrs deliberately makes character semantics UTF-8 rather than locale-driven
+/// (`docs/COMPATIBILITY.md` §9), and `-b` / `--characters-as-bytes` is the
+/// documented opt-out into byte semantics. `-b` already switched `length`,
+/// `substr` and `index` to counting bytes, but case folding stayed Unicode-aware
+/// regardless — so one `-b` program reported `length("café") == 5` while
+/// `toupper("café")` returned the folded `CAFÉ`, mixing the byte world and the
+/// character world in a single run. Under `-b` the fold is ASCII-only, which is
+/// what gawk, mawk and one-true-awk all do in the C locale.
+#[test]
+fn characters_as_bytes_makes_case_folding_ascii_only() {
+    let (code, stdout, stderr) = run_awkrs_stdin_args(
+        ["-b"],
+        r#"BEGIN { print toupper("café"), tolower("CAFÉ"), toupper("aBc1!~"), tolower("AbC1!~") }"#,
+        "",
+    );
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "CAFé cafÉ ABC1!~ abc1!~\n");
+}
+
+/// The self-consistency this fixes: under `-b`, `length` and the fold must agree
+/// on which world they are in. Unicode uppercases `ß` to the two-character `SS`,
+/// so the Unicode fold silently grew a byte-counted record by one.
+#[test]
+fn characters_as_bytes_case_folding_preserves_length() {
+    let (code, stdout, stderr) = run_awkrs_stdin_args(
+        ["-b"],
+        r#"{ u = toupper($0); print u, length(u), length($0) }"#,
+        "Straße\n",
+    );
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "STRAßE 7 7\n");
+}
+
+/// Without `-b` the Unicode fold is the documented awkrs behaviour and must stay
+/// put — this is a deliberate deviation from the references in the C locale, not
+/// an accident, and the character world is self-consistent too: `length` counts
+/// scalars and the fold maps them.
+#[test]
+fn default_mode_keeps_unicode_case_folding() {
+    let (code, stdout, stderr) = run_awkrs_stdin(
+        r#"BEGIN { print toupper("café"), tolower("CAFÉ"), length("café") }"#,
+        "",
+    );
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "CAFÉ café 4\n");
+}
+
+/// Neither mode consults the environment: the choice is the flag, so the answer
+/// is identical under `LC_ALL=C` and under a UTF-8 locale. That is what keeps
+/// this test meaningful in a bare CI container, which may have no locales
+/// generated at all.
+#[test]
+fn case_folding_does_not_depend_on_the_locale_environment() {
+    for locale in ["C", "en_US.UTF-8", "POSIX"] {
+        let env = [("LC_ALL".into(), locale.into())];
+        let (code, stdout, stderr) = run_awkrs_stdin_args_env(
+            Vec::<String>::new(),
+            r#"BEGIN { print toupper("café") }"#,
+            "",
+            env,
+        );
+        assert_eq!(code, 0, "{locale}: stderr {stderr:?}");
+        assert_eq!(stdout, "CAFÉ\n", "LC_ALL={locale} changed the default fold");
+
+        let env = [("LC_ALL".into(), locale.into())];
+        let (code, stdout, stderr) =
+            run_awkrs_stdin_args_env(["-b"], r#"BEGIN { print toupper("café") }"#, "", env);
+        assert_eq!(code, 0, "{locale}: stderr {stderr:?}");
+        assert_eq!(stdout, "CAFé\n", "LC_ALL={locale} changed the -b fold");
+    }
+}
+
+/// Both fixes live in code the two execution tiers reach by different routes:
+/// `toupper` has a separate implementation in the fusevm host from the one in
+/// the tree-walking builtin dispatch, and the JIT re-runs the formatter. A fix
+/// applied to one tier only would leave `-s` and `-O` disagreeing on the same
+/// program, which no reference awk ever does. `-b` is included because the
+/// fusevm host reads the flag from the runtime rather than being handed it.
+#[test]
+fn float_flags_and_case_folding_agree_across_execution_tiers() {
+    let program = r#"BEGIN { printf "[%#.0f][%+f][% g][%#.6g]|", 2, 0, 0, 1.5; print toupper("café"), tolower("CAFÉ") }"#;
+    let bin = env!("CARGO_BIN_EXE_awkrs");
+    for (extra, want) in [
+        ("-b", "[2.][+0.000000][ 0][1.50000]|CAFé cafÉ\n"),
+        ("--", "[2.][+0.000000][ 0][1.50000]|CAFÉ café\n"),
+    ] {
+        let mut seen = Vec::new();
+        for flag in ["-s", "-O"] {
+            let mut cmd = std::process::Command::new(bin);
+            cmd.arg(flag);
+            if extra != "--" {
+                cmd.arg(extra);
+            }
+            let out = cmd
+                .arg(program)
+                .stdin(std::process::Stdio::null())
+                .output()
+                .expect("run awkrs");
+            assert!(
+                out.status.success(),
+                "{flag} {extra}: {:?}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            seen.push(String::from_utf8_lossy(&out.stdout).into_owned());
+        }
+        assert_eq!(seen[0], want, "-s (no JIT) with {extra}");
+        assert_eq!(seen[1], seen[0], "-O (JIT) disagrees with -s under {extra}");
+    }
+}
+
+/// The awk-ERE to Rust-regex translator walked the pattern byte by byte and
+/// finished each iteration with `byte as char`, which latin-1-widens every half
+/// of a multi-byte UTF-8 sequence: `é` (0xC3 0xA9) compiled as the two-character
+/// `Ã©` and could never match itself. `~`, `!~` and `match()` therefore answered
+/// "no match" for any pattern containing a non-ASCII character.
+#[test]
+fn regex_matches_a_non_ascii_literal() {
+    let (code, stdout, stderr) = run_awkrs_stdin(
+        r#"BEGIN { s = "café"; print (s ~ /é/), (s ~ "é"), (s !~ /é/), ("aéb" ~ /éb/), ("abc" ~ /é/) }"#,
+        "",
+    );
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "1 1 0 1 0\n");
+}
+
+/// `gsub` and `split` masked the bug: a metacharacter-free pattern takes the
+/// literal-substring fast path and never reaches the translator. Pinning them
+/// alongside `~` keeps the two paths from drifting apart again.
+#[test]
+fn non_ascii_patterns_agree_between_the_regex_and_literal_paths() {
+    let (code, stdout, stderr) = run_awkrs_stdin(
+        r#"BEGIN { s = "café"; n = gsub(/é/, "E", s); print n, s, ("café" ~ /é/)
+                  m = split("aébéc", A, /é/); print m, A[1], A[2], A[3] }"#,
+        "",
+    );
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "1 cafE 1\n3 a b c\n");
+}
+
+/// The translator's own rewrites are all keyed on ASCII and must survive the
+/// switch from a byte walk to a character walk: POSIX ERE has no `\d` digit
+/// class and no `\1` backreference, and a bracket expression suppresses escape
+/// rewriting inside it.
+#[test]
+fn regex_translator_ascii_rules_survive_the_character_walk() {
+    let (code, stdout, stderr) = run_awkrs_stdin(
+        r#"BEGIN { print ("d" ~ /\d/), ("1" ~ /\d/), ("a]b" ~ /[]]/), ("a.c" ~ /a\.c/), ("abc" ~ /a\.c/)
+                  print ("a-b" ~ /[a-]/), ("x" ~ /[^abc]/), ("A" ~ /[[:upper:]]/), ("ab" ~ /a{1,2}b/) }"#,
+        "",
+    );
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "1 0 1 1 0\n1 1 1 1\n");
+}
+
+/// `match()` published RSTART and RLENGTH as *byte* offsets while writing the
+/// `arr[i, "start"]` entries as *character* offsets, so one call disagreed with
+/// itself on multibyte input: `match("ééx", /x/, A)` set RSTART to 5 and
+/// `A[0,"start"]` to 3. awk reports character positions — the same unit
+/// `substr`, `index` and `length` use — so 3 is the answer in both places.
+#[test]
+fn match_reports_rstart_and_rlength_in_characters() {
+    let (code, stdout, stderr) = run_awkrs_stdin(
+        r#"BEGIN { print match("ééx", /x/), RSTART, RLENGTH
+                  print match("ééxy", /xy/), RSTART, RLENGTH
+                  print match("café", /é/), RSTART, RLENGTH
+                  print match("abc", /z/), RSTART, RLENGTH }"#,
+        "",
+    );
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "3 3 1\n3 3 2\n4 4 1\n0 0 -1\n");
+}
+
+/// The self-consistency half of the same fix: the scalar specials and the
+/// submatch array must describe the identical match.
+#[test]
+fn match_specials_agree_with_the_submatch_array() {
+    let (code, stdout, stderr) = run_awkrs_stdin(
+        r#"BEGIN { match("ééx", /x/, A); print RSTART, RLENGTH, A[0,"start"], A[0,"length"], A[0] }"#,
+        "",
+    );
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "3 1 3 1 x\n");
+}
+
+/// ASCII positions are the overwhelmingly common case and must be untouched by
+/// the character-offset conversion.
+#[test]
+fn match_positions_are_unchanged_for_ascii_subjects() {
+    let (code, stdout, stderr) = run_awkrs_stdin(
+        r#"BEGIN { print match("hello world", /o w/), RSTART, RLENGTH
+                  print match("hello", //), RSTART, RLENGTH }"#,
+        "",
+    );
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "5 5 3\n1 1 0\n");
+}
+
+/// Both execution tiers reach `match` through different opcodes but share one
+/// implementation; a divergence here would mean the fusevm host had grown its
+/// own copy.
+#[test]
+fn non_ascii_regex_and_match_agree_across_execution_tiers() {
+    let program = r#"BEGIN { print ("café" ~ /é/), match("ééx", /x/), RSTART, RLENGTH }"#;
+    let bin = env!("CARGO_BIN_EXE_awkrs");
+    let mut seen = Vec::new();
+    for flag in ["-s", "-O"] {
+        let out = std::process::Command::new(bin)
+            .arg(flag)
+            .arg(program)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("run awkrs");
+        assert!(
+            out.status.success(),
+            "{flag}: {:?}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        seen.push(String::from_utf8_lossy(&out.stdout).into_owned());
+    }
+    assert_eq!(seen[0], "1 3 3 1\n", "-s (no JIT)");
     assert_eq!(seen[1], seen[0], "-O (JIT) disagrees with -s");
 }

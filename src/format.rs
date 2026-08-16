@@ -1028,7 +1028,14 @@ fn format_one(
         'a' | 'A' => {
             let n = v.as_number();
             let s = format_hex_float(n, prec, conv == 'A', alt);
-            let s = localize_float_radix(s, decimal);
+            let mut s = localize_float_radix(s, decimal);
+            // `format_hex_float` spells a non-finite value as `+inf`/`-nan`,
+            // which already carries its own sign; re-signing it would produce
+            // `++inf`. Only a finite magnitude takes the `+`/` ` flags.
+            if n.is_finite() {
+                let pos = !s.starts_with('-');
+                apply_sign(&mut s, pos, sign, space);
+            }
             pad_numeric(&s, w, left, pad_char)
         }
         'f' | 'F' => {
@@ -1057,6 +1064,11 @@ fn format_one(
             if group && sep != '\0' {
                 s = insert_thousands_sep_float(s, sep, decimal);
             }
+            if alt {
+                apply_alt_radix(&mut s, decimal);
+            }
+            let pos = !s.starts_with('-');
+            apply_sign(&mut s, pos, sign, space);
             pad_numeric(&s, w, left, pad_char)
         }
         'e' | 'E' => {
@@ -1087,7 +1099,12 @@ fn format_one(
                 }
             };
             let localized = localize_float_radix(raw, decimal);
-            let s = normalize_sprintf_scientific_exponent(&localized);
+            let mut s = normalize_sprintf_scientific_exponent(&localized);
+            if alt {
+                apply_alt_radix(&mut s, decimal);
+            }
+            let pos = !s.starts_with('-');
+            apply_sign(&mut s, pos, sign, space);
             pad_numeric(&s, w, left, pad_char)
         }
         'g' | 'G' => {
@@ -1103,9 +1120,22 @@ fn format_one(
                 }
                 let abs_n = n.abs();
                 if abs_n == 0.0 {
-                    let raw = format!("{:.*}", p, fsrc);
+                    // `%g` precision counts *significant* digits, so a zero
+                    // under `#` keeps p-1 fractional digits ("%#g" of 0 is
+                    // "0.00000", not "0.000000"). Without `#` the fraction is
+                    // trimmed away entirely, so the digit count is moot.
+                    let raw = format!("{:.*}", if alt { p - 1 } else { p }, fsrc);
                     let localized = localize_float_radix(raw, decimal);
-                    let s = trim_trailing_zero_fraction(&localized);
+                    let mut s = if alt {
+                        localized
+                    } else {
+                        trim_trailing_zero_fraction(&localized)
+                    };
+                    if alt {
+                        apply_alt_radix(&mut s, decimal);
+                    }
+                    let pos = !s.starts_with('-');
+                    apply_sign(&mut s, pos, sign, space);
                     return pad_numeric(&s, w, left, pad_char);
                 }
                 let exp = abs_n.log10().floor() as i32;
@@ -1125,11 +1155,20 @@ fn format_one(
                     }
                 };
                 let localized = localize_float_radix(raw, decimal);
-                let mut s = if use_e {
+                // `#` on `%g` means "do not remove trailing zeros" — the
+                // significant-digit padding survives verbatim.
+                let mut s = if alt {
+                    normalize_sprintf_scientific_exponent(&localized)
+                } else if use_e {
                     trim_sprintf_g_scientific(&localized)
                 } else {
                     trim_trailing_zero_fraction(&localized)
                 };
+                if alt {
+                    apply_alt_radix(&mut s, decimal);
+                }
+                let pos = !s.starts_with('-');
+                apply_sign(&mut s, pos, sign, space);
                 if conv == 'G' {
                     s = s.replace('e', "E");
                 }
@@ -1141,9 +1180,20 @@ fn format_one(
             }
             let abs_n = n.abs();
             if abs_n == 0.0 {
-                let raw = format!("{:.*}", p, n);
+                // See the MPFR arm above: `#` keeps p-1 fractional digits for a
+                // zero because `%g` precision is a significant-digit count.
+                let raw = format!("{:.*}", if alt { p - 1 } else { p }, n);
                 let localized = localize_float_radix(raw, decimal);
-                let s = trim_trailing_zero_fraction(&localized);
+                let mut s = if alt {
+                    localized
+                } else {
+                    trim_trailing_zero_fraction(&localized)
+                };
+                if alt {
+                    apply_alt_radix(&mut s, decimal);
+                }
+                let pos = !s.starts_with('-');
+                apply_sign(&mut s, pos, sign, space);
                 return pad_numeric(&s, w, left, pad_char);
             }
             // C99 / POSIX: the exponent that decides fixed-vs-e form is the
@@ -1162,11 +1212,20 @@ fn format_one(
                 format_g_decimal_significant_f64(n, p)
             };
             let localized = localize_float_radix(raw, decimal);
-            let mut s = if use_e {
+            // `#` on `%g` keeps the trailing zeros the significant-digit
+            // rounding produced; the exponent still needs its two-digit form.
+            let mut s = if alt {
+                normalize_sprintf_scientific_exponent(&localized)
+            } else if use_e {
                 trim_sprintf_g_scientific(&localized)
             } else {
                 trim_trailing_zero_fraction(&localized)
             };
+            if alt {
+                apply_alt_radix(&mut s, decimal);
+            }
+            let pos = !s.starts_with('-');
+            apply_sign(&mut s, pos, sign, space);
             if conv == 'G' {
                 s = s.replace('e', "E");
             }
@@ -1199,6 +1258,24 @@ fn apply_sign(s: &mut String, pos: bool, sign: bool, space: bool) {
             s.insert(0, ' ');
         }
     }
+}
+
+/// C `#` (alternate form) for the floating conversions: the radix point is
+/// always present, even when the precision leaves no fractional digits.
+///
+/// `printf "%#.0f", 2` is `2.` in gawk, mawk and one-true-awk alike, and
+/// `printf "%#.1g", 1e20` is `1.e+20` — the point is inserted before the
+/// exponent marker, not appended to the end of the field. A string that already
+/// carries a radix point is returned unchanged, so this is safe to call
+/// unconditionally on any finite magnitude.
+fn apply_alt_radix(s: &mut String, decimal: char) {
+    if s.contains(decimal) {
+        return;
+    }
+    // Split before the exponent marker so `1e+20` becomes `1.e+20`. The marker
+    // is the first `e`/`E` — a hex-float `p` exponent never reaches here.
+    let at = s.find(['e', 'E']).unwrap_or(s.len());
+    s.insert(at, decimal);
 }
 
 fn pad_numeric(s: &str, width: usize, left: bool, pad: char) -> Result<String, String> {

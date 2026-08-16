@@ -201,8 +201,15 @@ pub fn match_fn(rt: &mut Runtime, s: &str, re_pat: &str, arr_name: Option<&str>)
     rt.ensure_regex(re_pat).map_err(Error::Runtime)?;
     let re = rt.regex_ref(re_pat).clone();
     if let Some(m) = re.find(s) {
-        let rstart = (m.start() + 1) as f64;
-        let rlength = m.len() as f64;
+        // `Match::start`/`len` are byte offsets, but awk reports RSTART and
+        // RLENGTH as 1-based *character* positions — the same unit `substr`,
+        // `index` and `length` use, and the same unit the `arr[i, "start"]`
+        // entries below already reported. Publishing byte offsets here made a
+        // single `match(s, re, arr)` call disagree with itself on multibyte
+        // input: `match("ééx", /x/, A)` set RSTART to 5 while `A[0,"start"]`
+        // was 3, and gawk answers 3 for both.
+        let rstart = (s[..m.start()].chars().count() + 1) as f64;
+        let rlength = m.as_str().chars().count() as f64;
         rt.vars.insert("RSTART".into(), Value::Num(rstart));
         rt.vars.insert("RLENGTH".into(), Value::Num(rlength));
         if let Some(a) = arr_name {
@@ -706,6 +713,36 @@ pub fn awk_strtonum(s: &str) -> f64 {
         }
     }
     0.0
+}
+
+/// `toupper(s)`, honouring the `-b` / `--characters-as-bytes` selection.
+///
+/// awkrs deliberately makes character semantics UTF-8 rather than locale-driven
+/// (see `docs/COMPATIBILITY.md` §9), with `-b` as the explicit opt-out into byte
+/// semantics. `-b` already switched `length`, `substr` and `index` to counting
+/// bytes, but case folding stayed Unicode-aware, so a single `-b` run reported
+/// `length("café") == 5` while `toupper("café")` still returned the folded
+/// `CAFÉ` — the byte world and the character world in one program.
+///
+/// Under `-b` the fold is ASCII-only, which is what a byte-oriented awk does:
+/// gawk, mawk and one-true-awk all leave every byte above 0x7F alone in the C
+/// locale. It also keeps the result the same length as its input, where
+/// Unicode's `ß` → `SS` would silently grow the record.
+pub(crate) fn awk_to_upper(s: &str, as_bytes: bool) -> String {
+    if as_bytes {
+        s.to_ascii_uppercase()
+    } else {
+        s.to_uppercase()
+    }
+}
+
+/// `tolower(s)` — the `awk_to_upper` rule in the other direction.
+pub(crate) fn awk_to_lower(s: &str, as_bytes: bool) -> String {
+    if as_bytes {
+        s.to_ascii_lowercase()
+    } else {
+        s.to_lowercase()
+    }
 }
 
 pub(crate) fn locale_str_cmp_sort(a: &str, b: &str) -> Ordering {

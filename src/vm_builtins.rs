@@ -205,7 +205,10 @@ pub(crate) fn exec_builtin_dispatch(
                     "{argc} is invalid as number of arguments for tolower"
                 )));
             }
-            Value::StrLit(ctx.rt.value_to_str_convfmt(&args[0]).to_lowercase())
+            Value::StrLit(crate::builtins::awk_to_lower(
+                &ctx.rt.value_to_str_convfmt(&args[0]),
+                ctx.rt.characters_as_bytes,
+            ))
         }
         "toupper" => {
             if argc != 1 {
@@ -213,7 +216,10 @@ pub(crate) fn exec_builtin_dispatch(
                     "{argc} is invalid as number of arguments for toupper"
                 )));
             }
-            Value::StrLit(ctx.rt.value_to_str_convfmt(&args[0]).to_uppercase())
+            Value::StrLit(crate::builtins::awk_to_upper(
+                &ctx.rt.value_to_str_convfmt(&args[0]),
+                ctx.rt.characters_as_bytes,
+            ))
         }
         "int" => {
             if argc != 1 {

@@ -956,3 +956,159 @@ BEGIN {
   print match("a:b:c", r), RSTART, RLENGTH
   print ("a:b:c" ~ r), ("c$" ~ r)
 }
+
+#=== printf_sign_flags_on_float_conversions
+# The `+` / space flags are not integer-only: every signed conversion takes
+# them. awkrs honoured them for %d/%i and silently dropped them for %f/%e/%g,
+# which shifts every column of a formatted report without ever failing.
+#--- prog
+BEGIN {
+  printf "[% f][% e][% g][%+f][%+e][%+g]\n", 1.5, 1.5, 1.5, 1.5, 1.5, 1.5
+  printf "[%+f][% f][%+e][% g][%+d]\n", 0, 0, 0, 0, 0
+  printf "[%+f][% f][%+g][% e]\n", -1.5, -1.5, -1.5, -1.5
+}
+
+#=== printf_sign_flags_with_width_and_zero_padding
+# The sign counts toward the field width, and `0` padding goes between the sign
+# and the magnitude rather than in front of it.
+#--- prog
+BEGIN {
+  printf "[%010.2f][% 010.2f][%+010.2f][%-+10.2f][%- 10.2f]\n", 3.5, 3.5, 3.5, 3.5, 3.5
+  printf "[%+*.*f][% *.*e]\n", 10, 2, 3.5, 12, 3, 3.5
+}
+
+#=== printf_alt_flag_forces_radix_point_on_floats
+# C's `#` keeps the radix point even when the precision leaves no fraction.
+# awkrs honoured `#` for %x/%o/%a and ignored it for %f/%e/%g.
+#--- prog
+BEGIN {
+  printf "[%#.0f][%#.1f][%#.0e][%#.0E][%#.1g][%#.0g]\n", 2, 2, 2, 2, 2.0, 5
+  printf "[%#f][%#e][%#.0f]\n", 0, 0, 0
+}
+
+#=== printf_alt_flag_keeps_trailing_zeros_on_g
+# For %g the `#` flag also suppresses trailing-zero removal, in both the fixed
+# and the exponent form, and the point is inserted before the exponent marker.
+#--- prog
+BEGIN {
+  printf "[%#.6g][%#.3g][%#g][%#G]\n", 1.5, 100.0, 0.0001, 2.0
+  printf "[%#.3g][%#g][%#.1g][%#.10g]\n", 0.0000001, 1e20, 1e20, 1.5
+  printf "[%#g][%#.3g][%#.1g]\n", 0, 0, 0
+}
+
+#=== printf_alt_and_sign_flags_combine
+# Both flag families apply at once, and the radix point counts toward the width.
+#--- prog
+BEGIN { printf "[% #.0f][%+#.0e][% #g][%#010.0f][% #010.0f][%+#010.0e]\n", 1, 1, 1.0, 2, 2, 2 }
+
+#=== printf_sign_and_alt_flags_on_hex_float
+# `%a` is a gawk / one-true-awk conversion; mawk rejects it outright, so this
+# probe is scoped to the two references that define it.
+#--- only gawk,bsd
+#--- prog
+BEGIN { printf "[%#a][%+a][% a]\n", 1.0, 1.0, 1.0 }
+
+#=== case_mapping_of_ascii_text
+# Case folding of ASCII text is identical in every awk. The non-ASCII half of
+# this surface is a deliberate awkrs deviation rather than a probe: awkrs folds
+# Unicode scalars regardless of locale and `-b` selects the byte world the
+# references live in, so there is no single answer to compare here. See
+# docs/COMPATIBILITY.md section 9 and the `-b` tests in
+# tests/posix_parity_regressions.rs.
+#--- prog
+BEGIN { print toupper("aBc1!~"), tolower("AbC1!~"), toupper("hello world") }
+
+#=== toupper_tolower_of_numbers_and_empty_strings
+#--- prog
+BEGIN { print "[" toupper("") "]", "[" tolower("") "]", toupper(123), tolower(0.5), toupper(1/4) }
+
+#=== substr_fractional_and_out_of_range_arguments
+# substr rounds its start and length to the nearest integer and clamps the
+# resulting range to the string.
+#--- prog
+BEGIN {
+  s = "hello world"
+  print "[" substr(s, 1.5, 3.5) "]", "[" substr(s, 2.4, 2.4) "]", "[" substr(s, 0) "]"
+  print "[" substr(s, 3, 0) "]", "[" substr(s, 3, -1) "]", "[" substr(s, 10) "]", "[" substr(s, 1, 100) "]"
+}
+
+#=== gsub_with_an_empty_matching_regex
+# A regex that can match the empty string fires at every position, including
+# after the final character.
+#--- prog
+BEGIN { s = "abc"; n = gsub(/x*/, "-", s); print n, s
+        t = "hello"; m = gsub(/l*/, "(&)", t); print m, t }
+
+#=== split_and_index_boundary_cases
+#--- prog
+BEGIN {
+  n = split(":a::b:", a, ":"); print n; for (i = 1; i <= n; i++) printf "[%s]", a[i]; print ""
+  m = split("a.b.c", b, "."); print m; for (i = 1; i <= m; i++) printf "[%s]", b[i]; print ""
+  print index("abc", ""), index("", "a"), index("abc", "c"), index("abc", "abcd")
+}
+
+#=== math_builtins_and_int_truncation
+# int() truncates toward zero, so int(-3.9) is -3 and not -4.
+#--- prog
+BEGIN {
+  print int(3.9), int(-3.9), int(0.5), int(-0.5), int("12abc"), int("abc")
+  printf "%.6f %.6f %.6f %.6f %.6f %.6f\n", atan2(1,1), cos(0), sin(0), exp(1), log(1), sqrt(2)
+}
+
+#=== sub_replacement_ampersand_escaping
+# `&` in the replacement is the matched text, `\&` is a literal ampersand, and
+# `\\&` is a literal backslash followed by the matched text.
+#--- prog
+BEGIN { s = "abc"; sub(/b/, "[&]", s); print s
+        t = "abc"; sub(/b/, "[\\&]", t); print t
+        u = "abc"; sub(/b/, "[\\\\&]", u); print u }
+
+#=== function_array_parameters_are_by_reference
+# Arrays pass by reference and scalars by value, and an extra parameter is a
+# local that starts out uninitialized on every call.
+#--- prog
+function f(arr) { arr["new"] = 1 }
+function g(x) { x = 99 }
+function h(  loc) { loc["x"]++; n = 0; for (k in loc) n++; return n }
+BEGIN { f(a); print ("new" in a); v = 1; g(v); print v; print h(), h(), h() }
+
+#=== in_operator_does_not_create_the_element
+# `("k" in a)` is a pure test, while reading `a["j"]` auto-creates the element.
+#--- prog
+BEGIN { if ("k" in a) x = 1; n = 0; for (i in a) n++; print n
+        if (a["j"] == "") x = 2; m = 0; for (i in a) m++; print m }
+
+#=== regex_intervals_and_bracket_expressions
+#--- prog
+BEGIN {
+  print match("aaab", /a{2,3}/), RSTART, RLENGTH
+  print ("xxx" ~ /^x{3}$/), ("a1" ~ /^[[:alpha:]][[:digit:]]$/), ("-" ~ /^[a-]$/), ("]" ~ /^[]]$/)
+  print ("a" ~ /[.]/), ("." ~ /[.]/), ("" ~ /^a*$/), ("" ~ /^a+$/)
+}
+
+#=== regex_matches_a_non_ascii_literal
+# The awk-ERE to Rust-regex translator walked the pattern byte by byte and
+# widened each byte to a char, so `é` (0xC3 0xA9) compiled as `Ã©` and could
+# never match itself. `~` and `match()` answered "no match" for any pattern
+# holding a non-ASCII character, while `gsub` and `split` looked fine because a
+# metacharacter-free pattern takes the literal-substring fast path instead.
+# Every operand here is a whole-character comparison. RSTART/RLENGTH and a `.`
+# spanning a multibyte character are deliberately absent: those count bytes in
+# the references under LC_ALL=C and characters in awkrs, a separate open gap.
+#--- prog
+BEGIN {
+  s = "café"
+  print (s ~ /é/), (s ~ "é"), (s ~ /^caf/), ("abc" ~ /é/), ("aéb" ~ /éb/)
+  n = gsub(/é/, "E", s); print n, s
+  m = split("aébéc", A, /é/); print m, A[1], A[2], A[3]
+}
+
+#=== regex_escapes_still_translate_after_the_char_walk
+# The translator's own rules are all ASCII, and must keep working unchanged:
+# `\d` is not a digit class in POSIX ERE, and a bracket expression suppresses
+# escape rewriting inside it.
+#--- prog
+BEGIN {
+  print ("d" ~ /\d/), ("1" ~ /\d/), ("a]b" ~ /[]]/), ("a.c" ~ /a\.c/), ("abc" ~ /a\.c/)
+  print ("a-b" ~ /[a-]/), ("x" ~ /[^abc]/), ("A" ~ /[[:upper:]]/)
+}
