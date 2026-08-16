@@ -116,6 +116,42 @@ pub fn run_awkrs_file(program: &str, path: &Path) -> (i32, String, String) {
     (code, stdout, stderr)
 }
 
+/// Run `awkrs PROGRAM OPERAND…` with `stdin` piped in.
+///
+/// Distinct from [`run_awkrs_stdin_args`], which places its extra arguments
+/// *before* the program text — those are option flags. These go *after* it,
+/// where awk's operands live, which is the only position that can carry a
+/// `var=value` assignment or a file name. Stdin is still supplied because a
+/// command line whose operands are all assignments reads standard input.
+#[allow(dead_code)] // Only `posix_parity_regressions` needs the operand form.
+pub fn run_awkrs_operands<I, S>(program: &str, operands: I, stdin: &str) -> (i32, String, String)
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let bin = env!("CARGO_BIN_EXE_awkrs");
+    let mut cmd = Command::new(bin);
+    cmd.arg(program);
+    for operand in operands {
+        cmd.arg(operand.as_ref());
+    }
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().expect("spawn awkrs");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(stdin.as_bytes())
+        .expect("write stdin");
+    let out = child.wait_with_output().expect("wait");
+    let code = out.status.code().unwrap_or(-1);
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    (code, stdout, stderr)
+}
+
 /// Like [`run_awkrs_stdin`] but kills the child after `secs` and reports that it
 /// had to. Tests for programs every reference awk *rejects* need this: a
 /// regression that made awkrs accept and loop on one would otherwise wedge the

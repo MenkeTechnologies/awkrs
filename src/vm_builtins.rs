@@ -436,17 +436,12 @@ pub(crate) fn exec_builtin_dispatch(
             // POSIX/gawk: flush stdout and any buffered pipes/files before launching
             // the subprocess so its output is correctly interleaved after pending awk
             // output rather than before it. Without this, `print "a"; system("echo b")`
-            // would emit "b" before the buffered "a".
-            flush_print_buf(&mut ctx.rt.print_buf)?;
-            let _ = std::io::stdout().flush();
-            ctx.rt.flush_all_output_handles();
+            // would emit "b" before the buffered "a". Opening an output pipe needs
+            // the identical flush, so both go through the one helper.
+            ctx.rt.flush_stdout_before_child();
             let cmd = args[0].as_str();
-            let st = Command::new("sh")
-                .arg("-c")
-                .arg(&cmd)
-                .status()
-                .map_err(Error::Io)?;
-            Value::Num(st.code().unwrap_or(-1) as f64)
+            let st = Command::new("sh").arg("-c").arg(&cmd).status();
+            Value::Num(crate::runtime::awk_process_status(st))
         }
         "close" => {
             // gawk: `close(cmd)` closes the stream; `close(cmd, "to"|"from")`

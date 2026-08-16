@@ -9,8 +9,8 @@
 mod common;
 
 use common::{
-    run_awkrs_file, run_awkrs_stdin, run_awkrs_stdin_args, run_awkrs_stdin_args_env,
-    run_awkrs_stdin_bounded,
+    run_awkrs_file, run_awkrs_operands, run_awkrs_stdin, run_awkrs_stdin_args,
+    run_awkrs_stdin_args_env, run_awkrs_stdin_bounded,
 };
 use std::io::Write;
 
@@ -1319,4 +1319,152 @@ fn non_ascii_regex_and_match_agree_across_execution_tiers() {
     }
     assert_eq!(seen[0], "1 3 3 1\n", "-s (no JIT)");
     assert_eq!(seen[1], seen[0], "-O (JIT) disagrees with -s");
+}
+
+/// A `var=value` operand is a command-line assignment, not an input file, and
+/// it takes effect at the point it occupies among the operands.
+///
+/// awkrs read every operand as a file name and died with
+/// `cannot open file "v=1"`, which made the whole POSIX operand-assignment
+/// form unavailable. gawk, mawk and one-true-awk all run this and print an
+/// unset `v` for the first file and `1` for the second.
+#[test]
+fn a_var_equals_value_operand_assigns_rather_than_naming_a_file() {
+    let dir = std::env::temp_dir().join(format!("awkrs-operand-assign-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create fixture dir");
+    let first = dir.join("first.txt");
+    let second = dir.join("second.txt");
+    std::fs::write(&first, b"x\n").expect("write first");
+    std::fs::write(&second, b"y\n").expect("write second");
+
+    let (code, stdout, stderr) = run_awkrs_operands(
+        "{ print $0, v }",
+        [
+            first.to_str().expect("utf-8 path"),
+            "v=1",
+            second.to_str().expect("utf-8 path"),
+        ],
+        "",
+    );
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "x \ny 1\n");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// When no operand names a real file the program still reads standard input,
+/// with the assignments applied first — `awk '{print v}' v=7` is a working
+/// program in every reference, not a request to open a file called `v=7`.
+#[test]
+fn operands_that_are_all_assignments_still_read_standard_input() {
+    let (code, stdout, stderr) = run_awkrs_operands("{ print v, $0 }", ["v=7"], "z\n");
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "7 z\n");
+}
+
+/// A command-line assignment is a POSIX *numeric string*, so it compares
+/// numerically as well as textually. All three references answer `1 1 1`.
+#[test]
+fn a_command_line_assignment_is_a_numeric_string() {
+    let (code, stdout, stderr) = run_awkrs_operands(
+        r#"{ print (v == 7), (v == "7"), (v < 10) }"#,
+        ["v=7"],
+        "r\n",
+    );
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "1 1 1\n");
+}
+
+/// Only an operand whose left side is a valid awk identifier is an assignment.
+/// `2x=3` is not one, so it names a file — and there is no such file, which is
+/// the error every reference reports. Losing this test would let the
+/// assignment rule swallow ordinary file names that happen to contain `=`.
+#[test]
+fn an_operand_whose_name_is_not_an_identifier_is_still_a_file() {
+    let (code, _stdout, _stderr) = run_awkrs_operands("{ print }", ["2x=3"], "");
+    assert_ne!(
+        code, 0,
+        "`2x=3` must be read as a (missing) file, not an assignment"
+    );
+}
+
+/// POSIX processes the value of `-v var=value` "as if it were a string
+/// literal", so the escapes are decoded. awkrs stored the raw argument and
+/// `length` answered 6 for `a\tb\n` where gawk, mawk and one-true-awk all
+/// answer 4. The octal case pins that the lexer's full escape table is in play,
+/// not a hand-rolled subset that only knows `\t` and `\n`.
+#[test]
+fn dash_v_assignment_values_undergo_string_literal_escape_processing() {
+    let (code, stdout, stderr) =
+        run_awkrs_stdin_args(["-v", r"s=a\tb\n"], "BEGIN { print length(s) }", "");
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "4\n");
+
+    let (code, stdout, _) =
+        run_awkrs_stdin_args(["-v", r"s=a\101b"], r#"BEGIN { printf "%s", s }"#, "");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "aAb");
+
+    // Quotes and backslashes together. A `"` is never a string terminator here,
+    // but it still has to reach the lexer inside real quotes, and the escaping
+    // that arranges that must not double-escape a `"` the caller already wrote
+    // as `\"` — doing so turned the preceding backslash into a literal `\` that
+    // swallowed the closing quote and made `a\"b` come out as `a\`. Every row
+    // below is what gawk, mawk and one-true-awk all produce.
+    for (value, want) in [
+        (r"s=a\", r"a\"),           // trailing lone backslash is kept
+        ("s=a\"b", "a\"b"),         // bare quote is a plain character
+        ("s=a\\\"b", "a\"b"),       // already-escaped quote decodes to one quote
+        ("s=a\\\\\"b", "a\\\"b"),   // escaped backslash, then a bare quote
+        ("s=a\\\\\\\"b", "a\\\"b"), // escaped backslash, then an escaped quote
+        (r"s=a\\b", r"a\b"),        // escaped backslash mid-value
+        ("s=\"", "\""),             // a lone bare quote
+    ] {
+        let (_, stdout, _) = run_awkrs_stdin_args(["-v", value], r#"BEGIN { printf "%s", s }"#, "");
+        assert_eq!(stdout, want, "-v {value}");
+    }
+}
+
+/// An operand assignment gets the same escape processing as `-v`.
+#[test]
+fn operand_assignment_values_undergo_escape_processing_too() {
+    let (code, stdout, stderr) = run_awkrs_operands("{ print length(v) }", [r"v=a\tb"], "line\n");
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "3\n");
+}
+
+/// `ARGV` is writable and awk consults it while walking the operands: deleting
+/// an element, or setting it to the empty string, skips that file, and
+/// rewriting one redirects the read. awkrs iterated the argv it started with,
+/// so a deleted file was read anyway.
+#[test]
+fn argv_edits_change_which_files_are_read() {
+    let dir = std::env::temp_dir().join(format!("awkrs-argv-edit-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create fixture dir");
+    let first = dir.join("first.txt");
+    let second = dir.join("second.txt");
+    std::fs::write(&first, b"one\n").expect("write first");
+    std::fs::write(&second, b"two\n").expect("write second");
+    let (a, b) = (
+        first.to_str().expect("utf-8 path").to_string(),
+        second.to_str().expect("utf-8 path").to_string(),
+    );
+
+    for (program, want) in [
+        ("BEGIN { delete ARGV[1] } { print }", "two\n"),
+        (r#"BEGIN { ARGV[1] = "" } { print }"#, "two\n"),
+        ("{ print }", "one\ntwo\n"),
+    ] {
+        let (code, stdout, stderr) = run_awkrs_operands(program, [&a, &b], "");
+        assert_eq!(code, 0, "{program}: stderr {stderr:?}");
+        assert_eq!(stdout, want, "{program}");
+    }
+
+    // Rewriting an entry redirects the read to the named file.
+    let program = format!(r#"BEGIN {{ ARGV[2] = "{a}" }} {{ print }}"#);
+    let (code, stdout, stderr) = run_awkrs_operands(&program, [&a, &b], "");
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "one\none\n");
+
+    let _ = std::fs::remove_dir_all(&dir);
 }

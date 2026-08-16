@@ -408,7 +408,33 @@ pub fn run(bin_name: &str) -> Result<()> {
         let mut nr_global = 0.0f64;
         let chunk_lines = args.read_ahead.max(1);
 
-        if files.is_empty() {
+        // A `var=value` operand is an assignment, not an input file, and it takes
+        // effect where it sits: `awk '{...}' a.txt v=1 b.txt` runs the rule over
+        // a.txt with `v` unset and over b.txt with `v` set to 1. awkrs read every
+        // operand as a file name and died with `cannot open file "v=1"`, so the
+        // whole POSIX operand-assignment form was unavailable. When no operand
+        // names a real file the program still reads standard input, with the
+        // assignments applied first — `awk '{print v}' v=7` is a working program
+        // in all three references.
+        //
+        // The operands are read back out of `ARGV` rather than from the argv
+        // vector, because `ARGV` is writable and all three references walk it:
+        // `BEGIN { delete ARGV[1] }` skips the first file, and rewriting an
+        // entry redirects the read. awkrs iterated the original argv and
+        // processed the deleted file anyway.
+        let has_input_file = (1..=files.len())
+            .filter_map(|i| current_argv_operand(&rt, i))
+            .any(|operand| split_assignment_operand(&operand).is_none());
+
+        if !has_input_file {
+            for i in 1..=files.len() {
+                let Some(operand) = current_argv_operand(&rt, i) else {
+                    continue;
+                };
+                if let Some((name, value)) = split_assignment_operand(&operand) {
+                    apply_one_assignment(&mut rt, name, value);
+                }
+            }
             rt.vars.insert("ARGIND".into(), Value::Num(0.0));
             rt.filename = "-".into();
             vm_run_beginfile(cp.as_ref(), &mut rt)?;
@@ -437,10 +463,23 @@ pub fn run(bin_name: &str) -> Result<()> {
             }
             vm_run_endfile(cp.as_ref(), &mut rt)?;
         } else {
-            for (arg_idx, p) in files.iter().enumerate() {
-                rt.vars
-                    .insert("ARGIND".into(), Value::Num((arg_idx + 1) as f64));
-                rt.filename = p.to_string_lossy().into_owned();
+            for arg_idx in 1..=files.len() {
+                // Re-read on every pass: a rule may edit `ARGV` while an
+                // earlier file is still being processed, and all three
+                // references honour the edit for operands not yet reached.
+                let Some(operand) = current_argv_operand(&rt, arg_idx) else {
+                    continue;
+                };
+                // An assignment operand contributes no records: no BEGINFILE /
+                // ENDFILE, no FILENAME change, no FNR reset. It only takes
+                // effect at the point it occupies among the file operands.
+                if let Some((name, value)) = split_assignment_operand(&operand) {
+                    apply_one_assignment(&mut rt, name, value);
+                    continue;
+                }
+                let p = PathBuf::from(&operand);
+                rt.vars.insert("ARGIND".into(), Value::Num(arg_idx as f64));
+                rt.filename = operand;
                 rt.fnr = 0.0;
                 vm_run_beginfile(cp.as_ref(), &mut rt)?;
                 if rt.exit_pending {
@@ -1355,7 +1394,7 @@ fn process_file_slurp(
             return Ok(0);
         }
         let mut last = 0usize;
-        for m in regex.find_iter(data) {
+        for m in crate::record_io::record_separator_matches(regex, data) {
             let chunk = &data[last..m.start()];
             last = m.end();
             count += 1;
@@ -1900,6 +1939,14 @@ fn try_native_run(args: &Args, program_text: &str, files: &[PathBuf]) -> Result<
     if files.iter().any(|f| f.to_string_lossy().contains('=')) {
         return Ok(false);
     }
+    // Neither is a program that edits `ARGV`. The interpreter re-reads the array
+    // as it walks the operands, so `BEGIN { delete ARGV[1] }` skips that file;
+    // this backend fixes its source list up front and would read it anyway,
+    // which would make the same program answer differently depending on which
+    // tier ran it. Falling back keeps the two in agreement.
+    if program_text.contains("ARGV") || program_text.contains("ARGC") {
+        return Ok(false);
+    }
     let Ok(prog) = parse_program(program_text) else {
         return Ok(false);
     };
@@ -1996,10 +2043,60 @@ fn apply_assigns(args: &Args, rt: &mut Runtime) -> Result<()> {
             line: 1,
             msg: format!("invalid -v `{a}`, expected name=value"),
         })?;
-        rt.vars
-            .insert(name.to_string(), Value::Str(val.to_string()));
+        apply_one_assignment(rt, name, val);
     }
     Ok(())
+}
+
+/// The operand `ARGV[index]` currently names, or `None` when awk should skip it.
+///
+/// `ARGV` is an ordinary writable array, and awk consults it as it walks the
+/// operands rather than trusting the argv it started with. An element that a
+/// rule deleted, or set to the empty string, names nothing and is passed over —
+/// `awk 'BEGIN { delete ARGV[1] }' a.txt b.txt` reads only `b.txt` in gawk, mawk
+/// and one-true-awk. awkrs iterated the original argv, so the deleted file was
+/// read anyway.
+fn current_argv_operand(rt: &Runtime, index: usize) -> Option<String> {
+    let operand = rt.array_get("ARGV", &index.to_string()).as_str();
+    (!operand.is_empty()).then_some(operand)
+}
+
+/// Is this operand a `var=value` assignment rather than an input file name?
+///
+/// POSIX restricts the form to an assignment whose left side is a valid awk
+/// identifier, which is what keeps `./a=b` and `2x=3` readable as file names:
+/// the test is the identifier grammar, not the mere presence of `=`.
+fn split_assignment_operand(operand: &str) -> Option<(&str, &str)> {
+    let (name, value) = operand.split_once('=')?;
+    let mut chars = name.chars();
+    if !chars.next().is_some_and(crate::lexer::is_ident_start) {
+        return None;
+    }
+    if !chars.all(crate::lexer::is_ident_continue) {
+        return None;
+    }
+    Some((name, value))
+}
+
+/// Store one command-line assignment, from `-v` or from a `var=value` operand.
+///
+/// `Value::Str` rather than `Value::StrLit`: POSIX makes a command-line
+/// assignment a *numeric string*, so `awk 'END{print (v==7)}' v=7` compares
+/// numerically and answers 1 in all three references. The value goes through
+/// the same escape processing the lexer applies to a string literal.
+///
+/// Written through `symtab_elem_set` rather than straight into `rt.vars`
+/// because the two callers run at different times: `-v` is applied before the
+/// program is compiled, when every global still lives in the `vars` map, while
+/// an operand assignment lands mid-run, after the compiler has bound the
+/// globals the program mentions to slots. A `vars` insert is invisible to a
+/// slot-bound global, which is why `awk '{print v}' v=7 f` printed an empty
+/// value; `symtab_elem_set` writes the slot when there is one and the map
+/// otherwise, and keeps `OFS` / `ORS` assignments in step with their cached
+/// byte forms.
+fn apply_one_assignment(rt: &mut Runtime, name: &str, value: &str) {
+    let decoded = crate::lexer::unescape_assignment_value(value);
+    rt.symtab_elem_set(name, Value::Str(decoded));
 }
 
 #[cfg(test)]

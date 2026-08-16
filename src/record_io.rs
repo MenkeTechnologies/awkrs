@@ -175,6 +175,29 @@ fn read_paragraph_record<R: BufRead>(
     }
 }
 
+/// The matches of a regex `RS` that actually separate records.
+///
+/// A regex RS can match the empty string (`RS="z?"`, `RS="x*"`), and a
+/// zero-length match is not a separator: it consumes nothing. Treating one as a
+/// separator splits between every byte, and on the streaming path — where the
+/// match offset is also the amount of input to drain — it advances by zero and
+/// loops forever. gawk, mawk and one-true-awk all report the single record
+/// `abc\n` for `RS="z?"` on `abc\n`, i.e. they ignore empty matches; mawk and
+/// one-true-awk likewise take only the real `x` for `RS="x*"`. Dropping empty
+/// matches reproduces both.
+///
+/// awkrs splits records in three places — the streaming reader, the mmap
+/// splitter, and the slurp loop in `lib.rs` — and each had its own `find_iter`.
+/// They all go through this one now, because the fix was applied to two of them
+/// and the third kept splitting `abc` into one record per byte: a program has to
+/// give the same answer whether its input arrives on stdin or as a file operand.
+pub fn record_separator_matches<'h>(
+    re: &'h BytesRegex,
+    data: &'h [u8],
+) -> impl Iterator<Item = regex::bytes::Match<'h>> + 'h {
+    re.find_iter(data).filter(|m| m.end() > m.start())
+}
+
 fn read_until_regex_bytes<R: BufRead>(
     reader: &mut R,
     re: &BytesRegex,
@@ -184,10 +207,15 @@ fn read_until_regex_bytes<R: BufRead>(
 ) -> Result<bool> {
     let mut chunk = [0u8; 4096];
     loop {
-        if let Some(m) = re.find(leftover) {
-            out.extend_from_slice(&leftover[..m.start()]);
-            rt_sep.extend_from_slice(m.as_bytes());
-            leftover.drain(..m.end());
+        // Bound in its own statement: the iterator borrows `leftover`, and the
+        // drain below needs it mutably.
+        let sep = record_separator_matches(re, leftover)
+            .next()
+            .map(|m| (m.start(), m.end()));
+        if let Some((ms, me)) = sep {
+            out.extend_from_slice(&leftover[..ms]);
+            rt_sep.extend_from_slice(&leftover[ms..me]);
+            leftover.drain(..me);
             return Ok(true);
         }
         let n = reader.read(&mut chunk).map_err(Error::Io)?;
@@ -285,7 +313,7 @@ pub fn split_input_into_records<'a>(
 fn split_by_regex_mmap<'a>(data: &'a [u8], re: &BytesRegex) -> Vec<&'a [u8]> {
     let mut out = Vec::new();
     let mut last = 0usize;
-    for m in re.find_iter(data) {
+    for m in record_separator_matches(re, data) {
         out.push(&data[last..m.start()]);
         last = m.end();
     }
@@ -557,6 +585,59 @@ mod tests {
         assert_eq!(out, b"d");
         assert_eq!(sep, b"");
         assert!(!read_next_record(&rdr, "-+", &mut out, &mut sep, Some(&re), &mut lo).unwrap());
+    }
+
+    #[test]
+    fn streaming_regex_rs_that_matches_empty_yields_one_record_not_an_infinite_loop() {
+        // `RS="z?"` matches the empty string at every position and `abc` holds
+        // no `z`. Taking the empty match as a separator drained zero bytes and
+        // spun forever emitting empty records; gawk, mawk and one-true-awk all
+        // read this as the single record `abc`. If this regresses the test
+        // hangs rather than fails, which is exactly the user-visible symptom.
+        let rdr = shared_reader(b"abc");
+        let re = BytesRegex::new("z?").unwrap();
+        let (mut out, mut sep, mut lo) = (Vec::new(), Vec::new(), Vec::new());
+        assert!(read_next_record(&rdr, "z?", &mut out, &mut sep, Some(&re), &mut lo).unwrap());
+        assert_eq!(out, b"abc");
+        assert_eq!(sep, b"");
+        out.clear();
+        sep.clear();
+        assert!(!read_next_record(&rdr, "z?", &mut out, &mut sep, Some(&re), &mut lo).unwrap());
+    }
+
+    #[test]
+    fn streaming_regex_rs_skips_empty_matches_but_keeps_the_real_one() {
+        // `RS="x*"` can match empty *and* non-empty. Only the real `x` separates,
+        // so `aXbxc` is two records — mawk's and one-true-awk's reading.
+        let rdr = shared_reader(b"aXbxc");
+        let re = BytesRegex::new("x*").unwrap();
+        let (mut out, mut sep, mut lo) = (Vec::new(), Vec::new(), Vec::new());
+        assert!(read_next_record(&rdr, "x*", &mut out, &mut sep, Some(&re), &mut lo).unwrap());
+        assert_eq!(out, b"aXb");
+        assert_eq!(sep, b"x");
+        out.clear();
+        sep.clear();
+        assert!(read_next_record(&rdr, "x*", &mut out, &mut sep, Some(&re), &mut lo).unwrap());
+        assert_eq!(out, b"c");
+    }
+
+    #[test]
+    fn mmap_regex_rs_agrees_with_the_streaming_reader_on_empty_matches() {
+        // The file-operand path splits through a different function than the
+        // stdin path, and the empty-match fix was applied to one of them first
+        // while the other still produced one record per byte. A program has to
+        // answer the same either way, so both are asserted against the same
+        // inputs the streaming tests above use.
+        let re = BytesRegex::new("z?").unwrap();
+        assert_eq!(
+            split_input_into_records(b"abc", "z?", Some(&re)),
+            vec![&b"abc"[..]]
+        );
+        let re = BytesRegex::new("x*").unwrap();
+        assert_eq!(
+            split_input_into_records(b"aXbxc", "x*", Some(&re)),
+            vec![&b"aXb"[..], &b"c"[..]]
+        );
     }
 
     #[test]

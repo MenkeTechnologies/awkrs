@@ -767,12 +767,81 @@ impl<'a> Lexer<'a> {
     }
 }
 
-fn is_ident_start(c: char) -> bool {
+pub fn is_ident_start(c: char) -> bool {
     c.is_ascii_alphabetic() || c == '_'
 }
 
-fn is_ident_continue(c: char) -> bool {
+pub fn is_ident_continue(c: char) -> bool {
     is_ident_start(c) || c.is_ascii_digit()
+}
+
+/// Apply awk's string-literal escape rules to a command-line assignment value.
+///
+/// POSIX says the value of `-v var=value` and of a `var=value` operand "shall
+/// be [...] as if it were a string literal", so `awk -v 's=a\tb\n'` sets three
+/// characters and a newline, not six literal ones. awkrs stored the raw
+/// argument, and `length` of that example answered 6 where gawk, mawk and
+/// one-true-awk all answer 4.
+///
+/// The escape table is the lexer's own, reached by lexing the value as a string
+/// literal rather than by restating the rules here — a second table would be
+/// free to drift from the one that governs program text, and `\101` or `\x41`
+/// meaning different things in `-v s=…` than in `s = "…"` is its own bug. It
+/// also inherits the lexer's reading of the cases the references dispute (mawk
+/// keeps the backslash of an unknown escape such as `\q`, gawk and one-true-awk
+/// drop it), which is the reading awkrs already applies to program strings.
+///
+/// A `"` in the value is never a string terminator — no reference treats one as
+/// ending anything — but it reaches the lexer inside real quotes, so a *bare*
+/// one has to be escaped on the way in. Only a bare one: a `"` the user already
+/// wrote as `\"` is an escape the lexer must decode itself, and escaping it a
+/// second time turned the preceding backslash into a literal `\` that then
+/// swallowed the closing quote, so `-v 'v=a\"b'` produced `a\` where all three
+/// references produce `a"b`. The run of backslashes immediately before the
+/// quote is what distinguishes the two cases: an odd run means the quote is
+/// already escaped. A value ending in a lone backslash keeps that backslash,
+/// matching all three.
+pub fn unescape_assignment_value(value: &str) -> String {
+    let mut lexable = String::with_capacity(value.len() + 2);
+    lexable.push('"');
+    let mut trailing_backslashes = 0usize;
+    for c in value.chars() {
+        match c {
+            // Already escaped by an odd run of backslashes — pass it through and
+            // let the lexer decode `\"` to `"`.
+            '"' if trailing_backslashes % 2 == 1 => {
+                lexable.push('"');
+                trailing_backslashes = 0;
+            }
+            '"' => {
+                lexable.push_str("\\\"");
+                trailing_backslashes = 0;
+            }
+            '\\' => {
+                lexable.push('\\');
+                trailing_backslashes += 1;
+            }
+            _ => {
+                lexable.push(c);
+                trailing_backslashes = 0;
+            }
+        }
+    }
+    // An odd number of trailing backslashes would escape the closing quote and
+    // leave the string unterminated. Doubling the last one makes it decode back
+    // to the single literal backslash every reference keeps.
+    if trailing_backslashes % 2 == 1 {
+        lexable.push('\\');
+    }
+    lexable.push('"');
+
+    let mut lexer = Lexer::new(&lexable);
+    match lexer.next_token(false) {
+        Ok(Token::String(s)) => s,
+        // Unreachable for a well-formed quoted literal; falling back to the raw
+        // text keeps a malformed value usable rather than failing the run.
+        _ => value.to_string(),
+    }
 }
 
 #[cfg(test)]

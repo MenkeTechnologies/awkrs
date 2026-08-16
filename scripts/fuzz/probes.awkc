@@ -1112,3 +1112,87 @@ BEGIN {
   print ("d" ~ /\d/), ("1" ~ /\d/), ("a]b" ~ /[]]/), ("a.c" ~ /a\.c/), ("abc" ~ /a\.c/)
   print ("a-b" ~ /[a-]/), ("x" ~ /[^abc]/), ("A" ~ /[[:upper:]]/)
 }
+
+#=== system_reports_signal_death_as_256_plus_signo
+# A child killed by a signal has no exit code, and reporting `-1` for it both
+# loses which signal fired and collides with the "could not run it" answer.
+# gawk, mawk and one-true-awk all report `256 + signo`, and awkrs already did so
+# from `close()` on a pipe while `system()` answered -1 — the encoding lived in
+# one call site instead of in a shared helper.
+#--- prog
+BEGIN {
+  printf "%d %d %d %d %d\n",
+    system("kill -TERM $$"), system("kill -INT $$"), system("kill -KILL $$"),
+    system("exit 3"), system("exit 0")
+}
+
+#=== rs_regex_that_can_match_empty_ignores_the_empty_matches
+# `RS="z?"` matches the empty string at every position. A zero-length match
+# consumes nothing, so it cannot be a record separator: gawk, mawk and
+# one-true-awk all read `abc` as one record. awkrs took the empty match as a
+# separator, which on the streaming reader also meant draining zero bytes and
+# looping forever — the program never terminated on stdin, and split the input
+# into one record per byte when the same bytes arrived as a file operand.
+#--- prog
+BEGIN { RS = "z?" } { print NR "[" $0 "]" } END { print "records=" NR }
+#--- in
+abc
+
+#=== rs_regex_empty_and_real_matches_mixed
+# Reference disagreement, recorded rather than hidden: with `RS="x*"` on
+# `aXbxc`, mawk and one-true-awk skip the empty matches and split on the one
+# real `x`, while gawk emits an empty record per position instead. awkrs follows
+# mawk and one-true-awk, which is the same rule that makes `RS="z?"` above agree
+# with all three.
+#--- only mawk,bsd
+#--- prog
+BEGIN { RS = "x*" } { print NR "[" $0 "]" }
+#--- in
+aXbxc
+
+#=== getline_from_dash_reads_standard_input
+# POSIX gives the operand `-` the meaning "standard input", and all three
+# references honour it for `getline < "-"` as well. awkrs opened a file
+# literally named `-`, so the read returned -1 and the loop body never ran.
+# The output side is deliberately not covered here: gawk writes `print > "-"`
+# to stdout while mawk and one-true-awk create a file named `-`, so there is no
+# agreed behavior to match.
+#--- prog
+BEGIN { while ((getline l < "-") > 0) print "S" l; print "done" }
+#--- in
+p
+q
+
+#=== opening_an_output_pipe_flushes_pending_stdout
+# The child inherits awk's stdout, so anything awk has buffered but not written
+# surfaces after the child's output and reorders lines the program emitted
+# first. awkrs flushed nothing, so this printed B before A.
+#--- prog
+BEGIN { print "A"; print "B" | "cat"; close("cat"); print "C" }
+
+#=== output_pipe_flush_happens_at_open_not_at_close
+# Reference disagreement, recorded rather than hidden: mawk and one-true-awk
+# flush pending stdout when the pipe is opened and not again when it is closed,
+# so `2` lands after the child's output; gawk flushes at both points and prints
+# `2` before it. awkrs follows mawk and one-true-awk.
+#--- only mawk,bsd
+#--- prog
+BEGIN { print "1"; print "P1" | "cat"; print "2"; print "P2" | "cat"; close("cat"); print "3" }
+
+#=== dev_stdout_redirect_is_the_program_stdout_stream
+# `print > "/dev/stdout"` must interleave with plain `print` in program order.
+# awkrs opened the name as an ordinary file, giving it a second buffer that
+# drained at exit, so this printed A C B.
+#--- prog
+BEGIN { print "A"; print "B" > "/dev/stdout"; printf "%s\n", "P" > "/dev/stdout"; print "C" }
+
+#=== dev_stdout_survives_fflush_and_close
+# Three-way disagreement, recorded rather than hidden: gawk treats
+# `/dev/stdout` as a name for a stream it already owns, so `close()` on it is a
+# flush that answers 0 and later `print`s still work. mawk and one-true-awk
+# really close descriptor 1 — one-true-awk silently loses every later line and
+# mawk reports `write failure (Bad file descriptor)`. awkrs follows gawk, which
+# is the only reading under which a program can keep printing afterwards.
+#--- only gawk
+#--- prog
+BEGIN { print "A" > "/dev/stdout"; fflush("/dev/stdout"); print "B"; close("/dev/stdout"); print "C" }

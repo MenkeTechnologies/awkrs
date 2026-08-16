@@ -11,7 +11,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream, ToSocketAddrs, UdpSocket};
 use std::path::Path;
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -327,6 +327,66 @@ pub fn awk_binop_values(
         _ => return Err(Error::Runtime("invalid compound assignment op".into())),
     };
     Ok(Value::Mpfr(r))
+}
+
+/// Does this redirection target name the program's own standard output?
+///
+/// `print "x" > "/dev/stdout"` must land in the same byte stream as a plain
+/// `print`, interleaved in program order. Opening `/dev/stdout` as an ordinary
+/// file gives it a second, independent buffer, and awkrs then emitted
+/// `A`/`B`/`C` from `print "A"; print "B" > "/dev/stdout"; print "C"` as
+/// `A C B` — the separate buffer drained at exit, after the main one. gawk,
+/// mawk and one-true-awk all print `A B C`. Recognising the name and writing
+/// through the ordinary print buffer makes the ordering fall out for free
+/// instead of depending on flush timing.
+fn is_program_stdout(path: &str) -> bool {
+    path == "/dev/stdout"
+}
+
+/// The file `getline < path` should actually open.
+///
+/// POSIX gives the operand `-` the meaning "standard input", and gawk, mawk and
+/// one-true-awk all honour it for `getline < "-"` as well as for a file
+/// operand: all three read stdin for `while ((getline l < "-") > 0)`. awkrs
+/// opened a file literally named `-`, which does not exist, so the read
+/// returned -1 and the loop never ran. `/dev/stdin` is the same stream and is
+/// already handled correctly, so `-` is redirected onto it.
+///
+/// Only the *input* side is remapped. On the output side the references
+/// disagree — gawk writes `print > "-"` to stdout while mawk and one-true-awk
+/// create a file named `-` — so there is no single behavior to match and awkrs
+/// keeps the mawk / one-true-awk reading.
+fn getline_open_path(p: &Path) -> &Path {
+    if p.as_os_str() == "-" {
+        return Path::new("/dev/stdin");
+    }
+    p
+}
+
+/// The number awk reports for a finished child: `system()` and `close()` on a
+/// pipe both answer with this.
+///
+/// A child that exited normally reports its exit code. A child killed by a
+/// signal has no exit code at all, and `ExitStatus::code()` answers `None` for
+/// it — reporting that as `-1` loses which signal fired and collides with the
+/// "could not wait" answer. gawk, mawk and one-true-awk all report `256 + signo`
+/// instead, so `system("kill -TERM $$")` is 271 in every one of them; awkrs
+/// answered -1 from `system()` while already answering 271 from `close()`,
+/// because the encoding lived in `close_handle` and nowhere else. It lives here
+/// now, and both callers go through it.
+pub fn awk_process_status(status: std::io::Result<ExitStatus>) -> f64 {
+    let Ok(status) = status else { return -1.0 };
+    if let Some(code) = status.code() {
+        return code as f64;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(sig) = status.signal() {
+            return (256 + sig) as f64;
+        }
+    }
+    -1.0
 }
 
 /// Parse gawk-style `/inet/tcp/lport/host/rport` (local port `0` = ephemeral client).
@@ -2089,6 +2149,16 @@ impl Runtime {
             )));
         }
         if !self.pipe_stdin.contains_key(cmd) {
+            // The child inherits this process's stdout, so anything awk has
+            // buffered and not yet written would appear *after* the child's
+            // output even though the program printed it first. mawk and
+            // one-true-awk both flush all output when they open a pipe, and
+            // gawk flushes as well; awkrs flushed neither, so
+            // `print "A"; print "B" | "cat"; close("cat")` emitted B before A
+            // in all three references' disagreement-free case. Flushing at open
+            // (rather than at close) is what mawk and one-true-awk do, and it
+            // costs one flush per distinct command, not one per write.
+            self.flush_stdout_before_child();
             let mut child = Command::new("sh")
                 .arg("-c")
                 .arg(cmd)
@@ -2224,6 +2294,13 @@ impl Runtime {
     /// append (`>>`); later writes reuse the same handle until `close`.
     pub fn write_output_line(&mut self, path: &str, data: &str, append: bool) -> Result<()> {
         self.require_unsandboxed_io()?;
+        if is_program_stdout(path) {
+            // `>` and `>>` mean the same thing here: there is nothing to
+            // truncate on a stream the process already holds open.
+            let _ = append;
+            self.print_buf.extend_from_slice(data.as_bytes());
+            return Ok(());
+        }
         if path.starts_with("/inet/udp/") {
             let _ = append;
             self.ensure_inet_udp(path)?;
@@ -2272,6 +2349,11 @@ impl Runtime {
 
     /// Flush buffered output for a file or pipe opened with `print`/`printf` redirection.
     pub fn flush_redirect_target(&mut self, key: &str) -> Result<()> {
+        if is_program_stdout(key) {
+            crate::vm::flush_print_buf(&mut self.print_buf)?;
+            std::io::stdout().flush().map_err(Error::Io)?;
+            return Ok(());
+        }
         if let Some(w) = self.output_handles.get_mut(key) {
             w.flush().map_err(Error::Io)?;
             return Ok(());
@@ -2614,7 +2696,7 @@ impl Runtime {
             // can route through `set_errno_io`, giving ERRNO the clean OS error
             // message ("No such file or directory") that gawk produces, rather
             // than the noisier "open <path>: <full Rust display>" prefix.
-            let f = File::open(p).map_err(Error::Io)?;
+            let f = File::open(getline_open_path(p)).map_err(Error::Io)?;
             self.file_handles
                 .insert(path.to_string(), BufReader::new(f));
         }
@@ -2702,10 +2784,32 @@ impl Runtime {
             let _ = w.flush();
         }
     }
+
+    /// Push every byte awk still holds to the OS before handing a child process
+    /// a descriptor it shares with us.
+    ///
+    /// A child inherits this process's stdout, so whatever is sitting in
+    /// `print_buf` or in libc's stdout buffer would surface *after* the child's
+    /// own writes and reorder output the program emitted first. `system()` and
+    /// opening an output pipe both hand stdout to a child, and both need this.
+    pub fn flush_stdout_before_child(&mut self) {
+        let _ = crate::vm::flush_print_buf(&mut self.print_buf);
+        let _ = std::io::stdout().flush();
+        self.flush_all_output_handles();
+    }
     /// `close_handle` — see implementation for the contract.
     pub fn close_handle(&mut self, path: &str) -> f64 {
         let mut exit_status: f64 = 0.0;
         let mut had_any = false;
+        if is_program_stdout(path) {
+            // The stream stays open — awk keeps printing after it — so this is
+            // a flush that reports success, matching gawk's `close("/dev/stdout")`
+            // answer of 0. Reporting -1 ("no such stream") would be wrong now
+            // that writes to the name are accepted.
+            let _ = crate::vm::flush_print_buf(&mut self.print_buf);
+            let _ = std::io::stdout().flush();
+            return 0.0;
+        }
         if let Some(h) = self.coproc_handles.remove(path) {
             had_any = true;
             let _ = shutdown_coproc(h);
@@ -2720,26 +2824,7 @@ impl Runtime {
         }
         if let Some(mut ch) = self.pipe_children.remove(path) {
             had_any = true;
-            match ch.wait() {
-                Ok(status) => {
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::process::ExitStatusExt;
-                        if let Some(code) = status.code() {
-                            exit_status = code as f64;
-                        } else if let Some(sig) = status.signal() {
-                            exit_status = (256 + sig) as f64;
-                        }
-                    }
-                    #[cfg(not(unix))]
-                    {
-                        exit_status = status.code().unwrap_or(-1) as f64;
-                    }
-                }
-                Err(_) => {
-                    exit_status = -1.0;
-                }
-            }
+            exit_status = awk_process_status(ch.wait());
         }
         // `cmd | getline` reader/child — drop the reader (closes the read fd), then
         // reap the child so subsequent calls with the same key respawn cleanly.
@@ -2748,26 +2833,7 @@ impl Runtime {
         }
         if let Some(mut ch) = self.pipe_input_children.remove(path) {
             had_any = true;
-            match ch.wait() {
-                Ok(status) => {
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::process::ExitStatusExt;
-                        if let Some(code) = status.code() {
-                            exit_status = code as f64;
-                        } else if let Some(sig) = status.signal() {
-                            exit_status = (256 + sig) as f64;
-                        }
-                    }
-                    #[cfg(not(unix))]
-                    {
-                        exit_status = status.code().unwrap_or(-1) as f64;
-                    }
-                }
-                Err(_) => {
-                    exit_status = -1.0;
-                }
-            }
+            exit_status = awk_process_status(ch.wait());
         }
         if self.file_handles.remove(path).is_some() {
             had_any = true;
