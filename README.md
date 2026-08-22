@@ -14,7 +14,7 @@
  [![Docs](https://img.shields.io/badge/docs-online-blue.svg)](https://menketechnologies.github.io/awkrs/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-### `[WORLDS FASTEST AWK BYTECODE ENGINE // PARALLEL RECORD PROCESSOR // RUST CORE]`
+### `[AWK BYTECODE ENGINE // PARALLEL RECORD PROCESSOR // RUST CORE]`
 
 > *"Pattern. Action. Domination."*
 
