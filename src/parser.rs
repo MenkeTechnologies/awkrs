@@ -782,7 +782,21 @@ impl<'a> Parser<'a> {
                 let mut args = Vec::new();
                 if matches!(
                     self.cur,
-                    Token::Semi | Token::Newline | Token::RBrace | Token::Eof
+                    Token::Semi
+                        | Token::Newline
+                        | Token::RBrace
+                        | Token::Eof
+                        // POSIX: `print expr_list_opt output_redirection` — the
+                        // expression list is optional *with* a redirection too,
+                        // and the bare form prints `$0`. `{ print > "/dev/stdout" }`,
+                        // `print >> f` and `print | "cmd"` all work in gawk, mawk
+                        // and one-true-awk; awkrs sent the redirect token into the
+                        // expression parser instead and died with
+                        // "unexpected token in expression: Gt".
+                        | Token::Gt
+                        | Token::GtGt
+                        | Token::Pipe
+                        | Token::PipeCoproc
                 ) {
                     // empty print
                 } else {

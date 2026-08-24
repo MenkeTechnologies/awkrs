@@ -1655,3 +1655,49 @@ fn a_non_regular_file_operand_is_readable() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// POSIX's print statement is `print expr_list_opt output_redirection` — the
+/// expression list is optional *with* a redirection as well as without one, and
+/// the bare form prints `$0`. awkrs only recognised the bare form at a statement
+/// end, so every redirected spelling was a parse error:
+///
+/// ```text
+/// $ printf 'r1\nr2\n' | awk '{ print > "/dev/stdout" }'
+/// gawk 5.4.1 / one-true-awk 20200816 / mawk 1.3.4 → r1\nr2\n   [exit 0]
+/// awkrs                                           → parse error at line 1:
+///                                                    unexpected token in expression: Gt
+/// ```
+#[test]
+fn bare_print_accepts_a_redirection() {
+    let dir = std::env::temp_dir().join(format!("awkrs-bare-print-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create fixture dir");
+    let out = dir.join("out.txt");
+    let p = out.to_string_lossy().into_owned();
+
+    // `>` and `>>` against a real file, so the record content is checked and not
+    // just the exit status.
+    for (program, want) in [
+        (format!(r#"{{ print > "{p}" }}"#), "r1\nr2\n"),
+        (format!(r#"{{ print >> "{p}" }}"#), "r1\nr2\n"),
+    ] {
+        let _ = std::fs::remove_file(&out);
+        let (code, stdout, stderr) = run_awkrs_stdin(&program, "r1\nr2\n");
+        assert_eq!(code, 0, "{program}: stderr {stderr:?}");
+        assert_eq!(stdout, "", "{program} wrote to stdout");
+        let got = std::fs::read_to_string(&out).expect("redirect target");
+        assert_eq!(got, want, "{program}");
+    }
+
+    // The pipe form reaches stdout through the child.
+    let (code, stdout, stderr) = run_awkrs_stdin(r#"{ print | "cat" }"#, "r1\nr2\n");
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "r1\nr2\n");
+
+    // The relational reading of `>` inside a parenthesised print argument is
+    // unchanged — `print (1>2)` is a comparison, not a redirect to the file `2`.
+    let (code, stdout, _) = run_awkrs_stdin("BEGIN { print (1>2) }", "");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "0\n");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
