@@ -1202,9 +1202,8 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 // "unassigned" in gawk, and stays that way through a bare *read*
                 // (`x = $0 ""`); reading a record, `getline`, or assigning `$0` /
                 // `$n` / `NF` makes it "string".
-                let t = if i == 0 && !ctx.rt.record_assigned {
-                    "unassigned"
-                } else if ctx.rt.field_is_unassigned(i) {
+                let unassigned_record = i == 0 && !ctx.rt.record_assigned;
+                let t = if unassigned_record || ctx.rt.field_is_unassigned(i) {
                     "unassigned"
                 } else {
                     let v = ctx.rt.field(i)?;
