@@ -451,12 +451,12 @@ pub fn run(bin_name: &str) -> Result<()> {
         // `BEGIN { delete ARGV[1] }` skips the first file, and rewriting an
         // entry redirects the read. awkrs iterated the original argv and
         // processed the deleted file anyway.
-        let has_input_file = (1..=files.len())
+        let has_input_file = (1..argv_operand_limit(&rt))
             .filter_map(|i| current_argv_operand(&rt, i))
             .any(|operand| split_assignment_operand(&operand).is_none());
 
         if !has_input_file {
-            for i in 1..=files.len() {
+            for i in 1..argv_operand_limit(&rt) {
                 let Some(operand) = current_argv_operand(&rt, i) else {
                     continue;
                 };
@@ -492,10 +492,15 @@ pub fn run(bin_name: &str) -> Result<()> {
             }
             vm_run_endfile(cp.as_ref(), &mut rt)?;
         } else {
-            for arg_idx in 1..=files.len() {
-                // Re-read on every pass: a rule may edit `ARGV` while an
-                // earlier file is still being processed, and all three
-                // references honour the edit for operands not yet reached.
+            // Both the bound and each entry are re-read on every pass: a rule may
+            // edit `ARGV` or `ARGC` while an earlier file is still being
+            // processed, and all three references honour the edit for operands
+            // not yet reached. The cursor advances before the body so the
+            // `continue`s below cannot spin.
+            let mut next_idx = 1usize;
+            while next_idx < argv_operand_limit(&rt) {
+                let arg_idx = next_idx;
+                next_idx += 1;
                 let Some(operand) = current_argv_operand(&rt, arg_idx) else {
                     continue;
                 };
@@ -865,13 +870,37 @@ fn process_stdin_parallel(
     Ok(())
 }
 
-fn mmap_file_readonly(path: &Path, rt: &mut Runtime) -> Result<Mmap> {
+/// The bytes of one input file: memory-mapped where the OS allows it, read into
+/// memory where it does not.
+///
+/// Only a regular file can be mapped. `mmap` refuses a character device with
+/// `ENODEV` and a pipe or socket with `EINVAL`, and awkrs used to surface that
+/// refusal as a fatal "cannot open file" — so `awk '{…}' /dev/null` died with
+/// `Operation not supported by device` and `… | awk '{…}' /dev/stdin` with
+/// `Invalid argument`, both of which gawk, mawk and one-true-awk read normally.
+/// Process substitution (`awk '{…}' <(cmd)`) is the same case and failed the
+/// same way.
+enum InputBytes {
+    Mapped(Mmap),
+    Owned(Vec<u8>),
+}
+
+impl InputBytes {
+    fn as_slice(&self) -> &[u8] {
+        match self {
+            InputBytes::Mapped(m) => m.as_ref(),
+            InputBytes::Owned(v) => v.as_slice(),
+        }
+    }
+}
+
+fn read_input_file(path: &Path, rt: &mut Runtime) -> Result<InputBytes> {
     // Called only from input-file processing paths (`process_file` /
     // `process_file_slurp`). The `-f PROGRAM` loading path uses
     // `std::fs::read_to_string` further down. Use `Error::InputFile` so a
     // missing positional arg produces "cannot open file ..." (gawk-style)
     // instead of the misleading "cannot read program file ...".
-    let file = match File::open(path) {
+    let mut file = match File::open(path) {
         Ok(f) => {
             rt.clear_errno();
             f
@@ -882,11 +911,22 @@ fn mmap_file_readonly(path: &Path, rt: &mut Runtime) -> Result<Mmap> {
         }
     };
     // SAFETY: read-only map of a file we opened; no concurrent writes assumed (same as `fs::read`).
-    unsafe {
-        memmap2::MmapOptions::new().map(&file).map_err(|e| {
-            rt.set_errno_io(&e);
-            Error::InputFile(path.to_path_buf(), e)
-        })
+    let mapped = unsafe { memmap2::MmapOptions::new().map(&file) };
+    match mapped {
+        Ok(m) => Ok(InputBytes::Mapped(m)),
+        // Not mappable — a device, pipe, socket or FIFO. Read it instead; only
+        // a failure of *that* is a real I/O error worth reporting, since the
+        // open above already proved the path exists and is readable.
+        Err(_) => {
+            let mut buf = Vec::new();
+            match std::io::Read::read_to_end(&mut file, &mut buf) {
+                Ok(_) => Ok(InputBytes::Owned(buf)),
+                Err(e) => {
+                    rt.set_errno_io(&e);
+                    Err(Error::InputFile(path.to_path_buf(), e))
+                }
+            }
+        }
     }
 }
 
@@ -955,8 +995,8 @@ fn process_file_parallel(
     jit_enabled: bool,
 ) -> Result<usize> {
     let lines = if let Some(p) = path {
-        let mmap = mmap_file_readonly(p, rt)?;
-        mmap_split_into_owned_records(rt, mmap.as_ref())?
+        let data = read_input_file(p, rt)?;
+        mmap_split_into_owned_records(rt, data.as_slice())?
     } else {
         read_all_lines(std::io::stdin())?
     };
@@ -1398,8 +1438,8 @@ fn process_file_slurp(
     range_state: &mut [bool],
     rt: &mut Runtime,
 ) -> Result<usize> {
-    let mmap = mmap_file_readonly(path, rt)?;
-    let data = mmap.as_ref();
+    let bytes = read_input_file(path, rt)?;
+    let data = bytes.as_slice();
     // Cache FS once (only changes if program assigns FS mid-execution, rare).
     let fs = rt
         .vars
@@ -2088,6 +2128,36 @@ fn apply_assigns(args: &Args, rt: &mut Runtime) -> Result<()> {
 fn current_argv_operand(rt: &Runtime, index: usize) -> Option<String> {
     let operand = rt.array_get("ARGV", &index.to_string()).as_str();
     (!operand.is_empty()).then_some(operand)
+}
+
+/// The exclusive upper bound of awk's operand walk — the live value of `ARGC`.
+///
+/// POSIX spells the walk `for (i = 1; i < ARGC; i++)`, and gawk, mawk and
+/// one-true-awk all re-read `ARGC` on every pass, so a program can both shorten
+/// and extend the operand list:
+///
+/// ```text
+/// awk 'BEGIN { ARGC = 1 } { n++ } END { print NR }' data.txt          → 0
+/// awk 'BEGIN { ARGV[2] = "extra.txt"; ARGC = 3 } { … }' data.txt      → reads both
+/// awk 'FNR == 1 && FILENAME == "data.txt" { ARGC = 2 } { … }' a b     → stops after a
+/// ```
+///
+/// awkrs walked the argv vector it was launched with and honoured neither, so
+/// `ARGC = 1` still read every file and an appended `ARGV` entry was ignored.
+/// `ARGC` is on the compiler's never-slot list, so the plain global read is the
+/// authoritative one. A value below 1 (including a non-numeric one, which
+/// coerces to 0 — gawk and mawk both read no operands then) leaves an empty
+/// range rather than underflowing.
+fn argv_operand_limit(rt: &Runtime) -> usize {
+    let argc = rt
+        .get_global_var("ARGC")
+        .map(|v| v.as_number())
+        .unwrap_or(0.0);
+    if argc.is_nan() || argc < 1.0 {
+        1
+    } else {
+        argc as usize
+    }
 }
 
 /// Is this operand a `var=value` assignment rather than an input file name?
