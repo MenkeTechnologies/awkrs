@@ -1,6 +1,6 @@
 //! `ars` binary — short alias for the awkrs engine (`awkrs`).
 
-use awkrs::run;
+use awkrs::run_on_interpreter_stack as run;
 use awkrs::Error;
 
 fn main() {

@@ -136,6 +136,35 @@ pub fn run_program(program: &str, input: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&rt.print_buf).into_owned())
 }
 
+/// Native stack for the interpreter thread.
+///
+/// [`limits::MAX_USER_CALL_DEPTH`] is the cap that is supposed to stop
+/// unbounded recursion, and it can only do that if the host stack outlasts
+/// it. Each VM frame costs roughly 40 KiB of native stack in an unoptimized
+/// build, so the 150-frame production cap needs about 6 MiB — inside macOS's
+/// 8 MiB main-thread stack only until anything else on the stack tips it
+/// over, which is what
+/// `unbounded_recursion_errors_cleanly_instead_of_stack_overflow` caught on
+/// the macOS runner: `fatal runtime error: stack overflow` instead of the
+/// depth-cap diagnostic. 64 MiB leaves an order of magnitude of headroom, so
+/// the cap is what trips.
+const INTERP_STACK_BYTES: usize = 64 * 1024 * 1024;
+
+/// [`run`], on a thread whose stack the call-depth cap can outlast.
+///
+/// Binaries call this instead of [`run`] directly; the library entry points
+/// are unchanged for embedders that manage their own thread.
+pub fn run_on_interpreter_stack(bin_name: &str) -> Result<()> {
+    let name = bin_name.to_string();
+    std::thread::Builder::new()
+        .name("awkrs".into())
+        .stack_size(INTERP_STACK_BYTES)
+        .spawn(move || run(&name))
+        .expect("spawn interpreter thread")
+        .join()
+        .unwrap_or_else(|_| Err(Error::Runtime("interpreter thread panicked".into())))
+}
+
 /// Run the interpreter. `bin_name` is used for diagnostics and help (e.g. `"awkrs"` or `"ars"`).
 pub fn run(bin_name: &str) -> Result<()> {
     let mut args = Args::parse();

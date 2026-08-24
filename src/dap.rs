@@ -990,7 +990,7 @@ fn finish_with_error(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::{AwkMap, Value};
+    use crate::runtime::Value;
 
     fn refs() -> (RefAlloc, HashMap<u32, Vec<VarChild>>) {
         (

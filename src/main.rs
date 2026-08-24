@@ -1,6 +1,6 @@
 //! `awkrs` binary — same engine as `ars` (`src/bin/ars.rs`).
 
-use awkrs::run;
+use awkrs::run_on_interpreter_stack as run;
 use awkrs::Error;
 
 fn main() {

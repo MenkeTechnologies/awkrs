@@ -4555,7 +4555,7 @@ mod value_tests {
 #[cfg(test)]
 mod longest_prefix_and_sorted_in_tests {
     use super::{
-        longest_f64_prefix, sort_for_in_keys, sorted_in_mode, AwkMap, Runtime, SortedInMode, Value,
+        longest_f64_prefix, sort_for_in_keys, sorted_in_mode, Runtime, SortedInMode, Value,
     };
 
     #[test]
@@ -4790,7 +4790,7 @@ mod init_argv_tests {
 
 #[cfg(test)]
 mod awk_binop_values_pinning {
-    use super::{awk_binop_values, AwkMap, Runtime, Value};
+    use super::{awk_binop_values, Runtime, Value};
     use crate::ast::BinOp;
 
     fn rt() -> Runtime {

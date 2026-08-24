@@ -930,7 +930,7 @@ mod tests {
         awk_typeof_value, awk_value_sort_cmp, gsub, gsub_literal_eligible, is_literal_pattern,
         match_fn, patsplit, sub_fn,
     };
-    use crate::runtime::{AwkMap, Runtime, Value};
+    use crate::runtime::{Runtime, Value};
     use std::cmp::Ordering;
 
     fn rt_with_fs() -> Runtime {

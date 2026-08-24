@@ -1734,7 +1734,7 @@ mod gen_pot_tests {
 mod dump_variables_tests {
     use super::dump_variables;
     use crate::bytecode::{CompiledProgram, StringPool};
-    use crate::runtime::{AwkMap, Runtime, Value};
+    use crate::runtime::{Runtime, Value};
     use std::collections::HashMap;
 
     fn empty_cp_with_slots(names: &[&str]) -> CompiledProgram {
