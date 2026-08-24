@@ -3177,7 +3177,7 @@ fn concat_take_left(rt: &Runtime, v: Value) -> String {
 fn concat_push_right(rt: &Runtime, s: &mut String, v: Value) {
     match v {
         Value::Str(ref t) | Value::StrLit(ref t) | Value::Regexp(ref t) => s.push_str(t),
-        Value::Num(n) => s.push_str(&rt.num_to_string_convfmt(n)),
+        Value::Num(n) => rt.push_num_convfmt(s, n),
         Value::Mpfr(f) => s.push_str(&rt.mpfr_to_string_convfmt(&f)),
         Value::Uninit | Value::Array(_) => {}
     }

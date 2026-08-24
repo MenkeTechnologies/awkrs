@@ -2468,6 +2468,33 @@ impl Runtime {
     /// POSIX / gawk: format a number using **`CONVFMT`** (string coercion).
     /// Integer-valued numbers bypass CONVFMT and display in integer form —
     /// matches gawk where any integer-valued `n` prints exact via `%.0f`.
+    /// Append `n`'s string form to `out` — [`Self::num_to_string_convfmt`]
+    /// without the intermediate `String`.
+    ///
+    /// Concatenation appends a number in a loop, and the temporary was
+    /// allocated, copied out of and dropped once per iteration. An integral
+    /// value that fits an `i64` also formats through the integer writer rather
+    /// than the float one, which is the same digits by a much shorter route:
+    /// every integral `f64` below 2^53 is exactly representable as an `i64`, so
+    /// the cast cannot lose one.
+    pub fn push_num_convfmt(&self, out: &mut String, n: f64) {
+        use std::fmt::Write as _;
+        if n.is_finite() && n.fract() == 0.0 {
+            // gawk parity: -0.0 prints as "0", not "-0".
+            if n == 0.0 {
+                out.push('0');
+                return;
+            }
+            if n.abs() < 9_007_199_254_740_992.0 {
+                let _ = write!(out, "{}", n as i64);
+            } else {
+                let _ = write!(out, "{n:.0}");
+            }
+            return;
+        }
+        out.push_str(&self.num_to_string_convfmt(n));
+    }
+
     pub fn num_to_string_convfmt(&self, n: f64) -> String {
         if n.is_finite() && n.fract() == 0.0 {
             // gawk parity: -0.0 prints as "0", not "-0".
