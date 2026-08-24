@@ -1352,7 +1352,9 @@ pub struct Runtime {
     /// GNU MO catalogs loaded by `bindtextdomain` (domain → catalog).
     pub gettext_catalogs: AwkMap<String, Arc<Catalog>>,
     /// Copy of [`crate::bytecode::CompiledProgram::slot_map`] for SYMTAB / `array_keys` without VM context.
-    pub symtab_slot_map: HashMap<String, u16>,
+    /// Name -> slot index, with the fast hasher for the same reason
+    /// [`crate::bytecode::CompiledProgram::slot_map`] uses it.
+    pub symtab_slot_map: AwkMap<String, u16>,
     /// DAP debugger state. `Some` only under `awkrs --dap`; drives breakpoints,
     /// stepping, and variable inspection. The VM checks it on each
     /// [`crate::bytecode::Op::DebugLine`] marker.
@@ -1557,7 +1559,7 @@ impl Runtime {
             fuse_prefix_chunk_cache: HashMap::new(),
             fuse_vm_pool: fusevm::VMPool::new(),
             gettext_catalogs: AwkMap::default(),
-            symtab_slot_map: HashMap::new(),
+            symtab_slot_map: AwkMap::default(),
             debugger: None,
             debug_call_stack: Vec::new(),
             cur_line: 0,
@@ -1998,7 +2000,7 @@ impl Runtime {
             fuse_prefix_chunk_cache: HashMap::new(),
             fuse_vm_pool: fusevm::VMPool::new(),
             gettext_catalogs,
-            symtab_slot_map: HashMap::new(),
+            symtab_slot_map: AwkMap::default(),
             debugger: None,
             debug_call_stack: Vec::new(),
             cur_line: 0,

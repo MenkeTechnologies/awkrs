@@ -1743,7 +1743,7 @@ mod dump_variables_tests {
             .iter()
             .enumerate()
             .map(|(i, n)| (n.clone(), i as u16))
-            .collect::<HashMap<_, _>>();
+            .collect::<crate::runtime::AwkMap<_, _>>();
         CompiledProgram {
             begin_chunks: vec![],
             end_chunks: vec![],
@@ -2008,7 +2008,7 @@ mod write_profile_summary_tests {
             strings: crate::bytecode::StringPool::default(),
             slot_count: 1,
             slot_names: vec!["x".into()],
-            slot_map: std::collections::HashMap::from([("x".into(), 0u16)]),
+            slot_map: crate::runtime::AwkMap::from_iter([("x".into(), 0u16)]),
             array_var_names: vec![],
             parallel_safe: false,
             prog_rules_len: 0,

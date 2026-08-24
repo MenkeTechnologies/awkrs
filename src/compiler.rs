@@ -3,6 +3,7 @@
 use crate::ast::*;
 use crate::bytecode::*;
 use crate::error::{Error, Result};
+use crate::runtime::AwkMap;
 use std::collections::{HashMap, HashSet};
 
 /// Variables with special awk semantics — accessed by Runtime methods or computed
@@ -70,7 +71,7 @@ pub struct Compiler {
     pub strings: StringPool,
     structural_stack: Vec<StructuralKind>,
     /// Variable name → slot index (only non-special, non-array scalars).
-    var_slots: HashMap<String, u16>,
+    var_slots: AwkMap<String, u16>,
     next_slot: u16,
     /// Names used in array contexts anywhere in the program (excluded from slots).
     array_names: HashSet<String>,
@@ -100,7 +101,7 @@ impl Compiler {
         let mut c = Compiler {
             strings: StringPool::default(),
             structural_stack: Vec::new(),
-            var_slots: HashMap::new(),
+            var_slots: AwkMap::default(),
             next_slot: 0,
             array_names,
             current_func_params: HashSet::new(),
@@ -148,7 +149,7 @@ impl Compiler {
 
         let slot_count = c.next_slot;
         let mut slot_names = vec![String::new(); slot_count as usize];
-        let mut slot_map = HashMap::new();
+        let mut slot_map = AwkMap::default();
         for (name, &idx) in &c.var_slots {
             slot_names[idx as usize] = name.clone();
             slot_map.insert(name.clone(), idx);
@@ -224,7 +225,7 @@ impl Compiler {
 
         let slot_count = c.next_slot;
         let mut slot_names = vec![String::new(); slot_count as usize];
-        let mut slot_map = HashMap::new();
+        let mut slot_map = AwkMap::default();
         for (name, &idx) in &c.var_slots {
             slot_names[idx as usize] = name.clone();
             slot_map.insert(name.clone(), idx);
@@ -1430,7 +1431,7 @@ fn compiler_isolated() -> Compiler {
     Compiler {
         strings: StringPool::default(),
         structural_stack: Vec::new(),
-        var_slots: HashMap::new(),
+        var_slots: AwkMap::default(),
         next_slot: 0,
         array_names: HashSet::new(),
         current_func_params: HashSet::new(),
@@ -2842,7 +2843,7 @@ mod tests {
             strings,
             slot_count: 0,
             slot_names: vec![],
-            slot_map: HashMap::new(),
+            slot_map: AwkMap::default(),
             array_var_names: vec![],
             parallel_safe: false,
             prog_rules_len: 1,

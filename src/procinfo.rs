@@ -289,7 +289,7 @@ mod tests {
             strings: StringPool::default(),
             slot_count: 1,
             slot_names: vec!["vx".into()],
-            slot_map: HashMap::from([("vx".into(), 0u16)]),
+            slot_map: AwkMap::from_iter([("vx".into(), 0u16)]),
             array_var_names: vec!["arr".into()],
             parallel_safe: false,
             prog_rules_len: 0,

@@ -450,7 +450,13 @@ pub struct CompiledProgram {
     /// `slot_names[i]` = variable name for slot `i`.
     pub slot_names: Vec<String>,
     /// Reverse map: variable name → slot index (used by cold-path `get_var`/`set_var`).
-    pub slot_map: HashMap<String, u16>,
+    /// Name -> slot index for the program's scalars.
+    ///
+    /// The fast hasher, not std's: this is consulted on every by-name variable
+    /// access — `for (k in a)` binds its loop variable through it once per
+    /// element — and the keys are identifiers from the program text, not data,
+    /// so std's HashDoS-resistant hashing buys nothing here.
+    pub slot_map: AwkMap<String, u16>,
     /// Names used as arrays anywhere in the program (for **`PROCINFO["identifiers"]`**).
     pub array_var_names: Vec<String>,
     /// `parallel::record_rules_parallel_safe(prog)` cached — set by `compile_program`
@@ -562,7 +568,7 @@ mod tests {
             strings: StringPool::default(),
             slot_count: 1,
             slot_names: vec!["x".into()],
-            slot_map: HashMap::from([("x".into(), 0u16)]),
+            slot_map: AwkMap::from_iter([("x".into(), 0u16)]),
             array_var_names: vec![],
             parallel_safe: false,
             prog_rules_len: 0,
@@ -608,7 +614,7 @@ mod tests {
             strings: StringPool::default(),
             slot_count: 2,
             slot_names: vec!["x".into(), "y".into()],
-            slot_map: HashMap::from([("x".into(), 0u16), ("y".into(), 1u16)]),
+            slot_map: AwkMap::from_iter([("x".into(), 0u16), ("y".into(), 1u16)]),
             array_var_names: vec![],
             parallel_safe: false,
             prog_rules_len: 0,
@@ -641,7 +647,7 @@ mod tests {
             strings: StringPool::default(),
             slot_count: 1,
             slot_names: vec!["z".into()],
-            slot_map: HashMap::from([("z".into(), 0u16)]),
+            slot_map: AwkMap::from_iter([("z".into(), 0u16)]),
             array_var_names: vec![],
             parallel_safe: false,
             prog_rules_len: 0,
@@ -701,7 +707,7 @@ mod tests {
             strings: StringPool::default(),
             slot_count: 3,
             slot_names: vec!["a".into(), "b".into(), "c".into()],
-            slot_map: HashMap::from([("a".into(), 0), ("b".into(), 1), ("c".into(), 2)]),
+            slot_map: AwkMap::from_iter([("a".into(), 0), ("b".into(), 1), ("c".into(), 2)]),
             array_var_names: vec![],
             parallel_safe: true,
             prog_rules_len: 1,
