@@ -732,7 +732,7 @@ pub(crate) fn awk_to_upper(s: &str, as_bytes: bool) -> String {
     if as_bytes {
         s.to_ascii_uppercase()
     } else {
-        s.to_uppercase()
+        s.chars().map(simple_uppercase).collect()
     }
 }
 
@@ -741,7 +741,42 @@ pub(crate) fn awk_to_lower(s: &str, as_bytes: bool) -> String {
     if as_bytes {
         s.to_ascii_lowercase()
     } else {
-        s.to_lowercase()
+        s.chars().map(simple_lowercase).collect()
+    }
+}
+
+/// Unicode's **simple** (1:1) uppercase mapping, which is the one awk uses.
+///
+/// `str::to_uppercase` applies the *full* mapping from `SpecialCasing.txt`,
+/// where a single character can expand into several: `ß` → `SS`, `ﬁ` → `FI`,
+/// `ŉ` → `ʼN`. gawk applies none of those — in a UTF-8 locale
+/// `toupper("ß ﬁ ŉ")` comes back unchanged and `length()` is untouched — and
+/// awkrs grew the string instead, so `length(toupper(s)) != length(s)` on input
+/// no reference awk alters at all. A character whose full mapping is longer than
+/// one character has no simple mapping, so it stays as it is.
+fn simple_uppercase(c: char) -> char {
+    let mut it = c.to_uppercase();
+    match (it.next(), it.next()) {
+        (Some(u), None) => u,
+        _ => c,
+    }
+}
+
+/// The lowercase half of [`simple_uppercase`].
+///
+/// `İ` (U+0130) is the only character in Unicode with an unconditional
+/// multi-character *lowercase* mapping (`i` plus a combining dot above), and its
+/// simple mapping is a plain `i` — which is what gawk returns for
+/// `tolower("İ")`. Every other multi-character result means there is no simple
+/// mapping, so the character is left alone.
+fn simple_lowercase(c: char) -> char {
+    if c == '\u{0130}' {
+        return 'i';
+    }
+    let mut it = c.to_lowercase();
+    match (it.next(), it.next()) {
+        (Some(l), None) => l,
+        _ => c,
     }
 }
 
