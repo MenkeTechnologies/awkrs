@@ -89,6 +89,13 @@ pub enum Op {
     GetSlot(u16),
     /// Peek TOS, store in slot — fast Vec-indexed path for user scalars.
     SetSlot(u16),
+    /// Pop TOS and append its string value to the slot, in place.
+    ///
+    /// The fused form of the `s = s …` statement, which spelled out as
+    /// `GetSlot` + `Concat` + `SetSlot` copies the whole accumulator twice per
+    /// iteration — once out of the slot and once back in — and so builds a
+    /// string in time quadratic in its length.
+    AppendSlot(u16),
     /// Pop field index, push `$idx`.
     GetField,
     /// Pop value, pop field index, store `$idx = val`, push `val`.

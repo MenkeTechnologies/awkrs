@@ -249,6 +249,110 @@ impl Compiler {
         Ok(())
     }
 
+    /// `s = s a b …` as a statement: append to `s` where it sits instead of
+    /// reading it out, concatenating a copy and storing the copy back. The
+    /// read-modify-write spelling copies the whole accumulator once per
+    /// iteration for each of those three steps, which makes an append loop
+    /// quadratic in the string it builds.
+    ///
+    /// Returns `false` — leaving the caller to compile the statement the
+    /// ordinary way — unless every condition holds:
+    ///
+    /// * the statement is a plain `=` (not `+=`, not a nested expression), so
+    ///   the assigned value is discarded and never has to be materialized;
+    /// * the target is a host-backed scalar, not a function parameter living in
+    ///   a frame slot;
+    /// * the right-hand side is a concatenation whose leftmost leaf is the
+    ///   target itself;
+    /// * every remaining operand is free of side effects. `s = s f()` must not
+    ///   fuse: awk reads `s` before calling `f`, so if `f` assigns to `s` the
+    ///   append would land on the new value instead of the old one.
+    fn try_compile_append(&mut self, e: &Expr) -> Result<bool> {
+        let Expr::Assign {
+            name,
+            op: None,
+            rhs,
+        } = e
+        else {
+            return Ok(false);
+        };
+        if self.params.iter().any(|p| p == name) {
+            return Ok(false);
+        }
+        let mut suffix = Vec::new();
+        if !Self::split_self_concat(rhs, name, &mut suffix) {
+            return Ok(false);
+        }
+        if !suffix.iter().all(|e| Self::is_side_effect_free(e)) {
+            return Ok(false);
+        }
+        let c = self.b.add_constant(fusevm::Value::str(name.clone()));
+        self.b.emit(fusevm::Op::LoadConst(c), 0);
+        // Fold the operands into the one suffix string the append consumes.
+        self.compile_expr(suffix[0])?;
+        for part in &suffix[1..] {
+            self.compile_expr(part)?;
+            self.b.emit(
+                fusevm::Op::CallBuiltin(crate::fusevm_host::BUILTIN_AWK_CONCAT, 2),
+                0,
+            );
+        }
+        self.b.emit(
+            fusevm::Op::CallBuiltin(crate::fusevm_host::BUILTIN_AWK_APPEND, 2),
+            0,
+        );
+        self.b.emit(fusevm::Op::Pop, 0);
+        Ok(true)
+    }
+
+    /// Walk the left spine of a concatenation looking for `target` at the
+    /// bottom, collecting the operands to its right in source order. `s = s a b`
+    /// parses as `Concat(Concat(s, a), b)`, so the spine has to be unwound
+    /// rather than matched one level deep.
+    fn split_self_concat<'e>(e: &'e Expr, target: &str, out: &mut Vec<&'e Expr>) -> bool {
+        let Expr::Binary {
+            op: BinOp::Concat,
+            left,
+            right,
+        } = e
+        else {
+            return false;
+        };
+        out.insert(0, right);
+        match &**left {
+            Expr::Var(n) if n == target => true,
+            inner => Self::split_self_concat(inner, target, out),
+        }
+    }
+
+    /// Whether evaluating `e` can change what any other expression sees. Only
+    /// the shapes an append suffix is actually written with are admitted; a call
+    /// (which may assign to the accumulator), an assignment, an increment and a
+    /// `getline` (which rewrites the fields) are all rejected.
+    fn is_side_effect_free(e: &Expr) -> bool {
+        match e {
+            Expr::Number(_)
+            | Expr::IntegerLiteral(_)
+            | Expr::Str(_)
+            | Expr::RegexpLiteral(_)
+            | Expr::Var(_)
+            | Expr::In { .. } => true,
+            Expr::Field(i) => Self::is_side_effect_free(i),
+            Expr::Index { indices, .. } => indices.iter().all(Self::is_side_effect_free),
+            Expr::Binary { left, right, .. } => {
+                Self::is_side_effect_free(left) && Self::is_side_effect_free(right)
+            }
+            Expr::Unary { expr, .. } => Self::is_side_effect_free(expr),
+            Expr::Ternary { cond, then_, else_ } => {
+                Self::is_side_effect_free(cond)
+                    && Self::is_side_effect_free(then_)
+                    && Self::is_side_effect_free(else_)
+            }
+            Expr::Tuple(es) => es.iter().all(Self::is_side_effect_free),
+            _ => false,
+        }
+    }
+
     /// Emit a read of scalar `name`. All awk scalars (user globals and specials
     /// alike) are host-backed via `AwkSpecialGet` → `Runtime.symtab_elem_get`, so
     /// they persist across the separately-run BEGIN / per-record / END chunks and
@@ -463,6 +567,9 @@ impl Compiler {
                 Ok(())
             }
             Stmt::Expr(e) => {
+                if self.try_compile_append(e)? {
+                    return Ok(());
+                }
                 self.compile_expr(e)?;
                 self.b.emit(fusevm::Op::Pop, 0);
                 Ok(())

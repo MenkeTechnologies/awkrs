@@ -103,6 +103,7 @@ pub(crate) fn install_awk_host(vm: &mut fusevm::VM) {
     vm.register_builtin(BUILTIN_AWK_KEYS, awk_keys_builtin);
     vm.register_builtin(BUILTIN_ARRAY_LEN, array_len_builtin);
     vm.register_builtin(BUILTIN_AWK_CONCAT, awk_concat_builtin);
+    vm.register_builtin(BUILTIN_AWK_APPEND, awk_append_builtin);
 }
 
 /// String concatenation with awk's number→string rule: numbers stringify via
@@ -119,6 +120,23 @@ fn awk_concat_builtin(vm: &mut fusevm::VM, _argc: u8) -> fusevm::Value {
         s
     });
     fusevm::Value::str(s)
+}
+
+/// `s = s expr`: append to a scalar in place instead of reading it out,
+/// concatenating a copy and writing the copy back. Pops the suffix and the
+/// scalar's name; leaves nothing meaningful behind (the statement that emits it
+/// discards the result), which is exactly what lets it skip materializing the
+/// grown string as a value.
+pub(crate) const BUILTIN_AWK_APPEND: u16 = 2004;
+
+fn awk_append_builtin(vm: &mut fusevm::VM, _argc: u8) -> fusevm::Value {
+    let suffix = vm.pop();
+    let name = vm.pop().to_str();
+    with_runtime(|rt| {
+        let s = field_string(rt, &suffix);
+        rt.symtab_elem_append(&name, &s);
+    });
+    fusevm::Value::Undef
 }
 
 /// `for (k in a)` support: pop an array name and return its keys as a fusevm

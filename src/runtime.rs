@@ -3488,6 +3488,45 @@ impl Runtime {
     }
 
     /// `SYMTAB[name] = v` — assign global or slot (not a materialized mirror array).
+    /// `s = s expr` without reading `s` out first: append to the string the
+    /// scalar already holds.
+    ///
+    /// The read-modify-write spelling copies the whole accumulator three times
+    /// per iteration — once out of the symtab, once inside the concat, once
+    /// back in on assignment — so an append loop is quadratic in the length it
+    /// builds. gawk grows the value in place for the same reason, which is why
+    /// it finishes a 100 K-iteration build in the time this took for a few
+    /// thousand.
+    ///
+    /// Observably identical to `symtab_elem_set(key, Str(<value of key> +
+    /// suffix))`, kind included: a concatenation yields a dynamic `Str`, so a
+    /// later relational still sees a numeric string. `OFS`/`ORS` are excluded
+    /// from the in-place path because their byte caches are refreshed by
+    /// `symtab_elem_set`, which the fallback below still goes through.
+    pub fn symtab_elem_append(&mut self, key: &str, suffix: &str) {
+        if !matches!(key, "OFS" | "ORS") {
+            let slot = self.symtab_slot_map.get(key).map(|&s| s as usize);
+            let held = match slot {
+                Some(i) => self.slots.get_mut(i),
+                None => self.vars.get_mut(key),
+            };
+            if let Some(v) = held {
+                if let Value::Str(s) | Value::StrLit(s) = v {
+                    let mut owned = std::mem::take(s);
+                    owned.push_str(suffix);
+                    *v = Value::Str(owned);
+                    return;
+                }
+            }
+        }
+        // A number, an unset name, `OFS`/`ORS`: no string to grow, so take the
+        // same read/convert/store path the fused op replaced.
+        let cur = self.symtab_elem_get(key);
+        let mut s = self.value_to_str_convfmt(&cur).into_owned();
+        s.push_str(suffix);
+        self.symtab_elem_set(key, Value::Str(s));
+    }
+
     pub fn symtab_elem_set(&mut self, key: &str, val: Value) {
         if let Some(&slot) = self.symtab_slot_map.get(key) {
             let i = slot as usize;

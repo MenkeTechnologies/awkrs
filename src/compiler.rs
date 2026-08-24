@@ -254,6 +254,52 @@ impl Compiler {
 
     /// Get or assign a slot index for a variable. Returns `None` for specials,
     /// array names, and variables that are parameters of the current function.
+    /// `s = s a b …` as a statement: emit the fused [`Op::AppendSlot`], which
+    /// grows the slot's own string, instead of `GetSlot` + `Concat` + `SetSlot`,
+    /// which copies the whole accumulator out and back on every iteration and
+    /// so builds a string in time quadratic in its length.
+    ///
+    /// Returns `false` — leaving the caller to compile the statement the
+    /// ordinary way — unless all of these hold:
+    ///
+    /// * it is a plain `=`, in statement position, so the assigned value is
+    ///   discarded and never has to be materialized;
+    /// * the target is a slot scalar. Specials (`OFS`, `RS`, …) take the
+    ///   `SetVar` path because assigning them updates caches beyond the value;
+    /// * the right-hand side is a concatenation whose leftmost leaf is the
+    ///   target itself;
+    /// * every remaining operand is free of side effects. `s = s f()` must not
+    ///   fuse: awk reads `s` before calling `f`, so if `f` assigns to `s` the
+    ///   append would land on the new value instead of the old one.
+    fn compile_self_append(&mut self, e: &Expr, ops: &mut Vec<Op>) -> bool {
+        let Expr::Assign {
+            name,
+            op: None,
+            rhs,
+        } = e
+        else {
+            return false;
+        };
+        let mut suffix = Vec::new();
+        if !split_self_concat(rhs, name, &mut suffix) {
+            return false;
+        }
+        if !suffix.iter().all(|e| is_side_effect_free(e)) {
+            return false;
+        }
+        let Some(slot) = self.var_slot(name) else {
+            return false;
+        };
+        // Fold the operands into the single suffix value the append consumes.
+        self.compile_expr(suffix[0], ops);
+        for part in &suffix[1..] {
+            self.compile_expr(part, ops);
+            ops.push(Op::Concat);
+        }
+        ops.push(Op::AppendSlot(slot));
+        true
+    }
+
     fn var_slot(&mut self, name: &str) -> Option<u16> {
         if SPECIAL_VARS.contains(&name) {
             return None;
@@ -348,6 +394,9 @@ impl Compiler {
             }
 
             Stmt::Expr(e) => {
+                if self.compile_self_append(e, ops) {
+                    return;
+                }
                 self.compile_expr(e, ops);
                 ops.push(Op::Pop);
             }
@@ -3601,11 +3650,52 @@ mod peephole_pinning {
 
     #[test]
     fn peephole_concat_pool_str() {
-        // `s = s "suffix"` -> GetSlot + PushStr + Concat -> GetSlot + ConcatPoolStr
-        let ops = compile_begin_ops("BEGIN { s = \"\"; s = s \"suffix\" }");
+        // `t = s "suffix"` -> GetSlot + PushStr + Concat -> GetSlot + ConcatPoolStr.
+        // Concatenating into a *different* variable still goes through Concat,
+        // so this is the fusion's remaining ground; appending to the source
+        // variable itself is `AppendSlot`, pinned below.
+        let ops = compile_begin_ops("BEGIN { s = \"\"; t = s \"suffix\" }");
         assert!(
             contains_op(&ops, |op| matches!(op, Op::ConcatPoolStr(_))),
             "expected ConcatPoolStr fusion, got: {ops:?}"
+        );
+    }
+
+    /// `s = s …` as a statement compiles to the fused in-place append, with no
+    /// `GetSlot` of the accumulator and no `SetSlot` writing it back — those two
+    /// copies per iteration are what made building a string quadratic.
+    #[test]
+    fn peephole_self_append_slot() {
+        let ops = compile_begin_ops("BEGIN { s = \"\"; s = s \"suffix\" }");
+        assert!(
+            contains_op(&ops, |op| matches!(op, Op::AppendSlot(_))),
+            "expected AppendSlot fusion, got: {ops:?}"
+        );
+        // The whole point is that the accumulator is never read out or written
+        // back; only the initializer's `SetSlot` may remain.
+        assert_eq!(
+            ops.iter()
+                .filter(|op| matches!(op, Op::SetSlot(_) | Op::GetSlot(_)))
+                .count(),
+            1,
+            "accumulator must not be read out or stored back: {ops:?}"
+        );
+
+        // A call in the suffix must NOT fuse: awk reads `s` before calling, so a
+        // function that assigns to `s` would otherwise be appended to its own
+        // new value instead of the old one.
+        let ops =
+            compile_begin_ops("function f() { return \"y\" }\nBEGIN { s = \"a\"; s = s f() }");
+        assert!(
+            !contains_op(&ops, |op| matches!(op, Op::AppendSlot(_))),
+            "a call in the suffix must not fuse: {ops:?}"
+        );
+
+        // Nor may it fuse where the assigned value is still used.
+        let ops = compile_begin_ops("BEGIN { s = \"a\"; t = (s = s \"b\") }");
+        assert!(
+            !contains_op(&ops, |op| matches!(op, Op::AppendSlot(_))),
+            "a nested assignment must not fuse: {ops:?}"
         );
     }
 
@@ -4130,5 +4220,49 @@ mod peephole_pinning {
     #[test]
     fn compile_builtin_v51_17() {
         assert!(!compile_begin_ops("BEGIN{sprintf(\"\")}").is_empty());
+    }
+}
+
+/// Walk the left spine of a concatenation looking for `target` at the bottom,
+/// collecting the operands to its right in source order. `s = s a b` parses as
+/// `Concat(Concat(s, a), b)`, so the spine has to be unwound rather than
+/// matched one level deep.
+fn split_self_concat<'e>(e: &'e Expr, target: &str, out: &mut Vec<&'e Expr>) -> bool {
+    let Expr::Binary {
+        op: BinOp::Concat,
+        left,
+        right,
+    } = e
+    else {
+        return false;
+    };
+    out.insert(0, right);
+    match &**left {
+        Expr::Var(n) if n == target => true,
+        inner => split_self_concat(inner, target, out),
+    }
+}
+
+/// Whether evaluating `e` can change what another expression sees. Only the
+/// shapes an append suffix is actually written with are admitted; a call (which
+/// may assign to the accumulator), an assignment, an increment and a `getline`
+/// (which rewrites the fields) are all rejected.
+fn is_side_effect_free(e: &Expr) -> bool {
+    match e {
+        Expr::Number(_)
+        | Expr::IntegerLiteral(_)
+        | Expr::Str(_)
+        | Expr::RegexpLiteral(_)
+        | Expr::Var(_)
+        | Expr::In { .. } => true,
+        Expr::Field(i) => is_side_effect_free(i),
+        Expr::Index { indices, .. } => indices.iter().all(is_side_effect_free),
+        Expr::Binary { left, right, .. } => is_side_effect_free(left) && is_side_effect_free(right),
+        Expr::Unary { expr, .. } => is_side_effect_free(expr),
+        Expr::Ternary { cond, then_, else_ } => {
+            is_side_effect_free(cond) && is_side_effect_free(then_) && is_side_effect_free(else_)
+        }
+        Expr::Tuple(es) => es.iter().all(is_side_effect_free),
+        _ => false,
     }
 }

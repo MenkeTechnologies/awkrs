@@ -1629,24 +1629,8 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 let a = ctx.pop();
                 a.reject_if_array_scalar()?;
                 b.reject_if_array_scalar()?;
-                let mut s = match a {
-                    Value::Str(s) => s,
-                    Value::StrLit(s) => s,
-                    Value::Regexp(s) => s,
-                    Value::Num(n) => ctx.rt.num_to_string_convfmt(n),
-                    Value::Mpfr(f) => ctx.rt.mpfr_to_string_convfmt(&f),
-                    Value::Uninit => String::new(),
-                    Value::Array(_) => String::new(),
-                };
-                match b {
-                    Value::Str(ref t) => s.push_str(t),
-                    Value::StrLit(ref t) => s.push_str(t),
-                    Value::Regexp(ref t) => s.push_str(t),
-                    Value::Num(n) => s.push_str(&ctx.rt.num_to_string_convfmt(n)),
-                    Value::Mpfr(f) => s.push_str(&ctx.rt.mpfr_to_string_convfmt(&f)),
-                    Value::Uninit => {}
-                    Value::Array(_) => {}
-                }
+                let mut s = concat_take_left(ctx.rt, a);
+                concat_push_right(ctx.rt, &mut s, b);
                 // POSIX: the result of a concatenation is a *string*, never a
                 // numeric string — even when both operands were. So
                 // `$1 ""` of a field holding "06" compares against 6 as a
@@ -1654,6 +1638,32 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 // one-true-awk all do. awkrs used to keep the strnum-carrying
                 // `Value::Str` unless *both* sides were literals.
                 ctx.push(Value::StrLit(s));
+            }
+            // `s = s …` fused: grow the slot's own string instead of cloning it
+            // out (`GetSlot`), concatenating onto the clone, and cloning the
+            // result back in (`SetSlot`). Those two copies per iteration are
+            // what made an append loop quadratic in the length it builds.
+            // Produces exactly what the three-op spelling produced, `StrLit`
+            // result kind included — the conversions are the same two helpers
+            // `Op::Concat` uses.
+            Op::AppendSlot(slot) => {
+                let b = ctx.pop();
+                b.reject_if_array_scalar()?;
+                let i = slot as usize;
+                ctx.rt.slots[i].reject_if_array_scalar()?;
+                // The common case: take the string out of the slot, leaving an
+                // empty one behind, and reuse that same allocation.
+                let held = match &mut ctx.rt.slots[i] {
+                    Value::Str(s) | Value::StrLit(s) | Value::Regexp(s) => Some(std::mem::take(s)),
+                    _ => None,
+                };
+                let mut s = match held {
+                    Some(s) => s,
+                    None => concat_take_left(ctx.rt, ctx.rt.slots[i].clone()),
+                };
+                concat_push_right(ctx.rt, &mut s, b);
+                ctx.rt.slots[i] = Value::StrLit(s);
+                ctx.rt.touch_slot(i);
             }
             Op::RegexMatch => {
                 let pat_v = ctx.pop();
@@ -3124,6 +3134,30 @@ fn run_advice_program(ctx: &mut VmCtx<'_>, prog: &CompiledProgram) -> Result<()>
     }
     sub.recycle();
     result
+}
+
+/// The left operand of a concatenation as an owned `String`, reusing the
+/// operand's own allocation when it already holds one. Numbers stringify
+/// through `CONVFMT`; an array (rejected before reaching here) and an unset
+/// value are both empty.
+fn concat_take_left(rt: &Runtime, v: Value) -> String {
+    match v {
+        Value::Str(s) | Value::StrLit(s) | Value::Regexp(s) => s,
+        Value::Num(n) => rt.num_to_string_convfmt(n),
+        Value::Mpfr(f) => rt.mpfr_to_string_convfmt(&f),
+        Value::Uninit | Value::Array(_) => String::new(),
+    }
+}
+
+/// Append the right operand of a concatenation to `s`, with the same
+/// `CONVFMT` rule [`concat_take_left`] applies to the left one.
+fn concat_push_right(rt: &Runtime, s: &mut String, v: Value) {
+    match v {
+        Value::Str(ref t) | Value::StrLit(ref t) | Value::Regexp(ref t) => s.push_str(t),
+        Value::Num(n) => s.push_str(&rt.num_to_string_convfmt(n)),
+        Value::Mpfr(f) => s.push_str(&rt.mpfr_to_string_convfmt(&f)),
+        Value::Uninit | Value::Array(_) => {}
+    }
 }
 
 fn exec_call_user(ctx: &mut VmCtx<'_>, name: &str, argc: u16) -> Result<()> {

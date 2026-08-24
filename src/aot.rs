@@ -120,7 +120,12 @@ pub fn build_native(program_text: &str, out_path: &Path) -> Result<PathBuf, Stri
     let mut cmd = std::process::Command::new("cc");
     cmd.arg(&stub).arg(&obj).arg(&runtime_lib);
     if cfg!(target_os = "macos") {
+        // IOKit as well as CoreFoundation: `sysinfo`, which the runtime library
+        // pulls in for `PROCINFO`, calls IORegistry/IOService directly, and
+        // without the framework every one of those symbols is undefined at link
+        // time — `--aot` failed on macOS for any program at all.
         cmd.arg("-framework").arg("CoreFoundation");
+        cmd.arg("-framework").arg("IOKit");
     }
     cmd.arg("-o").arg(out_path);
     let status = cmd
