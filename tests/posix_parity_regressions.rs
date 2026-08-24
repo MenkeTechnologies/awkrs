@@ -1502,9 +1502,7 @@ fn redirected_getline_honours_rs() {
         ),
         // The same stream through a pipe rather than a file redirect.
         (
-            format!(
-                r#"BEGIN {{ RS="2"; while (("cat {p}" | getline l) > 0) printf "[%s]", l }}"#
-            ),
+            format!(r#"BEGIN {{ RS="2"; while (("cat {p}" | getline l) > 0) printf "[%s]", l }}"#),
             "[L1\nL][\nL3\n]",
         ),
         // A regex RS: every digit is a separator, so the records are the `L`s
@@ -1540,7 +1538,8 @@ fn redirected_getline_paragraph_mode_matches_the_record_loop() {
 
     // gawk, mawk and one-true-awk all give three records, runs of blank lines
     // collapsing to one separator.
-    let program = format!(r#"BEGIN {{ RS=""; while ((getline < "{p}") > 0) printf "<%s|%d>", $0, NF }}"#);
+    let program =
+        format!(r#"BEGIN {{ RS=""; while ((getline < "{p}") > 0) printf "<%s|%d>", $0, NF }}"#);
     let (code, stdout, stderr) = run_awkrs_stdin(&program, "");
     assert_eq!(code, 0, "stderr {stderr:?}");
     assert_eq!(stdout, "<a1\na2|2><b1|1><c1\nc2\nc3|3>");
@@ -1606,7 +1605,10 @@ fn argc_bounds_the_operand_walk() {
         // Below one — including a non-numeric value, which coerces to 0 the way
         // it does in gawk and mawk — leaves no operands at all.
         ("BEGIN { ARGC = 0 } END { print NR }".to_string(), "0\n"),
-        (r#"BEGIN { ARGC = "x" } END { print NR }"#.to_string(), "0\n"),
+        (
+            r#"BEGIN { ARGC = "x" } END { print NR }"#.to_string(),
+            "0\n",
+        ),
         // Untouched, for the baseline.
         ("END { print NR }".to_string(), "3\n"),
         // Shortened while the first file is still being read.
@@ -1648,8 +1650,7 @@ fn a_non_regular_file_operand_is_readable() {
     assert_eq!(stdout, "0\n");
 
     // And it must not derail the operands around it.
-    let (code, stdout, stderr) =
-        run_awkrs_operands("{ print FNR, $0 }", ["/dev/null", &sa], "");
+    let (code, stdout, stderr) = run_awkrs_operands("{ print FNR, $0 }", ["/dev/null", &sa], "");
     assert_eq!(code, 0, "stderr {stderr:?}");
     assert_eq!(stdout, "1 one\n2 two\n");
 

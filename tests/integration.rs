@@ -109,7 +109,8 @@ fn begin_for_c_loop_runs_expected_iterations() {
 /// behavior a program can observe — the status is.
 #[test]
 fn begin_delete_whole_array_then_scalar_reuse_is_fatal() {
-    let (code, stdout, stderr) = run_awkrs_stdin("BEGIN { a[1] = 1; delete a; a = 9; print a }", "");
+    let (code, stdout, stderr) =
+        run_awkrs_stdin("BEGIN { a[1] = 1; delete a; a = 9; print a }", "");
     assert_eq!(code, 2, "stderr: {stderr}");
     assert_eq!(stdout, "");
 }

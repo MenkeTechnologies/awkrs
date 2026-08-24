@@ -7,8 +7,8 @@ use crate::bytecode::*;
 use crate::error::{Error, Result};
 use crate::flow::Flow;
 use crate::format;
-use crate::runtime::{AwkArray, AwkMap};
 use crate::runtime::{sorted_in_mode, value_to_float, Runtime, SortedInMode, Value};
+use crate::runtime::{AwkArray, AwkMap};
 use rug::ops::Pow as _;
 use rug::Float;
 use std::borrow::Cow;
@@ -2538,9 +2538,7 @@ fn apply_binop(op: BinOp, old: &Value, rhs: &Value, use_mpfr: bool, rt: &Runtime
 /// that know which identifier the array arrived under. gawk's wording verbatim:
 /// `attempt to use array `x' in a scalar context`.
 fn array_in_scalar_context(name: &str) -> Error {
-    Error::Runtime(format!(
-        "attempt to use array `{name}' in a scalar context"
-    ))
+    Error::Runtime(format!("attempt to use array `{name}' in a scalar context"))
 }
 
 /// gawk parity: subscript assignment (`x[k] = …`) requires `x` to be an array

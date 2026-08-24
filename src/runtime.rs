@@ -1428,8 +1428,9 @@ fn read_record_from_stream<R: BufRead>(
 ) -> Result<Option<(String, Vec<u8>)>> {
     let mut buf = Vec::new();
     let mut sep = Vec::new();
-    let got =
-        crate::record_io::read_next_record_from(reader, rs, &mut buf, &mut sep, regex_rs, leftover)?;
+    let got = crate::record_io::read_next_record_from(
+        reader, rs, &mut buf, &mut sep, regex_rs, leftover,
+    )?;
     if !got {
         return Ok(None);
     }
