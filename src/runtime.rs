@@ -1233,6 +1233,13 @@ pub struct Runtime {
     pub primary_input_done: bool,
     /// Open files for `getline < path` / `close`.
     pub file_handles: HashMap<String, BufReader<File>>,
+    /// [`Self::read_leftover`], per redirected `getline` stream.
+    ///
+    /// A regex or multi-character `RS` reads in chunks and can over-consume past
+    /// a record's terminator, so each stream needs its own carry-over buffer.
+    /// Keyed by the same path/command string as `file_handles`, `pipe_stdout`
+    /// and `coproc_handles`, and dropped by `close`.
+    pub getline_leftover: HashMap<String, Vec<u8>>,
     /// Directory iteration for `getline var < dir` (gawk **readdir** extension semantics).
     pub dir_read: HashMap<String, (Vec<String>, usize)>,
     /// Open files for `print … > path` / `print … >> path` / `fflush` / `close`.
@@ -1401,6 +1408,44 @@ pub struct Runtime {
 /// bracket-interior semantics overlap enough with Rust's that the divergence
 /// surface is small. The function tracks bracket-expression state by counting
 /// unescaped `[` / `]` and only translates at top level.
+/// One record from a redirected `getline` stream, honouring `RS`.
+///
+/// `getline < file`, `cmd | getline` and the coprocess differ only in which map
+/// holds the reader, so the `RS` handling lives here. Returns the record with
+/// its separator already removed — under the default `RS`, that means the
+/// trailing newline and *only* the newline: a `\r` before it belongs to the
+/// record, exactly as it does in the main loop. The old readers called
+/// `BufRead::read_line` and the caller then trimmed `['\n', '\r']`, so a CRLF
+/// file read through `getline` reported `length` one short of what the same file
+/// read as ordinary input reported, and one short of all three references.
+///
+/// Returns the record and the separator text (for `RT`).
+fn read_record_from_stream<R: BufRead>(
+    reader: &mut R,
+    rs: &str,
+    regex_rs: Option<&BytesRegex>,
+    leftover: &mut Vec<u8>,
+) -> Result<Option<(String, Vec<u8>)>> {
+    let mut buf = Vec::new();
+    let mut sep = Vec::new();
+    let got =
+        crate::record_io::read_next_record_from(reader, rs, &mut buf, &mut sep, regex_rs, leftover)?;
+    if !got {
+        return Ok(None);
+    }
+    // Only the newline path leaves its terminator in the record; every other
+    // `RS` form hands the separator back through `sep` instead.
+    let end = if rs == "\n" {
+        crate::record_io::trim_end_record_bytes(&buf)
+    } else {
+        buf.len()
+    };
+    Ok(Some((
+        String::from_utf8_lossy(&buf[..end]).into_owned(),
+        sep,
+    )))
+}
+
 fn translate_awk_re_to_rust(pat: &str) -> String {
     // Iterate characters, not bytes. Every rule below keys off an ASCII
     // character, but a byte loop that ends in `byte as char` latin-1-widens
@@ -1554,6 +1599,7 @@ impl Runtime {
             gettext_dir: String::new(),
             bignum: false,
             file_handles: HashMap::new(),
+            getline_leftover: HashMap::new(),
             dir_read: HashMap::new(),
             output_handles: HashMap::new(),
             pipe_stdin: HashMap::new(),
@@ -2002,6 +2048,7 @@ impl Runtime {
             gettext_dir: String::new(),
             bignum,
             file_handles: HashMap::new(),
+            getline_leftover: HashMap::new(),
             dir_read: HashMap::new(),
             output_handles: HashMap::new(),
             pipe_stdin: HashMap::new(),
@@ -2271,13 +2318,11 @@ impl Runtime {
             let fd = h.stdout.get_ref().as_raw_fd();
             wait_fd_read_timeout(fd, to)?;
         }
+        let (rs, re, mut leftover) = self.getline_rs_state(cmd)?;
         let h = self.coproc_handles.get_mut(cmd).unwrap();
-        let mut line = String::new();
-        let n = h.stdout.read_line(&mut line).map_err(Error::Io)?;
-        if n == 0 {
-            return Ok(None);
-        }
-        Ok(Some(line))
+        let read = read_record_from_stream(&mut h.stdout, &rs, re.as_ref(), &mut leftover);
+        self.getline_leftover.insert(cmd.to_string(), leftover);
+        self.finish_redirected_getline(read?)
     }
 
     /// `expr | getline` — one line from `sh -c expr` stdout.
@@ -2315,17 +2360,14 @@ impl Runtime {
                 .as_raw_fd();
             wait_fd_read_timeout(fd, to)?;
         }
+        let (rs, re, mut leftover) = self.getline_rs_state(cmd)?;
         let reader = self
             .pipe_stdout
             .get_mut(cmd)
             .expect("pipe_stdout entry exists; just inserted");
-        let mut line = String::new();
-        let n = reader.read_line(&mut line).map_err(Error::Io)?;
-        if n == 0 {
-            Ok(None)
-        } else {
-            Ok(Some(line))
-        }
+        let read = read_record_from_stream(reader, &rs, re.as_ref(), &mut leftover);
+        self.getline_leftover.insert(cmd.to_string(), leftover);
+        self.finish_redirected_getline(read?)
     }
 
     /// Write one `print` line (including `ORS`) to `path`. First open uses truncate (`>`) or
@@ -2742,7 +2784,21 @@ impl Runtime {
         ))
     }
 
-    /// `getline var < filename` — one line from a kept-open file handle.
+    /// `RS`, its compiled regex form, and this stream's carry-over buffer.
+    ///
+    /// Pulled out of `self` before the reader is borrowed out of one of the
+    /// handle maps, so the record read below holds only that one borrow. The
+    /// regex is cloned rather than referenced for the same reason; `Regex` is
+    /// reference-counted internally, so the clone is a pointer bump.
+    fn getline_rs_state(&mut self, key: &str) -> Result<(String, Option<BytesRegex>, Vec<u8>)> {
+        let rs = self.rs_string();
+        self.ensure_rs_regex_bytes()?;
+        let re = self.rs_regex_bytes.clone();
+        let leftover = self.getline_leftover.remove(key).unwrap_or_default();
+        Ok((rs, re, leftover))
+    }
+
+    /// `getline var < filename` — one record from a kept-open file handle.
     pub fn read_line_file(&mut self, path: &str) -> Result<Option<String>> {
         self.require_unsandboxed_io()?;
         if path.starts_with("/inet/udp/") {
@@ -2765,6 +2821,9 @@ impl Runtime {
             if n == 0 {
                 return Ok(None);
             }
+            // The caller no longer trims, so strip the terminator here.
+            let keep = line.trim_end_matches('\n').len();
+            line.truncate(keep);
             return Ok(Some(line));
         }
         if path.starts_with("/inet/") {
@@ -2801,19 +2860,35 @@ impl Runtime {
                 .insert(path.to_string(), BufReader::new(f));
         }
         let to = self.procinfo_read_timeout_ms_for(path);
-        let reader = self.file_handles.get_mut(path).unwrap();
         #[cfg(unix)]
         if to > 0 {
             use std::os::unix::io::AsRawFd;
-            let fd = reader.get_ref().as_raw_fd();
+            let fd = self.file_handles[path].get_ref().as_raw_fd();
             wait_fd_read_timeout(fd, to)?;
         }
-        let mut line = String::new();
-        let n = reader.read_line(&mut line).map_err(Error::Io)?;
-        if n == 0 {
-            return Ok(None);
+        let (rs, re, mut leftover) = self.getline_rs_state(path)?;
+        let reader = self.file_handles.get_mut(path).unwrap();
+        let read = read_record_from_stream(reader, &rs, re.as_ref(), &mut leftover);
+        self.getline_leftover.insert(path.to_string(), leftover);
+        self.finish_redirected_getline(read?)
+    }
+
+    /// Publish `RT` for a redirected `getline` and hand back the record.
+    ///
+    /// gawk sets `RT` from every `getline`, not just the main record loop:
+    /// `BEGIN { RS="2"; getline l < "input.txt"; print RT }` prints `2`. mawk and
+    /// one-true-awk have no `RT` at all, so there is nothing to disagree with.
+    fn finish_redirected_getline(
+        &mut self,
+        read: Option<(String, Vec<u8>)>,
+    ) -> Result<Option<String>> {
+        match read {
+            Some((record, sep)) => {
+                self.set_rt_from_bytes(&sep);
+                Ok(Some(record))
+            }
+            None => Ok(None),
         }
-        Ok(Some(line))
     }
 
     fn ensure_inet_tcp_pair(&mut self, path: &str) -> Result<()> {
@@ -2910,6 +2985,9 @@ impl Runtime {
             let _ = std::io::stdout().flush();
             return 0.0;
         }
+        // Any carry-over bytes belong to the stream being torn down; a reopen
+        // under the same name must start clean.
+        self.getline_leftover.remove(path);
         if let Some(h) = self.coproc_handles.remove(path) {
             had_any = true;
             let _ = shutdown_coproc(h);
@@ -4114,6 +4192,7 @@ impl Clone for Runtime {
             gettext_dir: self.gettext_dir.clone(),
             bignum: self.bignum,
             file_handles: HashMap::new(),
+            getline_leftover: HashMap::new(),
             dir_read: HashMap::new(),
             output_handles: HashMap::new(),
             pipe_stdin: HashMap::new(),

@@ -2835,7 +2835,13 @@ fn apply_getline_line(
     line: Option<String>,
 ) -> Result<()> {
     if let Some(l) = line {
-        let trimmed = l.trim_end_matches(['\n', '\r']).to_string();
+        // Every reader hands back a finished record: the `RS` separator is
+        // already gone, and under the default `RS` that is the trailing newline
+        // and nothing else. This used to trim `['\n', '\r']` here instead, which
+        // ate the `\r` of a CRLF line — so `getline l < "crlf.txt"` reported
+        // `length(l) == 1` where gawk, mawk, one-true-awk and awkrs's own main
+        // record loop all report 2.
+        let trimmed = l;
         if let Some(var_idx) = var {
             // getline var — read into variable only, do NOT touch $0/fields/NF.
             let name = ctx.str_ref(var_idx).to_string();

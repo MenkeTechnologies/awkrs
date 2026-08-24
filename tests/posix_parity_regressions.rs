@@ -1468,3 +1468,190 @@ fn argv_edits_change_which_files_are_read() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Every redirected `getline` split on newlines regardless of `RS`, while the
+/// main record loop honoured it — so one program could disagree with itself
+/// about where a record ends. Verified against all three references on the
+/// file `L1\nL2\nL3\n`:
+///
+/// ```text
+/// BEGIN { RS="2"; while ((getline l < "in") > 0) printf "[%s]", l }
+/// gawk 5.4.1 / one-true-awk 20200816 / mawk 1.3.4 → [L1\nL][\nL3\n]
+/// awkrs before                                    → [L1][L2][L3]
+/// ```
+///
+/// The `$0` form, the pipe form, a regex `RS` and paragraph mode were all wrong
+/// the same way; all five spellings are pinned here.
+#[test]
+fn redirected_getline_honours_rs() {
+    let dir = std::env::temp_dir().join(format!("awkrs-getline-rs-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create fixture dir");
+    let path = dir.join("in.txt");
+    std::fs::write(&path, b"L1\nL2\nL3\n").expect("write fixture");
+    let p = path.to_string_lossy().into_owned();
+
+    for (program, want) in [
+        // Literal multi-character-position RS, into a variable and into `$0`.
+        (
+            format!(r#"BEGIN {{ RS="2"; while ((getline l < "{p}") > 0) printf "[%s]", l }}"#),
+            "[L1\nL][\nL3\n]",
+        ),
+        (
+            format!(r#"BEGIN {{ RS="2"; while ((getline < "{p}") > 0) printf "[%s]", $0 }}"#),
+            "[L1\nL][\nL3\n]",
+        ),
+        // The same stream through a pipe rather than a file redirect.
+        (
+            format!(
+                r#"BEGIN {{ RS="2"; while (("cat {p}" | getline l) > 0) printf "[%s]", l }}"#
+            ),
+            "[L1\nL][\nL3\n]",
+        ),
+        // A regex RS: every digit is a separator, so the records are the `L`s
+        // and the newlines between them, plus a final empty one.
+        (
+            format!(r#"BEGIN {{ RS="[0-9]"; while ((getline l < "{p}") > 0) printf "[%s]", l }}"#),
+            "[L][\nL][\nL][\n]",
+        ),
+        // gawk publishes RT from a redirected getline too.
+        (
+            format!(r#"BEGIN {{ RS="2"; getline l < "{p}"; printf "[%s][%s]", l, RT }}"#),
+            "[L1\nL][2]",
+        ),
+    ] {
+        let (code, stdout, stderr) = run_awkrs_stdin(&program, "");
+        assert_eq!(code, 0, "{program}: stderr {stderr:?}");
+        assert_eq!(stdout, want, "{program}");
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Paragraph mode is the one `RS` form a redirected `getline` did get right by
+/// accident, because blank-line-separated records also end at newlines. Pinned
+/// so the RS rework above cannot silently regress it.
+#[test]
+fn redirected_getline_paragraph_mode_matches_the_record_loop() {
+    let dir = std::env::temp_dir().join(format!("awkrs-getline-para-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create fixture dir");
+    let path = dir.join("para.txt");
+    std::fs::write(&path, b"a1\na2\n\n\nb1\n\nc1\nc2\nc3\n").expect("write fixture");
+    let p = path.to_string_lossy().into_owned();
+
+    // gawk, mawk and one-true-awk all give three records, runs of blank lines
+    // collapsing to one separator.
+    let program = format!(r#"BEGIN {{ RS=""; while ((getline < "{p}") > 0) printf "<%s|%d>", $0, NF }}"#);
+    let (code, stdout, stderr) = run_awkrs_stdin(&program, "");
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "<a1\na2|2><b1|1><c1\nc2\nc3|3>");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A `\r` before the record's newline belongs to the record — awkrs's own
+/// record loop already kept it, and all three references keep it in `getline`
+/// too. `getline` trimmed `['\n', '\r']`, so the same CRLF file measured one
+/// character shorter through `getline` than through the main loop.
+#[test]
+fn getline_keeps_a_carriage_return_like_the_record_loop() {
+    let dir = std::env::temp_dir().join(format!("awkrs-getline-crlf-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create fixture dir");
+    let path = dir.join("crlf.txt");
+    std::fs::write(&path, b"a\r\nb\r\n").expect("write fixture");
+    let p = path.to_string_lossy().into_owned();
+
+    for program in [
+        format!(r#"BEGIN {{ while ((getline l < "{p}") > 0) print length(l) }}"#),
+        format!(r#"BEGIN {{ while ((getline < "{p}") > 0) print length($0) }}"#),
+    ] {
+        let (code, stdout, stderr) = run_awkrs_stdin(&program, "");
+        assert_eq!(code, 0, "{program}: stderr {stderr:?}");
+        assert_eq!(stdout, "2\n2\n", "{program}");
+    }
+
+    // The main record loop, for the same bytes — the two paths must agree.
+    let (code, stdout, _) = run_awkrs_file("{ print length($0) }", &path);
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "2\n2\n");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// POSIX walks the operands as `for (i = 1; i < ARGC; i++)` and re-reads `ARGC`
+/// each pass, so a program can shorten the list, extend it, or cut it short
+/// mid-run. awkrs iterated the argv vector it was launched with and honoured
+/// none of the three. Every expectation below is gawk 5.4.1, one-true-awk and
+/// mawk agreeing.
+#[test]
+fn argc_bounds_the_operand_walk() {
+    let dir = std::env::temp_dir().join(format!("awkrs-argc-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create fixture dir");
+    let a = dir.join("a.txt");
+    let b = dir.join("b.txt");
+    std::fs::write(&a, b"a1\na2\n").expect("write a");
+    std::fs::write(&b, b"b1\n").expect("write b");
+    let (sa, sb) = (
+        a.to_string_lossy().into_owned(),
+        b.to_string_lossy().into_owned(),
+    );
+
+    for (program, want) in [
+        // Lowered before any input is read: no operand is a file, so the program
+        // reads standard input, which is empty here.
+        ("BEGIN { ARGC = 1 } END { print NR }".to_string(), "0\n"),
+        // Cut to the first operand only.
+        ("BEGIN { ARGC = 2 } END { print NR }".to_string(), "2\n"),
+        // Raised past the entries that exist: the missing ones are skipped.
+        ("BEGIN { ARGC = 9 } END { print NR }".to_string(), "3\n"),
+        // Below one — including a non-numeric value, which coerces to 0 the way
+        // it does in gawk and mawk — leaves no operands at all.
+        ("BEGIN { ARGC = 0 } END { print NR }".to_string(), "0\n"),
+        (r#"BEGIN { ARGC = "x" } END { print NR }"#.to_string(), "0\n"),
+        // Untouched, for the baseline.
+        ("END { print NR }".to_string(), "3\n"),
+        // Shortened while the first file is still being read.
+        (
+            "FNR == 1 && NR == 1 { ARGC = 2 } END { print NR }".to_string(),
+            "2\n",
+        ),
+    ] {
+        let (code, stdout, stderr) = run_awkrs_operands(&program, [&sa, &sb], "");
+        assert_eq!(code, 0, "{program}: stderr {stderr:?}");
+        assert_eq!(stdout, want, "{program}");
+    }
+
+    // Extending the list adds a file that was never on the command line.
+    let program = format!(r#"BEGIN {{ ARGV[2] = "{sb}"; ARGC = 3 }} {{ print }}"#);
+    let (code, stdout, stderr) = run_awkrs_operands(&program, [&sa], "");
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "a1\na2\nb1\n");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Only a regular file can be memory-mapped, and awkrs mapped every input file
+/// unconditionally — so a character device or a pipe named as an operand came
+/// back as a fatal "cannot open file" (`ENODEV` / `EINVAL`) where gawk, mawk and
+/// one-true-awk all read it. `/dev/null` is the portable case: it exists on
+/// every Unix CI image and is a character device on all of them.
+#[test]
+fn a_non_regular_file_operand_is_readable() {
+    let dir = std::env::temp_dir().join(format!("awkrs-devnull-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create fixture dir");
+    let a = dir.join("a.txt");
+    std::fs::write(&a, b"one\ntwo\n").expect("write a");
+    let sa = a.to_string_lossy().into_owned();
+
+    // Alone: no records, no error.
+    let (code, stdout, stderr) = run_awkrs_operands("END { print NR }", ["/dev/null"], "");
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "0\n");
+
+    // And it must not derail the operands around it.
+    let (code, stdout, stderr) =
+        run_awkrs_operands("{ print FNR, $0 }", ["/dev/null", &sa], "");
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "1 one\n2 two\n");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

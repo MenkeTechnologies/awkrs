@@ -1924,7 +1924,16 @@ fn system_flushes_stdout_before_invoking_subprocess() {
 fn system_flushes_pending_redirect_output_before_subprocess() {
     // The same buffering hazard applies to `print >` files — make sure the bytes
     // are on disk before the subprocess reads them back.
-    let path = "/tmp/awkrs_sys_flush_test.txt";
+    // Process-unique: the path used to be a fixed `/tmp` name, so two concurrent
+    // runs of this test raced on the same file — one's `remove_file` landed
+    // between the other's `print >` and its `system("cat …")`, and the `cat`
+    // came back empty. The assertion is unchanged; only the fixture is isolated.
+    let dir = std::env::temp_dir();
+    let path = dir
+        .join(format!("awkrs_sys_flush_{}.txt", std::process::id()))
+        .to_string_lossy()
+        .into_owned();
+    let path = path.as_str();
     let _ = std::fs::remove_file(path);
     let prog = format!(
         r#"BEGIN {{ print "hi" > "{path}"; system("cat {path}"); }}"#,

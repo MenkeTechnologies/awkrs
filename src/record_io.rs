@@ -38,12 +38,32 @@ pub fn read_next_record(
     regex_rs: Option<&BytesRegex>,
     leftover: &mut Vec<u8>,
 ) -> Result<bool> {
-    out.clear();
-    rt_sep.clear();
     let mut guard = reader
         .lock()
         .map_err(|_| Error::Runtime("input reader lock poisoned".into()))?;
-    let r = &mut *guard;
+    read_next_record_from(&mut *guard, rs, out, rt_sep, regex_rs, leftover)
+}
+
+/// [`read_next_record`] against any buffered reader.
+///
+/// The primary input is shared behind a mutex, but a `getline < file` handle and
+/// a `cmd | getline` pipe are plain `BufReader`s owned by the [`Runtime`], and
+/// those used to call `BufRead::read_line` directly — so every `getline` form
+/// split on newlines no matter what `RS` said, while the main record loop
+/// honoured it. `RS = "2"` over `L1\nL2\nL3\n` gives two records in gawk, mawk
+/// and one-true-awk and gave three in awkrs.
+///
+/// [`Runtime`]: crate::runtime::Runtime
+pub fn read_next_record_from<R: BufRead>(
+    r: &mut R,
+    rs: &str,
+    out: &mut Vec<u8>,
+    rt_sep: &mut Vec<u8>,
+    regex_rs: Option<&BytesRegex>,
+    leftover: &mut Vec<u8>,
+) -> Result<bool> {
+    out.clear();
+    rt_sep.clear();
     if rs == "\n" {
         return read_until_lf(r, out, rt_sep, leftover);
     }
