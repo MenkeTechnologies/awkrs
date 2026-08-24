@@ -3558,6 +3558,37 @@ impl Runtime {
         }
     }
     /// `array_set` — see implementation for the contract.
+    /// `a[k]` read with POSIX auto-vivification, resolved in one hash lookup
+    /// when the element is already there.
+    ///
+    /// Spelled out, the read was `array_has`, then `array_set(…, Uninit)` if
+    /// missing, then `array_get` — three hashes of the key and an owned copy of
+    /// it, on every element. Iterating a million-entry array paid all of that a
+    /// million times over.
+    ///
+    /// A missing key is created as `Uninit` and read back as `Uninit`, which is
+    /// what makes a later `k in a` true and `typeof(a[k])` `"untyped"` rather
+    /// than the `"string"` a coerced `""` would report.
+    pub fn array_get_vivify(&mut self, name: &str, key: &str) -> Value {
+        if name == "SYMTAB" {
+            return self.symtab_elem_get(key);
+        }
+        if let Some(Value::Array(a)) = self.vars.get_mut(name) {
+            if let Some(v) = a.get(key) {
+                return match v {
+                    Value::Num(n) => Value::Num(*n),
+                    other => other.clone(),
+                };
+            }
+            a.insert(key.to_string(), Value::Uninit);
+            return Value::Uninit;
+        }
+        // First touch of this name, or one still to be copied out of the
+        // readonly globals: `array_set` handles both, and only once per array.
+        self.array_set(name, key.to_string(), Value::Uninit);
+        Value::Uninit
+    }
+
     pub fn array_set(&mut self, name: &str, key: String, val: Value) {
         if name == "SYMTAB" {
             self.symtab_elem_set(&key, val);

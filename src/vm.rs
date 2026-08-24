@@ -151,6 +151,33 @@ impl<'a> VmCtx<'a> {
         self.rt.array_get(name, key)
     }
 
+    /// Frame-aware `a[k]` read with POSIX auto-vivification, in one hash lookup
+    /// when the element is already there.
+    ///
+    /// Vivifies where the array actually lives. The spelled-out form tested and
+    /// created the entry in the *globals* and only then looked the value up
+    /// frame-aware, so reading a missing key from an array passed into a user
+    /// function left a stray global behind under the parameter's name — awk,
+    /// gawk and mawk all leave the global untouched.
+    fn array_elem_get_vivify(&mut self, name: &str, key: &str) -> Value {
+        if name == "SYMTAB" {
+            return self.rt.symtab_elem_get(key);
+        }
+        for frame in self.locals.iter_mut().rev() {
+            if let Some(Value::Array(a)) = frame.get_mut(name) {
+                if let Some(v) = a.get(key) {
+                    return match v {
+                        Value::Num(n) => Value::Num(*n),
+                        other => other.clone(),
+                    };
+                }
+                a.insert(key.to_string(), Value::Uninit);
+                return Value::Uninit;
+            }
+        }
+        self.rt.array_get_vivify(name, key)
+    }
+
     /// Frame-aware snapshot of an array's `(key, value)` pairs for the
     /// sort builtins (`asort` / `asorti`). Walks the locals stack innermost-out
     /// so an array passed by reference into a user function is found in the
@@ -1099,19 +1126,16 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 let key_val = ctx.pop();
                 // POSIX: numeric subscripts are stringified via CONVFMT.
                 let k = ctx.rt.value_to_array_key(&key_val);
-                let name = ctx.str_ref(arr).to_string();
+                let name = ctx.cp.strings.get(arr);
                 // gawk parity: reading `x[k]` where `x` is a scalar is a fatal
                 // "attempt to use scalar `x' as an array". POSIX auto-creates
                 // arrays from missing names; we only error on existing non-array,
                 // non-uninit values.
-                check_array_target(ctx, &name)?;
+                check_array_target(ctx, name)?;
                 // POSIX: reading `a[k]` auto-creates the entry as `Uninit` if
                 // missing. Subsequent `k in a` returns 1, `typeof(a[k])` is
                 // "untyped" (rather than "string" from a coerced "").
-                if name != "SYMTAB" && !ctx.rt.array_has(&name, &k) {
-                    ctx.rt.array_set(&name, k.clone(), Value::Uninit);
-                }
-                let v = ctx.array_elem_get(&name, &k);
+                let v = ctx.array_elem_get_vivify(name, &k);
                 ctx.push(v);
             }
             Op::SymtabKeyCount => {
