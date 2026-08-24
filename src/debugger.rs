@@ -361,7 +361,7 @@ mod tests {
         assert_eq!(format_value(&Value::StrLit("hi".into())), "\"hi\"");
         assert_eq!(format_value(&Value::Num(42.0)), "42");
         assert_eq!(format_value(&Value::Uninit), "uninitialized");
-        let mut m = crate::runtime::AwkMap::default();
+        let mut m = crate::runtime::AwkArray::new();
         m.insert("a".to_string(), Value::Num(1.0));
         assert_eq!(format_value(&Value::Array(m)), "array (1 element)");
     }

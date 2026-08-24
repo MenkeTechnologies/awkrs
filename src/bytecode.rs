@@ -426,6 +426,12 @@ impl StringPool {
     pub fn get(&self, idx: u32) -> &str {
         &self.strings[idx as usize]
     }
+
+    /// Every interned string, so a caller can build a parallel table keyed by
+    /// pool index (see the decimal-literal cache in the VM).
+    pub fn all(&self) -> &[String] {
+        &self.strings
+    }
 }
 
 /// A fully compiled awk program, ready for VM execution.

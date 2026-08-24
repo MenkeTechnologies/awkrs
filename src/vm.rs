@@ -215,7 +215,7 @@ impl<'a> VmCtx<'a> {
     /// [`Self::array_pairs_for_sort`] so `asort` / `asorti` writeback hits the
     /// caller's storage.
     fn array_replace(&mut self, name: &str, pairs: Vec<(String, Value)>) {
-        let mut new_map = AwkMap::default();
+        let mut new_map = crate::runtime::AwkArray::new();
         for (k, v) in pairs {
             new_map.insert(k, v);
         }
@@ -244,7 +244,7 @@ impl<'a> VmCtx<'a> {
                 // If the local was uninit (no value yet), promote to an
                 // array — POSIX allows lazy array creation.
                 if matches!(slot, Value::Uninit) {
-                    let mut a = crate::runtime::AwkMap::default();
+                    let mut a = crate::runtime::AwkArray::new();
                     a.insert(key, val);
                     *slot = Value::Array(a);
                     return;
@@ -269,7 +269,7 @@ impl<'a> VmCtx<'a> {
         // array param with this name before falling through to global vars.
         let frame_keys: Option<Vec<String>> = self.locals.iter().rev().find_map(|frame| {
             if let Some(Value::Array(a)) = frame.get(name) {
-                Some(a.keys().cloned().collect())
+                Some(a.keys())
             } else {
                 None
             }
@@ -290,7 +290,7 @@ impl<'a> VmCtx<'a> {
                     let Some(Value::Array(a)) = self.rt.get_global_var(name) else {
                         return Ok(Vec::new());
                     };
-                    a.keys().cloned().collect::<Vec<String>>()
+                    a.keys().into_iter().collect::<Vec<String>>()
                 }
             };
             if self.rt.posix {
@@ -1070,7 +1070,20 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                     let f = crate::bignum::numeric_string_to_mpfr(s, prec, round);
                     ctx.push(Value::Mpfr(f));
                 } else {
-                    ctx.push(Value::Num(s.parse().unwrap_or(0.0)));
+                    let i = idx as usize;
+                    if ctx.rt.decimal_lits.len() <= i {
+                        // One pass over the pool, once per run: a literal's
+                        // value cannot change, so parsing it per execution was
+                        // pure repetition.
+                        ctx.rt.decimal_lits = ctx
+                            .cp
+                            .strings
+                            .all()
+                            .iter()
+                            .map(|t| t.parse().unwrap_or(0.0))
+                            .collect();
+                    }
+                    ctx.push(Value::Num(ctx.rt.decimal_lits[i]));
                 }
             }
             Op::PushStr(idx) => ctx.push(Value::StrLit(ctx.str_ref(idx).to_string())),
@@ -1124,8 +1137,6 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             }
             Op::GetArrayElem(arr) => {
                 let key_val = ctx.pop();
-                // POSIX: numeric subscripts are stringified via CONVFMT.
-                let k = ctx.rt.value_to_array_key(&key_val);
                 let name = ctx.cp.strings.get(arr);
                 // gawk parity: reading `x[k]` where `x` is a scalar is a fatal
                 // "attempt to use scalar `x' as an array". POSIX auto-creates
@@ -1135,7 +1146,20 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 // POSIX: reading `a[k]` auto-creates the entry as `Uninit` if
                 // missing. Subsequent `k in a` returns 1, `typeof(a[k])` is
                 // "untyped" (rather than "string" from a coerced "").
-                let v = ctx.array_elem_get_vivify(name, &k);
+                //
+                // An integer subscript reaches the array's integer half
+                // directly, rendering no key for the array to parse back. An
+                // array reached through a function parameter lives in a frame,
+                // so that case keeps the frame-aware path, and a string
+                // subscript borrows rather than allocating.
+                let v = match crate::runtime::Runtime::subscript_int(&key_val) {
+                    Some(i) if ctx.locals.is_empty() => ctx.rt.array_get_vivify_int(name, i),
+                    _ => {
+                        let mut kbuf = crate::runtime::KeyBuf::new();
+                        let k = ctx.rt.array_key_in(&key_val, &mut kbuf);
+                        ctx.array_elem_get_vivify(name, &k)
+                    }
+                };
                 ctx.push(v);
             }
             Op::SymtabKeyCount => {
@@ -1230,14 +1254,23 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 let val = ctx.pop();
                 // POSIX: numeric subscripts are stringified via CONVFMT.
                 let key_val = ctx.pop();
-                let key = ctx.rt.value_to_array_key(&key_val);
                 let name = ctx.cp.strings.get(arr);
                 // gawk parity: `x[k] = …` on a scalar `x` is a fatal "attempt
                 // to use scalar `x' as an array". Check both the local frames
                 // and globals before delegating to `array_elem_set` (which
                 // would silently overwrite a scalar with an array).
                 check_array_target(ctx, name)?;
-                ctx.array_elem_set(name, key, val.clone());
+                // As in `Op::GetArrayElem`: an integer subscript stores through
+                // the array's integer half, building no key. An array reached
+                // through a function parameter lives in a frame, so that case
+                // keeps the frame-aware path.
+                match crate::runtime::Runtime::subscript_int(&key_val) {
+                    Some(i) if ctx.locals.is_empty() => ctx.rt.array_set_int(name, i, val.clone()),
+                    _ => {
+                        let key = ctx.rt.value_to_array_key(&key_val);
+                        ctx.array_elem_set(name, key, val.clone());
+                    }
+                }
                 ctx.push(val);
             }
 

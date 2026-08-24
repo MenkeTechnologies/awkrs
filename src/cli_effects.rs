@@ -313,7 +313,7 @@ fn dump_value(out: &mut dyn Write, name: &str, v: &Value, tag: &str) -> Result<(
                 format!("{tag} ")
             };
             writeln!(out, "{prefix}{name}: array, {n} elements", n = a.len()).map_err(Error::Io)?;
-            let mut keys: Vec<_> = a.keys().cloned().collect();
+            let mut keys: Vec<_> = a.keys();
             keys.sort();
             for k in keys {
                 if let Some(elem) = a.get(&k) {
@@ -1797,7 +1797,7 @@ mod dump_variables_tests {
     #[test]
     fn dump_array_emits_count_header_and_elements() {
         let mut rt = Runtime::new();
-        let mut arr = AwkMap::default();
+        let mut arr = crate::runtime::AwkArray::new();
         arr.insert("k1".into(), Value::Num(1.0));
         arr.insert("k2".into(), Value::Str("v2".into()));
         rt.vars.insert("a".into(), Value::Array(arr));

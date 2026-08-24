@@ -1,7 +1,7 @@
 //! gawk-style [`crate::runtime::Runtime::PROCINFO`] keys (best-effort).
 
 use crate::bytecode::CompiledProgram;
-use crate::runtime::{AwkMap, Runtime, Value};
+use crate::runtime::{AwkArray, Runtime, Value};
 use std::ffi::CStr;
 
 /// gawk uses **`posix`** / **`mingw`** / **`vms`**, not Rust’s `std::env::consts::OS` (`macos`, `linux`, …).
@@ -58,8 +58,8 @@ pub(crate) fn field_split_mode(rt: &Runtime) -> &'static str {
 }
 
 /// Nested **`PROCINFO["identifiers"]`**: name → type string (gawk-style).
-pub(crate) fn merge_procinfo_identifiers(p: &mut AwkMap<String, Value>, cp: &CompiledProgram) {
-    let mut id = AwkMap::default();
+pub(crate) fn merge_procinfo_identifiers(p: &mut AwkArray, cp: &CompiledProgram) {
+    let mut id = AwkArray::new();
     for &name in crate::namespace::BUILTIN_NAMES {
         id.insert(name.into(), Value::Str("builtin".into()));
     }
@@ -289,12 +289,12 @@ mod tests {
             strings: StringPool::default(),
             slot_count: 1,
             slot_names: vec!["vx".into()],
-            slot_map: AwkMap::from_iter([("vx".into(), 0u16)]),
+            slot_map: crate::runtime::AwkMap::from_iter([("vx".into(), 0u16)]),
             array_var_names: vec!["arr".into()],
             parallel_safe: false,
             prog_rules_len: 0,
         };
-        let mut proc = AwkMap::default();
+        let mut proc = AwkArray::new();
         merge_procinfo_identifiers(&mut proc, &cp);
         let id = match proc.get("identifiers").expect("identifiers key") {
             Value::Array(m) => m,

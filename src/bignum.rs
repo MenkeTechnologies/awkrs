@@ -515,11 +515,7 @@ mod tests {
         let round = Round::Nearest;
         let u = value_to_mpfr(&Value::Uninit, prec, round);
         assert!(u.is_zero());
-        let a = value_to_mpfr(
-            &Value::Array(crate::runtime::AwkMap::default()),
-            prec,
-            round,
-        );
+        let a = value_to_mpfr(&Value::Array(crate::runtime::AwkArray::new()), prec, round);
         assert!(a.is_zero());
     }
 

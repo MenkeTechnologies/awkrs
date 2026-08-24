@@ -171,11 +171,7 @@ fn val_type_rank(v: &Value) -> u8 {
     }
 }
 
-pub(crate) fn sort_for_in_keys(
-    keys: &mut [String],
-    arr: &AwkMap<String, Value>,
-    mode: SortedInMode,
-) {
+pub(crate) fn sort_for_in_keys(keys: &mut [String], arr: &AwkArray, mode: SortedInMode) {
     use SortedInMode::*;
     match mode {
         Unsorted => {}
@@ -464,7 +460,7 @@ pub enum Value {
     /// GNU MPFR arbitrary-precision float (`-M` / `--bignum`).
     Mpfr(Float),
     /// `Array` variant.
-    Array(AwkMap<String, Value>),
+    Array(AwkArray),
 }
 
 /// Default **`-M`** number→string when no [`Runtime`] is available (POSIX default **CONVFMT** **`%.6g`**).
@@ -1355,6 +1351,14 @@ pub struct Runtime {
     /// Name -> slot index, with the fast hasher for the same reason
     /// [`crate::bytecode::CompiledProgram::slot_map`] uses it.
     pub symtab_slot_map: AwkMap<String, u16>,
+    /// Decimal integer literals, parsed once, indexed by string-pool index.
+    ///
+    /// A literal is stored as its digits so `-M` can render it at full
+    /// precision, but the ordinary path then parsed those digits to `f64` on
+    /// every execution — a counted loop paid a full float parse per iteration
+    /// for a constant. Filled on first use; empty under `-M`, which needs the
+    /// digits themselves.
+    pub decimal_lits: Vec<f64>,
     /// DAP debugger state. `Some` only under `awkrs --dap`; drives breakpoints,
     /// stepping, and variable inspection. The VM checks it on each
     /// [`crate::bytecode::Op::DebugLine`] marker.
@@ -1477,15 +1481,15 @@ impl Runtime {
         vars.insert("ERRNO".into(), Value::Str(String::new()));
         vars.insert("ARGIND".into(), Value::Num(0.0));
         // Process environment (gawk associative array).
-        let mut environ = AwkMap::default();
+        let mut environ = AwkArray::new();
         for (k, v) in std::env::vars() {
             environ.insert(k, Value::Str(v));
         }
         vars.insert("ENVIRON".into(), Value::Array(environ));
         // Stub gawk special arrays (full semantics not implemented).
-        vars.insert("PROCINFO".into(), Value::Array(AwkMap::default()));
-        vars.insert("SYMTAB".into(), Value::Array(AwkMap::default()));
-        vars.insert("FUNCTAB".into(), Value::Array(AwkMap::default()));
+        vars.insert("PROCINFO".into(), Value::Array(AwkArray::new()));
+        vars.insert("SYMTAB".into(), Value::Array(AwkArray::new()));
+        vars.insert("FUNCTAB".into(), Value::Array(AwkArray::new()));
         // POSIX octal \034 — multidimensional array subscript separator
         vars.insert("SUBSEP".into(), Value::Str("\x1c".into()));
         // Empty FPAT means use FS for field splitting (gawk).
@@ -1560,6 +1564,7 @@ impl Runtime {
             fuse_vm_pool: fusevm::VMPool::new(),
             gettext_catalogs: AwkMap::default(),
             symtab_slot_map: AwkMap::default(),
+            decimal_lits: Vec::new(),
             debugger: None,
             debug_call_stack: Vec::new(),
             cur_line: 0,
@@ -1719,7 +1724,7 @@ impl Runtime {
     }
 
     fn procinfo_refresh(&mut self, cp: &CompiledProgram, bin_name: &str) {
-        let mut p = AwkMap::default();
+        let mut p = AwkArray::new();
         if let Some(Value::Array(old)) = self.vars.get("PROCINFO") {
             for (k, v) in old.iter() {
                 p.insert(k.clone(), v.clone());
@@ -1769,7 +1774,7 @@ impl Runtime {
             Value::Str("%a %b %e %H:%M:%S %Z %Y".into()),
         );
 
-        let mut argv_proc = AwkMap::default();
+        let mut argv_proc = AwkArray::new();
         for (i, a) in std::env::args().enumerate() {
             argv_proc.insert(i.to_string(), Value::Str(a));
         }
@@ -1817,19 +1822,21 @@ impl Runtime {
         p.insert("awkrs_binmode".into(), Value::Num(binmode));
 
         // nproc: number of available CPUs
-        p.entry("nproc".into()).or_insert(Value::Num(
-            std::thread::available_parallelism()
-                .map(|n| n.get() as f64)
-                .unwrap_or(1.0),
-        ));
+        p.or_insert(
+            "nproc".into(),
+            Value::Num(
+                std::thread::available_parallelism()
+                    .map(|n| n.get() as f64)
+                    .unwrap_or(1.0),
+            ),
+        );
 
         // sorted_in: default sort order for for-in (gawk compat)
-        p.entry("sorted_in".into())
-            .or_insert(Value::Str(String::new()));
+        p.or_insert("sorted_in".into(), Value::Str(String::new()));
 
         // PREC (default precision) when not in bignum mode
         if !self.bignum {
-            p.entry("prec".into()).or_insert(Value::Num(53.0));
+            p.or_insert("prec".into(), Value::Num(53.0));
         }
 
         crate::procinfo::merge_procinfo_identifiers(&mut p, cp);
@@ -1857,19 +1864,19 @@ impl Runtime {
         paths.push("-".into());
         for path in paths {
             let k_rt = format!("{path}{sep}READ_TIMEOUT");
-            p.entry(k_rt).or_insert(Value::Num(global_to));
+            p.or_insert(k_rt, Value::Num(global_to));
             let k_retry = format!("{path}{sep}RETRY");
-            p.entry(k_retry).or_insert(Value::Num(0.0));
+            p.or_insert(k_retry, Value::Num(0.0));
         }
 
         self.vars.insert("PROCINFO".into(), Value::Array(p));
     }
 
     fn functab_refresh(&mut self, cp: &CompiledProgram) {
-        let mut ft = AwkMap::default();
+        let mut ft = AwkArray::new();
         // User-defined functions
         for (name, f) in &cp.functions {
-            let mut meta = AwkMap::default();
+            let mut meta = AwkArray::new();
             meta.insert("type".into(), Value::Str("user".into()));
             meta.insert("arity".into(), Value::Num(f.params.len() as f64));
             ft.insert(name.clone(), Value::Array(meta));
@@ -1877,7 +1884,7 @@ impl Runtime {
         // Builtin functions (gawk includes these in FUNCTAB)
         for &name in crate::namespace::BUILTIN_NAMES {
             if !ft.contains_key(name) {
-                let mut meta = AwkMap::default();
+                let mut meta = AwkArray::new();
                 meta.insert("type".into(), Value::Str("builtin".into()));
                 ft.insert(name.into(), Value::Array(meta));
             }
@@ -1889,7 +1896,7 @@ impl Runtime {
         self.symtab_slot_map = cp.slot_map.clone();
         // SYMTAB subscripts resolve live via [`VmCtx`] / [`Runtime::symtab_elem_get`]; keep empty placeholder.
         self.vars
-            .insert("SYMTAB".into(), Value::Array(AwkMap::default()));
+            .insert("SYMTAB".into(), Value::Array(AwkArray::new()));
     }
 
     ///
@@ -1916,7 +1923,7 @@ impl Runtime {
         }
         let argc = argv.len();
         self.vars.insert("ARGC".into(), Value::Num(argc as f64));
-        let mut map = AwkMap::default();
+        let mut map = AwkArray::new();
         for (i, s) in argv.iter().enumerate() {
             map.insert(i.to_string(), Value::Str(s.clone()));
         }
@@ -2001,6 +2008,7 @@ impl Runtime {
             fuse_vm_pool: fusevm::VMPool::new(),
             gettext_catalogs,
             symtab_slot_map: AwkMap::default(),
+            decimal_lits: Vec::new(),
             debugger: None,
             debug_call_stack: Vec::new(),
             cur_line: 0,
@@ -3622,6 +3630,63 @@ impl Runtime {
         }
     }
     /// `array_set` — see implementation for the contract.
+    /// The integer an array subscript names when it is one, so the VM can reach
+    /// [`AwkArray`]'s integer half without rendering the number to a string for
+    /// the array to parse straight back.
+    pub fn subscript_int(v: &Value) -> Option<i64> {
+        match v {
+            Value::Num(n)
+                if n.is_finite() && n.fract() == 0.0 && n.abs() < 9_007_199_254_740_992.0 =>
+            {
+                // `-0` subscripts the same element as `0`; the cast already
+                // gives 0 for both, which is what the string path renders too.
+                Some(*n as i64)
+            }
+            _ => None,
+        }
+    }
+
+    /// `a[i]` with an integer subscript — the counted-loop shape, with no key
+    /// rendered and none parsed.
+    pub fn array_get_vivify_int(&mut self, name: &str, i: i64) -> Value {
+        if name == "SYMTAB" {
+            let mut b = KeyBuf::new();
+            let k = b.write_i64(i).to_string();
+            return self.symtab_elem_get(&k);
+        }
+        if let Some(Value::Array(a)) = self.vars.get_mut(name) {
+            if let Some(v) = a.get_int(i) {
+                return match v {
+                    Value::Num(n) => Value::Num(*n),
+                    other => other.clone(),
+                };
+            }
+            a.insert_int(i, Value::Uninit);
+            return Value::Uninit;
+        }
+        let mut b = KeyBuf::new();
+        let k = b.write_i64(i).to_string();
+        self.array_set(name, k, Value::Uninit);
+        Value::Uninit
+    }
+
+    /// `a[i] = v` with an integer subscript.
+    pub fn array_set_int(&mut self, name: &str, i: i64, val: Value) {
+        if name == "SYMTAB" {
+            let mut b = KeyBuf::new();
+            let k = b.write_i64(i).to_string();
+            self.symtab_elem_set(&k, val);
+            return;
+        }
+        if let Some(Value::Array(a)) = self.vars.get_mut(name) {
+            a.insert_int(i, val);
+            return;
+        }
+        let mut b = KeyBuf::new();
+        let k = b.write_i64(i).to_string();
+        self.array_set(name, k, val);
+    }
+
     /// `a[k]` read with POSIX auto-vivification, resolved in one hash lookup
     /// when the element is already there.
     ///
@@ -3666,7 +3731,7 @@ impl Runtime {
                     return;
                 }
                 _ => {
-                    let mut m = AwkMap::default();
+                    let mut m = AwkArray::new();
                     m.insert(key, val);
                     *existing = Value::Array(m);
                     return;
@@ -3679,7 +3744,7 @@ impl Runtime {
             copy.insert(key, val);
             self.vars.insert(name.to_string(), Value::Array(copy));
         } else {
-            let mut m = AwkMap::default();
+            let mut m = AwkArray::new();
             m.insert(key, val);
             self.vars.insert(name.to_string(), Value::Array(m));
         }
@@ -3749,7 +3814,7 @@ impl Runtime {
                     return;
                 }
                 _ => {
-                    let mut m = AwkMap::default();
+                    let mut m = AwkArray::new();
                     m.insert(key.to_string(), Value::Num(delta));
                     *existing = Value::Array(m);
                     return;
@@ -3762,7 +3827,7 @@ impl Runtime {
             copy.insert(key.to_string(), Value::Num(old + delta));
             vars.insert(name.to_string(), Value::Array(copy));
         } else {
-            let mut m = AwkMap::default();
+            let mut m = AwkArray::new();
             m.insert(key.to_string(), Value::Num(delta));
             vars.insert(name.to_string(), Value::Array(m));
         }
@@ -3787,7 +3852,7 @@ impl Runtime {
                 .is_some_and(|g| g.contains_key(name))
             {
                 self.vars
-                    .insert(name.to_string(), Value::Array(AwkMap::default()));
+                    .insert(name.to_string(), Value::Array(AwkArray::new()));
             }
         }
     }
@@ -3805,7 +3870,7 @@ impl Runtime {
             if matches!(mode, SortedInMode::CustomFn(_)) {
                 return keys;
             }
-            let mut tmp: AwkMap<String, Value> = AwkMap::default();
+            let mut tmp = AwkArray::new();
             for k in &keys {
                 tmp.insert(k.clone(), self.symtab_elem_get(k));
             }
@@ -3815,7 +3880,7 @@ impl Runtime {
         let Some(Value::Array(a)) = self.get_global_var(name) else {
             return Vec::new();
         };
-        let mut keys: Vec<String> = a.keys().cloned().collect();
+        let mut keys: Vec<String> = a.keys();
         if self.posix {
             return keys;
         }
@@ -3846,7 +3911,7 @@ impl Runtime {
         // this the name stays absent and reads back as `untyped`.
         self.vars
             .entry(arr_name.to_string())
-            .or_insert_with(|| Value::Array(AwkMap::default()));
+            .or_insert_with(|| Value::Array(AwkArray::new()));
         for (i, p) in parts.iter().enumerate() {
             self.array_set(arr_name, format!("{}", i + 1), Value::Str(p.clone()));
         }
@@ -4050,6 +4115,7 @@ impl Clone for Runtime {
             fuse_vm_pool: fusevm::VMPool::new(),
             gettext_catalogs: self.gettext_catalogs.clone(),
             symtab_slot_map: self.symtab_slot_map.clone(),
+            decimal_lits: Vec::new(),
             // The debugger lives only on the main thread's runtime; parallel
             // worker clones never debug.
             debugger: None,
@@ -4192,7 +4258,7 @@ mod value_tests {
 
     #[test]
     fn value_truthy_cond_rejects_whole_array() {
-        let mut m = super::AwkMap::default();
+        let mut m = super::AwkArray::new();
         m.insert("k".into(), Value::Num(1.0));
         let v = Value::Array(m);
         assert!(v.truthy_cond().is_err());
@@ -4275,7 +4341,7 @@ mod value_tests {
 
     #[test]
     fn value_empty_array_not_truthy() {
-        let m = super::AwkMap::default();
+        let m = super::AwkArray::new();
         assert!(!Value::Array(m).truthy());
     }
 
@@ -4536,7 +4602,7 @@ mod longest_prefix_and_sorted_in_tests {
     fn sorted_in_posix_forces_unsorted() {
         let mut rt = Runtime::new();
         rt.posix = true;
-        let mut pi = AwkMap::default();
+        let mut pi = crate::runtime::AwkArray::new();
         pi.insert("sorted_in".into(), Value::Str("@ind_str_desc".into()));
         rt.vars.insert("PROCINFO".into(), Value::Array(pi));
         assert_eq!(sorted_in_mode(&rt), SortedInMode::Unsorted);
@@ -4545,7 +4611,7 @@ mod longest_prefix_and_sorted_in_tests {
     #[test]
     fn sorted_in_reads_at_tokens_with_trim() {
         let mut rt = Runtime::new();
-        let mut pi = AwkMap::default();
+        let mut pi = crate::runtime::AwkArray::new();
         pi.insert("sorted_in".into(), Value::Str("  @val_num_asc  ".into()));
         rt.vars.insert("PROCINFO".into(), Value::Array(pi));
         assert_eq!(sorted_in_mode(&rt), SortedInMode::ValNumAsc);
@@ -4554,7 +4620,7 @@ mod longest_prefix_and_sorted_in_tests {
     #[test]
     fn sorted_in_user_function_name() {
         let mut rt = Runtime::new();
-        let mut pi = AwkMap::default();
+        let mut pi = crate::runtime::AwkArray::new();
         pi.insert("sorted_in".into(), Value::Str("my_cmp".into()));
         rt.vars.insert("PROCINFO".into(), Value::Array(pi));
         assert_eq!(sorted_in_mode(&rt), SortedInMode::CustomFn("my_cmp".into()));
@@ -4566,13 +4632,13 @@ mod longest_prefix_and_sorted_in_tests {
         assert_eq!(sorted_in_mode(&rt), SortedInMode::Unsorted);
 
         let mut rt2 = Runtime::new();
-        let mut pi = AwkMap::default();
+        let mut pi = crate::runtime::AwkArray::new();
         pi.insert("sorted_in".into(), Value::Str("  ".into()));
         rt2.vars.insert("PROCINFO".into(), Value::Array(pi));
         assert_eq!(sorted_in_mode(&rt2), SortedInMode::Unsorted);
 
         let mut rt3 = Runtime::new();
-        let pi = AwkMap::default();
+        let pi = super::AwkArray::new();
         rt3.vars.insert("PROCINFO".into(), Value::Array(pi));
         assert_eq!(sorted_in_mode(&rt3), SortedInMode::Unsorted);
     }
@@ -4580,7 +4646,7 @@ mod longest_prefix_and_sorted_in_tests {
     #[test]
     fn sort_for_in_ind_num_asc_numeric_not_lexicographic() {
         let mut keys = vec!["10".into(), "2".into(), "1".into()];
-        let arr = AwkMap::default();
+        let arr = super::AwkArray::new();
         sort_for_in_keys(&mut keys, &arr, SortedInMode::IndNumAsc);
         assert_eq!(keys, vec!["1", "2", "10"]);
     }
@@ -4588,7 +4654,7 @@ mod longest_prefix_and_sorted_in_tests {
     #[test]
     fn sort_for_in_val_num_desc_by_values() {
         let mut keys = vec!["a".into(), "b".into()];
-        let mut arr = AwkMap::default();
+        let mut arr = super::AwkArray::new();
         arr.insert("a".into(), Value::Num(1.0));
         arr.insert("b".into(), Value::Num(10.0));
         sort_for_in_keys(&mut keys, &arr, SortedInMode::ValNumDesc);
@@ -4598,7 +4664,7 @@ mod longest_prefix_and_sorted_in_tests {
     #[test]
     fn sort_for_in_val_str_asc_by_string_values() {
         let mut keys = vec!["a".into(), "b".into()];
-        let mut arr = AwkMap::default();
+        let mut arr = super::AwkArray::new();
         arr.insert("a".into(), Value::Str("z".into()));
         arr.insert("b".into(), Value::Str("a".into()));
         sort_for_in_keys(&mut keys, &arr, SortedInMode::ValStrAsc);
@@ -4608,7 +4674,7 @@ mod longest_prefix_and_sorted_in_tests {
     #[test]
     fn sorted_in_mode_ind_str_asc_token() {
         let mut rt = Runtime::new();
-        let mut pi = AwkMap::default();
+        let mut pi = crate::runtime::AwkArray::new();
         pi.insert("sorted_in".into(), Value::Str("@ind_str_asc".into()));
         rt.vars.insert("PROCINFO".into(), Value::Array(pi));
         assert_eq!(sorted_in_mode(&rt), SortedInMode::IndStrAsc);
@@ -4617,7 +4683,7 @@ mod longest_prefix_and_sorted_in_tests {
     #[test]
     fn sorted_in_mode_val_type_asc_token() {
         let mut rt = Runtime::new();
-        let mut pi = AwkMap::default();
+        let mut pi = crate::runtime::AwkArray::new();
         pi.insert("sorted_in".into(), Value::Str("@val_type_asc".into()));
         rt.vars.insert("PROCINFO".into(), Value::Array(pi));
         assert_eq!(sorted_in_mode(&rt), SortedInMode::ValTypeAsc);
@@ -4626,7 +4692,7 @@ mod longest_prefix_and_sorted_in_tests {
     #[test]
     fn sorted_in_mode_val_type_desc_token() {
         let mut rt = Runtime::new();
-        let mut pi = AwkMap::default();
+        let mut pi = crate::runtime::AwkArray::new();
         pi.insert("sorted_in".into(), Value::Str("@val_type_desc".into()));
         rt.vars.insert("PROCINFO".into(), Value::Array(pi));
         assert_eq!(sorted_in_mode(&rt), SortedInMode::ValTypeDesc);
@@ -4635,7 +4701,7 @@ mod longest_prefix_and_sorted_in_tests {
     #[test]
     fn sort_for_in_val_type_asc_orders_type_rank_then_value_string() {
         let mut keys = vec!["str".into(), "num".into(), "absent".into()];
-        let mut arr = AwkMap::default();
+        let mut arr = super::AwkArray::new();
         arr.insert("num".into(), Value::Num(1.0));
         arr.insert("str".into(), Value::Str("z".into()));
         sort_for_in_keys(&mut keys, &arr, SortedInMode::ValTypeAsc);
@@ -4645,7 +4711,7 @@ mod longest_prefix_and_sorted_in_tests {
     #[test]
     fn sort_for_in_val_type_desc_reverses_type_rank() {
         let mut keys = vec!["absent".into(), "num".into(), "str".into()];
-        let mut arr = AwkMap::default();
+        let mut arr = super::AwkArray::new();
         arr.insert("num".into(), Value::Num(1.0));
         arr.insert("str".into(), Value::Str("z".into()));
         sort_for_in_keys(&mut keys, &arr, SortedInMode::ValTypeDesc);
@@ -4655,7 +4721,7 @@ mod longest_prefix_and_sorted_in_tests {
     #[test]
     fn sort_for_in_ind_str_desc() {
         let mut keys = vec!["a".into(), "c".into(), "b".into()];
-        let arr = AwkMap::default();
+        let arr = super::AwkArray::new();
         sort_for_in_keys(&mut keys, &arr, SortedInMode::IndStrDesc);
         assert_eq!(keys, vec!["c", "b", "a"]);
     }
@@ -4663,7 +4729,7 @@ mod longest_prefix_and_sorted_in_tests {
     #[test]
     fn sort_for_in_unsorted_no_op() {
         let mut keys = vec!["z".into(), "a".into()];
-        let arr = AwkMap::default();
+        let arr = super::AwkArray::new();
         sort_for_in_keys(&mut keys, &arr, SortedInMode::Unsorted);
         assert_eq!(keys, vec!["z", "a"]);
     }
@@ -4671,7 +4737,7 @@ mod longest_prefix_and_sorted_in_tests {
     #[test]
     fn sort_for_in_custom_fn_no_op_in_runtime_helper() {
         let mut keys = vec!["b".into(), "a".into()];
-        let arr = AwkMap::default();
+        let arr = super::AwkArray::new();
         sort_for_in_keys(&mut keys, &arr, SortedInMode::CustomFn("cmp".into()));
         assert_eq!(keys, vec!["b", "a"]);
     }
@@ -4801,7 +4867,7 @@ mod awk_binop_values_pinning {
         // gawk-style: using an array name in scalar context is a fatal error,
         // not a silent empty-string coercion.
         let rt = rt();
-        let arr = Value::Array(AwkMap::default());
+        let arr = Value::Array(super::AwkArray::new());
         let err = awk_binop_values(BinOp::Add, &arr, &Value::Num(1.0), false, &rt).unwrap_err();
         let msg = format!("{err}");
         assert!(
@@ -5449,6 +5515,175 @@ mod extra_runtime_tests {
         rt.set_field_sep_split(" ", "a b c");
         rt.ensure_fields_split();
         assert_eq!(rt.nf(), 3);
+    }
+}
+
+/// An awk array.
+///
+/// Subscripts are strings by definition, but one that IS the canonical decimal
+/// spelling of an integer is stored as that integer. `a[1]` and `a["1"]` name
+/// the same element, so both spellings must normalize to one key — and once
+/// they do, the `a[i]` of a counted loop neither renders a string nor
+/// allocates one.
+///
+/// gawk draws the same distinction, and it is most of the difference between
+/// them: denying gawk its integer representation (by subscripting with
+/// `"k" i`) costs it 2.5x on a million-element build, while awkrs, which had
+/// only the string map, barely moves.
+///
+/// Iteration yields the integer-subscripted elements first. awk leaves
+/// `for (k in a)` order unspecified and every implementation answers
+/// differently, so this is a legal order — just not the one the single hash
+/// map happened to produce.
+#[derive(Debug, Clone, Default)]
+pub struct AwkArray {
+    ints: AwkMap<i64, Value>,
+    strs: AwkMap<Box<str>, Value>,
+}
+
+/// The integer a subscript names, when the subscript is exactly that integer's
+/// decimal spelling.
+///
+/// `"1"` is `1`. `"01"`, `"+1"`, `" 1"`, `"1.0"`, `"-0"` and `"9223372036854775808"`
+/// are not: awk keeps each as its own element, so each has to stay a string
+/// key. Checking by rendering the parse back is what makes that exact.
+fn canonical_int(s: &str) -> Option<i64> {
+    let b = s.as_bytes();
+    let (neg, d) = match b.split_first() {
+        Some((b'-', rest)) => (true, rest),
+        _ => (false, b),
+    };
+    // 19 digits is the most an `i64` can hold without overflow checks per digit;
+    // longer subscripts stay strings, as does anything with a leading zero, a
+    // sign it does not render, or a non-digit. `-0` is not canonical either:
+    // zero renders as "0".
+    if d.is_empty() || d.len() > 19 || (d[0] == b'0' && d.len() > 1) || (neg && d == b"0") {
+        return None;
+    }
+    let mut acc: i64 = 0;
+    for &c in d {
+        if !c.is_ascii_digit() {
+            return None;
+        }
+        acc = acc.checked_mul(10)?.checked_add((c - b'0') as i64)?;
+    }
+    Some(if neg { -acc } else { acc })
+}
+
+impl AwkArray {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The element `key` names, whichever half holds it.
+    pub fn get(&self, key: &str) -> Option<&Value> {
+        match canonical_int(key) {
+            Some(i) => self.ints.get(&i),
+            None => self.strs.get(key),
+        }
+    }
+
+    /// `a[i]` where the subscript is already an integer — the hot path, with no
+    /// rendering and no parse.
+    pub fn get_int(&self, i: i64) -> Option<&Value> {
+        self.ints.get(&i)
+    }
+
+    pub fn get_mut(&mut self, key: &str) -> Option<&mut Value> {
+        match canonical_int(key) {
+            Some(i) => self.ints.get_mut(&i),
+            None => self.strs.get_mut(key),
+        }
+    }
+
+    pub fn insert(&mut self, key: String, val: Value) -> Option<Value> {
+        match canonical_int(&key) {
+            Some(i) => self.ints.insert(i, val),
+            None => self.strs.insert(key.into_boxed_str(), val),
+        }
+    }
+
+    /// `a[i] = v` with an integer subscript — stores without building a key.
+    pub fn insert_int(&mut self, i: i64, val: Value) -> Option<Value> {
+        self.ints.insert(i, val)
+    }
+
+    pub fn remove(&mut self, key: &str) -> Option<Value> {
+        match canonical_int(key) {
+            Some(i) => self.ints.remove(&i),
+            None => self.strs.remove(key),
+        }
+    }
+
+    pub fn contains_key(&self, key: &str) -> bool {
+        match canonical_int(key) {
+            Some(i) => self.ints.contains_key(&i),
+            None => self.strs.contains_key(key),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.ints.len() + self.strs.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.ints.is_empty() && self.strs.is_empty()
+    }
+
+    pub fn clear(&mut self) {
+        self.ints.clear();
+        self.strs.clear();
+    }
+
+    /// Every subscript, rendered. Owned rather than borrowed because an integer
+    /// subscript has no stored string to lend.
+    pub fn keys(&self) -> Vec<String> {
+        let mut out = Vec::with_capacity(self.len());
+        let mut b = KeyBuf::new();
+        for i in self.ints.keys() {
+            out.push(b.write_i64(*i).to_string());
+        }
+        out.extend(self.strs.keys().map(|k| k.to_string()));
+        out
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (String, &Value)> {
+        let ints = self.ints.iter().map(|(i, v)| {
+            let mut b = KeyBuf::new();
+            (b.write_i64(*i).to_string(), v)
+        });
+        ints.chain(self.strs.iter().map(|(k, v)| (k.to_string(), v)))
+    }
+
+    /// `entry(k).or_insert(v)` in one call — store `val` only when the
+    /// subscript is absent, and hand back what the subscript now names.
+    pub fn or_insert(&mut self, key: String, val: Value) -> &mut Value {
+        match canonical_int(&key) {
+            Some(i) => self.ints.entry(i).or_insert(val),
+            None => self.strs.entry(key.into_boxed_str()).or_insert(val),
+        }
+    }
+
+    /// [`AwkArray::or_insert`] with the value built only when it is needed.
+    pub fn or_insert_with(&mut self, key: String, f: impl FnOnce() -> Value) -> &mut Value {
+        match canonical_int(&key) {
+            Some(i) => self.ints.entry(i).or_insert_with(f),
+            None => self.strs.entry(key.into_boxed_str()).or_insert_with(f),
+        }
+    }
+
+    pub fn values(&self) -> impl Iterator<Item = &Value> {
+        self.ints.values().chain(self.strs.values())
+    }
+}
+
+impl FromIterator<(String, Value)> for AwkArray {
+    fn from_iter<T: IntoIterator<Item = (String, Value)>>(it: T) -> Self {
+        let mut a = AwkArray::new();
+        for (k, v) in it {
+            a.insert(k, v);
+        }
+        a
     }
 }
 

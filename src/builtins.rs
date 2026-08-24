@@ -849,7 +849,7 @@ pub fn asorti(rt: &mut Runtime, src: &str, dest: Option<&str>) -> Result<f64> {
     }
     let ic = rt.ignore_case_flag();
     let mut keys: Vec<String> = match rt.get_global_var(src) {
-        Some(Value::Array(a)) => a.keys().cloned().collect(),
+        Some(Value::Array(a)) => a.keys(),
         // gawk parity: an unassigned name is an empty array → 0, not a fatal.
         None => Vec::new(),
         _ => return Err(Error::Runtime(format!("asorti: `{src}` is not an array"))),
@@ -1039,7 +1039,7 @@ mod tests {
         assert_eq!(awk_typeof_value(&Value::Str("".into())), "string");
         assert_eq!(awk_typeof_value(&Value::StrLit("x".into())), "string");
         assert_eq!(awk_typeof_value(&Value::Regexp(".".into())), "regexp");
-        let mut a = crate::runtime::AwkMap::default();
+        let mut a = crate::runtime::AwkArray::new();
         a.insert("k".into(), Value::Num(1.0));
         assert_eq!(awk_typeof_value(&Value::Array(a)), "array");
     }
@@ -1389,7 +1389,7 @@ mod tests {
     #[test]
     fn asort_preserves_numeric_values() {
         let mut rt = Runtime::new();
-        let mut a = AwkMap::default();
+        let mut a = crate::runtime::AwkArray::new();
         a.insert("1".into(), Value::Num(10.0));
         a.insert("2".into(), Value::Num(5.0));
         rt.vars.insert("a".into(), Value::Array(a));
@@ -1454,7 +1454,7 @@ mod tests {
         let mut rt = Runtime::new();
         rt.array_delete("a", None);
         rt.vars
-            .insert("a".into(), Value::Array(crate::runtime::AwkMap::default()));
+            .insert("a".into(), Value::Array(crate::runtime::AwkArray::new()));
         let n = asort(&mut rt, "a", None).unwrap();
         assert_eq!(n, 0.0);
     }
@@ -1464,7 +1464,7 @@ mod tests {
         let mut rt = Runtime::new();
         rt.array_delete("a", None);
         rt.vars
-            .insert("a".into(), Value::Array(crate::runtime::AwkMap::default()));
+            .insert("a".into(), Value::Array(crate::runtime::AwkArray::new()));
         let n = asorti(&mut rt, "a", None).unwrap();
         assert_eq!(n, 0.0);
     }
@@ -1476,7 +1476,7 @@ mod tests {
         assert_eq!(awk_typeof_value(&Value::Regexp("a".into())), "regexp");
         assert_eq!(awk_typeof_value(&Value::Uninit), "untyped");
         assert_eq!(
-            awk_typeof_value(&Value::Array(crate::runtime::AwkMap::default())),
+            awk_typeof_value(&Value::Array(crate::runtime::AwkArray::new())),
             "array"
         );
     }
@@ -1567,7 +1567,8 @@ mod tests {
     #[test]
     fn awk_typeof_array_v3() {
         let mut rt = Runtime::new();
-        rt.vars.insert("a".into(), Value::Array(AwkMap::default()));
+        rt.vars
+            .insert("a".into(), Value::Array(crate::runtime::AwkArray::new()));
         assert_eq!(super::awk_typeof_value(rt.vars.get("a").unwrap()), "array");
     }
 

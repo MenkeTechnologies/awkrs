@@ -700,7 +700,7 @@ fn snap_one(
                     .iter()
                     .take(5000)
                     .map(|(k, val)| VarChild {
-                        name: display_key(k),
+                        name: display_key(&k),
                         repr: truncate(&crate::debugger::format_value(val), MAX_VAR_REPR),
                         var_ref: 0,
                     })
@@ -1014,7 +1014,7 @@ mod tests {
 
     #[test]
     fn array_row_expands_to_sorted_children() {
-        let mut arr = AwkMap::default();
+        let mut arr = crate::runtime::AwkArray::new();
         arr.insert("b".to_string(), Value::Num(2.0));
         arr.insert("a".to_string(), Value::StrLit("hi".to_string()));
         let (mut r, mut m) = refs();
@@ -1034,14 +1034,19 @@ mod tests {
     #[test]
     fn empty_array_is_not_expandable() {
         let (mut r, mut m) = refs();
-        let row = snap_one("e", &Value::Array(AwkMap::default()), &mut r, &mut m);
+        let row = snap_one(
+            "e",
+            &Value::Array(crate::runtime::AwkArray::new()),
+            &mut r,
+            &mut m,
+        );
         assert_eq!(row.var_ref, 0);
         assert_eq!(row.repr, "array (0 elements)");
     }
 
     #[test]
     fn subsep_keys_render_with_comma() {
-        let mut arr = AwkMap::default();
+        let mut arr = crate::runtime::AwkArray::new();
         arr.insert("1\u{1c}2".to_string(), Value::Num(9.0));
         let (mut r, mut m) = refs();
         let row = snap_one("m", &Value::Array(arr), &mut r, &mut m);
@@ -1051,10 +1056,10 @@ mod tests {
 
     #[test]
     fn build_snapshot_separates_locals_and_globals_with_unique_refs() {
-        let mut a1 = AwkMap::default();
+        let mut a1 = crate::runtime::AwkArray::new();
         a1.insert("k".to_string(), Value::Num(1.0));
         let a1v = Value::Array(a1);
-        let mut a2 = AwkMap::default();
+        let mut a2 = crate::runtime::AwkArray::new();
         a2.insert("k".to_string(), Value::Num(2.0));
         let a2v = Value::Array(a2);
         let locals = vec![("la".to_string(), &a1v)];
