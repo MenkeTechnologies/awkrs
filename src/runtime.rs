@@ -2442,11 +2442,46 @@ impl Runtime {
     /// all other values use their default string form. Integer-valued numbers
     /// bypass `CONVFMT` via the same heuristic as `as_str()` (e.g. `a[1]`
     /// stays as `"1"` regardless of CONVFMT).
+    /// The array subscript `v` names, without allocating in either hot case.
+    ///
+    /// A string subscript IS the key, so it is borrowed straight from the value
+    /// — `a[k]` inside `for (k in a)` used to clone the key once per element.
+    /// An integral number is written into `buf` through the integer writer
+    /// rather than the float formatter, and borrowed from there. Only the rare
+    /// non-integral subscript, which goes through CONVFMT, still allocates.
+    pub fn array_key_in<'a>(&self, v: &'a Value, buf: &'a mut KeyBuf) -> std::borrow::Cow<'a, str> {
+        use std::borrow::Cow;
+        match v {
+            Value::Str(s) | Value::StrLit(s) | Value::Regexp(s) => Cow::Borrowed(s.as_str()),
+            Value::Uninit | Value::Array(_) => Cow::Borrowed(""),
+            // `a[1]` must key on "1", never "1.000000", so an integral value
+            // never reaches CONVFMT. Every integral `f64` below 2^53 is exactly
+            // an `i64`, so the cast cannot change a digit.
+            Value::Num(n)
+                if n.is_finite() && n.fract() == 0.0 && n.abs() < 9_007_199_254_740_992.0 =>
+            {
+                Cow::Borrowed(buf.write_i64(*n as i64))
+            }
+            other => Cow::Owned(self.value_to_array_key(other)),
+        }
+    }
+
     pub fn value_to_array_key(&self, v: &Value) -> String {
         match v {
             Value::Num(n) => {
                 // Integer-valued numbers must stay exact: a[1] keys on "1" not "1.000000".
                 if n.is_finite() && n.fract() == 0.0 {
+                    // Negative zero subscripts the same element as zero, as it
+                    // does in gawk: `a[0] = 1; a[-0] = 2` leaves ONE element.
+                    // `format!("{:.0}", -0.0)` writes "-0", which made it two.
+                    if *n == 0.0 {
+                        return "0".to_string();
+                    }
+                    if n.abs() < 9_007_199_254_740_992.0 {
+                        // The integer writer, not the float one — the same
+                        // digits, and this runs once per subscript stored.
+                        return KeyBuf::new().write_i64(*n as i64).to_string();
+                    }
                     format!("{:.0}", *n)
                 } else {
                     self.num_to_string_convfmt(*n)
@@ -5412,5 +5447,52 @@ mod extra_runtime_tests {
         rt.set_field_sep_split(" ", "a b c");
         rt.ensure_fields_split();
         assert_eq!(rt.nf(), 3);
+    }
+}
+
+/// Scratch for rendering an integral array subscript in place.
+///
+/// Wide enough for any `i64` in decimal with its sign, so writing one can never
+/// need to grow or allocate.
+pub struct KeyBuf([u8; 20]);
+
+impl Default for KeyBuf {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl KeyBuf {
+    pub fn new() -> Self {
+        KeyBuf([0; 20])
+    }
+
+    /// `n` in decimal, written back-to-front, returned as a borrow of this
+    /// buffer — the integer writer without the formatting machinery, on a path
+    /// that runs once per array subscript.
+    pub fn write_i64(&mut self, n: i64) -> &str {
+        let neg = n < 0;
+        // `-i64::MIN` overflows, so accumulate the magnitude as `u64`.
+        let mut m = if neg {
+            (n as i128).unsigned_abs() as u64
+        } else {
+            n as u64
+        };
+        let mut i = self.0.len();
+        loop {
+            i -= 1;
+            self.0[i] = b'0' + (m % 10) as u8;
+            m /= 10;
+            if m == 0 {
+                break;
+            }
+        }
+        if neg {
+            i -= 1;
+            self.0[i] = b'-';
+        }
+        // Every byte written is an ASCII digit or '-', so this is UTF-8 by
+        // construction.
+        std::str::from_utf8(&self.0[i..]).expect("ascii digits")
     }
 }

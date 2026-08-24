@@ -1846,8 +1846,10 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 let key_val = ctx.pop();
                 // POSIX: numeric subscripts are stringified via CONVFMT — the
                 // same conversion the store path uses, so that `a[x] = 1;
-                // (x in a)` is true for every x.
-                let k = ctx.rt.value_to_array_key(&key_val);
+                // (x in a)` is true for every x. Borrowed: a membership test
+                // does not store the key.
+                let mut kbuf = crate::runtime::KeyBuf::new();
+                let k = ctx.rt.array_key_in(&key_val, &mut kbuf);
                 let name = ctx.str_ref(arr).to_string();
                 // gawk parity: `key in x` on a scalar `x` raises "attempt to
                 // use scalar `x' as an array". Earlier awkrs returned 0.
@@ -1864,7 +1866,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                     for frame in ctx.locals.iter().rev() {
                         match frame.get(name.as_str()) {
                             Some(Value::Array(a)) => {
-                                found = Some(a.contains_key(k.as_str()));
+                                found = Some(a.contains_key(k.as_ref()));
                                 break;
                             }
                             Some(Value::Uninit) | None => {}
