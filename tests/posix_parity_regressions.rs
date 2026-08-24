@@ -1702,3 +1702,116 @@ fn bare_print_accepts_a_redirection() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `FPAT` matches case-sensitively whatever `IGNORECASE` says. gawk is the only
+/// reference that implements `FPAT`, and it is unambiguous:
+///
+/// ```text
+/// $ printf 'AB cd EF\n' | gawk 'BEGIN { FPAT="[a-z]+"; IGNORECASE=1 } { print NF, $1 }'
+/// 1 cd
+/// $ printf 'AB cd EF\n' | gawk 'BEGIN { FPAT="ab";      IGNORECASE=1 } { print NF }'
+/// 0
+/// ```
+///
+/// awkrs compiled the `FPAT` alternatives case-insensitively, so the first
+/// answered `3 AB` — `AB` and `EF` became fields too — and the second `1`.
+#[test]
+fn fpat_does_not_honour_ignorecase() {
+    for (program, want) in [
+        (
+            r#"BEGIN { FPAT="[a-z]+"; IGNORECASE=1 } { print NF, $1 }"#,
+            "1 cd\n",
+        ),
+        (
+            r#"BEGIN { FPAT="[a-z]+"; IGNORECASE=0 } { print NF, $1 }"#,
+            "1 cd\n",
+        ),
+        (r#"BEGIN { FPAT="ab"; IGNORECASE=1 } { print NF }"#, "0\n"),
+    ] {
+        let (code, stdout, stderr) = run_awkrs_stdin(program, "AB cd EF\n");
+        assert_eq!(code, 0, "{program}: stderr {stderr:?}");
+        assert_eq!(stdout, want, "{program}");
+    }
+}
+
+/// The regex `FS`, the `split()` separator and the `FPAT` alternatives are all
+/// memoised now, so the cases that must still invalidate the memo are pinned
+/// here: a mid-run change of the pattern, and a mid-run change of `IGNORECASE`
+/// (which only `FS` honours). The `FS`-change and `split()` expectations are
+/// gawk, one-true-awk and mawk agreeing; the `IGNORECASE` and `FPAT` ones are
+/// gawk alone, because neither extension exists in the other two — mawk and
+/// one-true-awk answer `2 1 1` to the `IGNORECASE` case, having no such
+/// variable.
+#[test]
+fn memoised_split_patterns_still_track_changes() {
+    // A regex FS replaced between records.
+    let (code, stdout, stderr) = run_awkrs_stdin(
+        r#"BEGIN { FS="[0-9]" } NR==2 { FS="," } { print NF "|" $1 }"#,
+        "a1b,c\nx2y,z\nq3r,s\n",
+    );
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    // The new FS takes effect on the *next* record, so record 2 still splits on
+    // the digit and record 3 splits on the comma.
+    assert_eq!(stdout, "2|a\n2|x\n2|q3r\n");
+
+    // IGNORECASE flipped between records, with a multi-character FS — the one
+    // separator form that honours it.
+    let (code, stdout, stderr) = run_awkrs_stdin(
+        r#"BEGIN { FS="XY" } NR==2 { IGNORECASE=1 } { print NF }"#,
+        "aXYb\naxyb\naxyb\n",
+    );
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "2\n1\n2\n");
+
+    // The same separator text used by `split()` many times, and a different one
+    // afterwards: the memo must not answer the second with the first's engine.
+    let (code, stdout, stderr) = run_awkrs_stdin(
+        r#"BEGIN {
+             for (i = 0; i < 3; i++) n = split("a1b22c", A, "[0-9]+")
+             m = split("a1b22c", B, "[0-9]")
+             print n, A[3], m, B[3]
+           }"#,
+        "",
+    );
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "3 c 4 \n"); // gawk, one-true-awk and mawk agree
+
+    // `IGNORECASE` flipped between two `split()` calls that share a separator,
+    // in both directions — the memo must not answer the second with the first's
+    // engine. gawk (the only reference with `IGNORECASE`) prints `1 2` and
+    // `2 1`; dropping the flag from the memo key makes both `1 1` and `2 2`.
+    for (program, want) in [
+        (
+            r#"BEGIN { n = split("aXYb", A, "xy"); IGNORECASE = 1; m = split("aXYb", B, "xy"); print n, m }"#,
+            "1 2\n",
+        ),
+        (
+            r#"BEGIN { IGNORECASE = 1; n = split("aXYb", A, "xy"); IGNORECASE = 0; m = split("aXYb", B, "xy"); print n, m }"#,
+            "2 1\n",
+        ),
+    ] {
+        let (code, stdout, stderr) = run_awkrs_stdin(program, "");
+        assert_eq!(code, 0, "{program}: stderr {stderr:?}");
+        assert_eq!(stdout, want, "{program}");
+    }
+
+    // A separator that does not compile falls back to a literal split, and does
+    // so identically on every call — memoising the failure must not make the
+    // first call differ from the rest. (Falling back at all is a divergence from
+    // all three references, which make an invalid pattern fatal; that is
+    // pre-existing and unchanged here. What is pinned is the *stability*.)
+    let (code, stdout, stderr) = run_awkrs_stdin(
+        r#"BEGIN { for (i = 1; i <= 3; i++) { n = split("a[b[c", A, "[["); printf "%d:%d ", i, n } print "" }"#,
+        "",
+    );
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "1:1 2:1 3:1 \n");
+
+    // FPAT replaced between records.
+    let (code, stdout, stderr) = run_awkrs_stdin(
+        r#"BEGIN { FPAT="[0-9]+" } NR==2 { FPAT="[a-z]+" } { print NF "|" $1 }"#,
+        "a1b\nc2d\ne3f\n",
+    );
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "1|1\n1|2\n2|e\n"); // gawk 5.4.1
+}

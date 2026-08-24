@@ -1048,20 +1048,45 @@ fn is_main_rule(r: &Rule) -> bool {
     !matches!(r.pattern, Pattern::Begin | Pattern::End)
 }
 
-/// Run a chunk on a fresh fusevm VM with awkrs's host installed. Returns any awk
-/// control-flow signal the chunk raised (`next`/`exit`/…), propagating a host
-/// fatal as `Err`.
-fn run_chunk(rt: &mut crate::runtime::Runtime, chunk: &fusevm::Chunk) -> Result<Option<u8>> {
-    let mut vm = fusevm::VM::new(chunk.clone());
-    crate::fusevm_host::install_awk_host(&mut vm);
-    {
-        let _g = crate::fusevm_host::RuntimeGuard::enter(rt);
-        let _ = vm.run();
+/// One fusevm VM, reused for every chunk of every record.
+///
+/// Each rule of each record used to get `VM::new(chunk.clone())` followed by
+/// `install_awk_host`, which is two host installs and five `register_builtin`
+/// calls — per record. `VM::reset` swaps the chunk and clears the execution
+/// state but leaves the builtin table and both installed hosts alone, so all of
+/// that now happens once per program instead of once per record. awk's own
+/// globals are unaffected either way: they live in the [`Runtime`], not in
+/// fusevm's global vector, which is why resetting that vector is safe here.
+///
+/// [`Runtime`]: crate::runtime::Runtime
+struct ChunkRunner {
+    vm: fusevm::VM,
+}
+
+impl ChunkRunner {
+    fn new() -> Self {
+        let mut vm = fusevm::VM::new(fusevm::Chunk::default());
+        crate::fusevm_host::install_awk_host(&mut vm);
+        Self { vm }
     }
-    let signal = vm.awk_signal();
-    match crate::fusevm_host::take_host_error() {
-        Some(e) => Err(e),
-        None => Ok(signal),
+
+    /// Run one chunk. Returns any awk control-flow signal it raised
+    /// (`next`/`exit`/…), propagating a host fatal as `Err`.
+    fn run(
+        &mut self,
+        rt: &mut crate::runtime::Runtime,
+        chunk: &fusevm::Chunk,
+    ) -> Result<Option<u8>> {
+        self.vm.reset(chunk.clone());
+        {
+            let _g = crate::fusevm_host::RuntimeGuard::enter(rt);
+            let _ = self.vm.run();
+        }
+        let signal = self.vm.awk_signal();
+        match crate::fusevm_host::take_host_error() {
+            Some(e) => Err(e),
+            None => Ok(signal),
+        }
     }
 }
 
@@ -1192,9 +1217,10 @@ pub(crate) fn run_compiled_files(
     rt: &mut crate::runtime::Runtime,
 ) -> Result<Vec<u8>> {
     let (begin, main, end) = (&p.begin, &p.main, &p.end);
+    let mut runner = ChunkRunner::new();
     let mut exiting = false;
     for ch in begin {
-        if run_chunk(rt, ch)? == Some(SIG_EXIT) {
+        if runner.run(rt, ch)? == Some(SIG_EXIT) {
             exiting = true;
             break;
         }
@@ -1207,15 +1233,12 @@ pub(crate) fn run_compiled_files(
             'records: for line in content.lines() {
                 rt.nr += 1.0;
                 rt.fnr += 1.0;
-                // FS is read each record so a rule changing it affects the next.
-                let fs = rt
-                    .vars
-                    .get("FS")
-                    .map(|v| v.as_str())
-                    .unwrap_or_else(|| " ".to_string());
-                rt.set_field_sep_split(&fs, line);
+                // FS is read each record so a rule changing it affects the
+                // next; `set_record_with_current_fs` does that re-read without
+                // the per-record `String` clone `as_str()` costs.
+                rt.set_record_with_current_fs(line);
                 for ch in main {
-                    match run_chunk(rt, ch)? {
+                    match runner.run(rt, ch)? {
                         Some(SIG_NEXT) => continue 'records,
                         Some(SIG_NEXTFILE) => continue 'files,
                         Some(SIG_EXIT) => break 'files,
@@ -1228,7 +1251,7 @@ pub(crate) fn run_compiled_files(
 
     // END always runs (even after `exit`); `exit` inside END just stops it.
     for ch in end {
-        if run_chunk(rt, ch)? == Some(SIG_EXIT) {
+        if runner.run(rt, ch)? == Some(SIG_EXIT) {
             break;
         }
     }
@@ -1589,6 +1612,32 @@ mod tests {
         // a function called per-record, mutating a global accumulator
         let src = "function add(x) { total += x } { add($1) } END { print total }";
         assert_eq!(run_prog(src, "10\n20\n30\n"), b"60\n");
+    }
+
+    /// The record loop reuses one VM across every chunk of every record
+    /// (`ChunkRunner`), where it used to build a fresh one — with both hosts and
+    /// five builtin registrations — per rule per record. `VM::reset` clears
+    /// fusevm's own globals, so this pins the things that would break if awk
+    /// state had actually been living there: an accumulator carried across
+    /// records, `NR`/`FNR` advancing, a second rule running on the same record,
+    /// and `next` skipping only the rest of the current record.
+    #[test]
+    fn the_reused_vm_keeps_state_across_records_and_rules() {
+        // Accumulator across records, and both rules run on each record.
+        assert_eq!(
+            run_prog("{ s += $1 } { n += 1 } END { print s, n }", "1\n2\n3\n"),
+            b"6 3\n"
+        );
+        // `next` skips the remaining rules for that record only.
+        assert_eq!(
+            run_prog(
+                "$1 == 2 { next } { kept = kept $1 } END { print kept }",
+                "1\n2\n3\n"
+            ),
+            b"13\n"
+        );
+        // The record-scoped specials still advance.
+        assert_eq!(run_prog("END { print NR }", "a\nb\nc\n"), b"3\n");
     }
 
     #[test]

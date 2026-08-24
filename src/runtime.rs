@@ -896,37 +896,31 @@ fn split_toplevel_alternatives(pat: &str) -> Vec<String> {
 ///
 /// For a single-alternative pattern this collapses to the original behavior
 /// (with empty-match skipping for safety).
-fn split_fields_fpat(
-    record: &str,
-    fpat: &str,
-    field_ranges: &mut Vec<(u32, u32)>,
-    ignore_case: bool,
-) -> bool {
+fn split_fields_fpat(record: &str, fpat: &str, field_ranges: &mut Vec<(u32, u32)>) -> bool {
     field_ranges.clear();
     if record.is_empty() {
         return true;
     }
-    let alts = split_toplevel_alternatives(fpat);
-    // Compile each alternative anchored to the current position via Rust's
-    // anchored-find API. We compile them once.
-    let mut compiled: Vec<Regex> = Vec::with_capacity(alts.len());
-    for alt in &alts {
-        // Anchor at the start of the candidate substring.
-        let anchored = format!("^(?:{})", alt);
-        let mut b = RegexBuilder::new(&anchored);
-        b.case_insensitive(ignore_case);
-        match b.build() {
-            Ok(re) => compiled.push(re),
-            Err(_) => return false,
-        }
-    }
+    // "We compile them once" used to mean once per *call*, and this runs once
+    // per record — `FPAT="[0-9]+"` over 300 000 records cost 3.04 s of CPU
+    // against gawk's 1.39 s. Memoised like the `FS` and `split()` engines.
+    with_fpat_regexes(fpat, |compiled| {
+        let Some(compiled) = compiled else {
+            return false;
+        };
+        fpat_scan(record, compiled, field_ranges)
+    })
+}
+
+/// The leftmost-longest scan, once the alternatives are compiled.
+fn fpat_scan(record: &str, compiled: &[Regex], field_ranges: &mut Vec<(u32, u32)>) -> bool {
     let n = record.len();
     let bytes = record.as_bytes();
     let mut pos = 0usize;
     while pos < n {
         let tail = &record[pos..];
         let mut best_end: Option<usize> = None;
-        for re in &compiled {
+        for re in compiled {
             if let Some(m) = re.find(tail) {
                 // `^(?:…)` ensures m.start() == 0.
                 let end = m.end();
@@ -1088,6 +1082,83 @@ fn memoised_fs_regex<'a>(
         },
         _ => FsRegex::Unknown,
     }
+}
+
+/// Separator engines for `split()`, memoised per thread by pattern text.
+///
+/// Same finding as the record loop's `FS`, one call site along: the separator is
+/// a pure function of its text and `IGNORECASE`, and `split()` inside a record
+/// loop recompiled it for every record. Keyed by the pattern alone with the flag
+/// stored beside the engine, so a hit costs no allocation; a pattern that does
+/// not compile is memoised as `None` so the literal fallback does not pay for
+/// the failed compile again either.
+///
+/// Bounded rather than unbounded: a program that splits on many distinct
+/// computed separators would otherwise grow this without limit, and dropping the
+/// whole map is correct at any moment — every entry is reconstructible.
+const SPLIT_REGEX_MEMO_MAX: usize = 256;
+
+thread_local! {
+    static SPLIT_REGEX_MEMO: std::cell::RefCell<AwkMap<String, (bool, Option<Regex>)>> =
+        std::cell::RefCell::new(AwkMap::default());
+}
+
+/// Run `f` with the memoised engine for `fs` (`None` when `fs` is not a valid
+/// regex). The engine is handed to a closure rather than returned because it
+/// lives inside the thread-local map.
+fn with_split_regex<R>(fs: &str, ignore_case: bool, f: impl FnOnce(Option<&Regex>) -> R) -> R {
+    SPLIT_REGEX_MEMO.with(|memo| {
+        let mut memo = memo.borrow_mut();
+        let fresh = match memo.get(fs) {
+            Some((ic, _)) => *ic != ignore_case,
+            None => true,
+        };
+        if fresh {
+            if memo.len() >= SPLIT_REGEX_MEMO_MAX {
+                memo.clear();
+            }
+            let compiled = build_fs_regex(fs, ignore_case);
+            memo.insert(fs.to_string(), (ignore_case, compiled));
+        }
+        let entry = memo.get(fs).expect("just inserted");
+        f(entry.1.as_ref())
+    })
+}
+
+// Compiled `FPAT` alternatives, memoised per thread — the `with_split_regex`
+// treatment for the other per-record regex. `None` records an `FPAT` that does
+// not compile, which is what makes the splitter fall back to `FS`.
+//
+// No `IGNORECASE` in the key because `FPAT` does not honour it. gawk is the only
+// reference that implements `FPAT` at all, and it matches case-sensitively
+// regardless:
+//
+//   printf 'AB cd EF\n' | gawk 'BEGIN{FPAT="[a-z]+";IGNORECASE=1}{print NF, $1}'
+//   1 cd          # awkrs answered `3 AB` — the alternatives were compiled
+//                 # case-insensitively, so `AB` and `EF` became fields too.
+thread_local! {
+    static FPAT_REGEX_MEMO: std::cell::RefCell<AwkMap<String, Option<Vec<Regex>>>> =
+        std::cell::RefCell::new(AwkMap::default());
+}
+
+fn with_fpat_regexes<R>(fpat: &str, f: impl FnOnce(Option<&[Regex]>) -> R) -> R {
+    FPAT_REGEX_MEMO.with(|memo| {
+        let mut memo = memo.borrow_mut();
+        if !memo.contains_key(fpat) {
+            if memo.len() >= SPLIT_REGEX_MEMO_MAX {
+                memo.clear();
+            }
+            // Every alternative is anchored at the candidate position, so a
+            // single failure makes the whole `FPAT` unusable.
+            let compiled = split_toplevel_alternatives(fpat)
+                .iter()
+                .map(|alt| build_fs_regex(&format!("^(?:{alt})"), false))
+                .collect::<Option<Vec<Regex>>>();
+            memo.insert(fpat.to_string(), compiled);
+        }
+        let entry = memo.get(fpat).expect("just inserted");
+        f(entry.as_deref())
+    })
 }
 
 /// What the splitter should use for a regex `FS`.
@@ -1287,6 +1358,8 @@ pub struct Runtime {
     /// must return `0`, not raise "only valid during normal input" — gawk, mawk and
     /// one-true-awk all return `0` there.
     pub primary_input_done: bool,
+    /// `GAWK_READ_TIMEOUT` once read — see [`Self::read_timeout_env_ms`].
+    pub read_timeout_env: Cell<Option<i32>>,
     /// Memoised regex `FS`: `(pattern, IGNORECASE, engine)`, where a `None`
     /// engine records a pattern that does not compile. See [`FsRegex`] for why
     /// the record loop cannot afford to build this per record.
@@ -1659,6 +1732,7 @@ impl Runtime {
             inet_udp: HashMap::new(),
             gettext_dir: String::new(),
             bignum: false,
+            read_timeout_env: Cell::new(None),
             fs_regex: None,
             file_handles: HashMap::new(),
             getline_leftover: HashMap::new(),
@@ -1780,9 +1854,28 @@ impl Runtime {
         match self.get_global_var("PROCINFO") {
             Some(Value::Array(m)) => match m.get("READ_TIMEOUT") {
                 Some(v) => (v.as_number() as i32).max(0),
-                None => crate::procinfo::gawk_read_timeout_env().max(0),
+                None => self.read_timeout_env_ms(),
             },
-            _ => crate::procinfo::gawk_read_timeout_env().max(0),
+            _ => self.read_timeout_env_ms(),
+        }
+    }
+
+    /// `GAWK_READ_TIMEOUT`, read once per process rather than once per
+    /// `getline`.
+    ///
+    /// The env lookup was 14% of a `while ((getline l < f) > 0)` loop in the
+    /// profile — `std::env::var` walks the environment block on every call, and
+    /// nothing in an awk program can change it. Memoised here rather than inside
+    /// `gawk_read_timeout_env` so that function keeps re-reading, which is what
+    /// its own tests check.
+    fn read_timeout_env_ms(&self) -> i32 {
+        match self.read_timeout_env.get() {
+            Some(v) => v,
+            None => {
+                let v = crate::procinfo::gawk_read_timeout_env().max(0);
+                self.read_timeout_env.set(Some(v));
+                v
+            }
         }
     }
 
@@ -2109,6 +2202,7 @@ impl Runtime {
             inet_udp: HashMap::new(),
             gettext_dir: String::new(),
             bignum,
+            read_timeout_env: Cell::new(None),
             fs_regex: None,
             file_handles: HashMap::new(),
             getline_leftover: HashMap::new(),
@@ -2393,10 +2487,10 @@ impl Runtime {
             let fd = h.stdout.get_ref().as_raw_fd();
             wait_fd_read_timeout(fd, to)?;
         }
-        let (rs, re, mut leftover) = self.getline_rs_state(cmd)?;
+        let (rs, re, mut leftover) = self.take_getline_rs_state(cmd)?;
         let h = self.coproc_handles.get_mut(cmd).unwrap();
         let read = read_record_from_stream(&mut h.stdout, &rs, re.as_ref(), &mut leftover);
-        self.getline_leftover.insert(cmd.to_string(), leftover);
+        self.restore_getline_rs_state(cmd, re, leftover);
         self.finish_redirected_getline(read?)
     }
 
@@ -2435,13 +2529,13 @@ impl Runtime {
                 .as_raw_fd();
             wait_fd_read_timeout(fd, to)?;
         }
-        let (rs, re, mut leftover) = self.getline_rs_state(cmd)?;
+        let (rs, re, mut leftover) = self.take_getline_rs_state(cmd)?;
         let reader = self
             .pipe_stdout
             .get_mut(cmd)
             .expect("pipe_stdout entry exists; just inserted");
         let read = read_record_from_stream(reader, &rs, re.as_ref(), &mut leftover);
-        self.getline_leftover.insert(cmd.to_string(), leftover);
+        self.restore_getline_rs_state(cmd, re, leftover);
         self.finish_redirected_getline(read?)
     }
 
@@ -2859,18 +2953,45 @@ impl Runtime {
         ))
     }
 
-    /// `RS`, its compiled regex form, and this stream's carry-over buffer.
+    /// `RS`, its compiled regex form, and this stream's carry-over buffer, all
+    /// *moved out* of `self` — the reader is borrowed out of one of the handle
+    /// maps for the read below, so nothing else may still be borrowed from
+    /// `self` at that point. Every caller must hand all three back through
+    /// [`Self::restore_getline_rs_state`], on the error path too.
     ///
-    /// Pulled out of `self` before the reader is borrowed out of one of the
-    /// handle maps, so the record read below holds only that one borrow. The
-    /// regex is cloned rather than referenced for the same reason; `Regex` is
-    /// reference-counted internally, so the clone is a pointer bump.
-    fn getline_rs_state(&mut self, key: &str) -> Result<(String, Option<BytesRegex>, Vec<u8>)> {
+    /// Moved rather than cloned. A cloned `regex` engine starts with an empty
+    /// match-cache pool, so the lazy DFA it needs is rebuilt on the next match
+    /// — a cache that hands out clones looks like it is working (pattern
+    /// compilation vanishes from the profile) while the expensive half of the
+    /// work still happens per call. Measured on a `while ((getline l < f) > 0)`
+    /// loop over 200 000 records with `RS = "[0-9]"`: 1.98 s of CPU cloning,
+    /// against gawk's 0.63 s.
+    fn take_getline_rs_state(
+        &mut self,
+        key: &str,
+    ) -> Result<(String, Option<BytesRegex>, Vec<u8>)> {
         let rs = self.rs_string();
         self.ensure_rs_regex_bytes()?;
-        let re = self.rs_regex_bytes.clone();
-        let leftover = self.getline_leftover.remove(key).unwrap_or_default();
+        let re = self.rs_regex_bytes.take();
+        // `get_mut` + `take` rather than `remove`: `remove` would be paired with
+        // an `insert` that allocates the key string on every getline call, for a
+        // key that is already in the map after the first one.
+        let leftover = match self.getline_leftover.get_mut(key) {
+            Some(buf) => std::mem::take(buf),
+            None => Vec::new(),
+        };
         Ok((rs, re, leftover))
+    }
+
+    /// The other half of [`Self::take_getline_rs_state`].
+    fn restore_getline_rs_state(&mut self, key: &str, re: Option<BytesRegex>, leftover: Vec<u8>) {
+        self.rs_regex_bytes = re;
+        match self.getline_leftover.get_mut(key) {
+            Some(buf) => *buf = leftover,
+            None => {
+                self.getline_leftover.insert(key.to_string(), leftover);
+            }
+        }
     }
 
     /// `getline var < filename` — one record from a kept-open file handle.
@@ -2907,7 +3028,14 @@ impl Runtime {
             )));
         }
         let p = Path::new(path);
-        if p.is_dir() {
+        // `is_dir` is a `stat` syscall, and this runs once per `getline` — 66%
+        // of a `while ((getline l < f) > 0)` loop in the profile, more than the
+        // read itself. Only the *first* call for a path can discover that it is
+        // a directory: after that the path is either already being iterated as
+        // one, or has an open file handle. Both are answered from a map.
+        let is_dir = self.dir_read.contains_key(path)
+            || (!self.file_handles.contains_key(path) && p.is_dir());
+        if is_dir {
             self.require_unsandboxed_io()?;
             if !self.dir_read.contains_key(path) {
                 let mut names: Vec<String> = std::fs::read_dir(p)
@@ -2941,10 +3069,10 @@ impl Runtime {
             let fd = self.file_handles[path].get_ref().as_raw_fd();
             wait_fd_read_timeout(fd, to)?;
         }
-        let (rs, re, mut leftover) = self.getline_rs_state(path)?;
+        let (rs, re, mut leftover) = self.take_getline_rs_state(path)?;
         let reader = self.file_handles.get_mut(path).unwrap();
         let read = read_record_from_stream(reader, &rs, re.as_ref(), &mut leftover);
-        self.getline_leftover.insert(path.to_string(), leftover);
+        self.restore_getline_rs_state(path, re, leftover);
         self.finish_redirected_getline(read?)
     }
 
@@ -3278,7 +3406,7 @@ impl Runtime {
             }
         });
         if let Some(ref fp_trimmed) = fpat_trimmed {
-            if split_fields_fpat(record, fp_trimmed, &mut self.field_ranges, ic) {
+            if split_fields_fpat(record, fp_trimmed, &mut self.field_ranges) {
                 return;
             }
         }
@@ -4309,16 +4437,22 @@ fn split_string_impl(
         return (parts, seps);
     }
     // Regex FS (or multi-char / case-insensitive): use the regex engine and
-    // capture each match for the seps array.
-    let mut b = RegexBuilder::new(fs);
-    b.case_insensitive(ignore_case);
-    // gawk parity: `.` in ERE matches `\n` too.
-    b.dot_matches_new_line(true);
-    let Ok(re) = b.build() else {
-        let parts: Vec<String> = s.split(fs).map(String::from).collect();
-        let seps = vec![fs.to_string(); parts.len().saturating_sub(1)];
-        return (parts, seps);
-    };
+    // capture each match for the seps array. The engine comes from the memo —
+    // `split()` is routinely called once per record, and compiling the
+    // separator per call is what made `{ n += split($0, a, "[ ,]+") }` cost
+    // 3.18 s of CPU over 300 000 records where mawk needs 0.04 s.
+    with_split_regex(fs, ignore_case, |re| {
+        let Some(re) = re else {
+            let parts: Vec<String> = s.split(fs).map(String::from).collect();
+            let seps = vec![fs.to_string(); parts.len().saturating_sub(1)];
+            return (parts, seps);
+        };
+        split_on_regex(s, re)
+    })
+}
+
+/// The separator-capturing split, once the engine is in hand.
+fn split_on_regex(s: &str, re: &Regex) -> (Vec<String>, Vec<String>) {
     let mut parts: Vec<String> = Vec::new();
     let mut seps: Vec<String> = Vec::new();
     let mut last = 0usize;
@@ -4384,6 +4518,7 @@ impl Clone for Runtime {
             inet_udp: HashMap::new(),
             gettext_dir: self.gettext_dir.clone(),
             bignum: self.bignum,
+            read_timeout_env: Cell::new(None),
             fs_regex: None,
             file_handles: HashMap::new(),
             getline_leftover: HashMap::new(),
