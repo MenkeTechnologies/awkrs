@@ -1057,6 +1057,57 @@ fn split_csv_gawk_fields(record: &str, field_ranges: &mut Vec<(u32, u32)>) {
     }
 }
 
+/// Compile a regex `FS`. `None` when the pattern is not a valid regex, which
+/// makes the splitter fall back to a literal split.
+///
+/// The one place the flags are set, so the memoised engine and the ad-hoc one
+/// can never disagree: `IGNORECASE` applies (only a multi-character `FS` honours
+/// it), and gawk lets `.` match a newline in an ERE, which matters once `RS`
+/// allows a record to contain one.
+fn build_fs_regex(fs: &str, ignore_case: bool) -> Option<Regex> {
+    let mut b = RegexBuilder::new(fs);
+    b.case_insensitive(ignore_case);
+    b.dot_matches_new_line(true);
+    b.build().ok()
+}
+
+/// The memoised engine for `fs`, or [`FsRegex::Unknown`] when the cache holds a
+/// different pattern.
+///
+/// Takes the cache and the pattern as separate borrows rather than `&self`:
+/// the caller needs `&mut self.field_ranges` at the same time, and a whole-`self`
+/// borrow would rule that out.
+fn memoised_fs_regex<'a>(
+    cache: &'a Option<(String, bool, Option<Regex>)>,
+    fs: &str,
+) -> FsRegex<'a> {
+    match cache {
+        Some((pat, _, engine)) if pat == fs => match engine {
+            Some(re) => FsRegex::Compiled(re),
+            None => FsRegex::Invalid,
+        },
+        _ => FsRegex::Unknown,
+    }
+}
+
+/// What the splitter should use for a regex `FS`.
+///
+/// A multi-character `FS` is a regular expression, and the splitter used to
+/// compile it from scratch inside every call — which is once per record in the
+/// main loop. `awk -F'[;,]' '{ print $3 }'` over a million lines therefore built
+/// the same automaton a million times: 1.98 s of CPU against mawk's 0.16 s on
+/// the same file. The record loop now hands in the engine it memoised.
+pub enum FsRegex<'a> {
+    /// Nothing memoised — compile here. The `split()` builtin and the unit tests
+    /// come in this way; they are not the per-record path.
+    Unknown,
+    /// The engine for exactly this `FS` and `IGNORECASE`.
+    Compiled(&'a Regex),
+    /// This `FS` is not a valid regex, and the caller already knows it. Falls
+    /// back to a literal split without paying for the failed compile again.
+    Invalid,
+}
+
 /// Split `record` into `field_ranges` (replaces contents). Shared by lazy split and stdin path.
 /// Split `record` into field byte-ranges using `fs`.
 ///
@@ -1073,6 +1124,7 @@ fn split_fields_into(
     ignore_case: bool,
     characters_as_bytes: bool,
     paragraph_mode: bool,
+    fs_re: FsRegex<'_>,
 ) {
     field_ranges.clear();
     // POSIX: an empty record has zero fields, whatever FS is. Without this the
@@ -1134,13 +1186,17 @@ fn split_fields_into(
         // FS to `[<fs>\n]` in the single-character branch), so
         // `RS=""; FS="[0-9]+"` on "a12b\nc345d" is three fields in every
         // reference, with "b\nc" as $2.
-        let mut b = RegexBuilder::new(fs);
-        b.case_insensitive(ignore_case);
-        // gawk: `.` in ERE matches any byte including `\n` (matters when RS != "\n"
-        // so records can contain embedded newlines).
-        b.dot_matches_new_line(true);
-        match b.build() {
-            Ok(re) => {
+        let owned;
+        let re: Option<&Regex> = match fs_re {
+            FsRegex::Compiled(re) => Some(re),
+            FsRegex::Invalid => None,
+            FsRegex::Unknown => {
+                owned = build_fs_regex(fs, ignore_case);
+                owned.as_ref()
+            }
+        };
+        match re {
+            Some(re) => {
                 let mut last = 0;
                 for m in re.find_iter(record) {
                     field_ranges.push((last as u32, m.start() as u32));
@@ -1148,7 +1204,7 @@ fn split_fields_into(
                 }
                 field_ranges.push((last as u32, record.len() as u32));
             }
-            Err(_) => {
+            None => {
                 // Fall back to literal split if the FS is not a valid regex.
                 let mut pos = 0;
                 for part in record.split(fs) {
@@ -1231,6 +1287,10 @@ pub struct Runtime {
     /// must return `0`, not raise "only valid during normal input" — gawk, mawk and
     /// one-true-awk all return `0` there.
     pub primary_input_done: bool,
+    /// Memoised regex `FS`: `(pattern, IGNORECASE, engine)`, where a `None`
+    /// engine records a pattern that does not compile. See [`FsRegex`] for why
+    /// the record loop cannot afford to build this per record.
+    pub fs_regex: Option<(String, bool, Option<Regex>)>,
     /// Open files for `getline < path` / `close`.
     pub file_handles: HashMap<String, BufReader<File>>,
     /// [`Self::read_leftover`], per redirected `getline` stream.
@@ -1599,6 +1659,7 @@ impl Runtime {
             inet_udp: HashMap::new(),
             gettext_dir: String::new(),
             bignum: false,
+            fs_regex: None,
             file_handles: HashMap::new(),
             getline_leftover: HashMap::new(),
             dir_read: HashMap::new(),
@@ -2048,6 +2109,7 @@ impl Runtime {
             inet_udp: HashMap::new(),
             gettext_dir: String::new(),
             bignum,
+            fs_regex: None,
             file_handles: HashMap::new(),
             getline_leftover: HashMap::new(),
             dir_read: HashMap::new(),
@@ -2198,13 +2260,25 @@ impl Runtime {
         );
         Ok(())
     }
-    /// `set_rt_from_bytes` — see implementation for the contract.
+    /// Publish `RT` — the separator text that ended the record just read.
+    ///
+    /// Runs once per record, so it writes through the existing entry rather than
+    /// re-inserting. The straightforward `vars.insert("RT".into(), Value::Str(t))`
+    /// allocated twice on every record — a fresh `String` key for a name already
+    /// in the map, and a fresh value string — which is two million allocations
+    /// across a million-record input, for a variable most programs never read.
+    /// Reusing the stored `String`'s buffer makes the steady state allocation-free.
     pub fn set_rt_from_bytes(&mut self, sep: &[u8]) {
-        let t = if sep.is_empty() {
-            String::new()
-        } else {
-            String::from_utf8_lossy(sep).into_owned()
-        };
+        if let Some(Value::Str(s)) = self.vars.get_mut("RT") {
+            s.clear();
+            match std::str::from_utf8(sep) {
+                Ok(t) => s.push_str(t),
+                Err(_) => s.push_str(&String::from_utf8_lossy(sep)),
+            }
+            return;
+        }
+        // First record, or a program that assigned a non-string to `RT`.
+        let t = String::from_utf8_lossy(sep).into_owned();
         self.vars.insert("RT".into(), Value::Str(t));
     }
 
@@ -3056,6 +3130,14 @@ impl Runtime {
     }
     /// `set_field_sep_split` — see implementation for the contract.
     pub fn set_field_sep_split(&mut self, fs: &str, line: &str) {
+        self.reset_record(line);
+        self.cached_fs.clear();
+        self.cached_fs.push_str(fs);
+    }
+
+    /// [`set_field_sep_split`](Self::set_field_sep_split) minus the `FS` copy —
+    /// for the record loop, where `FS` is usually the same as last record's.
+    fn reset_record(&mut self, line: &str) {
         self.record.clear();
         self.record.push_str(line);
         self.record_assigned = true;
@@ -3063,10 +3145,37 @@ impl Runtime {
         self.field_strnum.clear();
         self.fields_dirty = false;
         self.fields_pending_split = true;
-        self.cached_fs.clear();
-        self.cached_fs.push_str(fs);
         self.fields.clear();
         self.field_ranges.clear();
+    }
+
+    /// Start a new record, reading `FS` from the variable map.
+    ///
+    /// POSIX makes a rule's assignment to `FS` take effect on the *next* record,
+    /// so the record loop has to re-read it every time and cannot hoist it. It
+    /// used to do that through `Value::as_str()`, which clones — a `String`
+    /// allocation per record for a value that changes in essentially no
+    /// programs. Comparing against the copy `cached_fs` already holds keeps the
+    /// steady state allocation-free while re-reading just as faithfully.
+    pub fn set_record_with_current_fs(&mut self, line: &str) {
+        let unchanged = match self.vars.get("FS") {
+            Some(Value::Str(s)) | Some(Value::StrLit(s)) | Some(Value::Regexp(s)) => {
+                s.as_str() == self.cached_fs.as_str()
+            }
+            // A numeric `FS`, or none at all, goes the long way — both are rare
+            // and neither can be compared without building the string.
+            _ => false,
+        };
+        if unchanged {
+            self.reset_record(line);
+            return;
+        }
+        let fs = self
+            .vars
+            .get("FS")
+            .map(|v| v.as_str())
+            .unwrap_or_else(|| " ".into());
+        self.set_field_sep_split(&fs, line);
     }
 
     /// Like [`set_field_sep_split`](Self::set_field_sep_split) but takes an owned line (avoids extra
@@ -3090,6 +3199,10 @@ impl Runtime {
     pub fn ensure_fields_split(&mut self) {
         if self.fields_pending_split {
             self.fields_pending_split = false;
+            // Before `split_record_fields` borrows `self.record`: memoising the
+            // compiled `FS` needs `&mut self`, and the split holds the record
+            // and the field vector at once.
+            self.sync_fs_regex();
             self.split_record_fields();
         }
     }
@@ -3097,6 +3210,32 @@ impl Runtime {
     /// Split `self.record` into `field_ranges` using current **`FPAT`** (if non-empty) or **`FS`**.
     /// Uses `cached_fs` when available (set by `set_field_sep_split`) to avoid per-record
     /// HashMap lookups and String allocations for the common case.
+    /// Bring [`Self::fs_regex`] in step with the current `FS` and `IGNORECASE`.
+    ///
+    /// Runs before `self.record` is borrowed for the split, because it needs
+    /// `&mut self`. The clone only happens on a miss — i.e. when `FS` or
+    /// `IGNORECASE` actually changed, which is essentially never inside a record
+    /// loop. A single-character, empty or default `FS` never reaches the regex
+    /// engine, so nothing is compiled for it.
+    fn sync_fs_regex(&mut self) {
+        // Only a multi-character `FS` reaches the regex engine, so the common
+        // separators return before even reading `IGNORECASE`.
+        let fs_len = self.cached_fs.len();
+        if fs_len <= 1 || self.cached_fs == " " {
+            return;
+        }
+        let ignore_case = self.ignore_case_flag();
+        if self
+            .fs_regex
+            .as_ref()
+            .is_some_and(|(pat, ic, _)| *ic == ignore_case && pat.as_str() == self.cached_fs)
+        {
+            return;
+        }
+        let compiled = build_fs_regex(&self.cached_fs, ignore_case);
+        self.fs_regex = Some((self.cached_fs.clone(), ignore_case, compiled));
+    }
+
     fn split_record_fields(&mut self) {
         let record = self.record.as_str();
         if self.csv_mode {
@@ -3151,6 +3290,7 @@ impl Runtime {
         // the common paths keep their single global lookup.
         if !self.cached_fs.is_empty() {
             let para = self.cached_fs.len() == 1 && self.cached_fs != " " && self.paragraph_mode();
+            let fs_re = memoised_fs_regex(&self.fs_regex, &self.cached_fs);
             split_fields_into(
                 record,
                 &self.cached_fs,
@@ -3158,14 +3298,31 @@ impl Runtime {
                 ic,
                 cab,
                 para,
+                fs_re,
             );
         } else {
             match self.get_global_var("FS") {
-                None => split_fields_into(record, " ", &mut self.field_ranges, ic, cab, false),
+                None => split_fields_into(
+                    record,
+                    " ",
+                    &mut self.field_ranges,
+                    ic,
+                    cab,
+                    false,
+                    FsRegex::Unknown,
+                ),
                 Some(v) => {
                     let fs = v.as_str_cow().into_owned();
                     let para = fs.len() == 1 && fs != " " && self.paragraph_mode();
-                    split_fields_into(record, &fs, &mut self.field_ranges, ic, cab, para);
+                    split_fields_into(
+                        record,
+                        &fs,
+                        &mut self.field_ranges,
+                        ic,
+                        cab,
+                        para,
+                        FsRegex::Unknown,
+                    );
                 }
             }
         }
@@ -3588,6 +3745,9 @@ impl Runtime {
         self.fields_dirty = false;
         self.fields.clear();
         self.field_ranges.clear();
+        // The streaming path splits eagerly rather than through
+        // `ensure_fields_split`, so it memoises the compiled `FS` itself.
+        self.sync_fs_regex();
         self.split_record_fields();
         let nf = self.nf() as f64;
         self.vars.insert("NF".into(), Value::Num(nf));
@@ -3823,6 +3983,38 @@ impl Runtime {
         // readonly globals: `array_set` handles both, and only once per array.
         self.array_set(name, key.to_string(), Value::Uninit);
         Value::Uninit
+    }
+
+    /// [`array_set`](Self::array_set) with a borrowed subscript — see
+    /// [`AwkArray::insert_str`] for why the borrow matters on this path.
+    pub fn array_set_str(&mut self, name: &str, key: &str, val: Value) {
+        if name == "SYMTAB" {
+            self.symtab_elem_set(key, val);
+            return;
+        }
+        if let Some(existing) = self.vars.get_mut(name) {
+            match existing {
+                Value::Array(a) => {
+                    a.insert_str(key, val);
+                }
+                _ => {
+                    let mut m = AwkArray::new();
+                    m.insert_str(key, val);
+                    *existing = Value::Array(m);
+                }
+            }
+            return;
+        }
+        // First access: seed from the read-only `BEGIN` snapshot if it has one.
+        if let Some(Value::Array(a)) = self.global_readonly.as_ref().and_then(|g| g.get(name)) {
+            let mut copy = a.clone();
+            copy.insert_str(key, val);
+            self.vars.insert(name.to_string(), Value::Array(copy));
+        } else {
+            let mut m = AwkArray::new();
+            m.insert_str(key, val);
+            self.vars.insert(name.to_string(), Value::Array(m));
+        }
     }
 
     pub fn array_set(&mut self, name: &str, key: String, val: Value) {
@@ -4192,6 +4384,7 @@ impl Clone for Runtime {
             inet_udp: HashMap::new(),
             gettext_dir: self.gettext_dir.clone(),
             bignum: self.bignum,
+            fs_regex: None,
             file_handles: HashMap::new(),
             getline_leftover: HashMap::new(),
             dir_read: HashMap::new(),
@@ -5246,7 +5439,15 @@ mod extra_runtime_tests {
     #[test]
     fn split_fields_whitespace() {
         let mut ranges = Vec::new();
-        split_fields_into("  a  b   c  ", " ", &mut ranges, false, false, false);
+        split_fields_into(
+            "  a  b   c  ",
+            " ",
+            &mut ranges,
+            false,
+            false,
+            false,
+            FsRegex::Unknown,
+        );
         assert_eq!(ranges.len(), 3);
         assert_eq!(ranges[0], (2, 3)); // "a"
         assert_eq!(ranges[1], (5, 6)); // "b"
@@ -5256,7 +5457,15 @@ mod extra_runtime_tests {
     #[test]
     fn split_fields_comma() {
         let mut ranges = Vec::new();
-        split_fields_into("a,b,,c", ",", &mut ranges, false, false, false);
+        split_fields_into(
+            "a,b,,c",
+            ",",
+            &mut ranges,
+            false,
+            false,
+            false,
+            FsRegex::Unknown,
+        );
         assert_eq!(ranges.len(), 4);
         assert_eq!(ranges[0], (0, 1)); // "a"
         assert_eq!(ranges[1], (2, 3)); // "b"
@@ -5267,7 +5476,15 @@ mod extra_runtime_tests {
     #[test]
     fn split_fields_regex() {
         let mut ranges = Vec::new();
-        split_fields_into("a1b22c", "[0-9]+", &mut ranges, false, false, false);
+        split_fields_into(
+            "a1b22c",
+            "[0-9]+",
+            &mut ranges,
+            false,
+            false,
+            false,
+            FsRegex::Unknown,
+        );
         assert_eq!(ranges.len(), 3);
         assert_eq!(ranges[0], (0, 1)); // "a"
         assert_eq!(ranges[1], (2, 3)); // "b"
@@ -5740,6 +5957,21 @@ impl AwkArray {
         match canonical_int(&key) {
             Some(i) => self.ints.insert(i, val),
             None => self.strs.insert(key.into_boxed_str(), val),
+        }
+    }
+
+    /// `a[k] = v` with a borrowed subscript.
+    ///
+    /// The owned form has to be handed a `String` even when the subscript names
+    /// an integer — the overwhelmingly common case for `a[$1]`, `a[NR]` and
+    /// `a[i]` — and then drops it unread, because an integer subscript is stored
+    /// in the `ints` half. That is one wasted allocation per element stored.
+    /// Taking the key by reference defers the allocation to the `strs` half,
+    /// which is the only half that needs to own it.
+    pub fn insert_str(&mut self, key: &str, val: Value) -> Option<Value> {
+        match canonical_int(key) {
+            Some(i) => self.ints.insert(i, val),
+            None => self.strs.insert(key.into(), val),
         }
     }
 
