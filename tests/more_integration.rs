@@ -211,14 +211,39 @@ fn procinfo_bignum_keys_when_dash_m() {
     assert_eq!(o, "1\n1\n1\n1\n");
 }
 
+/// `PROCINFO["identifiers"]` is a subarray, reached by passing it to a function
+/// — the spelling gawk accepts:
+///
+/// ```text
+/// $ LC_ALL=C gawk 'function f(a){ return a["split"] } BEGIN{ print f(PROCINFO["identifiers"]) }'
+/// builtin
+/// ```
+///
+/// This test used to read it as `id = PROCINFO["identifiers"]; id["split"]`,
+/// which gawk rejects — `fatal: attempt to use array `PROCINFO["identifiers"]'
+/// in a scalar context`, exit 2 — because a whole array cannot be assigned to a
+/// scalar. awkrs now rejects it too, so the assertion moved to the spelling
+/// both accept.
 #[test]
 fn procinfo_identifiers_has_split_builtin() {
+    let (c, o, e) = run_awkrs_stdin(
+        r#"function f(ids) { return ids["split"] } BEGIN { print f(PROCINFO["identifiers"]) }"#,
+        "",
+    );
+    assert_eq!(c, 0, "stderr: {e}");
+    assert_eq!(o.trim_end(), "builtin");
+}
+
+/// The half of the same behavior that used to be accepted: aliasing a subarray
+/// into a scalar name is fatal, exactly as gawk reports it.
+#[test]
+fn procinfo_subarray_assigned_to_a_scalar_is_fatal() {
     let (c, o, _) = run_awkrs_stdin(
         r#"BEGIN { id = PROCINFO["identifiers"]; print id["split"] }"#,
         "",
     );
-    assert_eq!(c, 0);
-    assert_eq!(o.trim_end(), "builtin");
+    assert_eq!(c, 2);
+    assert_eq!(o, "");
 }
 
 #[test]

@@ -1415,13 +1415,41 @@ fn translate_awk_re_to_rust(pat: &str) -> String {
     let mut in_bracket = false;
     while i < chars.len() {
         let c = chars[i];
+        // POSIX/gawk octal escape: a backslash followed by up to three octal
+        // digits is the character with that code, and it is recognised inside a
+        // bracket expression as well as outside one. gawk, mawk and
+        // one-true-awk all agree — `/\141/` matches `a`, `/\12/` matches a
+        // newline, `/\1411/` matches `a1`, and `/[\101]/` matches `A`.
+        //
+        // awkrs used to rewrite `\1`..`\9` into a *literal* backslash-digit,
+        // which matches nothing any of those patterns are looking for, and left
+        // the in-bracket spelling for Rust's regex parser, which rejected it
+        // outright: `BEGIN { print ("A" ~ /[\101]/) }` died with "backreferences
+        // are not supported" where every reference prints 1.
+        if c == '\\' && i + 1 < chars.len() && chars[i + 1].is_digit(8) {
+            let mut code = 0u32;
+            let mut digits = 0;
+            while digits < 3 {
+                match chars.get(i + 1 + digits) {
+                    Some(d) if d.is_digit(8) => {
+                        code = code * 8 + d.to_digit(8).expect("checked octal digit");
+                        digits += 1;
+                    }
+                    _ => break,
+                }
+            }
+            // `\x{…}` is the one spelling Rust's regex parser accepts in both
+            // positions, so the same rewrite serves inside and outside brackets.
+            out.push_str(&format!("\\x{{{code:x}}}"));
+            i += 1 + digits;
+            continue;
+        }
         if c == '\\' && i + 1 < chars.len() && !in_bracket {
             let next = chars[i + 1];
-            if ('1'..='9').contains(&next) {
-                // gawk: literal `\N`; Rust would treat as backref. Escape so
-                // Rust sees a literal backslash followed by the digit.
-                out.push('\\');
-                out.push('\\');
+            if matches!(next, '8' | '9') {
+                // Not an octal digit, so not an escape at all: gawk warns
+                // "regexp escape sequence `\8' treated as plain `8'" and matches
+                // the bare digit. mawk and one-true-awk do the same silently.
                 out.push(next);
                 i += 2;
                 continue;
@@ -3845,14 +3873,21 @@ impl Runtime {
                 self.vars.insert(name.to_string(), Value::Array(copy));
             }
         } else {
-            self.vars.remove(name);
-            if self
-                .global_readonly
-                .as_ref()
-                .is_some_and(|g| g.contains_key(name))
-            {
-                self.vars
-                    .insert(name.to_string(), Value::Array(AwkArray::new()));
+            // `delete arr` empties the array; it does not untype the name.
+            // gawk keeps reporting `typeof(arr) == "array"` afterwards and
+            // still rejects `arr = 5` as "attempt to use array `arr' in a
+            // scalar context", and mawk and one-true-awk agree. Removing the
+            // entry outright — what awkrs used to do — silently turned the
+            // name back into a fresh untyped variable.
+            match self.vars.get_mut(name) {
+                Some(Value::Array(a)) => a.clear(),
+                // Anything else — absent, or present but unassigned — becomes
+                // an empty array. `delete a` on a fresh name is how gawk types
+                // it: `BEGIN { delete a; print typeof(a) }` answers `array`.
+                _ => {
+                    self.vars
+                        .insert(name.to_string(), Value::Array(AwkArray::new()));
+                }
             }
         }
     }
@@ -4166,25 +4201,45 @@ mod regex_translator_tests {
         // (`\d\w\s` is no longer pass-through — see `strips_backslash_from_unsupported_class_escapes`)
     }
 
+    /// `\N` is an **octal escape**, not a backreference and not a literal
+    /// backslash-digit. These three tests used to pin the literal reading, which
+    /// no reference awk produces — verified against all three under `LC_ALL=C`:
+    ///
+    /// ```text
+    /// BEGIN { print ("aa" ~ /(.)\1/), ("a\\1" ~ /(.)\1/), ("a\001" ~ /(.)\1/),
+    ///               ("a\002b" ~ /a\2b/), ("\011" ~ /\9/), ("9" ~ /\9/) }
+    /// gawk 5.4.1        → 0 0 1 1 0 1
+    /// one-true-awk      → 0 0 1 1 0 1
+    /// mawk 1.3.4        → 0 0 1 1 0 1
+    /// ```
+    ///
+    /// So `\1` matches the byte 0x01 (not `aa`, and not the two characters
+    /// `\1`), and `\9` — `9` is not an octal digit — is the plain digit.
     #[test]
-    fn escapes_numeric_backref_to_literal() {
-        // Rust regex would parse `\1` as a backref and error. gawk treats it
-        // as literal `\1`. Escape to `\\1` so Rust matches the literal sequence.
-        assert_eq!(translate_awk_re_to_rust(r"(.)\1"), r"(.)\\1");
-        assert_eq!(translate_awk_re_to_rust(r"a\2b"), r"a\\2b");
-        assert_eq!(translate_awk_re_to_rust(r"\9"), r"\\9");
+    fn numeric_escape_is_octal_not_a_backreference() {
+        assert_eq!(translate_awk_re_to_rust(r"(.)\1"), r"(.)\x{1}");
+        assert_eq!(translate_awk_re_to_rust(r"a\2b"), r"a\x{2}b");
+        assert_eq!(translate_awk_re_to_rust(r"\9"), "9");
+        // Up to three octal digits, greedily: `\141` is `a`, and a fourth digit
+        // is an ordinary character after it.
+        assert_eq!(translate_awk_re_to_rust(r"\141"), r"\x{61}");
+        assert_eq!(translate_awk_re_to_rust(r"\1411"), r"\x{61}1");
     }
 
     #[test]
-    fn handles_multiple_backrefs_in_one_pattern() {
-        assert_eq!(translate_awk_re_to_rust(r"(.)(.)\1\2"), r"(.)(.)\\1\\2");
+    fn handles_multiple_octal_escapes_in_one_pattern() {
+        assert_eq!(translate_awk_re_to_rust(r"(.)(.)\1\2"), r"(.)(.)\x{1}\x{2}");
     }
 
+    /// A bracket expression is not an exception: `("\001" ~ /[\1\2]/)` and
+    /// `("\002" ~ /[\1\2]/)` are both 1 in gawk, mawk and one-true-awk, while
+    /// `("1" ~ /[\1\2]/)` is 0 — so the digits are octal codes there too, not
+    /// literal members of the set. Left untranslated, Rust's parser rejected the
+    /// whole pattern as an unsupported backreference.
     #[test]
-    fn does_not_escape_backref_inside_character_class() {
-        // Inside `[...]`, Rust regex already treats `\1` as literal. Don't
-        // double-escape or we'd match literal `\\1` instead of `\1`.
-        assert_eq!(translate_awk_re_to_rust(r"[\1\2]"), r"[\1\2]");
+    fn octal_escape_is_recognised_inside_a_character_class() {
+        assert_eq!(translate_awk_re_to_rust(r"[\1\2]"), r"[\x{1}\x{2}]");
+        assert_eq!(translate_awk_re_to_rust(r"[\101]"), r"[\x{41}]");
     }
 
     #[test]
@@ -4212,9 +4267,10 @@ mod regex_translator_tests {
     }
 
     #[test]
-    fn backref_compiles_after_translation() {
-        // End-to-end: a pattern that would have crashed `ensure_regex` now
-        // compiles and matches the literal `\1` sequence.
+    fn octal_escape_compiles_after_translation() {
+        // End-to-end: a pattern Rust's parser rejects outright now compiles,
+        // and matches what the three references match — the byte 0x01, not a
+        // repeated character and not the two characters `\` and `1`.
         use regex::Regex;
         let translated = translate_awk_re_to_rust(r"(.)\1");
         let re = Regex::new(&translated).expect("should compile after translation");
@@ -4222,7 +4278,11 @@ mod regex_translator_tests {
             !re.is_match("aa"),
             "repeated-char should NOT match (no real backref)"
         );
-        assert!(re.is_match("a\\1"), "literal `\\1` sequence SHOULD match");
+        assert!(
+            !re.is_match("a\\1"),
+            "the two characters `\\` `1` are not what `\\1` means"
+        );
+        assert!(re.is_match("a\u{1}"), "octal 1 SHOULD match");
     }
 }
 

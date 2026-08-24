@@ -15,16 +15,18 @@ use std::process::{Command, Stdio};
 
 // ── PROCINFO: argv mirror, FUNCTAB, composite keys ──────────────────────────
 
+/// A subarray is reached by passing it to a function, not by aliasing it into a
+/// scalar name: `a = PROCINFO["argv"]` — how this test used to spell it — is
+/// `fatal: attempt to use array `PROCINFO["argv"]' in a scalar context` in gawk
+/// (exit 2), and awkrs now agrees. The parameter form works in both.
 #[test]
 fn procinfo_argv_subarray_matches_process_args() {
-    let (c, o, _) = run_awkrs_stdin(
-        r#"BEGIN {
-  a = PROCINFO["argv"]
-  print (a["0"] ~ /awkrs/)
-}"#,
+    let (c, o, e) = run_awkrs_stdin(
+        r#"function argv0(a) { return (a["0"] ~ /awkrs/) }
+BEGIN { print argv0(PROCINFO["argv"]) }"#,
         "",
     );
-    assert_eq!(c, 0);
+    assert_eq!(c, 0, "stderr: {e}");
     assert_eq!(o.trim(), "1");
 }
 
@@ -47,28 +49,26 @@ fn procinfo_api_and_program_identify_runtime() {
 
 #[test]
 fn functab_lists_user_function_metadata() {
-    let (c, o, _) = run_awkrs_stdin(
+    let (c, o, e) = run_awkrs_stdin(
         r#"function f(x) { return x }
-BEGIN { m = FUNCTAB["f"]; print m["type"], m["arity"] }"#,
+function meta(m) { return m["type"] " " m["arity"] }
+BEGIN { print meta(FUNCTAB["f"]) }"#,
         "",
     );
-    assert_eq!(c, 0);
+    assert_eq!(c, 0, "stderr: {e}");
     assert_eq!(o.trim(), "user 1");
 }
 
 #[test]
 fn functab_lists_two_distinct_user_functions() {
-    let (c, o, _) = run_awkrs_stdin(
+    let (c, o, e) = run_awkrs_stdin(
         r#"function foo() { return 1 }
 function bar(x, y) { return x + y }
-BEGIN {
-  fa = FUNCTAB["foo"]
-  fb = FUNCTAB["bar"]
-  print fa["arity"], fb["arity"]
-}"#,
+function arity(m) { return m["arity"] }
+BEGIN { print arity(FUNCTAB["foo"]), arity(FUNCTAB["bar"]) }"#,
         "",
     );
-    assert_eq!(c, 0);
+    assert_eq!(c, 0, "stderr: {e}");
     assert_eq!(o.trim(), "0 2");
 }
 

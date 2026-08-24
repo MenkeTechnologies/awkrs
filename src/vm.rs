@@ -7,7 +7,7 @@ use crate::bytecode::*;
 use crate::error::{Error, Result};
 use crate::flow::Flow;
 use crate::format;
-use crate::runtime::AwkMap;
+use crate::runtime::{AwkArray, AwkMap};
 use crate::runtime::{sorted_in_mode, value_to_float, Runtime, SortedInMode, Value};
 use rug::ops::Pow as _;
 use rug::Float;
@@ -331,8 +331,24 @@ impl<'a> VmCtx<'a> {
     }
 
     fn set_var(&mut self, name: &str, val: Value) -> Result<()> {
+        // gawk, mawk and one-true-awk all make a plain assignment fatal when
+        // either side is a whole array: `y = x` after `x[1]=1` ("attempt to use
+        // array `x' in a scalar context") and `arr = 5` after `split(…, arr)`
+        // ("attempt to use array `arr' in a scalar context"). awkrs used to
+        // accept both silently — the first aliased the array under a second
+        // name, the second replaced it with a scalar — so a program that the
+        // references reject with status 2 ran to completion here.
+        //
+        // `delete arr` does NOT undo array-ness in any reference, and the check
+        // is deliberately placed here rather than at `Op::SetVar` so the
+        // compound (`+=`), increment and `for (k in …)` loop-variable paths,
+        // which all funnel through this one function, are covered too.
+        val.reject_if_array_scalar()?;
         for frame in self.locals.iter_mut().rev() {
             if let Some(v) = frame.get_mut(name) {
+                if matches!(v, Value::Array(_)) {
+                    return Err(array_in_scalar_context(name));
+                }
                 *v = val;
                 return Ok(());
             }
@@ -367,7 +383,12 @@ impl<'a> VmCtx<'a> {
             // RS / CONVFMT: no cached bytes; next read uses [`Runtime::rs_string`] / CONVFMT lookup.
             _ => {}
         }
+        // The global-target half of the array-in-scalar-context rule. It rides
+        // on the lookup the store needs anyway, so it costs nothing extra; a
+        // slot can never hold an array (the compiler keeps array-typed names
+        // out of `slot_map`), which is why the slot path above skips it.
         match self.rt.vars.get_mut(name) {
+            Some(Value::Array(_)) => return Err(array_in_scalar_context(name)),
             Some(v) => *v = val,
             None => {
                 self.rt.vars.insert(name.to_string(), val);
@@ -1108,6 +1129,12 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 ctx.push(v);
             }
             Op::SetSlot(slot) => {
+                // `y = x` with an array on the right compiles to
+                // `GetVar(x); SetSlot(y)` — `y` is scalar-only so it got a slot
+                // while the array-typed `x` did not. Without this the array was
+                // aliased into a scalar slot instead of being rejected the way
+                // every reference awk rejects it.
+                ctx.peek().reject_if_array_scalar()?;
                 ctx.rt.slots[slot as usize] = ctx.peek().clone();
                 ctx.rt.touch_slot(slot as usize);
             }
@@ -1925,7 +1952,17 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                             handled = true;
                             break;
                         }
-                        Some(Value::Uninit) | None => {}
+                        // A declared-but-unassigned local is typed as an array
+                        // by the delete itself: gawk answers `array` for
+                        // `function f(loc) { delete loc; print typeof(loc) }`
+                        // and then rejects `loc = 1`. `None` means the name is
+                        // not local to this frame at all, so keep walking out.
+                        Some(slot @ Value::Uninit) => {
+                            *slot = Value::Array(AwkArray::new());
+                            handled = true;
+                            break;
+                        }
+                        None => {}
                         Some(_) => {
                             scalar_err = true;
                             break;
@@ -2202,6 +2239,11 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 // which ignores CONVFMT; we must dispatch on `Value::Num`/
                 // `Value::Mpfr` here to honor the user-visible format global.
                 let v = ctx.pop();
+                // Same guard `Op::Concat` carries. `a ""` folds the literal into
+                // this fused opcode, which is exactly the spelling that reaches
+                // for an array's string value, so omitting it here let
+                // `f = a ""` through while `f = a b` was correctly rejected.
+                v.reject_if_array_scalar()?;
                 let mut s = match v {
                     Value::Num(n) => ctx.rt.num_to_string_convfmt(n),
                     Value::Mpfr(ref f) => ctx.rt.mpfr_to_string_convfmt(f),
@@ -2248,6 +2290,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             }
             Op::IncrSlot(slot) => {
                 let s = slot as usize;
+                ctx.rt.slots[s].reject_if_array_scalar()?;
                 if ctx.rt.bignum {
                     let prec = ctx.rt.mpfr_prec_bits();
                     let round = ctx.rt.mpfr_round();
@@ -2266,6 +2309,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             }
             Op::DecrSlot(slot) => {
                 let s = slot as usize;
+                ctx.rt.slots[s].reject_if_array_scalar()?;
                 if ctx.rt.bignum {
                     let prec = ctx.rt.mpfr_prec_bits();
                     let round = ctx.rt.mpfr_round();
@@ -2488,6 +2532,15 @@ fn incdec_push(kind: IncDecOp, old_n: f64, new_n: f64) -> f64 {
 
 fn apply_binop(op: BinOp, old: &Value, rhs: &Value, use_mpfr: bool, rt: &Runtime) -> Result<Value> {
     crate::runtime::awk_binop_values(op, old, rhs, use_mpfr, rt)
+}
+
+/// The named counterpart to [`Value::reject_if_array_scalar`], for the sites
+/// that know which identifier the array arrived under. gawk's wording verbatim:
+/// `attempt to use array `x' in a scalar context`.
+fn array_in_scalar_context(name: &str) -> Error {
+    Error::Runtime(format!(
+        "attempt to use array `{name}' in a scalar context"
+    ))
 }
 
 /// gawk parity: subscript assignment (`x[k] = …`) requires `x` to be an array

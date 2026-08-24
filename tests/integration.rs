@@ -91,11 +91,39 @@ fn begin_for_c_loop_runs_expected_iterations() {
     assert_eq!(stdout, "10\n");
 }
 
+/// `delete a` empties the array; it does not untype the name, so a later
+/// `a = 9` is still an array used in a scalar context. This test used to pin
+/// the opposite — exit 0 and `9` — which no reference awk produces:
+///
+/// ```text
+/// $ LC_ALL=C gawk 'BEGIN { a[1] = 1; delete a; a = 9; print a }'
+/// gawk: cmd. line:1: fatal: attempt to use array `a' in a scalar context   [exit 2]
+/// $ LC_ALL=C awk  'BEGIN { a[1] = 1; delete a; a = 9; print a }'   # one-true-awk 20200816
+/// awk: can't assign to a; it's an array name.                              [exit 2]
+/// $ LC_ALL=C mawk 'BEGIN { a[1] = 1; delete a; a = 9; print a }'   # mawk 1.3.4
+/// mawk: line 1: illegal reference to array a                               [exit 2]
+/// ```
+///
+/// Only the exit status and the absence of output are asserted: the three
+/// references word the diagnostic three different ways, so the wording is not
+/// behavior a program can observe — the status is.
 #[test]
-fn begin_delete_whole_array_then_scalar_reuse() {
-    let (code, stdout, _) = run_awkrs_stdin("BEGIN { a[1] = 1; delete a; a = 9; print a }", "");
+fn begin_delete_whole_array_then_scalar_reuse_is_fatal() {
+    let (code, stdout, stderr) = run_awkrs_stdin("BEGIN { a[1] = 1; delete a; a = 9; print a }", "");
+    assert_eq!(code, 2, "stderr: {stderr}");
+    assert_eq!(stdout, "");
+}
+
+/// The element-wise form is unaffected: `delete a[1]` leaves the array intact
+/// and reusable, and the array is still an array afterwards.
+#[test]
+fn begin_delete_element_keeps_array_usable() {
+    let (code, stdout, _) = run_awkrs_stdin(
+        "BEGIN { a[1] = 1; a[2] = 2; delete a[1]; a[3] = 3; n = 0; for (k in a) n++; print n, a[2], a[3] }",
+        "",
+    );
     assert_eq!(code, 0);
-    assert_eq!(stdout, "9\n");
+    assert_eq!(stdout, "2 2 3\n"); // gawk 5.4.1, one-true-awk and mawk agree
 }
 
 #[test]
