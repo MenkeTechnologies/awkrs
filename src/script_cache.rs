@@ -10,6 +10,7 @@
 //!                            pointer_width, built_at_secs },
 //!                  entries: HashMap<canonical_path, ScriptEntry> }`
 //!   `ScriptEntry { mtime_secs, mtime_nsecs, binary_mtime_at_cache,
+//!                  binary_mtime_nsecs_at_cache, binary_size_at_cache,
 //!                  cached_at_secs, cp_blob: Vec<u8> }`
 //!
 //! Inner `cp_blob` stays bincode for now — `CompiledProgram` has no
@@ -23,8 +24,11 @@
 //!     pay validation once.
 //!   - `rkyv::check_archived_root::<ScriptShard>` validates the byte image.
 //!   - Header validated for magic / format_version / awkrs_version / pointer_width.
-//!   - Per-entry: source mtime must match, and `binary_mtime_at_cache` ≥ running
-//!     awkrs binary's mtime (any rebuild invalidates entries silently).
+//!   - Per-entry: source mtime must match, and the recorded binary identity
+//!     `(mtime secs, mtime nsecs, size)` must EQUAL the running binary's — any
+//!     rebuild invalidates entries silently. Identity, not recency: a seconds-
+//!     only mtime tested with `<` replayed stale bytecode whenever a rebuild
+//!     landed in the same wall-clock second as the previous run's write.
 //!
 //! Write path:
 //!   - `flock(LOCK_EX)` on `scripts.rkyv.lock` so concurrent writers serialize.
@@ -48,7 +52,7 @@ use crate::bytecode::CompiledProgram;
 /// Magic header bytes — fail-fast if a wrong-format file is mmap'd.
 pub const SHARD_MAGIC: u32 = 0x41574B52; // "AWKR"
 /// Bumped on incompatible rkyv schema changes.
-pub const SHARD_FORMAT_VERSION: u32 = 2;
+pub const SHARD_FORMAT_VERSION: u32 = 3;
 
 // ── rkyv archived types ──────────────────────────────────────────────────────
 /// `ShardHeader` — see fields for the structure layout.
@@ -76,6 +80,15 @@ pub struct ScriptEntry {
     pub mtime_nsecs: i64,
     /// `binary_mtime_at_cache` field.
     pub binary_mtime_at_cache: i64,
+    /// Nanosecond half of the binary's mtime. The seconds half alone cannot
+    /// separate two builds a fraction of a second apart, and neither can the
+    /// size — a debug binary's byte count is dominated by padding and does not
+    /// move for a small code change (measured: two builds differing only in an
+    /// interned literal were both 50 111 464 bytes).
+    pub binary_mtime_nsecs_at_cache: i64,
+    /// Size of the awkrs binary when this entry was written. Paired with the
+    /// mtime to identify the build that produced `cp_blob`.
+    pub binary_size_at_cache: u64,
     /// `cached_at_secs` field.
     pub cached_at_secs: i64,
     /// `cp_blob` field.
@@ -208,9 +221,28 @@ impl ScriptCache {
             return None;
         }
 
-        if let Some(bin_mtime) = current_binary_mtime_secs() {
-            let cached_bin_mtime: i64 = entry.binary_mtime_at_cache.into();
-            if cached_bin_mtime < bin_mtime {
+        // The entry is only usable if the binary that wrote it is the binary
+        // running now — identity, not recency.
+        //
+        // This was `cached_bin_mtime < current_bin_mtime` against a *seconds*
+        // mtime, so an entry whose recorded second merely equalled the running
+        // binary's was served. An incremental rebuild plus a run fits inside one
+        // second easily, so a rebuild silently replayed the previous build's
+        // bytecode: verified by breaking the literal-compile path, rebuilding,
+        // and re-running a cached script, which printed the pre-break answer.
+        // The same comparison also accepted a binary that moved *backwards* in
+        // time — a checkout of an older build, or a restored CI cache.
+        //
+        // The nanosecond half is what actually separates two builds; the size is
+        // carried as a second discriminator for filesystems that quantise mtime
+        // to the second. Size alone is not enough: two debug binaries differing
+        // only in an interned literal both measured 50 111 464 bytes, because a
+        // debug binary's byte count is dominated by padding.
+        if let Some((bin_s, bin_ns, bin_size)) = current_binary_identity() {
+            let cached_s: i64 = entry.binary_mtime_at_cache.into();
+            let cached_ns: i64 = entry.binary_mtime_nsecs_at_cache.into();
+            let cached_size: u64 = entry.binary_size_at_cache.into();
+            if cached_s != bin_s || cached_ns != bin_ns || cached_size != bin_size {
                 return None;
             }
         }
@@ -246,11 +278,13 @@ impl ScriptCache {
             _ => fresh_shard(),
         };
 
-        let bin_mtime = current_binary_mtime_secs().unwrap_or(0);
+        let (bin_s, bin_ns, bin_size) = current_binary_identity().unwrap_or((0, 0, 0));
         let entry = ScriptEntry {
             mtime_secs,
             mtime_nsecs,
-            binary_mtime_at_cache: bin_mtime,
+            binary_mtime_at_cache: bin_s,
+            binary_mtime_nsecs_at_cache: bin_ns,
+            binary_size_at_cache: bin_size,
             cached_at_secs: now_secs(),
             cp_blob,
         };
@@ -392,13 +426,17 @@ pub fn file_mtime(path: &Path) -> Option<(i64, i64)> {
     Some((meta.mtime(), meta.mtime_nsec()))
 }
 
-/// Mtime of the running awkrs binary. Cached for the lifetime of the process.
-fn current_binary_mtime_secs() -> Option<i64> {
-    static BIN_MTIME: OnceLock<Option<i64>> = OnceLock::new();
-    *BIN_MTIME.get_or_init(|| {
+/// `(mtime_secs, mtime_nsecs, size)` of the running awkrs binary — enough to
+/// tell one build from another. One `stat`, cached for the process lifetime;
+/// hashing the image would be exact but costs 50 MB of I/O on a path whose
+/// whole purpose is a fast start.
+fn current_binary_identity() -> Option<(i64, i64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    static BIN_ID: OnceLock<Option<(i64, i64, u64)>> = OnceLock::new();
+    *BIN_ID.get_or_init(|| {
         let exe = std::env::current_exe().ok()?;
-        let (secs, _) = file_mtime(&exe)?;
-        Some(secs)
+        let meta = std::fs::metadata(exe).ok()?;
+        Some((meta.mtime(), meta.mtime_nsec(), meta.size()))
     })
 }
 
@@ -564,7 +602,7 @@ mod tests {
         script_path: &str,
         mtime_s: i64,
         mtime_ns: i64,
-        bin_mtime: i64,
+        bin_id: (i64, i64, u64),
         cp: &CompiledProgram,
     ) -> PathBuf {
         let cache_path = dir.join("scripts.rkyv");
@@ -574,7 +612,9 @@ mod tests {
             ScriptEntry {
                 mtime_secs: mtime_s,
                 mtime_nsecs: mtime_ns,
-                binary_mtime_at_cache: bin_mtime,
+                binary_mtime_at_cache: bin_id.0,
+                binary_mtime_nsecs_at_cache: bin_id.1,
+                binary_size_at_cache: bin_id.2,
                 cached_at_secs: 0,
                 cp_blob: bincode::serialize(cp).unwrap(),
             },
@@ -605,7 +645,9 @@ mod tests {
             &script_path.to_string_lossy(),
             s,
             ns,
-            i64::MAX, // future-dated bin_mtime so the bin-mtime check can't fail first
+            // The running binary's own identity, so the binary check is a hit
+            // and the header field under test is the only reason for the miss.
+            current_binary_identity().unwrap_or((0, 0, 0)),
             &compile("BEGIN { 1 }"),
         );
         let cache = ScriptCache::open(&cache_path).unwrap();
@@ -635,7 +677,7 @@ mod tests {
             &script_path.to_string_lossy(),
             s,
             ns,
-            i64::MAX,
+            current_binary_identity().unwrap_or((0, 0, 0)),
             &compile("BEGIN { 1 }"),
         );
         let cache = ScriptCache::open(&cache_path).unwrap();
@@ -670,7 +712,7 @@ mod tests {
             &script_path.to_string_lossy(),
             s,
             ns,
-            i64::MAX,
+            current_binary_identity().unwrap_or((0, 0, 0)),
             &compile("BEGIN { 1 }"),
         );
         let cache = ScriptCache::open(&cache_path).unwrap();
@@ -702,18 +744,99 @@ mod tests {
             &script_path.to_string_lossy(),
             s,
             ns,
-            0, // entry stamped 1970 — binary is newer (mtime > 0)
+            (0, 0, 0), // entry stamped 1970 with a zero-byte binary — not this build
             &compile("BEGIN { 1 }"),
         );
         let cache = ScriptCache::open(&cache_path).unwrap();
         // Only meaningful if the binary actually has a positive mtime; on every
         // real system the awkrs test binary has been written, so its mtime > 0.
-        if current_binary_mtime_secs().unwrap_or(0) > 0 {
+        if current_binary_identity().is_some() {
             assert!(
                 cache.get(&script_path.to_string_lossy(), s, ns).is_none(),
-                "entry with bin_mtime_at_cache < running binary mtime must miss"
+                "an entry written by a different build must miss"
             );
         }
+    }
+
+    /// The regression this pairs with: the check used to be
+    /// `cached_bin_mtime < current_bin_mtime` against a *seconds* mtime, so an
+    /// entry whose recorded second merely equalled the running binary's was
+    /// served. An incremental rebuild plus a run fits inside one second, so a
+    /// rebuilt binary replayed the previous build's bytecode. Reproduced end to
+    /// end: break the literal-compile path, rebuild, force the new binary's
+    /// mtime back to the second the entry recorded, re-run a cached script — it
+    /// printed the pre-break answer, and prints the post-break answer now.
+    ///
+    /// Size alone would not have caught it: two debug binaries differing only in
+    /// an interned literal both measured 50 111 464 bytes, because a debug
+    /// binary's byte count is dominated by padding. The nanosecond half of the
+    /// mtime is the discriminator; the size is the fallback for filesystems that
+    /// quantise mtime to the second.
+    #[test]
+    fn a_rebuild_inside_one_second_misses() {
+        let Some((bin_s, bin_ns, bin_size)) = current_binary_identity() else {
+            return;
+        };
+        let header = || ShardHeader {
+            magic: SHARD_MAGIC,
+            format_version: SHARD_FORMAT_VERSION,
+            awkrs_version: env!("CARGO_PKG_VERSION").to_string(),
+            pointer_width: std::mem::size_of::<usize>() as u32,
+            built_at_secs: 0,
+        };
+
+        // Each case stamps the entry with a binary identity that differs from
+        // the running one in exactly one component, and must miss.
+        for (label, id) in [
+            (
+                "same second, different nanosecond",
+                (bin_s, bin_ns ^ 1, bin_size),
+            ),
+            ("same mtime, different size", (bin_s, bin_ns, bin_size + 1)),
+            (
+                "a binary older than the entry",
+                (bin_s + 1, bin_ns, bin_size),
+            ),
+        ] {
+            let dir = tempdir().unwrap();
+            let script_path = dir.path().join("t.awk");
+            std::fs::write(&script_path, "BEGIN { 1 }").unwrap();
+            let (s, ns) = file_mtime(&script_path).unwrap();
+            let cache_path = write_shard_with_header(
+                dir.path(),
+                header(),
+                &script_path.to_string_lossy(),
+                s,
+                ns,
+                id,
+                &compile("BEGIN { 1 }"),
+            );
+            let cache = ScriptCache::open(&cache_path).unwrap();
+            assert!(
+                cache.get(&script_path.to_string_lossy(), s, ns).is_none(),
+                "{label}: an entry from a different build must miss"
+            );
+        }
+
+        // And the honest hit: the identity the running binary actually has.
+        let dir = tempdir().unwrap();
+        let script_path = dir.path().join("t.awk");
+        std::fs::write(&script_path, "BEGIN { 1 }").unwrap();
+        let (s, ns) = file_mtime(&script_path).unwrap();
+        let cache_path = write_shard_with_header(
+            dir.path(),
+            header(),
+            &script_path.to_string_lossy(),
+            s,
+            ns,
+            (bin_s, bin_ns, bin_size),
+            &compile("BEGIN { 1 }"),
+        );
+        let cache = ScriptCache::open(&cache_path).unwrap();
+        assert!(
+            cache.get(&script_path.to_string_lossy(), s, ns).is_some(),
+            "the running binary's own entry must still hit"
+        );
     }
 
     // ── evict_stale tests ────────────────────────────────────────────────────
