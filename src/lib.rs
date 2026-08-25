@@ -7,6 +7,7 @@
 #![allow(rustdoc::broken_intra_doc_links)]
 
 pub mod aot;
+pub mod awkstr;
 mod ast;
 mod ast_fmt;
 /// AWKRS ASCII logo + live-stats banner (shared by the REPL and `--help`).
