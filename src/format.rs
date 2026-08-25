@@ -4,6 +4,7 @@ use crate::bignum::{float_trunc_integer, mpfr_string_for_percent_s, value_to_mpf
 use crate::awkstr::AwkStr;
 use crate::runtime::Value;
 use rug::float::Round;
+use rug::ops::Pow;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Process-wide opt-in for BSD/Bell-Labs awk printf quirks: zero-padding `%0Ns`
@@ -867,6 +868,71 @@ fn numeric_c_char(v: &Value) -> AwkStr {
     }
 }
 
+/// `%.*f` for an MPFR value: `p` digits **after the radix point**.
+///
+/// `rug::Float`'s `Display` precision counts *significant* digits, not decimals,
+/// so `format!("{:.4}", 2.5)` gives `2.500` where C's `%.4f` gives `2.5000`,
+/// and a precision of 0 asked for no significant digits at all and printed the
+/// value's whole expansion. Converting decimals to significant digits needs the
+/// value's decimal exponent, which its scientific form reports — and reports
+/// *after* rounding, which is the exponent the digit count has to be based on.
+fn mpfr_fixed(f: &rug::Float, p: usize) -> String {
+    if !f.is_finite() {
+        return format!("{:.*}", p, f.to_f64());
+    }
+    // `%.*f` is "round the value to `p` decimals", which is exactly rounding
+    // `value * 10^p` to an integer. Doing it that way avoids `Display`
+    // altogether: rug's precision counts *significant* digits, not decimals, so
+    // `format!("{:.4}", 2.5)` gave `2.500` where C gives `2.5000`, and it
+    // switches to scientific notation on its own for small values, which `%f`
+    // never does.
+    let scale = rug::Integer::from(10).pow(p as u32);
+    // Room for the shift plus guard bits, so the multiply itself cannot round.
+    let bits = f
+        .prec()
+        .saturating_add((p as u32).saturating_mul(4))
+        .saturating_add(64);
+    let scaled = rug::Float::with_val(bits, f) * &scale;
+    let Some((int, _)) = scaled.to_integer_round(Round::Nearest) else {
+        return format!("{:.*}", p, f.to_f64());
+    };
+    // The sign comes from the value, not the rounded integer: `%.2f` of
+    // `-0.001` is `-0.00` in gawk, and the integer it rounds to is plain zero.
+    let neg = f.is_sign_negative();
+    let digits = int.abs().to_string();
+    let mut out = String::with_capacity(digits.len() + p + 2);
+    if neg {
+        out.push('-');
+    }
+    if p == 0 {
+        out.push_str(&digits);
+        return out;
+    }
+    if digits.len() <= p {
+        out.push_str("0.");
+        for _ in 0..(p - digits.len()) {
+            out.push('0');
+        }
+        out.push_str(&digits);
+    } else {
+        let split = digits.len() - p;
+        out.push_str(&digits[..split]);
+        out.push('.');
+        out.push_str(&digits[split..]);
+    }
+    out
+}
+
+/// `%.*e` for an MPFR value: `p` digits after the radix point, so `p + 1`
+/// significant. Same significant-vs-decimal mismatch as [`mpfr_fixed`].
+fn mpfr_scientific(f: &rug::Float, p: usize) -> String {
+    if !f.is_finite() {
+        return format!("{:.*e}", p, f.to_f64());
+    }
+    format!("{:.*e}", p + 1, f)
+}
+
+
 fn sprintf_c_char(v: &Value) -> String {
     match v {
         // POSIX: `%c` prints the first character of a *string* argument and the
@@ -1202,7 +1268,7 @@ fn format_one(
                     Value::Mpfr(f) => f.clone(),
                     _ => value_to_mpfr(v, pr, rd),
                 };
-                localize_float_radix(format!("{:.*}", p, fsrc), decimal)
+                localize_float_radix(mpfr_fixed(&fsrc, p), decimal)
             } else {
                 let n = v.as_number();
                 localize_float_radix(format!("{:.*}", p, n), decimal)
@@ -1235,10 +1301,11 @@ fn format_one(
                     Value::Mpfr(f) => f.clone(),
                     _ => value_to_mpfr(v, pr, rd),
                 };
+                let s = mpfr_scientific(&fsrc, p);
                 if conv == 'e' {
-                    format!("{:.*e}", p, fsrc)
+                    s
                 } else {
-                    format!("{:.*E}", p, fsrc)
+                    s.to_uppercase()
                 }
             } else {
                 let n = v.as_number();

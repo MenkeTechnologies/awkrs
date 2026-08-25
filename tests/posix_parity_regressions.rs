@@ -2526,3 +2526,95 @@ fn the_match_operator_accepts_what_the_references_accept() {
         assert_eq!(stdout, want, "{program}");
     }
 }
+
+/// Under `-M` a float literal holds the decimal that was written, not the
+/// `f64` nearest it.
+///
+/// `Float::with_val(prec, 0.1_f64)` widens the *double*, which is
+/// `0.10000000000000000555…`, so ten additions came to
+/// `1.00000000000000005551…`. gawk parses the literal's decimal text into MPFR
+/// and prints `1`. mawk and one-true-awk have no `-M`, so gawk is the reference
+/// here; the two spellings below must also agree with each other, since the
+/// fused `a[$1] += <literal>` opcode carries its delta as an `f64` too.
+#[test]
+fn a_float_literal_is_exact_under_bignum() {
+    let input = "x\n".repeat(10);
+    let mut seen = Vec::new();
+    for program in [
+        r#"{ a[$1] += 0.1 } END { for (k in a) printf "%.28f", a[k] }"#,
+        r#"{ a[$1] = a[$1] + 0.1 } END { for (k in a) printf "%.28f", a[k] }"#,
+    ] {
+        let (code, stdout, stderr) =
+            run_awkrs_stdin_args(["-M", "-v", "PREC=200"], program, &input);
+        assert_eq!(code, 0, "{program}: {stderr:?}");
+        // Ten tenths is one, to every digit asked for — gawk 5.4.1 prints the
+        // same. The old answer began `1.0000000000000000555`.
+        assert_eq!(
+            stdout.trim_end_matches('0'),
+            "1.",
+            "{program}: got {stdout}"
+        );
+        seen.push(stdout);
+    }
+    assert_eq!(seen[0], seen[1], "fused and unfused -M answers must agree");
+
+    // A literal with no shorter spelling is unchanged.
+    let (code, stdout, stderr) = run_awkrs_stdin_args(
+        ["-M", "-v", "PREC=200"],
+        r#"BEGIN { printf "%.4f|%.4f", 2.5, 1.25 }"#,
+        "",
+    );
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "2.5000|1.2500");
+}
+
+/// `%.*f` and `%.*e` under `-M` emit the number of digits that were asked for.
+///
+/// `rug::Float`'s formatting precision counts *significant* digits, not
+/// decimals, so `%.4f` of `2.5` printed `2.500` and `%.0f` printed the value's
+/// whole expansion; it also falls back to scientific notation for small values,
+/// which `%f` never does. `%.*f` is now "round `value * 10^p` to an integer",
+/// which is what the conversion means and needs no formatting quirk.
+///
+/// mawk and one-true-awk have no `-M`, so gawk 5.4.1 is the reference; each
+/// expectation is a run of `gawk -M`.
+#[test]
+fn bignum_fixed_and_scientific_emit_the_requested_digits() {
+    for (program, want) in [
+        (r#"BEGIN { printf "%.4f", 2.5 }"#, "2.5000"),
+        (r#"BEGIN { printf "%.2f", 1.5 }"#, "1.50"),
+        (r#"BEGIN { printf "%.6f", 1.0 }"#, "1.000000"),
+        (r#"BEGIN { printf "%f", 2.5 }"#, "2.500000"),
+        // A precision of 0 drops the point entirely; it used to print the
+        // value's full binary expansion.
+        (r#"BEGIN { printf "%.0f", 2.5 }"#, "2"),
+        (r#"BEGIN { printf "%.0f", 1.5 }"#, "2"),
+        // Below one, where rug would have switched to scientific.
+        (r#"BEGIN { printf "%.10f", 1/3 }"#, "0.3333333333"),
+        (r#"BEGIN { printf "%.7f", -1/3 }"#, "-0.3333333"),
+        (r#"BEGIN { printf "%.1f", 0.05 }"#, "0.1"),
+        // Rounding that carries into a new digit.
+        (r#"BEGIN { printf "%.2f", 99.999 }"#, "100.00"),
+        (r#"BEGIN { printf "%.1f", -99.99 }"#, "-100.0"),
+        // A value below the last place keeps the sign it had.
+        (r#"BEGIN { printf "%.2f", -0.001 }"#, "-0.00"),
+        (r#"BEGIN { printf "%.3f", 1e-10 }"#, "0.000"),
+        (r#"BEGIN { printf "%.2f", 0 }"#, "0.00"),
+        (r#"BEGIN { printf "%.5f", 123456.789 }"#, "123456.78900"),
+        // `%e` had the same off-by-one.
+        (r#"BEGIN { printf "%.4e", 2.5 }"#, "2.5000e+00"),
+        (r#"BEGIN { printf "%.2e", 12345 }"#, "1.23e+04"),
+        (r#"BEGIN { printf "%.0e", 2.5 }"#, "2e+00"),
+        (r#"BEGIN { printf "%e", 2.5 }"#, "2.500000e+00"),
+    ] {
+        let (code, stdout, stderr) = run_awkrs_stdin_args(["-M"], program, "");
+        assert_eq!(code, 0, "{program}: {stderr:?}");
+        assert_eq!(stdout, want, "{program}");
+    }
+
+    // Without `-M` these were already right, and must stay so.
+    let (code, stdout, stderr) =
+        run_awkrs_stdin(r#"BEGIN { printf "%.4f|%.0f|%.2e", 2.5, 1.5, 12345 }"#, "");
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "2.5000|2|1.23e+04");
+}

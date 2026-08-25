@@ -310,8 +310,7 @@ impl<'a> VmCtx<'a> {
         let key = self.rt.field(field)?.as_str();
         let old = self.array_elem_get(name, &key);
         let rhs = if self.rt.bignum {
-            let prec = self.rt.mpfr_prec_bits();
-            Value::Mpfr(rug::Float::with_val(prec, delta))
+            Value::Mpfr(crate::bignum::literal_f64_to_mpfr(delta, self.rt))
         } else {
             Value::Num(delta)
         };
@@ -1168,9 +1167,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             // ── Constants ───────────────────────────────────────────────
             Op::PushNum(n) => {
                 if ctx.rt.bignum {
-                    let prec = ctx.rt.mpfr_prec_bits();
-                    let round = ctx.rt.mpfr_round();
-                    ctx.push(Value::Mpfr(Float::with_val_round(prec, n, round).0));
+                    ctx.push(Value::Mpfr(crate::bignum::literal_f64_to_mpfr(n, ctx.rt)));
                 } else {
                     ctx.push(Value::Num(n));
                 }

@@ -55,6 +55,31 @@ pub fn value_to_mpfr(v: &Value, prec: u32, round: Round) -> Float {
     }
 }
 
+/// A **literal**'s `f64` as MPFR, at the requested precision.
+///
+/// Widening the `f64` is not the same thing: `0.1` is already the nearest
+/// double to one tenth, so `Float::with_val(prec, 0.1_f64)` produces that
+/// double exactly — `0.1000000000000000055511151231257827…` — and ten additions
+/// of it come to `1.00000000000000005551…` where gawk prints `1`. gawk parses
+/// the literal's decimal text into MPFR instead, so it holds one tenth to the
+/// requested precision.
+///
+/// The text is recovered rather than threaded through the bytecode: Rust's
+/// `{}` for `f64` prints the shortest decimal that round-trips to the same
+/// double, which for a literal a person wrote is the literal they wrote. That
+/// keeps `Op::PushNum` carrying a plain `f64`, so the constant-folding
+/// fusions that match on it are untouched. A value with no shorter spelling
+/// (`1e300`, `2.5`) round-trips through the same path unchanged.
+pub fn literal_f64_to_mpfr(n: f64, rt: &crate::runtime::Runtime) -> Float {
+    let prec = rt.mpfr_prec_bits();
+    let round = rt.mpfr_round();
+    if n.is_finite() {
+        numeric_string_to_mpfr(&format!("{n}"), prec, round)
+    } else {
+        Float::with_val_round(prec, n, round).0
+    }
+}
+
 /// Truncate toward zero as [`Integer`] (gawk-style integer ops).
 pub fn float_trunc_integer(f: &Float) -> Integer {
     f.clone()

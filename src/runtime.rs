@@ -4750,7 +4750,12 @@ impl Runtime {
                 let prec = self.mpfr_prec_bits();
                 let round = self.mpfr_round();
                 let old = value_to_mpfr(&self.array_get(name, &key.to_str_lossy()), prec, round);
-                let sum = Float::with_val_round(prec, old + Float::with_val(prec, delta), round).0;
+                // The delta is a *literal*, so it goes through the same
+                // decimal recovery `Op::PushNum` uses — widening the `f64`
+                // would make `a[$1] += 0.1` accumulate the double rather than
+                // one tenth.
+                let d = crate::bignum::literal_f64_to_mpfr(delta, self);
+                let sum = Float::with_val_round(prec, old + d, round).0;
                 self.array_set(name, key.to_lossy_string(), Value::Mpfr(sum));
             } else {
                 Self::apply_array_numeric_delta(
