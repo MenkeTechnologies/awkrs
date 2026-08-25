@@ -1526,8 +1526,10 @@ fn jit_gsub_third_arg_scalar() {
 
 #[test]
 fn jit_for_in_count_keys() {
-    // Uses fused ArrayFieldAddConst for `a[$1] += 1` (correct string-key path),
-    // then ForIn to count keys.
+    // `a[$1] += 1` does not reach the fused `ArrayFieldAddConst` opcode: an
+    // integer literal compiles to `PushNumDecimalStr`, which the fusion pattern
+    // (`PushNum`) does not match. What is covered is the string-key compound
+    // assign followed by `ForIn` counting the keys.
     let (c, o, e) = run_awkrs_stdin_args_env(
         std::iter::empty::<&str>(),
         "{ a[$1] += 1 } END { n=0; for (k in a) n++; print n }",
@@ -1540,8 +1542,9 @@ fn jit_for_in_count_keys() {
 
 #[test]
 fn jit_for_in_sum_values() {
-    // Uses fused ArrayFieldAddConst for array population,
-    // then ForIn + fused ArrayFieldAddConst to sum values.
+    // `$2` is not a constant delta, so this does not reach the fused
+    // `ArrayFieldAddConst` opcode either. What is covered is array population
+    // through the string-key compound assign, then `ForIn` summing the values.
     let (c, o, e) = run_awkrs_stdin_args_env(
         std::iter::empty::<&str>(),
         "{ a[$1] += $2 } END { s=0; for (k in a) s += a[k]; print s }",
