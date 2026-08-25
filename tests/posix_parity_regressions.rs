@@ -2262,6 +2262,27 @@ fn a_high_byte_survives_every_path_it_is_put_through() {
     let (code, out) = run_awkrs_bytes_locale("C", &[], "{ print }", b"\xff\xfe\x00A\n");
     assert_eq!(code, 0);
     assert_eq!(out, vec![0xff, 0xfe, 0x00, b'A', b'\n']);
+
+    // A byte written as a *literal* is the same byte. `"\351"` and `"\xe9"`
+    // name one byte in all three references — `length` of either is 1 — where
+    // awkrs built the character `U+00E9` and emitted its two UTF-8 bytes, so a
+    // pattern written that way could never match the byte it meant.
+    for prog in [
+        r#"BEGIN { printf "%d|", length("\351"); printf "%s", "\351" }"#,
+        r#"BEGIN { printf "%d|", length("\xe9"); printf "%s", "\xe9" }"#,
+    ] {
+        let (code, out) = run_awkrs_bytes_locale("C", &[], prog, b"");
+        assert_eq!(code, 0, "{prog}");
+        assert_eq!(out, vec![b'1', b'|', HI], "{prog}");
+    }
+    let (code, out) = run_awkrs_bytes_locale(
+        "C",
+        &[],
+        r#"{ print ($0 ~ "\xe9") ? "Y" : "N" }"#,
+        &[b'a', HI, b'b', b'\n'],
+    );
+    assert_eq!(code, 0);
+    assert_eq!(String::from_utf8_lossy(&out), "Y\n");
 }
 
 /// `printf "%c"` of a numeric argument follows the locale's character model.

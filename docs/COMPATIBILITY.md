@@ -265,13 +265,14 @@ Columns: **P** = POSIX / universal core, **B** = BSD awk, **M** = mawk, **G** = 
   | `{ split($0,p," "); print p[2] }` | `c\377d` |
   | `{ print ($0 ~ /^a.b$/) }` on `a\351b` | `1` |
   | `{ print ($1 ~ $2) }` where `$2` is `\351` | `1` |
+  | `length("\351")` and `printf "%s", "\351"` | `1`, and the single byte — `"\xNN"` / `"\NNN"` in a literal name a byte, not a character |
+  | `{ print ($0 ~ "\xe9") }` on `a\351b` | `1` |
   | a binary line `\377\376\0A` | intact (one-true-awk truncates at the NUL; gawk and mawk do not, so the majority rules) |
 
   `printf "%c"` of a number follows the locale, which is the only behaviour no reference contradicts: in a single-byte locale all three emit `N & 0xFF` (`233` → `\351`, and it stays the low byte above 255 — `300` → `\054`, `955` → `\273`), while in a UTF-8 locale gawk emits the encoding of the code point and the other two stay on bytes. The regex engine takes the same switch — with Unicode mode off, `.` and the character classes work in single bytes, which is what all three do in a single-byte locale. `locale_numeric::ctype_is_utf8` resolves `LC_ALL`, then `LC_CTYPE`, then `LANG`, the precedence gawk and one-true-awk were both observed to use.
 
   **What is still rendered rather than carried**, each for a named reason:
 
-  - **A string literal's `\xNN` / `\NNN` above `0x7F`.** `printf "%s", "\351"` emits `\303\251` where all three emit `\351`, so `$0 ~ "\351"` does not match. The lexer, `Expr::Str` and the compiler's string pool are `String`-typed, and that pool also holds variable and function names, which want `&str`. A pattern taken from *data* has no such problem — `$1 ~ $2` matches — so this is confined to a byte written as a literal in the program.
   - **A non-UTF-8 byte in the program text or a `-v` assignment.** `awk '{ print ($0 ~ /\351/) }'` with the byte raw in `argv`, the same program via `-f`, and `-v x=a\351b` all run in the three references; awkrs exits **2**, from the CLI parser (`invalid UTF-8 was detected in one or more arguments`) or the program-file read (`stream did not contain valid UTF-8`). The CLI struct is `String`-typed; accepting these needs `OsString` fields and a byte-capable program reader.
   - **`sub` / `gsub` / `gensub` targets.** The engine matches over bytes, but these three take their subject as `&str` and cut it with the offsets they get back, so what they can carry is bounded by their caller rather than by the engine. `sub` on `$0` says so at the call site.
   - **The fusevm backend's `sprintf` and `awk_keys`.** `fusevm::Value` carries a `String`, so a value crossing into that backend is rendered. `printf` on that backend is unaffected — it writes into `print_buf` directly. Closing this needs a byte string in fusevm itself, which is upstream of this crate.
