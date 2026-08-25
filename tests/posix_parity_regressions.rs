@@ -2458,3 +2458,71 @@ fn a_high_byte_is_accepted_in_the_program_text() {
     let (code, _out) = run_awkrs_byte_args("C", &[b"BEGIN { x\xe9 = 1 }"], b"");
     assert_ne!(code, 0, "a stray byte in code position must not be accepted");
 }
+
+/// awkrs's regex acceptance set now matches the references' rather than Rust's.
+///
+/// The two differ in both directions, and both directions were wrong: Rust
+/// accepts `(?:…)` and `(?i)…`, which ERE has no notion of and all three
+/// references reject, while Rust rejects `))`, `{`, `a{` and `\Qa\E`, which all
+/// three accept as literals. Every expectation below is a run of gawk 5.4.1,
+/// mawk 1.3.4 and one-true-awk 20200816 against `"xayb"` under `LC_ALL=C`.
+#[test]
+fn the_match_operator_accepts_what_the_references_accept() {
+    // Fatal in all three: ERE has no non-capturing group and no inline flags,
+    // so the `?` has no preceding expression — "illegal primary" in one-true-awk
+    // and the same complaint in the other two. Rust honoured both.
+    for pat in ["(?:a)", "(?i)a"] {
+        let program = format!(r#"BEGIN {{ print ("xayb" ~ "{pat}") }}"#);
+        let (code, stdout, stderr) = run_awkrs_stdin(&program, "");
+        assert_eq!(code, 2, "{pat} should be fatal: {stdout:?}");
+        assert!(stderr.contains("invalid regexp"), "{pat}: {stderr:?}");
+    }
+
+    // Accepted by all three as literal text; Rust's parser rejects each, and
+    // awkrs died with it.
+    for (pat, subject, want) in [
+        ("))", "a))b", "1\n"),
+        ("))", "xayb", "0\n"),
+        ("{", "a{b", "1\n"),
+        ("a{", "xa{b", "1\n"),
+        ("a{", "xayb", "0\n"),
+        // `\Q` and `\E` are not ERE escapes: each is the plain letter, so the
+        // pattern is `QaE`. Rust reads `\Q…\E` as a quoted span and errors on
+        // the unknown escape.
+        (r"\Qa\E", "xQaEy", "1\n"),
+        (r"\Qa\E", "xayb", "0\n"),
+        // A reversed range is fatal in gawk but literal in mawk and one-true-awk,
+        // so the majority is the three characters as a set.
+        ("[z-a]", "z-a", "1\n"),
+    ] {
+        let program = format!(r#"BEGIN {{ print ("{subject}" ~ "{pat}") }}"#);
+        let (code, stdout, stderr) = run_awkrs_stdin(&program, "");
+        assert_eq!(code, 0, "{pat} on {subject}: {stderr:?}");
+        assert_eq!(stdout, want, "{pat} on {subject}");
+    }
+
+    // Inside a bracket expression the character escapes keep their character
+    // but the class shorthands do not name a class: `[\w]` is the letter `w`,
+    // matching neither a backslash nor a digit. All three agree; Rust read it
+    // as the word class.
+    for (program, want) in [
+        (r#"BEGIN { print ("\t" ~ "[\t]") }"#, "1\n"),
+        (r#"BEGIN { print ("\n" ~ "[\n]") }"#, "1\n"),
+        (r#"BEGIN { print ("w" ~ "[\w]") }"#, "1\n"),
+        (r#"BEGIN { print ("7" ~ "[\w]") }"#, "0\n"),
+        (r#"BEGIN { print ("\\" ~ "[\w]") }"#, "0\n"),
+        (r#"BEGIN { print ("\\" ~ "[\\\\]") }"#, "1\n"),
+        // The octal spelling still names its character inside a bracket.
+        (r#"BEGIN { print ("A" ~ "[\101]") }"#, "1\n"),
+        // A regex literal's `\t` is still a tab, which is what the whitespace
+        // split idiom depends on.
+        (r#"BEGIN { n = split("a   b\t\tc", A, /[ \t]+/); print n }"#, "3\n"),
+        // `\p` is not an ERE escape either — the plain letter, not a Unicode
+        // class, so this does not match a letter.
+        (r#"BEGIN { print ("xayb" ~ "\p{L}") }"#, "0\n"),
+    ] {
+        let (code, stdout, stderr) = run_awkrs_stdin(program, "");
+        assert_eq!(code, 0, "{program}: {stderr:?}");
+        assert_eq!(stdout, want, "{program}");
+    }
+}

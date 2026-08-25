@@ -1711,6 +1711,8 @@ fn translate_awk_re_to_rust(pat: &str) -> String {
     let mut out = String::with_capacity(pat.len() + 4);
     let mut i = 0;
     let mut in_bracket = false;
+    // Open capture groups, so an unmatched `)` can be recognised as a literal.
+    let mut depth: i32 = 0;
     while i < chars.len() {
         let c = chars[i];
         // POSIX/gawk octal escape: a backslash followed by up to three octal
@@ -1742,6 +1744,31 @@ fn translate_awk_re_to_rust(pat: &str) -> String {
             i += 1 + digits;
             continue;
         }
+        if c == '\\' && in_bracket {
+            // Inside a bracket expression the character escapes still mean their
+            // character, but the class shorthands do not name a class — all
+            // three references agree, and precisely: `[\t]` matches a tab and
+            // `[\n]` a newline, while `[\w]` matches the letter `w` and neither
+            // a backslash nor a digit. So a shorthand loses its backslash and
+            // becomes the plain letter, exactly as an unknown escape does
+            // outside a bracket. Rust reads `[\w]` as the word class, which
+            // matched a digit.
+            let Some(&next) = chars.get(i + 1) else {
+                out.push_str("\\\\");
+                i += 1;
+                continue;
+            };
+            if matches!(next, 't' | 'n' | 'r' | 'f' | 'v' | 'a' | 'x')
+                || !next.is_ascii_alphanumeric()
+            {
+                out.push('\\');
+                out.push(next);
+            } else {
+                out.push(next);
+            }
+            i += 2;
+            continue;
+        }
         if c == '\\' && i + 1 < chars.len() && !in_bracket {
             let next = chars[i + 1];
             if matches!(next, '8' | '9') {
@@ -1761,11 +1788,59 @@ fn translate_awk_re_to_rust(pat: &str) -> String {
                 i += 2;
                 continue;
             }
-            // Other escapes (`\.`, `\(`, `\n`, `\t`, `\<`, `\>`, `\b`, `\B`,
-            // `\xHH`, etc.) — pass through unchanged.
+            if !rust_knows_escape(next) {
+                // An escape Rust's parser does not know is a hard error there,
+                // while gawk, mawk and one-true-awk all read it as the plain
+                // character: `"QaE" ~ "\Qa\E"` matches in all three, and
+                // awkrs died with "unrecognized escape sequence". Emit the
+                // character, escaped when it is a metacharacter.
+                if !next.is_ascii_alphanumeric() {
+                    out.push('\\');
+                }
+                out.push(next);
+                i += 2;
+                continue;
+            }
+            // Other escapes (`\.`, `\(`, `\n`, `\t`, `\b`, `\B`, `\xHH`,
+            // etc.) — pass through unchanged.
             out.push('\\');
             out.push(next);
             i += 2;
+            continue;
+        }
+        if !in_bracket && c == ')' && depth == 0 {
+            // An unmatched `)` is a literal in gawk, mawk and one-true-awk —
+            // `"a))b" ~ "))"` matches in all three — and a hard error in Rust's
+            // parser, which took awkrs's `~` down with it.
+            out.push_str("\\)");
+            i += 1;
+            continue;
+        }
+        if !in_bracket && c == '(' {
+            depth += 1;
+        } else if !in_bracket && c == ')' {
+            depth -= 1;
+        }
+        if !in_bracket && c == '{' && interval_end(&chars, i).is_none() {
+            // A `{` that does not open a valid interval is a literal brace in
+            // all three references (`"a{b" ~ "{"` matches); Rust rejects it.
+            out.push_str("\\{");
+            i += 1;
+            continue;
+        }
+        if in_bracket
+            && c == '-'
+            && i > 0
+            && i + 1 < chars.len()
+            && chars[i + 1] != ']'
+            && chars[i - 1] > chars[i + 1]
+        {
+            // A reversed range (`[z-a]`) is a hard error in Rust and in gawk,
+            // but mawk and one-true-awk read the three characters literally —
+            // `"z-a" ~ "[z-a]"` matches in both — so the majority is the literal
+            // set. Escaping the `-` gives exactly that.
+            out.push_str("\\-");
+            i += 1;
             continue;
         }
         if c == '[' && !in_bracket {
@@ -1777,6 +1852,22 @@ fn translate_awk_re_to_rust(pat: &str) -> String {
         i += 1;
     }
     out
+}
+
+/// Whether Rust's regex parser gives `\<c>` a meaning.
+///
+/// Anything outside this set is a hard parse error there, while gawk, mawk and
+/// one-true-awk all read the escape as the plain character. The list is the
+/// escapes `regex-syntax` accepts: the C-style ones, the class shorthands, the
+/// anchors, the numeric forms, and any punctuation (which escapes itself).
+fn rust_knows_escape(c: char) -> bool {
+    matches!(
+        c,
+        'a' | 'f' | 't' | 'n' | 'r' | 'v' | '0'
+            | 'A' | 'z' | 'Z' | 'b' | 'B'
+            | 's' | 'S' | 'w' | 'W'
+            | 'x' | 'u' | 'U'
+    ) || !c.is_ascii_alphanumeric()
 }
 
 // Verdict cache for `check_ere_separator`, keyed on the separator text.
@@ -2647,6 +2738,17 @@ impl Runtime {
         };
         if cache.contains_key(pat) {
             return Ok(());
+        }
+        // The same ERE walk `FS` and `split()` use. Rust's parser accepts two
+        // spellings ERE has no notion of — `(?:…)` and `(?i)…` — so `~` used to
+        // honour them as a non-capturing group and an inline flag where gawk,
+        // mawk and one-true-awk are all fatal ("illegal primary": a `?` with no
+        // preceding expression, which is what the walk calls it too).
+        if let Some(why) = ere_reject_reason(&String::from_utf8_lossy(pat)) {
+            return Err(format!(
+                "invalid regexp: {why}: /{}/",
+                String::from_utf8_lossy(pat)
+            ));
         }
         let translated = translate_awk_re_bytes_to_rust(pat);
         let mut b = regex::bytes::RegexBuilder::new(&translated);
