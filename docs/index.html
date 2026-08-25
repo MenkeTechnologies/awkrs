@@ -146,7 +146,7 @@
             <span class="sep">/</span>
             <a href="https://docs.rs/awkrs" target="_blank" rel="noopener noreferrer">docs.rs</a>
           </nav>
-          <p class="docs-build-line" id="awkrsBuildLine">awkrs v0.4.21 · Rust-powered · Parallel records (-j) · fusevm/Cranelift JIT offload · rkyv bytecode cache · 2,116 parity tests vs gawk/mawk/BSD awk</p>
+          <p class="docs-build-line" id="awkrsBuildLine">awkrs v0.5.1 · Rust-powered · Parallel records (-j) · fusevm/Cranelift JIT offload · rkyv bytecode cache · 2,116 parity tests vs gawk/mawk/BSD awk</p>
         </div>
         <div class="tutorial-toolbar">
           <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
@@ -240,7 +240,7 @@ aw '/error/i { print FILENAME ":" NR ":" $0 }' *.log</pre>
           <li><strong>fusevm offload</strong> — eligible numeric bytecode chunks lower to the shared <a href="https://crates.io/crates/fusevm">fusevm</a> VM (also used by zshrs and stryke) and JIT-compile via Cranelift; <code>AWKRS_FUSEVM=0</code> forces the bytecode interpreter for every chunk.</li>
           <li><strong>Parallelism</strong> — <code>-j N</code> / <code>--threads N</code> (default 1) processes records in parallel via rayon when the program is parallel-safe; output is reordered to input order.</li>
           <li><strong>Bytecode cache</strong> — <code>-f script.awk</code> runs memoize the compiled program to <code>~/.awkrs/scripts.rkyv</code>; repeat invocations skip lex/parse/compile.</li>
-          <li><strong>Binary size</strong> — one self-contained executable, no runtime deps. Release builds use the stock <code>cargo build --release</code> profile (see <code>.github/workflows/release.yml</code>) and are stripped before packaging; the v0.4.21 aarch64-apple-darwin binary is 9.0 MB.</li>
+          <li><strong>Binary size</strong> — one self-contained executable, no runtime deps. Release builds use the stock <code>cargo build --release</code> profile (see <code>.github/workflows/release.yml</code>) and are stripped before packaging; the v0.5.1 aarch64-apple-darwin binary is 9.0 MB.</li>
         </ul>
       </section>
 
