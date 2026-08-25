@@ -4113,38 +4113,6 @@ impl Runtime {
         Value::Uninit
     }
 
-    /// [`array_set`](Self::array_set) with a borrowed subscript — see
-    /// [`AwkArray::insert_str`] for why the borrow matters on this path.
-    pub fn array_set_str(&mut self, name: &str, key: &str, val: Value) {
-        if name == "SYMTAB" {
-            self.symtab_elem_set(key, val);
-            return;
-        }
-        if let Some(existing) = self.vars.get_mut(name) {
-            match existing {
-                Value::Array(a) => {
-                    a.insert_str(key, val);
-                }
-                _ => {
-                    let mut m = AwkArray::new();
-                    m.insert_str(key, val);
-                    *existing = Value::Array(m);
-                }
-            }
-            return;
-        }
-        // First access: seed from the read-only `BEGIN` snapshot if it has one.
-        if let Some(Value::Array(a)) = self.global_readonly.as_ref().and_then(|g| g.get(name)) {
-            let mut copy = a.clone();
-            copy.insert_str(key, val);
-            self.vars.insert(name.to_string(), Value::Array(copy));
-        } else {
-            let mut m = AwkArray::new();
-            m.insert_str(key, val);
-            self.vars.insert(name.to_string(), Value::Array(m));
-        }
-    }
-
     pub fn array_set(&mut self, name: &str, key: String, val: Value) {
         if name == "SYMTAB" {
             self.symtab_elem_set(&key, val);
