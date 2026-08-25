@@ -195,7 +195,7 @@ pub(crate) fn ord(_rt: &mut Runtime, s: &str) -> Result<Value> {
 pub(crate) fn chr(_rt: &mut Runtime, n: f64) -> Result<Value> {
     let u = n as u32;
     let s = char::from_u32(u).map(|c| c.to_string()).unwrap_or_default();
-    Ok(Value::Str(s))
+    Ok(Value::Str(s.into()))
 }
 
 /// `readfile(path)` — read entire file as a string (empty on failure; **`ERRNO`** set).
@@ -203,10 +203,10 @@ pub(crate) fn readfile(rt: &mut Runtime, path: &str) -> Result<Value> {
     rt.require_unsandboxed_io()?;
     rt.clear_errno();
     match fs::read_to_string(path) {
-        Ok(s) => Ok(Value::Str(s)),
+        Ok(s) => Ok(Value::Str(s.into())),
         Err(e) => {
             rt.set_errno_io(&e);
-            Ok(Value::Str(String::new()))
+            Ok(Value::Str(String::new().into()))
         }
     }
 }
@@ -254,10 +254,10 @@ pub(crate) fn inplace_tmpfile(rt: &mut Runtime, path: &str) -> Result<Value> {
     ));
     let tmp_s = tmp.to_string_lossy().into_owned();
     match File::create(&tmp) {
-        Ok(_) => Ok(Value::Str(tmp_s)),
+        Ok(_) => Ok(Value::Str(tmp_s.into())),
         Err(e) => {
             rt.set_errno_io(&e);
-            Ok(Value::Str(String::new()))
+            Ok(Value::Str(String::new().into()))
         }
     }
 }
@@ -354,7 +354,7 @@ pub(crate) fn reada(rt: &mut Runtime, path: &str, arr_name: &str) -> Result<Valu
         let mut parts = s.splitn(2, '\t');
         let key = parts.next().unwrap_or("");
         let val = parts.next().unwrap_or("");
-        rt.array_set(arr_name, unescape_rw(key), Value::Str(unescape_rw(val)));
+        rt.array_set(arr_name, unescape_rw(key), Value::Str(unescape_rw(val).into()));
         line.clear();
     }
     Ok(Value::Num(0.0))
@@ -417,7 +417,7 @@ pub(crate) fn readdir(rt: &mut Runtime, path: &str, arr_name: &str) -> Result<Va
         rt.array_set(
             arr_name,
             count.to_string(),
-            Value::Str(format!("{fname}/{ftype}")),
+            Value::Str(format!("{fname}/{ftype}").into()),
         );
     }
     Ok(Value::Num(count as f64))

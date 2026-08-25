@@ -15,6 +15,7 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::awkstr::AwkStr;
 use crate::bignum::value_to_mpfr;
 use crate::bytecode::CompiledProgram;
 use crate::error::{Error, Result};
@@ -450,11 +451,11 @@ pub enum Value {
     /// String/number contexts treat this like `""` / `0` (same as gawk *untyped*).
     Uninit,
     /// Dynamic string (fields, concat, I/O, etc.) — may be a POSIX *numeric string* in comparisons.
-    Str(String),
+    Str(AwkStr),
     /// String literal from program text (`"..."`) — not a numeric string for relational ops (POSIX).
-    StrLit(String),
+    StrLit(AwkStr),
     /// gawk: `@/regex/` regexp constant — distinct from [`Value::Str`] for `typeof` and typed `~`.
-    Regexp(String),
+    Regexp(AwkStr),
     /// `Num` variant.
     Num(f64),
     /// GNU MPFR arbitrary-precision float (`-M` / `--bignum`).
@@ -559,8 +560,7 @@ impl Value {
     pub fn as_str(&self) -> String {
         match self {
             Value::Uninit => String::new(),
-            Value::Str(s) | Value::StrLit(s) => s.clone(),
-            Value::Regexp(s) => s.clone(),
+            Value::Str(s) | Value::StrLit(s) | Value::Regexp(s) => s.to_lossy_string(),
             Value::Num(n) => format_number(*n),
             Value::Mpfr(f) => mpfr_value_default_display(f),
             Value::Array(_) => String::new(),
@@ -572,22 +572,37 @@ impl Value {
     pub fn as_str_cow(&self) -> Cow<'_, str> {
         match self {
             Value::Uninit => Cow::Borrowed(""),
-            Value::Str(s) | Value::StrLit(s) => Cow::Borrowed(s.as_str()),
-            Value::Regexp(s) => Cow::Borrowed(s.as_str()),
+            Value::Str(s) | Value::StrLit(s) | Value::Regexp(s) => s.to_str_lossy(),
             Value::Num(n) => Cow::Owned(format_number(*n)),
             Value::Mpfr(f) => Cow::Owned(mpfr_value_default_display(f)),
             Value::Array(_) => Cow::Borrowed(""),
         }
     }
 
-    /// Borrow the inner string without cloning. Returns `None` for Num/Array.
+    /// Borrow the inner byte string without cloning. `None` for Num/Array.
     #[inline]
     #[allow(dead_code)]
-    pub fn str_ref(&self) -> Option<&str> {
+    pub fn str_ref(&self) -> Option<&AwkStr> {
         match self {
-            Value::Str(s) | Value::StrLit(s) => Some(s),
-            Value::Regexp(s) => Some(s),
+            Value::Str(s) | Value::StrLit(s) | Value::Regexp(s) => Some(s),
             _ => None,
+        }
+    }
+
+    /// The value's **bytes**, borrowing when it already holds them.
+    ///
+    /// This is the byte-exact counterpart of [`Self::as_str_cow`], and the one
+    /// any path the awk program can observe should use: `as_str`/`as_str_cow`
+    /// render through `U+FFFD` and cannot round-trip a byte that is not part of
+    /// valid UTF-8. A number renders through `CONVFMT` exactly as before — that
+    /// text is always ASCII, so the two agree for every numeric value.
+    #[inline]
+    pub fn as_bytes_cow(&self) -> Cow<'_, [u8]> {
+        match self {
+            Value::Uninit | Value::Array(_) => Cow::Borrowed(b""),
+            Value::Str(s) | Value::StrLit(s) | Value::Regexp(s) => Cow::Borrowed(s.as_bytes()),
+            Value::Num(n) => Cow::Owned(format_number(*n).into_bytes()),
+            Value::Mpfr(f) => Cow::Owned(mpfr_value_default_display(f).into_bytes()),
         }
     }
 
@@ -616,8 +631,8 @@ impl Value {
         match self {
             Value::Uninit => 0.0,
             Value::Num(n) => *n,
-            Value::Str(s) | Value::StrLit(s) => parse_number(s),
-            Value::Regexp(s) => parse_number(s),
+            Value::Str(s) | Value::StrLit(s) => parse_number(&s.to_str_lossy()),
+            Value::Regexp(s) => parse_number(&s.to_str_lossy()),
             Value::Mpfr(f) => f.to_f64(),
             Value::Array(_) => 0.0,
         }
@@ -636,7 +651,7 @@ impl Value {
             Value::Str(s) => {
                 if s.is_empty() {
                     false
-                } else if let Ok(n) = s.parse::<f64>() {
+                } else if let Ok(n) = s.to_str_lossy().parse::<f64>() {
                     n != 0.0
                 } else {
                     true
@@ -659,7 +674,7 @@ impl Value {
             Value::Str(s) => {
                 if s.is_empty() {
                     false
-                } else if let Ok(n) = s.parse::<f64>() {
+                } else if let Ok(n) = s.to_str_lossy().parse::<f64>() {
                     n != 0.0
                 } else {
                     true
@@ -677,8 +692,7 @@ impl Value {
     pub fn into_string(self) -> String {
         match self {
             Value::Uninit => String::new(),
-            Value::Str(s) | Value::StrLit(s) => s,
-            Value::Regexp(s) => s,
+            Value::Str(s) | Value::StrLit(s) | Value::Regexp(s) => s.to_lossy_string(),
             Value::Num(n) => format_number(n),
             Value::Mpfr(f) => mpfr_value_default_display(&f),
             Value::Array(_) => String::new(),
@@ -692,8 +706,8 @@ impl Value {
     pub fn append_to_string(&self, buf: &mut String) {
         match self {
             Value::Uninit => {}
-            Value::Str(s) | Value::StrLit(s) => buf.push_str(s),
-            Value::Regexp(s) => buf.push_str(s),
+            Value::Str(s) | Value::StrLit(s) => buf.push_str(&s.to_str_lossy()),
+            Value::Regexp(s) => buf.push_str(&s.to_str_lossy()),
             Value::Num(n) => {
                 use std::fmt::Write;
                 let n = *n;
@@ -722,6 +736,7 @@ impl Value {
                 // `+"42abc"` yields 42 via prefix parsing. Earlier we used the prefix check
                 // alone, which made `typeof($1)` report `strnum` for noisy fields like
                 // `"42abc"` and made `"42abc" == 42` a numeric compare instead of string.
+                let s = s.to_str_lossy();
                 let t = s.trim();
                 if t.is_empty() {
                     return false;
@@ -1917,13 +1932,13 @@ impl Runtime {
         // POSIX record separator (default newline).
         vars.insert("RS".into(), Value::Str("\n".into()));
         // Text of the input record separator for the last record read (gawk).
-        vars.insert("RT".into(), Value::Str(String::new()));
-        vars.insert("ERRNO".into(), Value::Str(String::new()));
+        vars.insert("RT".into(), Value::Str(String::new().into()));
+        vars.insert("ERRNO".into(), Value::Str(String::new().into()));
         vars.insert("ARGIND".into(), Value::Num(0.0));
         // Process environment (gawk associative array).
         let mut environ = AwkArray::new();
         for (k, v) in std::env::vars() {
-            environ.insert(k, Value::Str(v));
+            environ.insert(k, Value::Str(v.into()));
         }
         vars.insert("ENVIRON".into(), Value::Array(environ));
         // Stub gawk special arrays (full semantics not implemented).
@@ -1933,12 +1948,12 @@ impl Runtime {
         // POSIX octal \034 — multidimensional array subscript separator
         vars.insert("SUBSEP".into(), Value::Str("\x1c".into()));
         // Empty FPAT means use FS for field splitting (gawk).
-        vars.insert("FPAT".into(), Value::Str(String::new()));
-        vars.insert("FIELDWIDTHS".into(), Value::Str(String::new()));
+        vars.insert("FPAT".into(), Value::Str(String::new().into()));
+        vars.insert("FIELDWIDTHS".into(), Value::Str(String::new().into()));
         vars.insert("IGNORECASE".into(), Value::Num(0.0));
         vars.insert("BINMODE".into(), Value::Num(0.0));
         vars.insert("LINT".into(), Value::Num(0.0));
-        vars.insert("TEXTDOMAIN".into(), Value::Str(String::new()));
+        vars.insert("TEXTDOMAIN".into(), Value::Str(String::new().into()));
         Self {
             vars,
             global_readonly: None,
@@ -2238,7 +2253,7 @@ impl Runtime {
 
         let mut argv_proc = AwkArray::new();
         for (i, a) in std::env::args().enumerate() {
-            argv_proc.insert(i.to_string(), Value::Str(a));
+            argv_proc.insert(i.to_string(), Value::Str(a.into()));
         }
         p.insert("argv".into(), Value::Array(argv_proc));
 
@@ -2262,11 +2277,11 @@ impl Runtime {
         if self.bignum {
             p.insert(
                 "gmp_version".into(),
-                Value::Str(crate::procinfo::gmp_version_string()),
+                Value::Str(crate::procinfo::gmp_version_string().into()),
             );
             p.insert(
                 "mpfr_version".into(),
-                Value::Str(crate::procinfo::mpfr_version_string()),
+                Value::Str(crate::procinfo::mpfr_version_string().into()),
             );
             p.insert(
                 "prec_min".into(),
@@ -2294,7 +2309,7 @@ impl Runtime {
         );
 
         // sorted_in: default sort order for for-in (gawk compat)
-        p.or_insert("sorted_in".into(), Value::Str(String::new()));
+        p.or_insert("sorted_in".into(), Value::Str(String::new().into()));
 
         // PREC (default precision) when not in bignum mode
         if !self.bignum {
@@ -2387,7 +2402,7 @@ impl Runtime {
         self.vars.insert("ARGC".into(), Value::Num(argc as f64));
         let mut map = AwkArray::new();
         for (i, s) in argv.iter().enumerate() {
-            map.insert(i.to_string(), Value::Str(s.clone()));
+            map.insert(i.to_string(), Value::Str(s.clone().into()));
         }
         self.vars.insert("ARGV".into(), Value::Array(map));
     }
@@ -2562,7 +2577,7 @@ impl Runtime {
     /// `clear_errno` — see implementation for the contract.
     pub fn clear_errno(&mut self) {
         self.errno_code = 0;
-        self.vars.insert("ERRNO".into(), Value::Str(String::new()));
+        self.vars.insert("ERRNO".into(), Value::Str(String::new().into()));
     }
     /// `set_errno_io` — see implementation for the contract.
     pub fn set_errno_io(&mut self, e: &std::io::Error) {
@@ -2575,12 +2590,12 @@ impl Runtime {
             Some(pos) if msg.ends_with(')') => msg[..pos].to_string(),
             _ => msg,
         };
-        self.vars.insert("ERRNO".into(), Value::Str(cleaned));
+        self.vars.insert("ERRNO".into(), Value::Str(cleaned.into()));
     }
     /// `set_errno_str` — see implementation for the contract.
     pub fn set_errno_str(&mut self, msg: impl Into<String>) {
         self.errno_code = 0;
-        self.vars.insert("ERRNO".into(), Value::Str(msg.into()));
+        self.vars.insert("ERRNO".into(), Value::Str(msg.into().into()));
     }
     /// `ensure_rs_regex_bytes` — see implementation for the contract.
     pub fn ensure_rs_regex_bytes(&mut self) -> Result<()> {
@@ -2622,7 +2637,7 @@ impl Runtime {
         }
         // First record, or a program that assigned a non-string to `RT`.
         let t = String::from_utf8_lossy(sep).into_owned();
-        self.vars.insert("RT".into(), Value::Str(t));
+        self.vars.insert("RT".into(), Value::Str(t.into()));
     }
 
     /// Cached [`memmem::Finder`] for a literal pattern string (non-empty).
@@ -2929,7 +2944,7 @@ impl Runtime {
 
     pub fn rs_string(&self) -> String {
         match self.get_global_var("RS") {
-            Some(Value::Str(s)) => s.clone(),
+            Some(Value::Str(s)) => s.clone().to_lossy_string(),
             Some(v) => v.as_str(),
             None => "\n".to_string(),
         }
@@ -2950,7 +2965,7 @@ impl Runtime {
     pub fn array_key_in<'a>(&self, v: &'a Value, buf: &'a mut KeyBuf) -> std::borrow::Cow<'a, str> {
         use std::borrow::Cow;
         match v {
-            Value::Str(s) | Value::StrLit(s) | Value::Regexp(s) => Cow::Borrowed(s.as_str()),
+            Value::Str(s) | Value::StrLit(s) | Value::Regexp(s) => s.to_str_lossy(),
             Value::Uninit | Value::Array(_) => Cow::Borrowed(""),
             // `a[1]` must key on "1", never "1.000000", so an integral value
             // never reaches CONVFMT. Every integral `f64` below 2^53 is exactly
@@ -2993,7 +3008,7 @@ impl Runtime {
                 }
             }
             Value::Uninit => String::new(),
-            Value::Str(s) | Value::StrLit(s) | Value::Regexp(s) => s.clone(),
+            Value::Str(s) | Value::StrLit(s) | Value::Regexp(s) => s.clone().to_lossy_string(),
             Value::Array(_) => String::new(),
         }
     }
@@ -3537,7 +3552,7 @@ impl Runtime {
     pub fn set_record_with_current_fs(&mut self, line: &str) {
         let unchanged = match self.vars.get("FS") {
             Some(Value::Str(s)) | Some(Value::StrLit(s)) | Some(Value::Regexp(s)) => {
-                s.as_str() == self.cached_fs.as_str()
+                s == &self.cached_fs
             }
             // A numeric `FS`, or none at all, goes the long way — both are rare
             // and neither can be compared without building the string.
@@ -3642,7 +3657,7 @@ impl Runtime {
         let fpat_trimmed: Option<String> = self.get_global_var("FPAT").and_then(|fv| {
             if !matches!(
                 fv,
-                Value::Str(ref s) | Value::StrLit(ref s) if !s.trim().is_empty()
+                Value::Str(ref s) | Value::StrLit(ref s) if !s.to_str_lossy().trim().is_empty()
             ) {
                 return None;
             }
@@ -3765,9 +3780,9 @@ impl Runtime {
             // must come back as `StrLit` — that is what makes `$0 < 7` compare
             // as text after `$0 = "42"`.
             return Ok(if self.record_strnum {
-                Value::Str(rec)
+                Value::Str(rec.into())
             } else {
-                Value::StrLit(rec)
+                Value::StrLit(rec.into())
             });
         }
         self.ensure_fields_split();
@@ -3779,15 +3794,14 @@ impl Runtime {
             Ok(self
                 .fields
                 .get(idx - 1)
-                .cloned()
-                .map(make)
-                .unwrap_or_else(|| Value::Str(String::new())))
+                .map(|f| make(f.as_str().into()))
+                .unwrap_or_else(|| Value::Str(String::new().into())))
         } else {
             Ok(self
                 .field_ranges
                 .get(idx - 1)
-                .map(|&(s, e)| Value::Str(self.record[s as usize..e as usize].to_string()))
-                .unwrap_or_else(|| Value::Str(String::new())))
+                .map(|&(s, e)| Value::Str(self.record[s as usize..e as usize].to_string().into()))
+                .unwrap_or_else(|| Value::Str(String::new().into())))
         }
     }
 
@@ -4106,7 +4120,7 @@ impl Runtime {
         // Sync cached_fs from vars (non-allocating check; only copies when changed).
         let fs_changed = match self.vars.get("FS") {
             Some(Value::Str(s)) | Some(Value::StrLit(s)) | Some(Value::Regexp(s)) => {
-                s.as_str() != self.cached_fs.as_str()
+                s != &self.cached_fs
             }
             _ => false,
         };
@@ -4115,7 +4129,7 @@ impl Runtime {
                 self.vars.get("FS")
             {
                 self.cached_fs.clear();
-                self.cached_fs.push_str(s);
+                self.cached_fs.push_str(&s.to_str_lossy());
             }
         }
         // Split using current FPAT or FS
@@ -4152,7 +4166,7 @@ impl Runtime {
             } else {
                 self.field_ranges.len()
             } as f64),
-            "FILENAME" => Value::Str(self.filename.clone()),
+            "FILENAME" => Value::Str(self.filename.clone().into()),
             _ => Value::Uninit,
         }
     }
@@ -4240,7 +4254,7 @@ impl Runtime {
         let cur = self.symtab_elem_get(key);
         let mut s = self.value_to_str_convfmt(&cur).into_owned();
         s.push_str(suffix);
-        self.symtab_elem_set(key, Value::Str(s));
+        self.symtab_elem_set(key, Value::Str(s.into()));
     }
 
     pub fn symtab_elem_set(&mut self, key: &str, val: Value) {
@@ -4268,9 +4282,9 @@ impl Runtime {
             Some(Value::Array(a)) => match a.get(key) {
                 Some(Value::Num(n)) => Value::Num(*n),
                 Some(v) => v.clone(),
-                None => Value::Str(String::new()),
+                None => Value::Str(String::new().into()),
             },
-            _ => Value::Str(String::new()),
+            _ => Value::Str(String::new().into()),
         }
     }
     /// `array_set` — see implementation for the contract.
@@ -4627,7 +4641,7 @@ impl Runtime {
             .entry(arr_name.to_string())
             .or_insert_with(|| Value::Array(AwkArray::new()));
         for (i, p) in parts.iter().enumerate() {
-            self.array_set(arr_name, format!("{}", i + 1), Value::Str(p.clone()));
+            self.array_set(arr_name, format!("{}", i + 1), Value::Str(p.clone().into()));
         }
     }
 }

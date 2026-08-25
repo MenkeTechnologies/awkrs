@@ -250,7 +250,7 @@ pub enum DebugAction {
 pub(crate) fn format_value(v: &Value) -> String {
     match v {
         Value::Uninit => "uninitialized".to_string(),
-        Value::Str(s) | Value::StrLit(s) => format!("\"{}\"", s.escape_default()),
+        Value::Str(s) | Value::StrLit(s) => format!("\"{}\"", s.to_str_lossy().escape_default()),
         Value::Regexp(s) => format!("@/{}/", s),
         Value::Array(a) => format!(
             "array ({} element{})",

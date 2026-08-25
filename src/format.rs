@@ -167,7 +167,7 @@ fn convfmt_preprocess_for_percent_s<'a>(
         if let Some(v) = out.get_mut(idx) {
             if let Value::Num(n) = v {
                 let s = format_num_via_convfmt(*n, convfmt);
-                *v = Value::StrLit(s);
+                *v = Value::StrLit(s.into());
             }
         }
     }
@@ -752,7 +752,11 @@ fn sprintf_c_char(v: &Value) -> String {
             .unwrap_or('\u{fffd}')
             .to_string(),
         Value::Str(s) | Value::StrLit(s) | Value::Regexp(s) => {
-            s.chars().next().map(|c| c.to_string()).unwrap_or_default()
+            s.to_str_lossy()
+                .chars()
+                .next()
+                .map(|c| c.to_string())
+                .unwrap_or_default()
         }
         Value::Mpfr(f) => {
             let code = float_trunc_integer(f).to_u32_wrapping();
@@ -2307,7 +2311,7 @@ mod tests {
     fn format_percent_s_long_v3() {
         let s = "x".repeat(100);
         assert_eq!(
-            awk_sprintf("%105s", &[Value::Str(s.clone())]).unwrap(),
+            awk_sprintf("%105s", &[Value::Str(s.clone().into())]).unwrap(),
             format!("     {}", s)
         );
     }

@@ -1016,7 +1016,7 @@ mod tests {
     fn array_row_expands_to_sorted_children() {
         let mut arr = crate::runtime::AwkArray::new();
         arr.insert("b".to_string(), Value::Num(2.0));
-        arr.insert("a".to_string(), Value::StrLit("hi".to_string()));
+        arr.insert("a".to_string(), Value::StrLit("hi".to_string().into()));
         let (mut r, mut m) = refs();
         let row = snap_one("arr", &Value::Array(arr), &mut r, &mut m);
         assert_eq!(row.kind, "array");

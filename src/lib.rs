@@ -361,7 +361,7 @@ pub fn run(bin_name: &str) -> Result<()> {
     apply_assigns(&args, &mut rt)?;
     if let Some(fs) = &args.field_sep {
         rt.vars
-            .insert("FS".into(), Value::Str(String::from(fs.as_str())));
+            .insert("FS".into(), Value::Str(String::from(fs.as_str()).into()));
     }
     if args.csv {
         rt.csv_mode = true;
@@ -666,7 +666,7 @@ fn parallel_set_rt_approx(rt: &mut Runtime) {
     } else {
         rs
     };
-    rt.vars.insert("RT".into(), Value::Str(rt_sep));
+    rt.vars.insert("RT".into(), Value::Str(rt_sep.into()));
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2061,7 +2061,7 @@ fn try_native_run(args: &Args, program_text: &str, files: &[PathBuf]) -> Result<
     let mut rt = Runtime::new();
     rt.characters_as_bytes = args.characters_as_bytes;
     if let Some(fs) = &args.field_sep {
-        rt.vars.insert("FS".into(), Value::Str(fs.clone()));
+        rt.vars.insert("FS".into(), Value::Str(fs.clone().into()));
     }
     apply_assigns(args, &mut rt)?;
     rt.init_argv(files);
@@ -2230,7 +2230,7 @@ fn split_assignment_operand(operand: &str) -> Option<(&str, &str)> {
 /// byte forms.
 fn apply_one_assignment(rt: &mut Runtime, name: &str, value: &str) {
     let decoded = crate::lexer::unescape_assignment_value(value);
-    rt.symtab_elem_set(name, Value::Str(decoded));
+    rt.symtab_elem_set(name, Value::Str(decoded.into()));
 }
 
 #[cfg(test)]

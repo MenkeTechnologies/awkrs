@@ -770,7 +770,7 @@ fn awk_to_fuse(v: crate::runtime::Value) -> fusevm::Value {
     use crate::runtime::Value as A;
     match v {
         A::Uninit => fusevm::Value::Undef,
-        A::Str(s) | A::StrLit(s) | A::Regexp(s) => fusevm::Value::str(s),
+        A::Str(s) | A::StrLit(s) | A::Regexp(s) => fusevm::Value::str(s.to_lossy_string()),
         A::Num(n) => fusevm::Value::Float(n),
         A::Mpfr(f) => fusevm::Value::Float(f.to_f64()),
         A::Array(_) => fusevm::Value::Undef,
@@ -787,7 +787,7 @@ fn fuse_to_awk(v: fusevm::Value) -> crate::runtime::Value {
         fusevm::Value::Bool(b) => A::Num(if b { 1.0 } else { 0.0 }),
         fusevm::Value::Int(n) => A::Num(n as f64),
         fusevm::Value::Float(f) => A::Num(f),
-        fusevm::Value::Str(s) => A::Str((*s).clone()),
+        fusevm::Value::Str(s) => A::Str((*s).clone().into()),
         fusevm::Value::Status(n) => A::Num(n as f64),
         fusevm::Value::Ref(inner) => fuse_to_awk(*inner),
         // `Obj` is a frontend heap handle (added in fusevm 0.14.3 for elisp
@@ -927,7 +927,7 @@ fn host_substitute(
                 let mut s = rt.symtab_elem_get(name).as_str();
                 let n = sub_call(rt, &re_s, &repl_s, Some(&mut s));
                 if n.is_ok() {
-                    rt.symtab_elem_set(name, crate::runtime::Value::Str(s));
+                    rt.symtab_elem_set(name, crate::runtime::Value::Str(s.into()));
                 }
                 n
             }
@@ -935,7 +935,7 @@ fn host_substitute(
                 let mut s = rt.array_get(name, key).as_str();
                 let n = sub_call(rt, &re_s, &repl_s, Some(&mut s));
                 if n.is_ok() {
-                    rt.array_set(name, key.clone(), crate::runtime::Value::Str(s));
+                    rt.array_set(name, key.clone(), crate::runtime::Value::Str(s.into()));
                 }
                 n
             }

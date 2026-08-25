@@ -659,7 +659,7 @@ mod tests {
             prog_rules_len: 0,
         };
         let mut vars = AwkMap::default();
-        vars.insert("z".into(), Value::Str(String::new()));
+        vars.insert("z".into(), Value::Str(String::new().into()));
         let slots = cp.init_slots(&vars);
         assert_eq!(slots[0].as_str(), "");
     }

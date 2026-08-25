@@ -233,7 +233,7 @@ pub fn match_fn(rt: &mut Runtime, s: &str, re_pat: &str, arr_name: Option<&str>)
                 for i in 0..caps.len() {
                     if let Some(g) = caps.get(i) {
                         let key = format!("{i}");
-                        rt.array_set(a, key, Value::Str(g.as_str().to_string()));
+                        rt.array_set(a, key, Value::Str(g.as_str().to_string().into()));
                         let char_start = s[..g.start()].chars().count() + 1;
                         let char_len = g.as_str().chars().count();
                         rt.array_set(
@@ -378,6 +378,7 @@ pub fn awk_gensub(
     let s_ref = s.as_str();
     match how {
         Value::Str(h) | Value::StrLit(h) => {
+            let h = h.to_str_lossy();
             let h = h.trim();
             if h.is_empty() {
                 return Err(Error::Runtime(
@@ -498,7 +499,7 @@ pub fn patsplit(
         rt.array_set(
             arr_name,
             format!("{}", i + 1),
-            Value::Str(m.as_str().to_string()),
+            Value::Str(m.as_str().to_string().into()),
         );
     }
 
@@ -508,7 +509,7 @@ pub fn patsplit(
             let prev = &matches[i - 1];
             let curr = &matches[i];
             let sep = &s[prev.end()..curr.start()];
-            rt.array_set(sep_arr, format!("{i}"), Value::Str(sep.to_string()));
+            rt.array_set(sep_arr, format!("{i}"), Value::Str(sep.to_string().into()));
         }
     }
 
@@ -567,7 +568,7 @@ pub fn awk_strftime(args: &[Value]) -> std::result::Result<Value, String> {
             .map_err(|_| format!("strftime: unsupported format string `{fmt}`"))?;
         buf
     };
-    Ok(Value::StrLit(out))
+    Ok(Value::StrLit(out.into()))
 }
 
 /// gawk-style `mktime(datespec)` — `"YYYY MM DD HH MM SS"` (whitespace-separated).
@@ -902,19 +903,19 @@ pub fn asorti(rt: &mut Runtime, src: &str, dest: Option<&str>) -> Result<f64> {
         None => {
             rt.array_delete(src, None);
             for (i, k) in keys.iter().enumerate() {
-                rt.array_set(src, format!("{}", i + 1), Value::Str(k.clone()));
+                rt.array_set(src, format!("{}", i + 1), Value::Str(k.clone().into()));
             }
         }
         Some(d) if d == src => {
             rt.array_delete(src, None);
             for (i, k) in keys.iter().enumerate() {
-                rt.array_set(src, format!("{}", i + 1), Value::Str(k.clone()));
+                rt.array_set(src, format!("{}", i + 1), Value::Str(k.clone().into()));
             }
         }
         Some(d) => {
             rt.array_delete(d, None);
             for (i, k) in keys.iter().enumerate() {
-                rt.array_set(d, format!("{}", i + 1), Value::Str(k.clone()));
+                rt.array_set(d, format!("{}", i + 1), Value::Str(k.clone().into()));
             }
         }
     }
@@ -1919,7 +1920,7 @@ mod tests {
     /// formats via `write!` and surfaces the error as a clean string.
     #[test]
     fn awk_strftime_unsupported_directive_errors_without_panic() {
-        let r = awk_strftime(&[Value::Str("%N".to_string()), Value::Num(0.5)]);
+        let r = awk_strftime(&[Value::Str("%N".to_string().into()), Value::Num(0.5)]);
         match r {
             Err(msg) => assert!(
                 msg.contains("unsupported format string") || msg.contains("%N"),

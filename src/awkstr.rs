@@ -48,6 +48,16 @@ impl AwkStr {
         AwkStr(Vec::new())
     }
 
+    /// Empty string, usable in a `static` / `const`.
+    ///
+    /// `Vec::new` is const but `String::new().into()` is not, and the VM keeps a
+    /// `static EMPTY_STR: Value` to hand out for a missing slot without
+    /// allocating.
+    #[inline]
+    pub const fn new_const() -> Self {
+        AwkStr(Vec::new())
+    }
+
     /// Empty string with room for `n` bytes.
     #[inline]
     pub fn with_capacity(n: usize) -> Self {

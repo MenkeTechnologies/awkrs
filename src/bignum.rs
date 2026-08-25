@@ -48,8 +48,8 @@ pub fn value_to_mpfr(v: &Value, prec: u32, round: Round) -> Float {
     match v {
         Value::Mpfr(f) => f.clone(),
         Value::Num(n) => Float::with_val(prec, *n),
-        Value::Str(s) | Value::StrLit(s) => numeric_string_to_mpfr(s, prec, round),
-        Value::Regexp(s) => numeric_string_to_mpfr(s, prec, round),
+        Value::Str(s) | Value::StrLit(s) => numeric_string_to_mpfr(&s.to_str_lossy(), prec, round),
+        Value::Regexp(s) => numeric_string_to_mpfr(&s.to_str_lossy(), prec, round),
         Value::Uninit => Float::with_val_round(prec, 0, round).0,
         Value::Array(_) => Float::with_val_round(prec, 0, round).0,
     }

@@ -1,6 +1,7 @@
 //! Stack-based virtual machine that executes compiled bytecode.
 
 use crate::ast::{BinOp, IncDecOp};
+use crate::awkstr::AwkStr;
 use crate::bignum;
 use crate::builtins;
 use crate::bytecode::*;
@@ -117,7 +118,7 @@ impl<'a> VmCtx<'a> {
         match name {
             "NR" => Cow::Owned(Value::Num(self.rt.nr)),
             "FNR" => Cow::Owned(Value::Num(self.rt.fnr)),
-            "FILENAME" => Cow::Owned(Value::Str(self.rt.filename.clone())),
+            "FILENAME" => Cow::Owned(Value::Str(self.rt.filename.clone().into())),
             _ => Cow::Owned(Value::Uninit),
         }
     }
@@ -144,7 +145,7 @@ impl<'a> VmCtx<'a> {
                 return match a.get(key) {
                     Some(Value::Num(n)) => Value::Num(*n),
                     Some(v) => v.clone(),
-                    None => Value::Str(String::new()),
+                    None => Value::Str(String::new().into()),
                 };
             }
         }
@@ -464,7 +465,7 @@ impl<'a> VmCtx<'a> {
 
     #[inline]
     fn pop(&mut self) -> Value {
-        self.stack.pop().unwrap_or(Value::Str(String::new()))
+        self.stack.pop().unwrap_or(Value::Str(String::new().into()))
     }
 
     #[inline]
@@ -502,7 +503,7 @@ impl<'a> VmCtx<'a> {
     }
 }
 
-static EMPTY_STR: Value = Value::Str(String::new());
+static EMPTY_STR: Value = Value::Str(AwkStr::new_const());
 
 /// Turn the [`Error::Exit`] a user function raises for `exit` back into the
 /// ordinary [`VmSignal::ExitPending`] that a top-level `exit` produces.
@@ -1161,8 +1162,8 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                     ctx.push(Value::Num(ctx.rt.decimal_lits[i]));
                 }
             }
-            Op::PushStr(idx) => ctx.push(Value::StrLit(ctx.str_ref(idx).to_string())),
-            Op::PushRegexp(idx) => ctx.push(Value::Regexp(ctx.str_ref(idx).to_string())),
+            Op::PushStr(idx) => ctx.push(Value::StrLit(ctx.str_ref(idx).to_string().into())),
+            Op::PushRegexp(idx) => ctx.push(Value::Regexp(ctx.str_ref(idx).to_string().into())),
 
             // ── Variable access ─────────────────────────────────────────
             Op::GetVar(idx) => {
@@ -1786,7 +1787,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 // string and answers 0, which is what gawk, mawk and
                 // one-true-awk all do. awkrs used to keep the strnum-carrying
                 // `Value::Str` unless *both* sides were literals.
-                ctx.push(Value::StrLit(s));
+                ctx.push(Value::StrLit(s.into()));
             }
             // `s = s …` fused: grow the slot's own string instead of cloning it
             // out (`GetSlot`), concatenating onto the clone, and cloning the
@@ -1808,7 +1809,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 };
                 let mut s = match held {
                     Some(s) => s,
-                    None => concat_take_left(ctx.rt, ctx.rt.slots[i].clone()),
+                    None => concat_take_left(ctx.rt, ctx.rt.slots[i].clone()).into(),
                 };
                 concat_push_right(ctx.rt, &mut s, b);
                 ctx.rt.slots[i] = Value::StrLit(s);
@@ -2122,7 +2123,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 let vals: Vec<Value> = ctx.stack.drain(start..).collect();
                 let parts: Vec<String> =
                     vals.iter().map(|v| ctx.rt.value_to_array_key(v)).collect();
-                ctx.push(Value::Str(parts.join(&sep)));
+                ctx.push(Value::Str(parts.join(&sep).into()));
             }
 
             // ── Getline ─────────────────────────────────────────────────
@@ -2229,7 +2230,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 // Move key out of the snapshot vec — avoids cloning each `String`.
                 let key = mem::take(&mut state.keys[state.index]);
                 state.index += 1;
-                ctx.set_var_interned(var, Value::Str(key))?;
+                ctx.set_var_interned(var, Value::Str(key.into()))?;
             }
             Op::ForInEnd => {
                 ctx.for_in_iters.pop();
@@ -2286,7 +2287,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 let reindexed: Vec<(String, Value)> = pairs
                     .into_iter()
                     .enumerate()
-                    .map(|(i, (k, _))| (format!("{}", i + 1), Value::Str(k)))
+                    .map(|(i, (k, _))| (format!("{}", i + 1), Value::Str(k.into())))
                     .collect();
                 let target = dest_name.as_deref().unwrap_or(&src_name);
                 ctx.array_replace(target, reindexed);
@@ -2322,7 +2323,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 s.push_str(pool_str);
                 // Same rule as `Op::Concat`: a concatenation result is a plain
                 // string, so it never participates in a numeric comparison.
-                ctx.push(Value::StrLit(s));
+                ctx.push(Value::StrLit(s.into()));
             }
             Op::GetNR => ctx.push(Value::Num(ctx.rt.nr)),
             Op::GetFNR => ctx.push(Value::Num(ctx.rt.fnr)),
@@ -2889,7 +2890,7 @@ fn sprintf_simple(
     // `sprintf("%s","06") == 6` is 0 in gawk, mawk and one-true-awk; returning
     // `Str` made awkrs compare it numerically and answer 1.
     format::awk_sprintf_with_convfmt(fmt, vals, dec, thousands_sep, mpfr, &convfmt)
-        .map(Value::StrLit)
+        .map(|s| Value::StrLit(s.into()))
         .map_err(Error::Runtime)
 }
 
@@ -2912,7 +2913,7 @@ fn apply_getline_line(
         if let Some(var_idx) = var {
             // getline var — read into variable only, do NOT touch $0/fields/NF.
             let name = ctx.str_ref(var_idx).to_string();
-            ctx.set_var(&name, Value::Str(trimmed))?;
+            ctx.set_var(&name, Value::Str(trimmed.into()))?;
         } else {
             // getline (no var) — update $0 and re-split fields, then update NF.
             let fs = ctx
@@ -3051,7 +3052,7 @@ pub(crate) fn exec_sub_from_values(
                 builtins::sub_fn(ctx.rt, re.as_ref(), repl.as_ref(), Some(&mut s))?
             };
             if n > 0.0 {
-                ctx.set_var(&name, Value::Str(s))?;
+                ctx.set_var(&name, Value::Str(s.into()))?;
             }
             n
         }
@@ -3073,7 +3074,7 @@ pub(crate) fn exec_sub_from_values(
                 builtins::sub_fn(ctx.rt, re.as_ref(), repl.as_ref(), Some(&mut s))?
             };
             if n > 0.0 {
-                ctx.rt.slots[slot as usize] = Value::Str(s);
+                ctx.rt.slots[slot as usize] = Value::Str(s.into());
             }
             n
         }
@@ -3107,7 +3108,7 @@ pub(crate) fn exec_sub_from_values(
                 builtins::sub_fn(ctx.rt, re.as_ref(), repl.as_ref(), Some(&mut s))?
             };
             if n > 0.0 {
-                ctx.array_elem_set(&arr_name, key, Value::Str(s));
+                ctx.array_elem_set(&arr_name, key, Value::Str(s.into()));
             }
             n
         }
@@ -3203,11 +3204,11 @@ fn run_user_intercepts(ctx: &mut VmCtx<'_>, name: &str, args: &[Value]) -> Resul
     // Expose AOP context to advice (HashMap-backed via SPECIAL_VARS).
     ctx.rt
         .vars
-        .insert("INTERCEPT_NAME".into(), Value::Str(name.to_string()));
+        .insert("INTERCEPT_NAME".into(), Value::Str(name.to_string().into()));
     ctx.rt
         .vars
-        .insert("INTERCEPT_ARGS".into(), Value::Str(args_joined));
-    ctx.rt.vars.insert("INTERCEPT_CMD".into(), Value::Str(full));
+        .insert("INTERCEPT_ARGS".into(), Value::Str(args_joined.into()));
+    ctx.rt.vars.insert("INTERCEPT_CMD".into(), Value::Str(full.into()));
 
     ctx.rt.intercept_call_stack.push(InterceptCall {
         name: name.to_string(),
@@ -3268,10 +3269,10 @@ fn run_user_intercepts(ctx: &mut VmCtx<'_>, name: &str, args: &[Value]) -> Resul
     let ms = elapsed.as_secs_f64() * 1000.0;
     ctx.rt
         .vars
-        .insert("INTERCEPT_MS".into(), Value::Str(format!("{ms:.3}")));
+        .insert("INTERCEPT_MS".into(), Value::Str(format!("{ms:.3}").into()));
     ctx.rt.vars.insert(
         "INTERCEPT_US".into(),
-        Value::Str(format!("{:.0}", ms * 1000.0)),
+        Value::Str(format!("{:.0}", ms * 1000.0).into()),
     );
 
     for adv in matching
@@ -3324,21 +3325,33 @@ fn run_advice_program(ctx: &mut VmCtx<'_>, prog: &CompiledProgram) -> Result<()>
 /// operand's own allocation when it already holds one. Numbers stringify
 /// through `CONVFMT`; an array (rejected before reaching here) and an unset
 /// value are both empty.
-fn concat_take_left(rt: &Runtime, v: Value) -> String {
+/// The left operand of a concatenation, as the buffer the right one appends to.
+///
+/// Takes the `AwkStr` by value so `a = a b` reuses the existing allocation, and
+/// keeps its bytes exactly — a concatenation must not be able to lose a byte
+/// that neither operand's own path would have lost. Numbers render through
+/// `CONVFMT`, whose output is always ASCII.
+fn concat_take_left(rt: &Runtime, v: Value) -> AwkStr {
     match v {
         Value::Str(s) | Value::StrLit(s) | Value::Regexp(s) => s,
-        Value::Num(n) => rt.num_to_string_convfmt(n),
-        Value::Mpfr(f) => rt.mpfr_to_string_convfmt(&f),
-        Value::Uninit | Value::Array(_) => String::new(),
+        Value::Num(n) => rt.num_to_string_convfmt(n).into(),
+        Value::Mpfr(f) => rt.mpfr_to_string_convfmt(&f).into(),
+        Value::Uninit | Value::Array(_) => AwkStr::new(),
     }
 }
 
 /// Append the right operand of a concatenation to `s`, with the same
 /// `CONVFMT` rule [`concat_take_left`] applies to the left one.
-fn concat_push_right(rt: &Runtime, s: &mut String, v: Value) {
+fn concat_push_right(rt: &Runtime, s: &mut AwkStr, v: Value) {
     match v {
-        Value::Str(ref t) | Value::StrLit(ref t) | Value::Regexp(ref t) => s.push_str(t),
-        Value::Num(n) => rt.push_num_convfmt(s, n),
+        Value::Str(ref t) | Value::StrLit(ref t) | Value::Regexp(ref t) => s.push_awkstr(t),
+        Value::Num(n) => {
+            // `push_num_convfmt` writes into a `String`; the digits it produces
+            // are ASCII, so going through one costs nothing in fidelity.
+            let mut tmp = String::new();
+            rt.push_num_convfmt(&mut tmp, n);
+            s.push_str(&tmp);
+        }
         Value::Mpfr(f) => s.push_str(&rt.mpfr_to_string_convfmt(&f)),
         Value::Uninit | Value::Array(_) => {}
     }

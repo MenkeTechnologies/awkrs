@@ -167,7 +167,7 @@ pub(crate) fn exec_builtin_dispatch(
             let len_opt = if let Some(v) = args.get(2) {
                 let l = v.as_number() as i64;
                 if l <= 0 {
-                    return Ok(Value::StrLit(String::new()));
+                    return Ok(Value::StrLit(String::new().into()));
                 }
                 Some(l)
             } else {
@@ -191,10 +191,10 @@ pub(crate) fn exec_builtin_dispatch(
                         String::from_utf8_lossy(&rest[..take]).into_owned()
                     })
                     .unwrap_or_default();
-                Value::StrLit(slice)
+                Value::StrLit(slice.into())
             } else {
                 let slice: String = s.chars().skip(start0).take(len).collect();
-                Value::StrLit(slice)
+                Value::StrLit(slice.into())
             }
         }
         "tolower" => {
@@ -208,7 +208,7 @@ pub(crate) fn exec_builtin_dispatch(
             Value::StrLit(crate::builtins::awk_to_lower(
                 &ctx.rt.value_to_str_convfmt(&args[0]),
                 ctx.rt.characters_as_bytes,
-            ))
+            ).into())
         }
         "toupper" => {
             if argc != 1 {
@@ -219,7 +219,7 @@ pub(crate) fn exec_builtin_dispatch(
             Value::StrLit(crate::builtins::awk_to_upper(
                 &ctx.rt.value_to_str_convfmt(&args[0]),
                 ctx.rt.characters_as_bytes,
-            ))
+            ).into())
         }
         "int" => {
             if argc != 1 {
@@ -623,7 +623,7 @@ pub(crate) fn exec_builtin_dispatch(
                 &args[2],
                 target,
             )?;
-            Value::StrLit(out)
+            Value::StrLit(out.into())
         }
         "isarray" => {
             if argc != 1 {
@@ -647,11 +647,11 @@ pub(crate) fn exec_builtin_dispatch(
             ctx.rt.gettext_dir = dirname.clone();
             ctx.rt
                 .vars
-                .insert("TEXTDOMAIN".into(), Value::Str(domain.clone()));
+                .insert("TEXTDOMAIN".into(), Value::Str(domain.clone().into()));
             if let Some(cat) = crate::gettext_util::try_load_gettext_catalog(&domain, &dirname) {
                 ctx.rt.gettext_catalogs.insert(domain, cat);
             }
-            Value::Str(dirname)
+            Value::Str(dirname.into())
         }
         "dcgettext" => {
             if argc != 3 {
@@ -663,9 +663,9 @@ pub(crate) fn exec_builtin_dispatch(
             let domain = args[1].as_str();
             let _cat = args[2].as_number() as i32;
             if let Some(cat) = ctx.rt.gettext_catalogs.get(&domain) {
-                Value::Str(cat.gettext(msgid.as_str()).to_string())
+                Value::Str(cat.gettext(msgid.as_str()).to_string().into())
             } else {
-                Value::Str(msgid)
+                Value::Str(msgid.into())
             }
         }
         "dcngettext" => {
@@ -680,9 +680,9 @@ pub(crate) fn exec_builtin_dispatch(
             let domain = args[3].as_str();
             let _ = args[4].as_number() as i32;
             if let Some(cat) = ctx.rt.gettext_catalogs.get(&domain) {
-                Value::Str(cat.ngettext(s1.as_str(), s2.as_str(), n as u64).to_string())
+                Value::Str(cat.ngettext(s1.as_str(), s2.as_str(), n as u64).to_string().into())
             } else {
-                Value::Str((if n == 1.0 { s1 } else { s2 }).to_string())
+                Value::Str((if n == 1.0 { s1 } else { s2 }).to_string().into())
             }
         }
         "chdir" => {
@@ -963,7 +963,7 @@ fn fusevm_value_to_awk(v: fusevm::Value) -> Value {
         fusevm::Value::Int(n) => Value::Num(n as f64),
         fusevm::Value::Float(f) => Value::Num(f),
         fusevm::Value::Undef => Value::Uninit,
-        other => Value::Str(other.to_str()),
+        other => Value::Str(other.to_str().into()),
     }
 }
 
@@ -991,7 +991,7 @@ pub(super) fn sort_keys_with_custom_cmp(
             return Ordering::Equal;
         }
         let vals = if argc == 2 {
-            vec![Value::Str(a.clone()), Value::Str(b.clone())]
+            vec![Value::Str(a.clone().into()), Value::Str(b.clone().into())]
         } else {
             let va = if arr_name == "SYMTAB" {
                 ctx.rt.symtab_elem_get(a.as_str())
@@ -1003,7 +1003,7 @@ pub(super) fn sort_keys_with_custom_cmp(
             } else {
                 ctx.rt.array_get(arr_name, b.as_str())
             };
-            vec![Value::Str(a.clone()), va, Value::Str(b.clone()), vb]
+            vec![Value::Str(a.clone().into()), va, Value::Str(b.clone().into()), vb]
         };
         match exec_call_user_inner(ctx, fname, vals) {
             Ok(v) => {
