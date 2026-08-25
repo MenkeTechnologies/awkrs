@@ -126,6 +126,7 @@ pub fn run_program(program: &str, input: &str) -> Result<String> {
             rt.line_buf.clear();
             rt.line_buf.extend_from_slice(rec.as_bytes());
             rt.set_record_from_line_buf();
+            rt.check_fs_ere().map_err(Error::Runtime)?;
             if dispatch_rules(&cp, &mut range_state, &mut rt)? {
                 break;
             }
@@ -1216,6 +1217,7 @@ fn process_file(
         rt.nr += 1.0;
         rt.fnr += 1.0;
         rt.set_record_from_line_buf();
+        rt.check_fs_ere().map_err(Error::Runtime)?;
         if dispatch_rules(cp, range_state, rt)? {
             break;
         }
@@ -1420,13 +1422,11 @@ fn dispatch_slurp_record(
     // the value captured before the loop, so `NR == 1 { FS = ":" }` never took
     // effect on a file argument at all. The streaming path re-syncs `FS` per
     // record already; this keeps the two paths on the same rule.
-    let fs = rt
-        .vars
-        .get("FS")
-        .map(|v| v.as_str())
-        .unwrap_or_else(|| " ".into());
+    // `set_record_with_current_fs` does the re-read without the per-record
+    // `String` clone the plain `vars.get("FS").as_str()` spelling cost.
     let line = String::from_utf8_lossy(chunk);
-    rt.set_field_sep_split(&fs, line.as_ref());
+    rt.set_record_with_current_fs(line.as_ref());
+    rt.check_fs_ere().map_err(Error::Runtime)?;
     dispatch_rules(cp, range_state, rt)
 }
 

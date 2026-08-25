@@ -1058,8 +1058,17 @@ fn split_csv_gawk_fields(record: &str, field_ranges: &mut Vec<(u32, u32)>) {
 /// can never disagree: `IGNORECASE` applies (only a multi-character `FS` honours
 /// it), and gawk lets `.` match a newline in an ERE, which matters once `RS`
 /// allows a record to contain one.
+///
+/// Runs the same [`translate_awk_re_to_rust`] rewrite the `~` operator gets.
+/// Without it a separator reached Rust's parser raw, so the awk spellings that
+/// only the rewrite understands were lost: `split(s, a, "\\101")` and
+/// `split(s, a, "[\\101]")` failed to compile and fell back to a literal split
+/// where all three references split on `A`, `"\\8"` likewise where they split
+/// on `8`, and `"\\d"` compiled as Rust's digit class where all three match a
+/// literal `d`.
 fn build_fs_regex(fs: &str, ignore_case: bool) -> Option<Regex> {
-    let mut b = RegexBuilder::new(fs);
+    let translated = translate_awk_re_to_rust(fs);
+    let mut b = RegexBuilder::new(&translated);
     b.case_insensitive(ignore_case);
     b.dot_matches_new_line(true);
     b.build().ok()
@@ -1658,6 +1667,230 @@ fn translate_awk_re_to_rust(pat: &str) -> String {
         i += 1;
     }
     out
+}
+
+// Verdict cache for `check_ere_separator`, keyed on the separator text.
+//
+// `FS` is re-read once per record and essentially never changes, so the check
+// has to be free in the steady state; the walk itself only runs when the text
+// differs from the last one seen.
+thread_local! {
+    static ERE_SEPARATOR_MEMO: std::cell::RefCell<Option<(String, Option<&'static str>)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Fatal-check a separator that is about to be used as a regular expression —
+/// `FS`, or the third argument of `split()`.
+///
+/// A one-character separator is a literal in every reference (POSIX: "if `FS`
+/// is any other single character, that character is used as the separator"), so
+/// `FS="["` splits on a literal `[` and is never a regex error. Only multi-
+/// character separators are walked.
+pub fn check_ere_separator(pat: &str) -> std::result::Result<(), String> {
+    if pat.chars().nth(1).is_none() {
+        return Ok(());
+    }
+    let verdict = ERE_SEPARATOR_MEMO.with(|memo| {
+        let mut memo = memo.borrow_mut();
+        match memo.as_ref() {
+            Some((seen, verdict)) if seen == pat => *verdict,
+            _ => {
+                let verdict = ere_reject_reason(pat);
+                *memo = Some((pat.to_string(), verdict));
+                verdict
+            }
+        }
+    });
+    match verdict {
+        Some(why) => Err(format!("invalid regexp: {why}: /{pat}/")),
+        None => Ok(()),
+    }
+}
+
+/// Reject the ERE spellings that gawk, mawk *and* one-true-awk all refuse to
+/// compile, so `FS` and `split()` can be fatal on them the way the references
+/// are instead of silently degrading to a literal split.
+///
+/// Deliberately narrower than "whatever Rust's regex crate accepts". The two
+/// acceptance sets differ in both directions, and only the patterns all three
+/// references reject may be made fatal here — anything the references disagree
+/// about keeps the existing literal-split fallback. Observed on gawk 5.4.1,
+/// mawk 1.3.4 and one-true-awk 20200816, splitting `"xayb"`:
+///
+/// | pattern    | gawk  | mawk  | b-awk | verdict           |
+/// |------------|-------|-------|-------|-------------------|
+/// | `[[`       | fatal | fatal | fatal | rejected here     |
+/// | `[]`       | fatal | fatal | fatal | rejected here     |
+/// | `[^]`      | fatal | fatal | fatal | rejected here     |
+/// | `[a-`      | fatal | fatal | fatal | rejected here     |
+/// | `[[:alpha:]` | fatal | fatal | fatal | rejected here   |
+/// | `((`       | fatal | fatal | fatal | rejected here     |
+/// | `a{2,1}`   | fatal | fatal | fatal | rejected here     |
+/// | `{2}`      | fatal | fatal | fatal | rejected here     |
+/// | `*x`       | fatal | fatal | fatal | rejected here     |
+/// | `+x`       | fatal | fatal | fatal | rejected here     |
+/// | `?x`       | fatal | fatal | fatal | rejected here     |
+/// | `(?:a)`    | fatal | fatal | fatal | rejected here     |
+/// | `))`       | ok    | ok    | ok    | accepted          |
+/// | `{`, `a{`  | ok    | ok    | ok    | accepted          |
+/// | `a{1,`     | fatal | ok    | fatal | accepted (2/3)    |
+/// | `|x`       | ok    | fatal | fatal | accepted (2/3)    |
+/// | `[z-a]`    | fatal | ok    | ok    | accepted (1/3)    |
+/// | `[[:foo:]]`| fatal | fatal | ok    | accepted (2/3)    |
+/// | `[a-b-c]`  | fatal | ok    | ok    | accepted (1/3)    |
+/// | `()`,`(|)` | ok    | fatal | mixed | accepted          |
+///
+/// Returns the reason as `Err` so the caller can name the offending pattern.
+fn ere_reject_reason(pat: &str) -> Option<&'static str> {
+    let c: Vec<char> = pat.chars().collect();
+    let n = c.len();
+    let mut i = 0;
+    let mut depth = 0i32;
+    // True while the next token would be the first atom of a branch, i.e. at the
+    // start of the pattern or straight after `(`. A quantifier there is what all
+    // three references call "illegal primary" / "unbalanced" / "no preceding
+    // regular expression". Not tracked after `|`: `|x` is fatal in only two of
+    // the three, so it stays accepted.
+    let mut need_atom = true;
+    while i < n {
+        match c[i] {
+            '\\' => {
+                // Any escape is one atom; a trailing backslash is accepted by
+                // two of the three references, so it is not rejected here.
+                i += if i + 1 < n { 2 } else { 1 };
+                need_atom = false;
+            }
+            '[' => {
+                match bracket_end(&c, i) {
+                    Some(end) => i = end + 1,
+                    None => return Some("unterminated bracket expression"),
+                }
+                need_atom = false;
+            }
+            '(' => {
+                depth += 1;
+                i += 1;
+                need_atom = true;
+            }
+            ')' => {
+                // An unmatched `)` is a literal in every reference, so it only
+                // closes a group that is actually open.
+                if depth > 0 {
+                    depth -= 1;
+                }
+                i += 1;
+                need_atom = false;
+            }
+            '*' | '+' | '?' => {
+                if need_atom {
+                    return Some("repetition operator with no preceding expression");
+                }
+                i += 1;
+            }
+            '{' => {
+                match interval_end(&c, i) {
+                    // A well-formed interval: it quantifies, so it needs an atom
+                    // and its bounds have to be ordered.
+                    Some((end, lo, hi)) => {
+                        if need_atom {
+                            return Some("repetition operator with no preceding expression");
+                        }
+                        if let (Some(lo), Some(hi)) = (lo, hi) {
+                            if lo > hi {
+                                return Some("invalid interval expression");
+                            }
+                        }
+                        i = end + 1;
+                    }
+                    // Not an interval at all (`{`, `a{`, `a{1,`): a literal
+                    // brace in mawk and one-true-awk, so it is an atom.
+                    None => {
+                        i += 1;
+                        need_atom = false;
+                    }
+                }
+            }
+            _ => {
+                i += 1;
+                need_atom = false;
+            }
+        }
+    }
+    if depth > 0 {
+        return Some("unbalanced (");
+    }
+    None
+}
+
+/// Index of the `]` that closes the bracket expression opening at `open`, or
+/// `None` when the pattern runs out first.
+///
+/// POSIX bracket rules: a leading `]` (after an optional `^`) is a literal, and
+/// `[:class:]`, `[.coll.]` and `[=equiv=]` swallow their own closing `]`.
+fn bracket_end(c: &[char], open: usize) -> Option<usize> {
+    let n = c.len();
+    let mut i = open + 1;
+    if i < n && c[i] == '^' {
+        i += 1;
+    }
+    if i < n && c[i] == ']' {
+        i += 1;
+    }
+    while i < n {
+        if c[i] == '[' && i + 1 < n && matches!(c[i + 1], ':' | '.' | '=') {
+            let kind = c[i + 1];
+            let mut j = i + 2;
+            while j + 1 < n && !(c[j] == kind && c[j + 1] == ']') {
+                j += 1;
+            }
+            if j + 1 >= n {
+                return None;
+            }
+            i = j + 2;
+            continue;
+        }
+        if c[i] == ']' {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Parse `{n}`, `{n,}` or `{n,m}` starting at `open`, returning the index of the
+/// closing brace and the bounds. `None` when the text is not a valid interval,
+/// which every reference then treats as a literal `{`.
+fn interval_end(c: &[char], open: usize) -> Option<(usize, Option<u64>, Option<u64>)> {
+    let n = c.len();
+    let mut i = open + 1;
+    let lo_start = i;
+    while i < n && c[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i == lo_start {
+        return None;
+    }
+    let lo: u64 = c[lo_start..i].iter().collect::<String>().parse().ok()?;
+    if i < n && c[i] == '}' {
+        return Some((i, Some(lo), Some(lo)));
+    }
+    if i >= n || c[i] != ',' {
+        return None;
+    }
+    i += 1;
+    let hi_start = i;
+    while i < n && c[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i >= n || c[i] != '}' {
+        return None;
+    }
+    let hi = if i == hi_start {
+        None
+    } else {
+        Some(c[hi_start..i].iter().collect::<String>().parse().ok()?)
+    };
+    Some((i, Some(lo), hi))
 }
 
 impl Runtime {
@@ -2262,6 +2495,22 @@ impl Runtime {
             ));
         }
         Ok(())
+    }
+
+    /// Fatal-check the `FS` the current record is about to be split with.
+    ///
+    /// gawk, mawk and one-true-awk all abort with a non-zero status once a
+    /// record is read under an `FS` that is not a valid ERE; awkrs used to fall
+    /// back to splitting on the separator text literally and carry on. The
+    /// check is per record rather than per assignment because that is where the
+    /// three agree: `awk 'BEGIN{FS="[["} END{print}' </dev/null` is fatal in
+    /// gawk and mawk but exits 0 in one-true-awk, so an assignment no record
+    /// ever reaches must stay silent.
+    ///
+    /// Memoised on the separator text, so the steady state is one string
+    /// compare per record.
+    pub fn check_fs_ere(&self) -> std::result::Result<(), String> {
+        check_ere_separator(&self.cached_fs)
     }
 
     /// Ensure a regex is compiled and cached. Call before `regex_ref()`.
@@ -4187,9 +4436,38 @@ impl Runtime {
     ///
     /// Uses a substring of `record` / `fields` as `&str` for `get_mut` so repeated field
     /// values do not allocate a `String` per line; inserts still allocate once for the key.
+    ///
+    /// Two shapes leave the `f64` fast path because it cannot express them:
+    /// `$0` as the subscript (the key is the whole record, not a field), and
+    /// `-M`, where the sum has to be an [`Value::Mpfr`] built at the requested
+    /// precision. Both used to be answered with the fast path anyway — `$0`
+    /// keyed every record under `""`, collapsing the array to a single element,
+    /// and `-M` silently did the arithmetic in `f64`.
     pub fn array_field_add_delta(&mut self, name: &str, field: i32, delta: f64) {
         self.ensure_fields_split();
-        if field < 1 {
+        if field == 0 || self.bignum {
+            let key = match field {
+                0 => self.record.clone(),
+                n => self.field(n).map(|v| v.as_str()).unwrap_or_default(),
+            };
+            if self.bignum {
+                let prec = self.mpfr_prec_bits();
+                let round = self.mpfr_round();
+                let old = value_to_mpfr(&self.array_get(name, &key), prec, round);
+                let sum = Float::with_val_round(prec, old + Float::with_val(prec, delta), round).0;
+                self.array_set(name, key, Value::Mpfr(sum));
+            } else {
+                Self::apply_array_numeric_delta(
+                    &mut self.vars,
+                    &self.global_readonly,
+                    name,
+                    &key,
+                    delta,
+                );
+            }
+            return;
+        }
+        if field < 0 {
             Self::apply_array_numeric_delta(&mut self.vars, &self.global_readonly, name, "", delta);
             return;
         }

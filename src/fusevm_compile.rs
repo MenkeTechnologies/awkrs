@@ -1237,6 +1237,7 @@ pub(crate) fn run_compiled_files(
                 // next; `set_record_with_current_fs` does that re-read without
                 // the per-record `String` clone `as_str()` costs.
                 rt.set_record_with_current_fs(line);
+                rt.check_fs_ere().map_err(crate::error::Error::Runtime)?;
                 for ch in main {
                     match runner.run(rt, ch)? {
                         Some(SIG_NEXT) => continue 'records,

@@ -1795,13 +1795,13 @@ fn memoised_split_patterns_still_track_changes() {
         assert_eq!(stdout, want, "{program}");
     }
 
-    // A separator that does not compile falls back to a literal split, and does
-    // so identically on every call — memoising the failure must not make the
-    // first call differ from the rest. (Falling back at all is a divergence from
-    // all three references, which make an invalid pattern fatal; that is
-    // pre-existing and unchanged here. What is pinned is the *stability*.)
+    // A separator that Rust's regex crate refuses but every reference accepts
+    // still falls back to a literal split, and does so identically on every
+    // call — memoising the failure must not make the first call differ from the
+    // rest. `))` is the case: an unmatched `)` is a literal in gawk, mawk and
+    // one-true-awk alike, all three print `1` here, and Rust rejects it.
     let (code, stdout, stderr) = run_awkrs_stdin(
-        r#"BEGIN { for (i = 1; i <= 3; i++) { n = split("a[b[c", A, "[["); printf "%d:%d ", i, n } print "" }"#,
+        r#"BEGIN { for (i = 1; i <= 3; i++) { n = split("a)b)c", A, "))"); printf "%d:%d ", i, n } print "" }"#,
         "",
     );
     assert_eq!(code, 0, "stderr {stderr:?}");
@@ -1814,4 +1814,176 @@ fn memoised_split_patterns_still_track_changes() {
     );
     assert_eq!(code, 0, "stderr {stderr:?}");
     assert_eq!(stdout, "1|1\n1|2\n2|e\n"); // gawk 5.4.1
+}
+
+/// An `FS` or `split()` separator that is not a valid ERE is fatal, exactly
+/// where gawk 5.4.1, mawk 1.3.4 and one-true-awk 20200816 all make it fatal.
+///
+/// awkrs used to split on the separator text literally and exit 0. The three
+/// references phrase the diagnostic differently ("unbalanced [", "bad class",
+/// "nonterminated character class"), so only the status and the fatality are
+/// portable enough to pin; the message text is awkrs's own.
+#[test]
+fn an_invalid_regex_separator_is_fatal_like_every_reference() {
+    // Unanimously fatal in all three references — verified by running each of
+    // `gawk`, `mawk` and `/usr/bin/awk` on `split("xayb", arr, PAT)`.
+    for pat in [
+        "[[", "((", "a{2,1}", "{2}", "*x", "+x", "?x", "[]", "[a-", "[[:alpha:]", "[^]", "(?:a)",
+        "(?i)a",
+    ] {
+        let program = format!(r#"BEGIN {{ n = split("xayb", A, "{pat}"); print n }}"#);
+        let (code, stdout, stderr) = run_awkrs_stdin(&program, "");
+        assert_eq!(code, 2, "split separator {pat:?} should be fatal: {stdout:?}");
+        assert!(
+            stderr.contains("invalid regexp"),
+            "split separator {pat:?}: stderr {stderr:?}"
+        );
+        assert_eq!(stdout, "", "split separator {pat:?}");
+    }
+
+    // The same patterns are fatal once a record is read under them as `FS`.
+    for pat in ["[[", "((", "a{2,1}"] {
+        let (code, stdout, stderr) =
+            run_awkrs_stdin_args([format!("-F{pat}")], "{ print NR }", "a b\nc d\n");
+        assert_eq!(code, 2, "FS {pat:?} should be fatal: {stdout:?}");
+        assert!(
+            stderr.contains("invalid regexp"),
+            "FS {pat:?}: stderr {stderr:?}"
+        );
+    }
+
+    // Nothing the references disagree about becomes fatal. Each of these is
+    // accepted by at least two of the three, so awkrs keeps accepting it:
+    //   `))` `}` `{` `a{` `a}`   — all three accept
+    //   `a{1,`                   — mawk accepts
+    //   `|x` `x|`                — gawk accepts
+    //   `[z-a]` `[a-b-c]`        — mawk and one-true-awk accept
+    //   `[[:foo:]]`              — one-true-awk accepts
+    //   `()` `(|)`               — gawk accepts
+    for pat in [
+        "))", "}", "{", "a{", "a}", "a{1,", "|x", "x|", "[z-a]", "[a-b-c]", "[[:foo:]]", "()",
+        "(|)",
+    ] {
+        let program = format!(r#"BEGIN {{ n = split("xayb", A, "{pat}"); print n }}"#);
+        let (code, _stdout, stderr) = run_awkrs_stdin(&program, "");
+        assert_eq!(code, 0, "split separator {pat:?}: stderr {stderr:?}");
+    }
+
+    // A single character is a literal separator, never a regex, so the bracket
+    // metacharacters are not errors on their own. All three print `2`.
+    for (pat, want) in [("[", "2\n"), ("(", "2\n"), ("*", "2\n"), ("{", "2\n")] {
+        let program = format!(r#"BEGIN {{ n = split("a{pat}b", A, "{pat}"); print n }}"#);
+        let (code, stdout, stderr) = run_awkrs_stdin(&program, "");
+        assert_eq!(code, 0, "single-char separator {pat:?}: stderr {stderr:?}");
+        assert_eq!(stdout, want, "single-char separator {pat:?}");
+    }
+
+    // An `FS` that no record is ever split with stays silent: gawk and mawk are
+    // fatal here but one-true-awk exits 0, so the majority rules.
+    let (code, stdout, _stderr) = run_awkrs_stdin(r#"BEGIN { FS = "[[" } END { print "done" }"#, "");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "done\n");
+}
+
+/// A `split()` separator goes through the same awk→Rust regex rewrite the `~`
+/// operator uses. It did not, so the awk-only spellings were compiled by Rust's
+/// parser raw, failed, and silently degraded to a literal split.
+#[test]
+fn a_split_separator_honours_the_awk_regex_escapes() {
+    // Octal escapes, in and out of a bracket expression: `\101` is `A`.
+    // gawk 5.4.1, mawk 1.3.4 and one-true-awk 20200816 all print `2|a|b`.
+    for sep in [r"\\101", r"[\\101]"] {
+        let program = format!(r#"BEGIN {{ n = split("aAb", x, "{sep}"); print n "|" x[1] "|" x[2] }}"#);
+        let (code, stdout, stderr) = run_awkrs_stdin(&program, "");
+        assert_eq!(code, 0, "separator {sep:?}: stderr {stderr:?}");
+        assert_eq!(stdout, "2|a|b\n", "separator {sep:?}");
+    }
+
+    // `\d` is not an ERE operator: every reference matches the literal letter
+    // `d`, where Rust's regex crate would read a digit class.
+    let (code, stdout, stderr) =
+        run_awkrs_stdin(r#"BEGIN { n = split("a1bdc", x, "\\d"); print n "|" x[1] "|" x[2] }"#, "");
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "2|a1b|c\n");
+
+    // `\8` is not an octal digit, so it is the plain character `8`.
+    let (code, stdout, stderr) =
+        run_awkrs_stdin(r#"BEGIN { n = split("a8b", x, "\\8"); print n "|" x[1] "|" x[2] }"#, "");
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "2|a|b\n");
+}
+
+/// The fused `a[$n] += <literal>` opcode has to answer exactly what the
+/// unfused form answers.
+///
+/// The fusion only fires for a non-integer literal delta — an integer literal
+/// compiles to `PushNumDecimalStr`, which the pattern does not match — so each
+/// case below pairs the fused spelling with the unfused one that proves the
+/// divergence was the fusion's. All expectations are from gawk 5.4.1, mawk
+/// 1.3.4 and one-true-awk 20200816, which agree on every one.
+#[test]
+fn the_fused_array_field_add_matches_the_unfused_form() {
+    // An array passed to a function is by reference: the update lands in the
+    // caller's array. The fused path wrote a *global* named after the parameter
+    // instead, so `A` came back empty.
+    let (code, stdout, stderr) = run_awkrs_stdin(
+        "function f(arr) { arr[$1] += 1.5 } { f(A) } \
+         END { for (k in A) print \"A[\" k \"]=\" A[k]; \
+               for (k in arr) print \"LEAK arr[\" k \"]=\" arr[k] }",
+        "x\nx\ny\n",
+    );
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    let mut lines: Vec<&str> = stdout.lines().collect();
+    lines.sort_unstable();
+    assert_eq!(lines, ["A[x]=3", "A[y]=1.5"]);
+
+    // A function's own local array (an extra parameter) must not survive the
+    // call, and must not accumulate across calls.
+    let (code, stdout, stderr) = run_awkrs_stdin(
+        "function f(  loc) { loc[$1] += 1.5; return loc[$1] } { print f() } \
+         END { for (k in loc) print \"LEAK loc[\" k \"]\" }",
+        "x\nx\n",
+    );
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "1.5\n1.5\n");
+
+    // `$0` as the subscript keys on the whole record. The fused path keyed
+    // every record under `""`, collapsing the array to one element.
+    let (code, stdout, stderr) = run_awkrs_stdin(
+        r#"{ a[$0] += 1.5 } END { for (k in a) print "[" k "]=" a[k] }"#,
+        "p q\np q\nz\n",
+    );
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    let mut lines: Vec<&str> = stdout.lines().collect();
+    lines.sort_unstable();
+    assert_eq!(lines, ["[p q]=3", "[z]=1.5"]);
+
+    // The global case the fusion exists for is unchanged.
+    let (code, stdout, stderr) = run_awkrs_stdin(
+        "{ a[$1] += 1.5 } END { for (k in a) print k, a[k] }",
+        "x\nx\ny\n",
+    );
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    let mut lines: Vec<&str> = stdout.lines().collect();
+    lines.sort_unstable();
+    assert_eq!(lines, ["x 3", "y 1.5"]);
+
+    // Under `-M` the sum is MPFR, so the fused and unfused spellings have to
+    // agree bit for bit. The fused path used to do the arithmetic in `f64`.
+    // (`-M` has no mawk or one-true-awk counterpart; the reference here is
+    // awkrs's own unfused path.)
+    let input = "x\n".repeat(10);
+    let (code, fused, stderr) = run_awkrs_stdin_args(
+        ["-M", "-v", "PREC=200"],
+        r#"{ a[$1] += 0.1 } END { for (k in a) printf "%.30f\n", a[k] }"#,
+        &input,
+    );
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    let (code, unfused, stderr) = run_awkrs_stdin_args(
+        ["-M", "-v", "PREC=200"],
+        r#"{ a[$1] = a[$1] + 0.1 } END { for (k in a) printf "%.30f\n", a[k] }"#,
+        &input,
+    );
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(fused, unfused, "fused -M diverged from the unfused form");
 }

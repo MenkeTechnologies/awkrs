@@ -228,6 +228,60 @@ impl<'a> VmCtx<'a> {
         self.rt.vars.insert(name.to_string(), Value::Array(new_map));
     }
 
+    /// [`array_elem_set`](Self::array_elem_set) with a borrowed subscript, for
+    /// the record-loop opcodes that already have the key text in hand. See
+    /// [`crate::runtime::AwkArray::insert_str`] for what the borrow saves.
+    fn array_elem_set_str(&mut self, name: &str, key: &str, val: Value) {
+        if name == "SYMTAB" {
+            self.rt.symtab_elem_set(key, val);
+            return;
+        }
+        // POSIX array call-by-reference: writes through a function array
+        // param go to the current frame, not global vars.
+        for frame in self.locals.iter_mut().rev() {
+            if let Some(slot) = frame.get_mut(name) {
+                if let Value::Array(a) = slot {
+                    a.insert_str(key, val);
+                    return;
+                }
+                if matches!(slot, Value::Uninit) {
+                    let mut a = crate::runtime::AwkArray::new();
+                    a.insert_str(key, val);
+                    *slot = Value::Array(a);
+                    return;
+                }
+            }
+        }
+        self.rt.array_set_str(name, key, val);
+    }
+
+    /// Fused `a[$n] += <literal>` ([`crate::bytecode::Op::ArrayFieldAddConst`]),
+    /// routed around the runtime's by-name fast path when `name` is bound in a
+    /// function frame.
+    ///
+    /// The runtime helper writes straight into the global var map, so
+    /// `function f(arr) { arr[$1] += 1.5 }` called as `f(A)` updated a global
+    /// named `arr` and left `A` empty, where gawk, mawk and one-true-awk all
+    /// update the caller's array. A local array (`function f(  loc)`) leaked
+    /// the same way and accumulated across calls.
+    fn array_field_add_delta(&mut self, name: &str, field: i32, delta: f64) -> Result<()> {
+        if !self.locals.iter().any(|frame| frame.contains_key(name)) {
+            self.rt.array_field_add_delta(name, field, delta);
+            return Ok(());
+        }
+        let key = self.rt.field(field)?.as_str();
+        let old = self.array_elem_get(name, &key);
+        let rhs = if self.rt.bignum {
+            let prec = self.rt.mpfr_prec_bits();
+            Value::Mpfr(rug::Float::with_val(prec, delta))
+        } else {
+            Value::Num(delta)
+        };
+        let sum = apply_binop(BinOp::Add, &old, &rhs, self.rt.bignum, self.rt)?;
+        self.array_elem_set_str(name, &key, sum);
+        Ok(())
+    }
+
     fn array_elem_set(&mut self, name: &str, key: String, val: Value) {
         if name == "SYMTAB" {
             self.rt.symtab_elem_set(&key, val);
@@ -1294,8 +1348,14 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 match crate::runtime::Runtime::subscript_int(&key_val) {
                     Some(i) if ctx.locals.is_empty() => ctx.rt.array_set_int(name, i, val.clone()),
                     _ => {
-                        let key = ctx.rt.value_to_array_key(&key_val);
-                        ctx.array_elem_set(name, key, val.clone());
+                        // Borrowed: the key text is already inside `key_val`
+                        // (a field, a `getline` target, a `split` element), and
+                        // an integer-looking subscript needs no owned key at
+                        // all. `value_to_array_key` allocated one per store and
+                        // the integer half of the array then dropped it.
+                        let mut kbuf = crate::runtime::KeyBuf::new();
+                        let key = ctx.rt.array_key_in(&key_val, &mut kbuf);
+                        ctx.array_elem_set_str(name, key.as_ref(), val.clone());
                     }
                 }
                 ctx.push(val);
@@ -1348,11 +1408,17 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 // `CONVFMT = "%.2f"; a[1.23456] = 5; a[1.23456] += 1` read the
                 // "1.23" entry, then stored the result under a second key
                 // "1.23456" — one array, two entries, increment lost.
-                let key = ctx.rt.value_to_array_key(&key_val);
+                //
+                // Both go through the borrowed spelling: `a[$1] += 1` is the
+                // shape of every counting one-liner, and building an owned key
+                // per record cost an allocation the array's integer half then
+                // threw away.
+                let mut kbuf = crate::runtime::KeyBuf::new();
+                let key = ctx.rt.array_key_in(&key_val, &mut kbuf);
                 let name = ctx.cp.strings.get(arr);
-                let old = ctx.array_elem_get(name, &key);
+                let old = ctx.array_elem_get(name, key.as_ref());
                 let new_val = apply_binop(bop, &old, &rhs, ctx.rt.bignum, ctx.rt)?;
-                ctx.array_elem_set(name, key, new_val.clone());
+                ctx.array_elem_set_str(name, key.as_ref(), new_val.clone());
                 ctx.push(new_val);
             }
 
@@ -2093,6 +2159,9 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 };
                 let arr_name = ctx.str_ref(arr).to_string();
                 let seps_name = seps.map(|i| ctx.str_ref(i).to_string());
+                // All three references abort on a separator that is not a valid
+                // ERE; awkrs used to split on it literally instead.
+                crate::runtime::check_ere_separator(&fs).map_err(Error::Runtime)?;
                 let ic = ctx.rt.ignore_case_flag();
                 let (parts, seps_vec) = if fs_is_regex {
                     crate::runtime::split_string_with_seps_regex(&s, &fs, ic)
@@ -2347,7 +2416,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             }
             Op::ArrayFieldAddConst { arr, field, delta } => {
                 let name = ctx.cp.strings.get(arr);
-                ctx.rt.array_field_add_delta(name, field as i32, delta);
+                ctx.array_field_add_delta(name, field as i32, delta)?;
             }
             Op::PrintFieldSepField { f1, sep, f2 } => {
                 let sep_s = ctx.str_ref(sep).to_string();
