@@ -10,7 +10,7 @@ mod common;
 
 use common::{
     run_awkrs_file, run_awkrs_operands, run_awkrs_stdin, run_awkrs_stdin_args,
-    run_awkrs_stdin_args_env, run_awkrs_stdin_bounded,
+    run_awkrs_stdin_args_env, run_awkrs_stdin_bounded, unique_tmp_path,
 };
 use std::io::Write;
 
@@ -1883,6 +1883,43 @@ fn an_invalid_regex_separator_is_fatal_like_every_reference() {
     let (code, stdout, _stderr) = run_awkrs_stdin(r#"BEGIN { FS = "[[" } END { print "done" }"#, "");
     assert_eq!(code, 0);
     assert_eq!(stdout, "done\n");
+
+    // A *file* operand takes a different record loop from stdin, and the
+    // single-rule shapes take a third one that bypasses field splitting
+    // entirely (`process_file_slurp_inline`). All of them have to gate the
+    // separator; `{ print $1 }` over a file went on printing.
+    let path = unique_tmp_path("awkrs_fs_ere_fatal.txt");
+    std::fs::write(&path, "a b\nc d\n").expect("write fixture");
+    for program in ["{ print $1 }", "{ print NF }", "{ print }"] {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_awkrs"))
+            .args(["-F[[", program])
+            .arg(&path)
+            .output()
+            .expect("spawn");
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "{program} over a file operand: stdout {:?}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("invalid regexp"),
+            "{program}: stderr {:?}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    // An empty file has no record to split, so it stays silent — the same
+    // majority call as the never-used `FS` above.
+    let empty = unique_tmp_path("awkrs_fs_ere_empty.txt");
+    std::fs::write(&empty, "").expect("write fixture");
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_awkrs"))
+        .args(["-F[[", "{ print NF }"])
+        .arg(&empty)
+        .output()
+        .expect("spawn");
+    assert_eq!(out.status.code(), Some(0), "empty file should not be fatal");
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(&empty);
 }
 
 /// A `split()` separator goes through the same awk→Rust regex rewrite the `~`

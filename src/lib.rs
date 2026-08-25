@@ -1447,6 +1447,15 @@ fn process_file_slurp(
         .map(|v| v.as_str())
         .unwrap_or_else(|| " ".into());
 
+    // The inline path below never goes through `set_record_*`, so it never
+    // reaches the per-record `FS` gate the other record loops call. Check here
+    // instead, where the value has just been read — and only when the file has
+    // a record in it, because an `FS` no record is ever split with is not fatal
+    // in one-true-awk (see `Runtime::check_fs_ere`).
+    if !data.is_empty() {
+        crate::runtime::check_ere_separator(&fs).map_err(Error::Runtime)?;
+    }
+
     // Try the inlined fast path for trivial single-rule programs.
     if let Some((pattern, action)) = detect_inline_program(cp, rt) {
         return process_file_slurp_inline(data, &fs, pattern, action, cp, rt);
