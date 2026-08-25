@@ -203,6 +203,9 @@ Columns: **P** = POSIX / universal core, **B** = BSD awk, **M** = mawk, **G** = 
 | Scalar used as array (`x[k]=…`, `x[k]`, `k in x`, `for (k in x)`) | **Match** — fatal "attempt to use scalar `x' as an array". Earlier awkrs silently auto-promoted on write, returned empty on read, returned 0 from `in`, and ran zero iterations on for-in. |
 | `printf "%u"` of values past 2^64 | **Match** — falls back to `%g`-style formatting (`2^65` → `"3.68935e+19"`). The exact 2^64 boundary still prints as the u64::MAX digit string. Earlier awkrs saturated all over-u64 values at u64::MAX. |
 | MPFR (`-M`) | **Part** (precision / rounding via `PROCINFO`) |
+| `printf` precision on `d` `i` `o` `u` `x` `X` | **Match** — the precision is a minimum digit count reached by zero-padding the magnitude, and while it is present the `0` flag is ignored, so `%08.2d` of `42` is `      42`. The `#` prefix goes outside that padding (`%#.5x` of `255` is `0x000ff`), and on `%o` it raises the precision far enough to force a leading zero, so `%#.0o` of `0` is `0` where plain `%.0o` is empty. awkrs previously ignored the precision entirely on `o`/`u`/`x`/`X` and let the `0` flag win on all six. |
+| `printf` rounding at an exact half | **Match** — `%e`/`%f`/`%g` round the exact binary value, halves to even, as C does: `%.1g` of `2.5` is `2` and of `4.5` is `4`, while `%.2g` of `1.35` is `1.4` because 1.35 is a shade above the half. `%g` previously rounded in arithmetic (scale, `f64::round`, unscale), which both rounded halves away from zero and moved the value before rounding — `%.1g` of `0.15` came out `0.2` because `0.15 * 10` is exactly `1.5` in `f64` even though `0.15` is not. |
+| Output already printed when a fatal is raised | **Match** with gawk and one-true-awk — a fatal inside the record loop still emits the records the program printed before it. mawk discards them. awkrs previously discarded the record loop's buffer while flushing the `BEGIN` block's. |
 
 ---
 
