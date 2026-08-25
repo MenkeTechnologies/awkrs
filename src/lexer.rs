@@ -58,7 +58,7 @@ pub enum Token {
     /// Decimal integer with no `.` in source — exact under **`-M`** (not rounded through `f64`).
     IntegerLiteral(String),
     /// `String` variant.
-    String(String),
+    String(crate::awkstr::AwkStr),
     /// `Regexp` variant.
     Regexp(String),
     /// `Plus` variant.
@@ -314,7 +314,11 @@ impl<'a> Lexer<'a> {
         // string
         if c == '"' {
             self.bump();
-            let mut s = String::new();
+            // A byte string, not a `String`: `"\351"` and `"\xe9"` name a single
+            // byte in gawk, mawk and one-true-awk alike, and no `String` can
+            // hold one. Everything else appended here is a `char`, which
+            // `push_char` encodes as UTF-8 exactly as before.
+            let mut s = crate::awkstr::AwkStr::new();
             while let Some(d) = self.peek() {
                 if d == '"' {
                     self.bump();
@@ -325,37 +329,37 @@ impl<'a> Lexer<'a> {
                     match self.peek() {
                         Some('n') => {
                             self.bump();
-                            s.push('\n');
+                            s.push_char('\n');
                         }
                         Some('t') => {
                             self.bump();
-                            s.push('\t');
+                            s.push_char('\t');
                         }
                         Some('r') => {
                             self.bump();
-                            s.push('\r');
+                            s.push_char('\r');
                         }
                         Some('a') => {
                             self.bump();
-                            s.push('\x07');
+                            s.push_char('\x07');
                         }
                         Some('b') => {
                             self.bump();
-                            s.push('\x08');
+                            s.push_char('\x08');
                         }
                         Some('f') => {
                             self.bump();
-                            s.push('\x0C');
+                            s.push_char('\x0C');
                         }
                         Some('v') => {
                             self.bump();
-                            s.push('\x0B');
+                            s.push_char('\x0B');
                         }
                         Some('/') => {
                             self.bump();
-                            s.push('/');
+                            s.push_char('/');
                         }
-                        Some('\\') | Some('"') => s.push(self.bump().unwrap()),
+                        Some('\\') | Some('"') => s.push_char(self.bump().unwrap()),
                         // `\xHH` — 1-2 hex digits (gawk extension).
                         Some('x') => {
                             self.bump();
@@ -372,15 +376,16 @@ impl<'a> Lexer<'a> {
                             if hex.is_empty() {
                                 // No hex digits — preserve `\x` literally
                                 // (matches gawk's "stray backslash" behavior).
-                                s.push('x');
+                                s.push_char('x');
                             } else {
-                                let v = u8::from_str_radix(&hex, 16).expect("validated hex digits")
-                                    as u32;
-                                if let Some(ch) = char::from_u32(v) {
-                                    s.push(ch);
-                                } else {
-                                    s.push(v as u8 as char);
-                                }
+                                // The byte itself, not the character with that
+                                // code: `"\xe9"` is one byte in gawk, mawk and
+                                // one-true-awk, and `length` of it is 1 in all
+                                // three. Encoding it as `U+00E9` gave two bytes
+                                // and a value that could not match the byte.
+                                let v = u8::from_str_radix(&hex, 16)
+                                    .expect("validated hex digits");
+                                s.push_byte(v);
                             }
                         }
                         // `\NNN` — 1-3 octal digits.
@@ -395,19 +400,16 @@ impl<'a> Lexer<'a> {
                                     _ => break,
                                 }
                             }
+                            // Same rule as `\xNN`: the byte, not the character.
                             let v = u32::from_str_radix(&oct, 8).expect("validated octal digits");
-                            if let Some(ch) = char::from_u32(v.min(0xFF)) {
-                                s.push(ch);
-                            } else {
-                                s.push((v & 0xFF) as u8 as char);
-                            }
+                            s.push_byte((v & 0xFF) as u8);
                         }
                         Some(x) => {
                             // gawk parity: unknown escape (`\q`) drops the
                             // backslash and emits just the character — gawk
                             // also warns under `--lint`, awkrs stays silent.
                             self.bump();
-                            s.push(x);
+                            s.push_char(x);
                         }
                         None => {
                             return Err(Error::Parse {
@@ -424,7 +426,7 @@ impl<'a> Lexer<'a> {
                         msg: "newline in string".into(),
                     });
                 }
-                s.push(d);
+                s.push_char(d);
                 self.bump();
             }
             return Err(Error::Parse {
@@ -837,7 +839,7 @@ pub fn unescape_assignment_value(value: &str) -> String {
 
     let mut lexer = Lexer::new(&lexable);
     match lexer.next_token(false) {
-        Ok(Token::String(s)) => s,
+        Ok(Token::String(s)) => s.to_lossy_string(),
         // Unreachable for a well-formed quoted literal; falling back to the raw
         // text keeps a malformed value usable rather than failing the run.
         _ => value.to_string(),
@@ -952,12 +954,24 @@ mod tests {
         }
     }
 
+    /// The literal's **bytes**. `lex_string` renders, so it cannot show the
+    /// difference between the byte `0xFF` and the character `U+00FF`, which is
+    /// exactly what these escapes are about.
+    fn lex_bytes(src: &str) -> Vec<u8> {
+        let wrapped = format!("\"{src}\"");
+        let mut l = Lexer::new(&wrapped);
+        match l.next_token(false).unwrap() {
+            Token::String(s) => s.as_bytes().to_vec(),
+            t => panic!("expected String, got {t:?}"),
+        }
+    }
+
     fn lex_string(src: &str) -> String {
         // Helper: wrap in `"..."` and lex one token.
         let wrapped = format!("\"{src}\"");
         let mut l = Lexer::new(&wrapped);
         match l.next_token(false).unwrap() {
-            Token::String(s) => s,
+            Token::String(s) => s.to_lossy_string(),
             t => panic!("expected String, got {t:?}"),
         }
     }
@@ -997,7 +1011,9 @@ mod tests {
     fn lex_escape_hex_two_digits() {
         // `\x41` = 'A'
         assert_eq!(lex_string(r"\x41"), "A");
-        assert_eq!(lex_string(r"\xFF"), "\u{FF}");
+        // One byte, not the character U+00FF: gawk, mawk and one-true-awk
+        // all emit `ff` for `printf "%s", "\xFF"` and report length 1.
+        assert_eq!(lex_bytes(r"\xFF"), vec![0xff]);
     }
 
     #[test]
@@ -1801,7 +1817,7 @@ mod tests {
         // \0 to \377
         assert_eq!(lex_string(r"\0"), "\x00");
         assert_eq!(lex_string(r"\123"), "S");
-        assert_eq!(lex_string(r"\377"), "\u{00ff}");
+        assert_eq!(lex_bytes(r"\377"), vec![0xff]); // one byte, as in all three
         // more than 3 digits -> first 3 only
         assert_eq!(lex_string(r"\1234"), "S4");
     }
@@ -1810,7 +1826,7 @@ mod tests {
     fn lex_hex_escapes() {
         assert_eq!(lex_string(r"\x41"), "A");
         assert_eq!(lex_string(r"\x0a"), "\n");
-        assert_eq!(lex_string(r"\xff"), "\u{00ff}");
+        assert_eq!(lex_bytes(r"\xff"), vec![0xff]); // one byte, as in all three
         // more than 2 digits? awkrs seems to consume as many as possible or just 2?
         // Let's check implementation. It consumes as many as possible.
         // assert_eq!(lex_string(r"\x4142"), "AB"); // if it consumes all
@@ -1840,7 +1856,7 @@ mod tests {
     fn lex_long_string_literal() {
         let long_str = "s".repeat(4096);
         let src = format!("\"{}\"", long_str);
-        assert_eq!(tokens_no_regex(&src), vec![Token::String(long_str)]);
+        assert_eq!(tokens_no_regex(&src), vec![Token::String(long_str.into())]);
     }
 
     #[test]
@@ -2920,9 +2936,10 @@ mod tests {
     }
     #[test]
     fn lex_hex_v13_ff() {
+        // The byte 0xFF, which is not the two bytes of `ÿ`.
         assert_eq!(
             tokens_no_regex("\"\\xFF\""),
-            vec![Token::String("ÿ".into())]
+            vec![Token::String(crate::awkstr::AwkStr::from_vec(vec![0xff]))]
         );
     }
 
@@ -2951,7 +2968,7 @@ mod tests {
     fn lex_oct_v13_377() {
         assert_eq!(
             tokens_no_regex("\"\\377\""),
-            vec![Token::String("ÿ".into())]
+            vec![Token::String(crate::awkstr::AwkStr::from_vec(vec![0xff]))]
         );
     }
 

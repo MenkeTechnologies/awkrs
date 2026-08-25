@@ -765,8 +765,20 @@ impl Compiler {
                 ops.push(Op::PushNumDecimalStr(idx));
             }
             Expr::Str(s) => {
-                let idx = self.strings.intern(s);
-                ops.push(Op::PushStr(idx));
+                // A literal that is valid UTF-8 takes the `&str` half, which is
+                // every literal in every ordinary program. One holding a byte
+                // no `&str` can name (`"\351"`) goes to the blob half instead,
+                // so the byte reaches the VM intact.
+                match s.as_utf8() {
+                    Some(text) => {
+                        let idx = self.strings.intern(text);
+                        ops.push(Op::PushStr(idx));
+                    }
+                    None => {
+                        let idx = self.strings.intern_blob(s.as_bytes());
+                        ops.push(Op::PushStrBytes(idx));
+                    }
+                }
             }
             Expr::RegexpLiteral(s) => {
                 let idx = self.strings.intern(s);

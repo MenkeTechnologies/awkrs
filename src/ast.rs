@@ -178,7 +178,7 @@ pub enum Expr {
     /// Decimal integer from source with no `.` — preserved as digits for **`-M`** (see [`crate::bytecode::Op::PushNumDecimalStr`]).
     IntegerLiteral(String),
     /// `Str` variant.
-    Str(String),
+    Str(crate::awkstr::AwkStr),
     /// gawk-style regexp constant: `@/pattern/` — value type is **regexp**, not string (`typeof` is **`"regexp"`**).
     RegexpLiteral(String),
     /// `Var` variant.

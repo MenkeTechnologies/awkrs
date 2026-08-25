@@ -758,7 +758,7 @@ impl Compiler {
     fn compile_expr(&mut self, e: &Expr) -> Result<()> {
         match e {
             Expr::Str(s) => {
-                let c = self.b.add_constant(fusevm::Value::str(s.clone()));
+                let c = self.b.add_constant(fusevm::Value::str(s.clone().to_lossy_string()));
                 self.b.emit(fusevm::Op::LoadConst(c), 0);
             }
             Expr::Number(n) => {

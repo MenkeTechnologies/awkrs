@@ -1200,6 +1200,10 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 }
             }
             Op::PushStr(idx) => ctx.push(Value::StrLit(ctx.str_ref(idx).to_string().into())),
+            Op::PushStrBytes(idx) => {
+                let b = ctx.cp.strings.get_blob(idx);
+                ctx.push(Value::StrLit(AwkStr::from(b)));
+            }
             Op::PushRegexp(idx) => ctx.push(Value::Regexp(ctx.str_ref(idx).to_string().into())),
 
             // ── Variable access ─────────────────────────────────────────

@@ -1046,7 +1046,7 @@ impl<'a> Parser<'a> {
         Expr::Binary {
             op: BinOp::Match,
             left: Box::new(Expr::Field(Box::new(Expr::Number(0.0)))),
-            right: Box::new(Expr::Str(pat)),
+            right: Box::new(Expr::Str(pat.into())),
         }
     }
 
@@ -1560,12 +1560,12 @@ impl<'a> Parser<'a> {
                 let s = s.clone();
                 self.bump(false)?;
                 if re_pat {
-                    Ok(Expr::Str(s))
+                    Ok(Expr::Str(s.into()))
                 } else {
                     Ok(Expr::Binary {
                         op: BinOp::Match,
                         left: Box::new(Expr::Field(Box::new(Expr::Number(0.0)))),
-                        right: Box::new(Expr::Str(s)),
+                        right: Box::new(Expr::Str(s.into())),
                     })
                 }
             }
@@ -1708,7 +1708,7 @@ impl<'a> Parser<'a> {
                                 name == "split" && matches!(self.cur, Token::Regexp(_));
                             let arg = self.parse_expr_allow_gt(false, re_for_arg)?;
                             args.push(match arg {
-                                Expr::Str(s) if literal_re => Expr::RegexpLiteral(s),
+                                Expr::Str(s) if literal_re => Expr::RegexpLiteral(s.to_lossy_string()),
                                 other => other,
                             });
                             if self.cur == Token::Comma {

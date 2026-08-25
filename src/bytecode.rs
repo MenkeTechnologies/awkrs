@@ -77,6 +77,9 @@ pub enum Op {
     PushNumDecimalStr(u32),
     /// Push interned string by pool index.
     PushStr(u32),
+    /// A string literal holding a byte no `&str` can name; the operand indexes
+    /// [`StringPool::get_blob`] rather than the `&str` half.
+    PushStrBytes(u32),
     /// Push gawk-style regexp constant (`@/…/`) — [`crate::runtime::Value::Regexp`] with interned pattern.
     PushRegexp(u32),
 
@@ -409,6 +412,14 @@ impl Chunk {
 pub struct StringPool {
     strings: Vec<String>,
     index: HashMap<String, u32>,
+    /// String literals that hold a byte no `&str` can name — `"\351"`, `"\xe9"`.
+    ///
+    /// Kept apart from `strings` rather than widening it, because that half is
+    /// also the variable, function and format-string table, and every one of
+    /// those readers wants a `&str`. A literal only lands here when the lexer
+    /// produced a byte the `&str` half could not hold.
+    blobs: Vec<Vec<u8>>,
+    blob_index: HashMap<Vec<u8>, u32>,
 }
 
 impl StringPool {
@@ -425,6 +436,22 @@ impl StringPool {
     /// `get` — see implementation for the contract.
     pub fn get(&self, idx: u32) -> &str {
         &self.strings[idx as usize]
+    }
+
+    /// Intern a literal that holds a byte no `&str` can name.
+    pub fn intern_blob(&mut self, b: &[u8]) -> u32 {
+        if let Some(&idx) = self.blob_index.get(b) {
+            return idx;
+        }
+        let idx = self.blobs.len() as u32;
+        self.blobs.push(b.to_vec());
+        self.blob_index.insert(b.to_vec(), idx);
+        idx
+    }
+
+    /// The bytes [`Self::intern_blob`] stored at `idx`.
+    pub fn get_blob(&self, idx: u32) -> &[u8] {
+        &self.blobs[idx as usize]
     }
 
     /// Every interned string, so a caller can build a parallel table keyed by

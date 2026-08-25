@@ -206,7 +206,7 @@ fn collect_stmt_strings(s: &Stmt, out: &mut BTreeMap<String, usize>) {
 fn collect_expr_strings(e: &Expr, out: &mut BTreeMap<String, usize>) {
     match e {
         Expr::Str(s) if !s.is_empty() => {
-            *out.entry(s.clone()).or_insert(0) += 1;
+            *out.entry(s.clone().to_lossy_string()).or_insert(0) += 1;
         }
         Expr::Str(_) => {}
         Expr::RegexpLiteral(_) => {}
@@ -1135,7 +1135,7 @@ fn lint_expr_printf_deep(w: &impl Fn(&str), e: &Expr) {
         Expr::Call { name, args } => {
             if (name == "printf" || name == "sprintf") && !args.is_empty() {
                 if let Some(Expr::Str(fmt)) = args.first() {
-                    if let Some(min) = printf_min_args_for_format(fmt) {
+                    if let Some(min) = printf_min_args_for_format(&fmt.to_str_lossy()) {
                         let have = args.len().saturating_sub(1);
                         if have < min {
                             w(&format!(
@@ -1321,7 +1321,7 @@ fn lint_stmt_printf_args(w: &impl Fn(&str), stmt: &Stmt) {
         Stmt::SrcLine(_) => {}
         Stmt::Printf { args, redir } => {
             if let Some(Expr::Str(fmt)) = args.first() {
-                if let Some(min) = printf_min_args_for_format(fmt) {
+                if let Some(min) = printf_min_args_for_format(&fmt.to_str_lossy()) {
                     let have = args.len().saturating_sub(1);
                     if have < min {
                         w(&format!(

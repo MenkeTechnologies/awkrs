@@ -318,7 +318,7 @@ pub(crate) fn format_expr(e: &Expr) -> String {
             }
         }
         Expr::IntegerLiteral(s) => s.clone(),
-        Expr::Str(s) => format_string_literal(s),
+        Expr::Str(s) => format_string_literal(&s.to_str_lossy()),
         Expr::RegexpLiteral(s) => format!("@/{}/", escape_regex_slash(s)),
         Expr::Var(v) => v.clone(),
         Expr::Field(inner) => format_field_expr(inner),
