@@ -187,6 +187,21 @@ impl AwkStr {
         self.0.is_ascii()
     }
 
+    /// Characters, with `U+FFFD` standing in for any byte that is not part of
+    /// valid UTF-8 — the character view for a multibyte locale.
+    ///
+    /// Named for what it does: a caller that wants the bytes must ask for
+    /// [`Self::as_bytes`], because in a single-byte locale each byte is its own
+    /// character and this iterator would merge some of them.
+    #[inline]
+    pub fn chars_lossy(&self) -> impl Iterator<Item = char> + '_ {
+        self.0.utf8_chunks().flat_map(|c| {
+            c.valid()
+                .chars()
+                .chain(std::iter::repeat('\u{fffd}').take(c.invalid().len()))
+        })
+    }
+
     /// Byte slice of a range, as a new `AwkStr`.
     #[inline]
     pub fn slice(&self, start: usize, end: usize) -> AwkStr {
@@ -323,6 +338,15 @@ impl fmt::Debug for AwkStr {
                 f.write_str("\"")
             }
         }
+    }
+}
+
+/// `write!(dst, ...)` appends UTF-8, which is always a valid byte sequence.
+impl fmt::Write for AwkStr {
+    #[inline]
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        self.push_str(s);
+        Ok(())
     }
 }
 

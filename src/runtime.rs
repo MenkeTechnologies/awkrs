@@ -911,7 +911,7 @@ fn split_toplevel_alternatives(pat: &str) -> Vec<String> {
 ///
 /// For a single-alternative pattern this collapses to the original behavior
 /// (with empty-match skipping for safety).
-fn split_fields_fpat(record: &str, fpat: &str, field_ranges: &mut Vec<(u32, u32)>) -> bool {
+fn split_fields_fpat(record: &[u8], fpat: &str, field_ranges: &mut Vec<(u32, u32)>) -> bool {
     field_ranges.clear();
     if record.is_empty() {
         return true;
@@ -928,9 +928,9 @@ fn split_fields_fpat(record: &str, fpat: &str, field_ranges: &mut Vec<(u32, u32)
 }
 
 /// The leftmost-longest scan, once the alternatives are compiled.
-fn fpat_scan(record: &str, compiled: &[Regex], field_ranges: &mut Vec<(u32, u32)>) -> bool {
+fn fpat_scan(record: &[u8], compiled: &[BytesRegex], field_ranges: &mut Vec<(u32, u32)>) -> bool {
     let n = record.len();
-    let bytes = record.as_bytes();
+    let bytes = record;
     let mut pos = 0usize;
     while pos < n {
         let tail = &record[pos..];
@@ -987,7 +987,7 @@ pub(crate) struct FieldwidthsSpec {
 const FIELDWIDTHS_REST: usize = usize::MAX;
 
 fn split_fields_fieldwidths(
-    record: &str,
+    record: &[u8],
     specs: &[FieldwidthsSpec],
     field_ranges: &mut Vec<(u32, u32)>,
 ) {
@@ -995,7 +995,7 @@ fn split_fields_fieldwidths(
     if specs.is_empty() {
         return;
     }
-    let b = record.as_bytes();
+    let b = record;
     let n = b.len();
     let mut pos = 0usize;
     for spec in specs {
@@ -1020,9 +1020,9 @@ fn split_fields_fieldwidths(
 /// double-quoted fields may contain commas, and `""` inside a quoted field is
 /// an escaped quote. Empty record → 0 fields; otherwise the field count is
 /// always `(commas at top level) + 1`.
-fn split_csv_gawk_fields(record: &str, field_ranges: &mut Vec<(u32, u32)>) {
+fn split_csv_gawk_fields(record: &[u8], field_ranges: &mut Vec<(u32, u32)>) {
     field_ranges.clear();
-    let bytes = record.as_bytes();
+    let bytes = record;
     let n = bytes.len();
     if n == 0 {
         return;
@@ -1081,9 +1081,9 @@ fn split_csv_gawk_fields(record: &str, field_ranges: &mut Vec<(u32, u32)>) {
 /// where all three references split on `A`, `"\\8"` likewise where they split
 /// on `8`, and `"\\d"` compiled as Rust's digit class where all three match a
 /// literal `d`.
-fn build_fs_regex(fs: &str, ignore_case: bool) -> Option<Regex> {
+fn build_fs_regex(fs: &str, ignore_case: bool) -> Option<BytesRegex> {
     let translated = translate_awk_re_to_rust(fs);
-    let mut b = RegexBuilder::new(&translated);
+    let mut b = regex::bytes::RegexBuilder::new(&translated);
     b.case_insensitive(ignore_case);
     b.dot_matches_new_line(true);
     b.build().ok()
@@ -1096,7 +1096,7 @@ fn build_fs_regex(fs: &str, ignore_case: bool) -> Option<Regex> {
 /// the caller needs `&mut self.field_ranges` at the same time, and a whole-`self`
 /// borrow would rule that out.
 fn memoised_fs_regex<'a>(
-    cache: &'a Option<(String, bool, Option<Regex>)>,
+    cache: &'a Option<(String, bool, Option<BytesRegex>)>,
     fs: &str,
 ) -> FsRegex<'a> {
     match cache {
@@ -1123,14 +1123,14 @@ fn memoised_fs_regex<'a>(
 const SPLIT_REGEX_MEMO_MAX: usize = 256;
 
 thread_local! {
-    static SPLIT_REGEX_MEMO: std::cell::RefCell<AwkMap<String, (bool, Option<Regex>)>> =
+    static SPLIT_REGEX_MEMO: std::cell::RefCell<AwkMap<String, (bool, Option<BytesRegex>)>> =
         std::cell::RefCell::new(AwkMap::default());
 }
 
 /// Run `f` with the memoised engine for `fs` (`None` when `fs` is not a valid
 /// regex). The engine is handed to a closure rather than returned because it
 /// lives inside the thread-local map.
-fn with_split_regex<R>(fs: &str, ignore_case: bool, f: impl FnOnce(Option<&Regex>) -> R) -> R {
+fn with_split_regex<R>(fs: &str, ignore_case: bool, f: impl FnOnce(Option<&BytesRegex>) -> R) -> R {
     SPLIT_REGEX_MEMO.with(|memo| {
         let mut memo = memo.borrow_mut();
         let fresh = match memo.get(fs) {
@@ -1161,11 +1161,11 @@ fn with_split_regex<R>(fs: &str, ignore_case: bool, f: impl FnOnce(Option<&Regex
 //   1 cd          # awkrs answered `3 AB` — the alternatives were compiled
 //                 # case-insensitively, so `AB` and `EF` became fields too.
 thread_local! {
-    static FPAT_REGEX_MEMO: std::cell::RefCell<AwkMap<String, Option<Vec<Regex>>>> =
+    static FPAT_REGEX_MEMO: std::cell::RefCell<AwkMap<String, Option<Vec<BytesRegex>>>> =
         std::cell::RefCell::new(AwkMap::default());
 }
 
-fn with_fpat_regexes<R>(fpat: &str, f: impl FnOnce(Option<&[Regex]>) -> R) -> R {
+fn with_fpat_regexes<R>(fpat: &str, f: impl FnOnce(Option<&[BytesRegex]>) -> R) -> R {
     FPAT_REGEX_MEMO.with(|memo| {
         let mut memo = memo.borrow_mut();
         if !memo.contains_key(fpat) {
@@ -1177,7 +1177,7 @@ fn with_fpat_regexes<R>(fpat: &str, f: impl FnOnce(Option<&[Regex]>) -> R) -> R 
             let compiled = split_toplevel_alternatives(fpat)
                 .iter()
                 .map(|alt| build_fs_regex(&format!("^(?:{alt})"), false))
-                .collect::<Option<Vec<Regex>>>();
+                .collect::<Option<Vec<BytesRegex>>>();
             memo.insert(fpat.to_string(), compiled);
         }
         let entry = memo.get(fpat).expect("just inserted");
@@ -1197,7 +1197,7 @@ pub enum FsRegex<'a> {
     /// come in this way; they are not the per-record path.
     Unknown,
     /// The engine for exactly this `FS` and `IGNORECASE`.
-    Compiled(&'a Regex),
+    Compiled(&'a BytesRegex),
     /// This `FS` is not a valid regex, and the caller already knows it. Falls
     /// back to a literal split without paying for the failed compile again.
     Invalid,
@@ -1212,8 +1212,73 @@ pub enum FsRegex<'a> {
 /// rewrites FS to `[<fs>\n]` there and leaves a regex FS untouched); mawk does
 /// not apply it at all. The default `FS == " "` needs nothing extra — newline is
 /// already whitespace — so the flag is only consulted in the single-char branch.
+/// Every occurrence of `from` in `hay` replaced by `to`.
+fn byte_replace(hay: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(hay.len());
+    let mut start = 0usize;
+    while let Some(off) = memchr::memmem::find(&hay[start..], from) {
+        out.extend_from_slice(&hay[start..start + off]);
+        out.extend_from_slice(to);
+        start += off + from.len();
+    }
+    out.extend_from_slice(&hay[start..]);
+    out
+}
+
+/// `[AwkStr]::join` — the pieces separated by `sep`, as one `AwkStr`.
+fn join_awkstrs(parts: &[AwkStr], sep: &[u8]) -> AwkStr {
+    let mut out = AwkStr::with_capacity(
+        parts.iter().map(|p| p.len()).sum::<usize>() + sep.len() * parts.len().saturating_sub(1),
+    );
+    for (i, p) in parts.iter().enumerate() {
+        if i > 0 {
+            out.push_bytes(sep);
+        }
+        out.push_awkstr(p);
+    }
+    out
+}
+
+/// Byte length of the UTF-8 character starting at `b[0]`, or 1 when the bytes
+/// there are not a valid encoding.
+///
+/// An unpaired byte counting as one character is what makes a character-wise
+/// operation total over arbitrary input: the references have no multi-byte
+/// character to fold it into either.
+fn utf8_char_len(b: &[u8]) -> usize {
+    let want = match b[0] {
+        0x00..=0x7f => return 1,
+        0xc2..=0xdf => 2,
+        0xe0..=0xef => 3,
+        0xf0..=0xf4 => 4,
+        _ => return 1,
+    };
+    if b.len() >= want && std::str::from_utf8(&b[..want]).is_ok() {
+        want
+    } else {
+        1
+    }
+}
+
+/// `str::split` for byte strings: the pieces of `hay` between each
+/// non-overlapping occurrence of `needle`. An empty `needle` yields `hay` whole,
+/// matching what the literal-split fallback wants.
+fn byte_split<'h>(hay: &'h [u8], needle: &[u8]) -> Vec<&'h [u8]> {
+    if needle.is_empty() {
+        return vec![hay];
+    }
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    while let Some(off) = memchr::memmem::find(&hay[start..], needle) {
+        out.push(&hay[start..start + off]);
+        start += off + needle.len();
+    }
+    out.push(&hay[start..]);
+    out
+}
+
 fn split_fields_into(
-    record: &str,
+    record: &[u8],
     fs: &str,
     field_ranges: &mut Vec<(u32, u32)>,
     ignore_case: bool,
@@ -1240,12 +1305,18 @@ fn split_fields_into(
                 field_ranges.push((i as u32, (i + 1) as u32));
             }
         } else {
-            for (i, c) in record.char_indices() {
-                field_ranges.push((i as u32, (i + c.len_utf8()) as u32));
+            // Character split. A byte that does not begin a valid UTF-8
+            // character is its own field — the references have no multi-byte
+            // character to group it into either.
+            let mut i = 0usize;
+            while i < record.len() {
+                let step = utf8_char_len(&record[i..]);
+                field_ranges.push((i as u32, (i + step) as u32));
+                i += step;
             }
         }
     } else if fs == " " {
-        let bytes = record.as_bytes();
+        let bytes = record;
         let len = bytes.len();
         let mut i = 0;
         while i < len && bytes[i].is_ascii_whitespace() {
@@ -1265,7 +1336,7 @@ fn split_fields_into(
         // POSIX / gawk: single-char FS is always a **literal** match; IGNORECASE
         // explicitly does not apply (only multi-char regex FS honors IGNORECASE).
         let sep = fs.as_bytes()[0];
-        let bytes = record.as_bytes();
+        let bytes = record;
         let mut start = 0;
         for (i, &b) in bytes.iter().enumerate() {
             if b == sep || (paragraph_mode && b == b'\n') {
@@ -1282,7 +1353,7 @@ fn split_fields_into(
         // `RS=""; FS="[0-9]+"` on "a12b\nc345d" is three fields in every
         // reference, with "b\nc" as $2.
         let owned;
-        let re: Option<&Regex> = match fs_re {
+        let re: Option<&BytesRegex> = match fs_re {
             FsRegex::Compiled(re) => Some(re),
             FsRegex::Invalid => None,
             FsRegex::Unknown => {
@@ -1302,7 +1373,7 @@ fn split_fields_into(
             None => {
                 // Fall back to literal split if the FS is not a valid regex.
                 let mut pos = 0;
-                for part in record.split(fs) {
+                for part in byte_split(record, fs.as_bytes()) {
                     let end = pos + part.len();
                     field_ranges.push((pos as u32, end as u32));
                     pos = end + fs.len();
@@ -1325,7 +1396,7 @@ pub struct Runtime {
     /// Reads resolve `vars` first (per-record overlay), then this map. Not used in the main thread.
     pub global_readonly: Option<Arc<AwkMap<String, Value>>>,
     /// Owned field strings — only populated when a field is modified via `set_field`.
-    pub fields: Vec<String>,
+    pub fields: Vec<AwkStr>,
     /// Zero-copy field byte-ranges into `record`. Each `(start, end)` is a byte offset.
     pub field_ranges: Vec<(u32, u32)>,
     /// True when `set_field` has been called and `fields` vec is authoritative.
@@ -1335,7 +1406,7 @@ pub struct Runtime {
     /// Cached FS for lazy field splitting.
     pub cached_fs: String,
     /// `record` field.
-    pub record: String,
+    pub record: AwkStr,
     /// True once `$0` has ever been given a value — by reading a record, by
     /// `getline`, or by assigning `$0` / `$n` / `NF`. Only `typeof($0)` reads
     /// it: gawk reports `"unassigned"` for `$0` in a `BEGIN` that has not
@@ -1387,7 +1458,7 @@ pub struct Runtime {
     /// Memoised regex `FS`: `(pattern, IGNORECASE, engine)`, where a `None`
     /// engine records a pattern that does not compile. See [`FsRegex`] for why
     /// the record loop cannot afford to build this per record.
-    pub fs_regex: Option<(String, bool, Option<Regex>)>,
+    pub fs_regex: Option<(String, bool, Option<BytesRegex>)>,
     /// Open files for `getline < path` / `close`.
     pub file_handles: HashMap<String, BufReader<File>>,
     /// [`Self::read_leftover`], per redirected `getline` stream.
@@ -1962,7 +2033,7 @@ impl Runtime {
             fields_dirty: false,
             fields_pending_split: false,
             cached_fs: " ".into(),
-            record: String::new(),
+            record: String::new().into(),
             record_assigned: false,
             record_strnum: true,
             field_strnum: Vec::new(),
@@ -2432,7 +2503,7 @@ impl Runtime {
             fields_dirty: false,
             fields_pending_split: false,
             cached_fs: " ".into(),
-            record: String::new(),
+            record: String::new().into(),
             record_assigned: false,
             record_strnum: true,
             field_strnum: Vec::new(),
@@ -3521,7 +3592,7 @@ impl Runtime {
         (prev & 0xffff_ffff) as f64
     }
     /// `set_field_sep_split` — see implementation for the contract.
-    pub fn set_field_sep_split(&mut self, fs: &str, line: &str) {
+    pub fn set_field_sep_split(&mut self, fs: &str, line: &[u8]) {
         self.reset_record(line);
         self.cached_fs.clear();
         self.cached_fs.push_str(fs);
@@ -3529,9 +3600,9 @@ impl Runtime {
 
     /// [`set_field_sep_split`](Self::set_field_sep_split) minus the `FS` copy —
     /// for the record loop, where `FS` is usually the same as last record's.
-    fn reset_record(&mut self, line: &str) {
+    fn reset_record(&mut self, line: &[u8]) {
         self.record.clear();
-        self.record.push_str(line);
+        self.record.push_bytes(line);
         self.record_assigned = true;
         self.record_strnum = true;
         self.field_strnum.clear();
@@ -3549,7 +3620,7 @@ impl Runtime {
     /// allocation per record for a value that changes in essentially no
     /// programs. Comparing against the copy `cached_fs` already holds keeps the
     /// steady state allocation-free while re-reading just as faithfully.
-    pub fn set_record_with_current_fs(&mut self, line: &str) {
+    pub fn set_record_with_current_fs(&mut self, line: &[u8]) {
         let unchanged = match self.vars.get("FS") {
             Some(Value::Str(s)) | Some(Value::StrLit(s)) | Some(Value::Regexp(s)) => {
                 s == &self.cached_fs
@@ -3573,7 +3644,7 @@ impl Runtime {
     /// Like [`set_field_sep_split`](Self::set_field_sep_split) but takes an owned line (avoids extra
     /// copies when the caller already has a `String`, e.g. `gsub` replacing `$0`).
     pub fn set_field_sep_split_owned(&mut self, fs: &str, line: String) {
-        self.record = line;
+        self.record = line.into();
         self.record_assigned = true;
         self.record_strnum = true;
         self.field_strnum.clear();
@@ -3629,17 +3700,17 @@ impl Runtime {
     }
 
     fn split_record_fields(&mut self) {
-        let record = self.record.as_str();
+        let record: &[u8] = self.record.as_bytes();
         if self.csv_mode {
             split_csv_gawk_fields(record, &mut self.field_ranges);
             self.fields.clear();
             for &(s, e) in &self.field_ranges {
                 let raw = &record[s as usize..e as usize];
                 // CSV doubled-quote escape: `""` → `"` inside a quoted field (gawk / RFC 4180).
-                self.fields.push(if raw.contains("\"\"") {
-                    raw.replace("\"\"", "\"")
+                self.fields.push(if memchr::memmem::find(raw, b"\"\"").is_some() {
+                    AwkStr::from_vec(byte_replace(raw, b"\"\"", b"\""))
                 } else {
-                    raw.to_string()
+                    AwkStr::from(raw)
                 });
             }
             self.fields_dirty = true;
@@ -3794,13 +3865,13 @@ impl Runtime {
             Ok(self
                 .fields
                 .get(idx - 1)
-                .map(|f| make(f.as_str().into()))
+                .map(|f| make(f.clone()))
                 .unwrap_or_else(|| Value::Str(String::new().into())))
         } else {
             Ok(self
                 .field_ranges
                 .get(idx - 1)
-                .map(|&(s, e)| Value::Str(self.record[s as usize..e as usize].to_string().into()))
+                .map(|&(s, e)| Value::Str(AwkStr::from(&self.record[s as usize..e as usize])))
                 .unwrap_or_else(|| Value::Str(String::new().into())))
         }
     }
@@ -3815,20 +3886,20 @@ impl Runtime {
         }
         let idx = i as usize;
         if idx == 0 {
-            return Ok(parse_number(&self.record));
+            return Ok(parse_number(&&self.record.to_str_lossy()));
         }
         self.ensure_fields_split();
         if self.fields_dirty {
             Ok(self
                 .fields
                 .get(idx - 1)
-                .map(|s| parse_number(s))
+                .map(|s| parse_number(&s.to_str_lossy()))
                 .unwrap_or(0.0))
         } else {
             Ok(self
                 .field_ranges
                 .get(idx - 1)
-                .map(|&(s, e)| parse_number(&self.record[s as usize..e as usize]))
+                .map(|&(s, e)| parse_number(&String::from_utf8_lossy(&self.record[s as usize..e as usize])))
                 .unwrap_or(0.0))
         }
     }
@@ -3854,17 +3925,17 @@ impl Runtime {
 
     /// Get a field as &str without allocating (zero-copy from record).
     #[allow(dead_code)]
-    pub fn field_str(&self, i: usize) -> &str {
+    pub fn field_str(&self, i: usize) -> &[u8] {
         if i == 0 {
-            return &self.record;
+            return self.record.as_bytes();
         }
         if self.fields_dirty {
-            self.fields.get(i - 1).map(|s| s.as_str()).unwrap_or("")
+            self.fields.get(i - 1).map(|s| s.as_bytes()).unwrap_or(b"")
         } else {
             self.field_ranges
                 .get(i - 1)
                 .map(|&(s, e)| &self.record[s as usize..e as usize])
-                .unwrap_or("")
+                .unwrap_or(b"")
         }
     }
 
@@ -3925,7 +3996,7 @@ impl Runtime {
             .get_global_var("FS")
             .map(|v| v.as_str())
             .unwrap_or_else(|| " ".into());
-        self.set_field_sep_split(&fs, val);
+        self.set_field_sep_split(&fs, val.as_bytes());
         self.ensure_fields_split();
         self.record_strnum = strnum;
         let nf = self.nf() as f64;
@@ -3945,14 +4016,14 @@ impl Runtime {
             self.fields.clear();
             for &(s, e) in &self.field_ranges {
                 self.fields
-                    .push(self.record[s as usize..e as usize].to_string());
+                    .push(AwkStr::from(&self.record[s as usize..e as usize]));
             }
             self.fields_dirty = true;
         }
         if self.fields.len() > nf {
             self.fields.truncate(nf);
         } else {
-            self.fields.resize(nf, String::new());
+            self.fields.resize(nf, String::new().into());
         }
         self.rebuild_record();
         self.vars.insert("NF".into(), Value::Num(nf as f64));
@@ -3997,15 +4068,15 @@ impl Runtime {
             self.fields.clear();
             for &(s, e) in &self.field_ranges {
                 self.fields
-                    .push(self.record[s as usize..e as usize].to_string());
+                    .push(AwkStr::from(&self.record[s as usize..e as usize]));
             }
             self.fields_dirty = true;
         }
         let idx = (i - 1) as usize;
         if self.fields.len() <= idx {
-            self.fields.resize(idx + 1, String::new());
+            self.fields.resize(idx + 1, String::new().into());
         }
-        self.fields[idx] = val.to_string();
+        self.fields[idx] = val.to_string().into();
         // Absent entries read as `true`, so only a non-numeric-string assignment
         // has to be recorded — and the vec has to reach `idx` to record it.
         if !strnum || self.field_strnum.len() > idx {
@@ -4043,13 +4114,13 @@ impl Runtime {
             self.fields.clear();
             for &(s, e) in &self.field_ranges {
                 self.fields
-                    .push(self.record[s as usize..e as usize].to_string());
+                    .push(AwkStr::from(&self.record[s as usize..e as usize]));
             }
             self.fields_dirty = true;
         }
         let idx = (i - 1) as usize;
         if self.fields.len() <= idx {
-            self.fields.resize(idx + 1, String::new());
+            self.fields.resize(idx + 1, String::new().into());
         }
         // Format number into the existing String, reusing its allocation.
         self.fields[idx].clear();
@@ -4072,7 +4143,7 @@ impl Runtime {
             .get("OFS")
             .map(|v| v.as_str())
             .unwrap_or_else(|| " ".into());
-        self.record = self.fields.join(&ofs);
+        self.record = join_awkstrs(&self.fields, ofs.as_bytes());
         self.record_assigned = true;
         // A record joined back together from fields is a computed string. gawk
         // and one-true-awk both treat it that way (`$1 = $1` then `$0 < 7` is a
@@ -4088,7 +4159,7 @@ impl Runtime {
             .get("FS")
             .map(|v| v.as_str())
             .unwrap_or_else(|| " ".into());
-        self.set_field_sep_split(&fs, trimmed);
+        self.set_field_sep_split(&fs, trimmed.as_bytes());
     }
 
     /// Parse the current `line_buf` as a record. Avoids the borrow-checker conflict
@@ -4109,14 +4180,12 @@ impl Runtime {
         self.record_assigned = true;
         self.record_strnum = true;
         self.field_strnum.clear();
-        // Valid UTF-8 fast path (common for text data)
-        match std::str::from_utf8(&self.line_buf[..end]) {
-            Ok(s) => self.record.push_str(s),
-            Err(_) => {
-                let lossy = String::from_utf8_lossy(&self.line_buf[..end]);
-                self.record.push_str(&lossy);
-            }
-        }
+        // The record is the bytes that were read — no decode, no validation, no
+        // substitution. This is the line that used to replace every byte that is
+        // not part of valid UTF-8 with `U+FFFD`, which is where byte
+        // transparency was lost for `$0`, every field cut from it, and every
+        // `print` of either.
+        self.record.push_bytes(&self.line_buf[..end]);
         // Sync cached_fs from vars (non-allocating check; only copies when changed).
         let fs_changed = match self.vars.get("FS") {
             Some(Value::Str(s)) | Some(Value::StrLit(s)) | Some(Value::Regexp(s)) => {
@@ -4462,20 +4531,20 @@ impl Runtime {
         if field == 0 || self.bignum {
             let key = match field {
                 0 => self.record.clone(),
-                n => self.field(n).map(|v| v.as_str()).unwrap_or_default(),
+                n => self.field(n).map(|v| v.as_str()).unwrap_or_default().into(),
             };
             if self.bignum {
                 let prec = self.mpfr_prec_bits();
                 let round = self.mpfr_round();
-                let old = value_to_mpfr(&self.array_get(name, &key), prec, round);
+                let old = value_to_mpfr(&self.array_get(name, &key.to_str_lossy()), prec, round);
                 let sum = Float::with_val_round(prec, old + Float::with_val(prec, delta), round).0;
-                self.array_set(name, key, Value::Mpfr(sum));
+                self.array_set(name, key.to_lossy_string(), Value::Mpfr(sum));
             } else {
                 Self::apply_array_numeric_delta(
                     &mut self.vars,
                     &self.global_readonly,
                     name,
-                    &key,
+                    &key.to_str_lossy(),
                     delta,
                 );
             }
@@ -4487,12 +4556,12 @@ impl Runtime {
         }
         let idx = (field - 1) as usize;
         if self.fields_dirty {
-            let key = self.fields.get(idx).map(|s| s.as_str()).unwrap_or("");
+            let key = self.fields.get(idx).map(|s| s.to_str_lossy()).unwrap_or_default();
             Self::apply_array_numeric_delta(
                 &mut self.vars,
                 &self.global_readonly,
                 name,
-                key,
+                &key,
                 delta,
             );
             return;
@@ -4510,8 +4579,8 @@ impl Runtime {
                 return;
             }
         };
-        let key = &self.record[s..e];
-        Self::apply_array_numeric_delta(&mut self.vars, &self.global_readonly, name, key, delta);
+        let key = String::from_utf8_lossy(&self.record[s..e]);
+        Self::apply_array_numeric_delta(&mut self.vars, &self.global_readonly, name, &key, delta);
     }
 
     /// Shared body for [`array_field_add_delta`](Self::array_field_add_delta); separate from
@@ -4741,16 +4810,22 @@ fn split_string_impl(
             let seps = vec![fs.to_string(); parts.len().saturating_sub(1)];
             return (parts, seps);
         };
-        split_on_regex(s, re)
+        split_on_regex_bytes(s, re)
     })
 }
 
 /// The separator-capturing split, once the engine is in hand.
-fn split_on_regex(s: &str, re: &Regex) -> (Vec<String>, Vec<String>) {
+///
+/// Matches over the bytes, because the `FS` engine is `regex::bytes::Regex`
+/// now. The offsets it reports are byte offsets into the same buffer, so the
+/// pieces are cut from the bytes and rendered back — a subject that is valid
+/// UTF-8 (which every caller of the `&str` form has) comes back unchanged.
+fn split_on_regex_bytes(s: &str, re: &BytesRegex) -> (Vec<String>, Vec<String>) {
+    let hay = s.as_bytes();
     let mut parts: Vec<String> = Vec::new();
     let mut seps: Vec<String> = Vec::new();
     let mut last = 0usize;
-    for m in re.find_iter(s) {
+    for m in re.find_iter(hay) {
         // gawk parity: zero-width matches are ignored during split. Without
         // this, `split("abc", a, /x*/)` would emit one split between every
         // character because `/x*/` matches the empty string everywhere; gawk
@@ -4760,11 +4835,11 @@ fn split_on_regex(s: &str, re: &Regex) -> (Vec<String>, Vec<String>) {
         if m.start() == m.end() {
             continue;
         }
-        parts.push(s[last..m.start()].to_string());
-        seps.push(m.as_str().to_string());
+        parts.push(String::from_utf8_lossy(&hay[last..m.start()]).into_owned());
+        seps.push(String::from_utf8_lossy(m.as_bytes()).into_owned());
         last = m.end();
     }
-    parts.push(s[last..].to_string());
+    parts.push(String::from_utf8_lossy(&hay[last..]).into_owned());
     (parts, seps)
 }
 
@@ -5053,7 +5128,7 @@ mod value_tests {
     #[test]
     fn set_nf_truncates_and_rebuilds_record() {
         let mut rt = super::Runtime::new();
-        rt.set_field_sep_split(" ", "a b c d e");
+        rt.set_field_sep_split(" ", b"a b c d e");
         rt.ensure_fields_split();
         rt.set_nf(3).unwrap();
         assert_eq!(rt.record, "a b c");
@@ -5064,7 +5139,7 @@ mod value_tests {
     fn set_record_str_resplits_nf() {
         let mut rt = super::Runtime::new();
         rt.vars.insert("FS".into(), Value::Str(" ".into()));
-        rt.set_field_sep_split(" ", "a b c");
+        rt.set_field_sep_split(" ", b"a b c");
         rt.ensure_fields_split();
         rt.set_record_str("x y");
         assert_eq!(rt.nf(), 2);
@@ -5145,7 +5220,7 @@ mod value_tests {
     fn csv_mode_quoted_comma_three_fields() {
         let mut rt = super::Runtime::new();
         rt.csv_mode = true;
-        rt.set_field_sep_split(",", r#"a,"b,c",d"#);
+        rt.set_field_sep_split(",", r#"a,"b,c",d"#.as_bytes());
         rt.ensure_fields_split();
         assert_eq!(rt.nf(), 3);
         assert_eq!(rt.field(1).unwrap().as_str(), "a");
@@ -5157,7 +5232,7 @@ mod value_tests {
     fn csv_mode_escape_double_quote_in_field() {
         let mut rt = super::Runtime::new();
         rt.csv_mode = true;
-        rt.set_field_sep_split(",", "\"a\"\"b\"");
+        rt.set_field_sep_split(",", b"\"a\"\"b\"");
         rt.ensure_fields_split();
         assert_eq!(rt.field(1).unwrap().as_str(), "a\"b");
     }
@@ -5166,7 +5241,7 @@ mod value_tests {
     fn csv_mode_trailing_comma_empty_field() {
         let mut rt = super::Runtime::new();
         rt.csv_mode = true;
-        rt.set_field_sep_split(",", "a,");
+        rt.set_field_sep_split(",", b"a,");
         rt.ensure_fields_split();
         assert_eq!(rt.nf(), 2);
         assert_eq!(rt.field(1).unwrap().as_str(), "a");
@@ -5179,7 +5254,7 @@ mod value_tests {
     fn csv_mode_leading_empty_field() {
         let mut rt = super::Runtime::new();
         rt.csv_mode = true;
-        rt.set_field_sep_split(",", ",a,b");
+        rt.set_field_sep_split(",", b",a,b");
         rt.ensure_fields_split();
         assert_eq!(rt.nf(), 3);
         assert_eq!(rt.field(1).unwrap().as_str(), "");
@@ -5191,7 +5266,7 @@ mod value_tests {
     fn csv_mode_all_empty_fields() {
         let mut rt = super::Runtime::new();
         rt.csv_mode = true;
-        rt.set_field_sep_split(",", ",,,");
+        rt.set_field_sep_split(",", b",,,");
         rt.ensure_fields_split();
         // 3 commas = 4 fields, all empty
         assert_eq!(rt.nf(), 4);
@@ -5204,7 +5279,7 @@ mod value_tests {
     fn csv_mode_mixed_quoted_and_unquoted() {
         let mut rt = super::Runtime::new();
         rt.csv_mode = true;
-        rt.set_field_sep_split(",", r#"a,"b,c",d,"e"#);
+        rt.set_field_sep_split(",", r#"a,"b,c",d,"e"#.as_bytes());
         rt.ensure_fields_split();
         // "e is unterminated; awkrs should accept (RFC 4180 strict would reject,
         // gawk is lenient). Pin actual behavior: 4 fields including the
@@ -5219,7 +5294,7 @@ mod value_tests {
     fn csv_mode_double_quote_escape_in_middle() {
         let mut rt = super::Runtime::new();
         rt.csv_mode = true;
-        rt.set_field_sep_split(",", r#""he said ""hi""","next""#);
+        rt.set_field_sep_split(",", r#""he said ""hi""","next""#.as_bytes());
         rt.ensure_fields_split();
         assert_eq!(rt.nf(), 2);
         assert_eq!(rt.field(1).unwrap().as_str(), r#"he said "hi""#);
@@ -5230,7 +5305,7 @@ mod value_tests {
         // `,` is one separator → 2 empty fields. Previously broken (returned 1).
         let mut rt = super::Runtime::new();
         rt.csv_mode = true;
-        rt.set_field_sep_split(",", ",");
+        rt.set_field_sep_split(",", b",");
         rt.ensure_fields_split();
         assert_eq!(rt.nf(), 2);
         assert_eq!(rt.field(1).unwrap().as_str(), "");
@@ -5243,7 +5318,7 @@ mod value_tests {
         // separate branch that didn't account for the implicit empty start.
         let mut rt = super::Runtime::new();
         rt.csv_mode = true;
-        rt.set_field_sep_split(",", ",a,b");
+        rt.set_field_sep_split(",", b",a,b");
         rt.ensure_fields_split();
         assert_eq!(rt.nf(), 3);
         assert_eq!(rt.field(1).unwrap().as_str(), "");
@@ -5255,7 +5330,7 @@ mod value_tests {
     fn csv_mode_empty_record_zero_fields() {
         let mut rt = super::Runtime::new();
         rt.csv_mode = true;
-        rt.set_field_sep_split(",", "");
+        rt.set_field_sep_split(",", b"");
         rt.ensure_fields_split();
         assert_eq!(rt.nf(), 0);
     }
@@ -5265,7 +5340,7 @@ mod value_tests {
         // Without csv_mode the quotes are part of the field text.
         let mut rt = super::Runtime::new();
         rt.csv_mode = false;
-        rt.set_field_sep_split(",", r#"a,"b,c",d"#);
+        rt.set_field_sep_split(",", r#"a,"b,c",d"#.as_bytes());
         rt.ensure_fields_split();
         // Without CSV mode: comma-only splitting → 4 fields.
         assert_eq!(rt.nf(), 4);
@@ -5869,7 +5944,7 @@ mod extra_runtime_tests {
     fn split_fields_whitespace() {
         let mut ranges = Vec::new();
         split_fields_into(
-            "  a  b   c  ",
+            b"  a  b   c  ",
             " ",
             &mut ranges,
             false,
@@ -5887,7 +5962,7 @@ mod extra_runtime_tests {
     fn split_fields_comma() {
         let mut ranges = Vec::new();
         split_fields_into(
-            "a,b,,c",
+            b"a,b,,c",
             ",",
             &mut ranges,
             false,
@@ -5906,7 +5981,7 @@ mod extra_runtime_tests {
     fn split_fields_regex() {
         let mut ranges = Vec::new();
         split_fields_into(
-            "a1b22c",
+            b"a1b22c",
             "[0-9]+",
             &mut ranges,
             false,
@@ -5923,13 +5998,13 @@ mod extra_runtime_tests {
     #[test]
     fn split_csv_gawk_rfc4180() {
         let mut ranges = Vec::new();
-        split_csv_gawk_fields("a,\"b,c\",d", &mut ranges);
+        split_csv_gawk_fields(b"a,\"b,c\",d", &mut ranges);
         assert_eq!(ranges.len(), 3);
         assert_eq!(ranges[0], (0, 1)); // "a"
         assert_eq!(ranges[1], (3, 6)); // "b,c"
         assert_eq!(ranges[2], (8, 9)); // "d"
 
-        split_csv_gawk_fields("\"\"\"\"", &mut ranges); // escaped quote
+        split_csv_gawk_fields(b"\"\"\"\"", &mut ranges); // escaped quote
         assert_eq!(ranges.len(), 1);
         assert_eq!(ranges[0], (1, 3)); // ""
     }
@@ -6143,7 +6218,7 @@ mod extra_runtime_tests {
     #[test]
     fn runtime_set_field_edge_cases_v3() {
         let mut rt = super::Runtime::new();
-        rt.set_field_sep_split(" ", "a b c");
+        rt.set_field_sep_split(" ", b"a b c");
         rt.ensure_fields_split();
         rt.set_field(5, "e").unwrap();
         assert_eq!(rt.nf(), 5);
@@ -6181,7 +6256,7 @@ mod extra_runtime_tests {
     #[test]
     fn runtime_nf_truncation_v2() {
         let mut rt = super::Runtime::new();
-        rt.set_field_sep_split(":", "a:b:c:d");
+        rt.set_field_sep_split(":", b"a:b:c:d");
         rt.ensure_fields_split();
         let _ = rt.set_nf(2);
         assert_eq!(rt.nf(), 2);
@@ -6192,7 +6267,7 @@ mod extra_runtime_tests {
     #[test]
     fn runtime_record_reconstruction_with_ofs_v2() {
         let mut rt = super::Runtime::new();
-        rt.set_field_sep_split(",", "a,b");
+        rt.set_field_sep_split(",", b"a,b");
         rt.ensure_fields_split();
         rt.vars.insert("OFS".into(), Value::Str("|".into()));
         rt.set_field(1, "x").unwrap();
@@ -6284,21 +6359,21 @@ mod extra_runtime_tests {
     #[test]
     fn runtime_field_sep_v56_0() {
         let mut rt = super::Runtime::new();
-        rt.set_field_sep_split(":", "a:b:c");
+        rt.set_field_sep_split(":", b"a:b:c");
         rt.ensure_fields_split();
         assert_eq!(rt.nf(), 3);
     }
     #[test]
     fn runtime_field_sep_v56_1() {
         let mut rt = super::Runtime::new();
-        rt.set_field_sep_split(",", "a,b,c");
+        rt.set_field_sep_split(",", b"a,b,c");
         rt.ensure_fields_split();
         assert_eq!(rt.nf(), 3);
     }
     #[test]
     fn runtime_field_sep_v56_2() {
         let mut rt = super::Runtime::new();
-        rt.set_field_sep_split(" ", "a b c");
+        rt.set_field_sep_split(" ", b"a b c");
         rt.ensure_fields_split();
         assert_eq!(rt.nf(), 3);
     }

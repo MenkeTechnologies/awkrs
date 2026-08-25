@@ -369,7 +369,7 @@ impl fusevm::AwkHost for AwkRuntimeHost {
                 if rt.characters_as_bytes {
                     rt.record.len() as i64
                 } else {
-                    rt.record.chars().count() as i64
+                    rt.record.chars_lossy().count() as i64
                 }
             }
             Some(v) => {
@@ -671,7 +671,7 @@ impl fusevm::AwkHost for AwkRuntimeHost {
                         .get("FS")
                         .map(|v| v.as_str())
                         .unwrap_or_else(|| " ".to_string());
-                    rt.set_field_sep_split(&fs, &trimmed);
+                    rt.set_field_sep_split(&fs, &trimmed.as_bytes());
                     rt.ensure_fields_split();
                     let nf = rt.nf() as f64;
                     rt.vars.insert("NF".into(), crate::runtime::Value::Num(nf));
@@ -1013,7 +1013,7 @@ mod tests {
     #[test]
     fn host_field_get_reads_fields_and_record() {
         let mut rt = Runtime::new();
-        rt.set_field_sep_split(" ", "alpha beta gamma");
+        rt.set_field_sep_split(" ", b"alpha beta gamma");
         let _g = RuntimeGuard::enter(&mut rt);
         let mut host = AwkRuntimeHost;
         assert_eq!(host.field_get(2).to_str(), "beta");
@@ -1024,7 +1024,7 @@ mod tests {
     #[test]
     fn host_field_set_assigns_and_rebuilds_record() {
         let mut rt = Runtime::new();
-        rt.set_field_sep_split(" ", "a b c");
+        rt.set_field_sep_split(" ", b"a b c");
         {
             let _g = RuntimeGuard::enter(&mut rt);
             let mut host = AwkRuntimeHost;
@@ -1052,7 +1052,7 @@ mod tests {
     #[test]
     fn negative_field_index_records_host_error() {
         let mut rt = Runtime::new();
-        rt.set_field_sep_split(" ", "a b");
+        rt.set_field_sep_split(" ", b"a b");
         {
             let _g = RuntimeGuard::enter(&mut rt);
             let mut host = AwkRuntimeHost;
@@ -1067,7 +1067,7 @@ mod tests {
     #[test]
     fn host_special_get_reads_nr_nf_and_globals() {
         let mut rt = Runtime::new();
-        rt.set_field_sep_split(" ", "a b c");
+        rt.set_field_sep_split(" ", b"a b c");
         rt.nr = 7.0;
         let _g = RuntimeGuard::enter(&mut rt);
         let mut host = AwkRuntimeHost;
@@ -1081,7 +1081,7 @@ mod tests {
     #[test]
     fn host_nf_read_realizes_split_and_assign_rebuilds() {
         let mut rt = Runtime::new();
-        rt.set_field_sep_split(" ", "a b c d");
+        rt.set_field_sep_split(" ", b"a b c d");
         let _g = RuntimeGuard::enter(&mut rt);
         let mut host = AwkRuntimeHost;
         // NF read must realize the lazy split (not report 0).
@@ -1212,7 +1212,7 @@ mod tests {
     #[test]
     fn host_gsub_and_sub_on_lvalues() {
         let mut rt = Runtime::new();
-        rt.set_field_sep_split(" ", "foo bar");
+        rt.set_field_sep_split(" ", b"foo bar");
         let _g = RuntimeGuard::enter(&mut rt);
         let mut host = AwkRuntimeHost;
         let _ = host.nf(); // realize the field split

@@ -1321,13 +1321,7 @@ fn awk_float_eq(a: f64, b: f64) -> bool {
 }
 
 fn set_record_from_line_bytes(rt: &mut Runtime, fs: &str, line_bytes: &[u8]) {
-    match std::str::from_utf8(line_bytes) {
-        Ok(line) => rt.set_field_sep_split(fs, line),
-        Err(_) => {
-            let lossy = String::from_utf8_lossy(line_bytes);
-            rt.set_field_sep_split(fs, &lossy);
-        }
-    }
+    rt.set_field_sep_split(fs, line_bytes);
 }
 
 /// Detect programs that can bypass the full VM dispatch loop.
@@ -1450,8 +1444,7 @@ fn dispatch_slurp_record(
     // record already; this keeps the two paths on the same rule.
     // `set_record_with_current_fs` does the re-read without the per-record
     // `String` clone the plain `vars.get("FS").as_str()` spelling cost.
-    let line = String::from_utf8_lossy(chunk);
-    rt.set_record_with_current_fs(line.as_ref());
+    rt.set_record_with_current_fs(chunk);
     rt.check_fs_ere().map_err(Error::Runtime)?;
     dispatch_rules(cp, range_state, rt)
 }

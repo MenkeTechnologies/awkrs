@@ -630,7 +630,7 @@ pub fn vm_pattern_matches(
         CompiledPattern::Regexp(idx) => {
             let pat = cp.strings.get(*idx);
             rt.ensure_regex(pat).map_err(Error::Runtime)?;
-            Ok(rt.regex_ref(pat).is_match(&rt.record))
+            Ok(rt.regex_ref(pat).is_match(&&rt.record.to_str_lossy()))
         }
         CompiledPattern::LiteralRegexp(idx) => {
             let pat = cp.strings.get(*idx);
@@ -640,9 +640,9 @@ pub fn vm_pattern_matches(
             // no effect on bare `/abc/` patterns.
             if rt.ignore_case_flag() {
                 rt.ensure_regex(pat).map_err(Error::Runtime)?;
-                Ok(rt.regex_ref(pat).is_match(&rt.record))
+                Ok(rt.regex_ref(pat).is_match(&rt.record.to_str_lossy()))
             } else {
-                Ok(rt.record.contains(pat))
+                Ok(rt.record.contains_bytes(pat.as_bytes()))
             }
         }
         CompiledPattern::Expr(chunk) => {
@@ -673,15 +673,15 @@ pub fn vm_match_range_endpoint(
         CompiledRangeEndpoint::Regexp(idx) => {
             let pat = cp.strings.get(*idx);
             rt.ensure_regex(pat).map_err(Error::Runtime)?;
-            Ok(rt.regex_ref(pat).is_match(&rt.record))
+            Ok(rt.regex_ref(pat).is_match(&&rt.record.to_str_lossy()))
         }
         CompiledRangeEndpoint::LiteralRegexp(idx) => {
             let pat = cp.strings.get(*idx);
             if rt.ignore_case_flag() {
                 rt.ensure_regex(pat).map_err(Error::Runtime)?;
-                Ok(rt.regex_ref(pat).is_match(&rt.record))
+                Ok(rt.regex_ref(pat).is_match(&rt.record.to_str_lossy()))
             } else {
-                Ok(rt.record.contains(pat))
+                Ok(rt.record.contains_bytes(pat.as_bytes()))
             }
         }
         CompiledRangeEndpoint::Expr(chunk) => {
@@ -2298,7 +2298,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             Op::MatchRegexp(idx) => {
                 let pat = ctx.str_ref(idx).to_string();
                 ctx.rt.ensure_regex(&pat).map_err(Error::Runtime)?;
-                let m = ctx.rt.regex_ref(&pat).is_match(&ctx.rt.record);
+                let m = ctx.rt.regex_ref(&pat).is_match(&&ctx.rt.record.to_str_lossy());
                 ctx.push(Value::Num(if m { 1.0 } else { 0.0 }));
             }
 
@@ -2848,7 +2848,7 @@ fn exec_print(ctx: &mut VmCtx<'_>, argc: u16, redir: RedirKind, is_printf: bool)
                     other => other.as_str(),
                 });
             }
-            parts.join(&ofs)
+            parts.join(&ofs).into()
         };
         let chunk = format!("{line}{ors}");
         emit_with_redir(ctx, &chunk, redir, redir_path.as_deref())?;
@@ -2922,7 +2922,7 @@ fn apply_getline_line(
                 .get("FS")
                 .map(|v| v.as_str())
                 .unwrap_or_else(|| " ".into());
-            ctx.rt.set_field_sep_split(&fs, &trimmed);
+            ctx.rt.set_field_sep_split(&fs, &trimmed.as_bytes());
             ctx.rt.ensure_fields_split();
             let nf = ctx.rt.nf() as f64;
             ctx.rt.vars.insert("NF".into(), Value::Num(nf));

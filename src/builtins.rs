@@ -113,19 +113,19 @@ pub fn gsub(
         // Replace `$0` in one step — do not restore the old record only to overwrite it again.
         let cur = std::mem::take(&mut rt.record);
         let (new_s, c) = if use_literal {
-            if literal_substring_absent(rt, re_pat, &cur) {
+            if literal_substring_absent(rt, re_pat, &&cur.to_str_lossy()) {
                 rt.record = cur;
                 return Ok(0.0);
             }
-            literal_replace_all(&cur, re_pat, repl, rt)
+            literal_replace_all(&&cur.to_str_lossy(), re_pat, repl, rt)
         } else {
             rt.ensure_regex(re_pat).map_err(Error::Runtime)?;
             let re = rt.regex_ref(re_pat);
-            if !re.is_match(&cur) {
+            if !re.is_match(&&cur.to_str_lossy()) {
                 rt.record = cur;
                 return Ok(0.0);
             }
-            replace_all_awk(re, &cur, repl, repl_has_special)
+            replace_all_awk(re, &&cur.to_str_lossy(), repl, repl_has_special)
         };
         drop(cur);
         let fs = rt
@@ -168,16 +168,22 @@ pub fn sub_fn(
         }
     } else {
         let cur = std::mem::take(&mut rt.record);
-        if let Some(m) = rt.regex_ref(re_pat).find(&cur) {
+        // The `~` engine still matches over `&str`, so the offsets it reports
+        // are offsets into this rendering, not into `cur`'s bytes. Cutting the
+        // record with them therefore has to use the same rendering. That makes
+        // `sub` on `$0` exactly as byte-faithful as the regex engine behind it
+        // — no more, and no less — until that engine moves to bytes too.
+        let cur_text = cur.to_lossy_string();
+        if let Some(m) = rt.regex_ref(re_pat).find(&cur_text) {
             let piece = if repl_has_special {
                 expand_repl(repl, m.as_str())
             } else {
                 repl.to_string()
             };
-            let mut out = String::with_capacity(cur.len() + piece.len());
-            out.push_str(&cur[..m.start()]);
+            let mut out = String::with_capacity(cur_text.len() + piece.len());
+            out.push_str(&cur_text[..m.start()]);
             out.push_str(&piece);
-            out.push_str(&cur[m.end()..]);
+            out.push_str(&cur_text[m.end()..]);
             drop(cur);
             let fs = rt
                 .vars
@@ -371,7 +377,7 @@ pub fn awk_gensub(
 ) -> Result<String> {
     let s = match target {
         Some(t) => t,
-        None => rt.record.clone(),
+        None => rt.record.to_lossy_string(),
     };
     rt.ensure_regex(ere).map_err(Error::Runtime)?;
     let re = rt.regex_ref(ere).clone();

@@ -88,7 +88,7 @@ pub(crate) fn exec_builtin_dispatch(
                 let n = if ctx.rt.characters_as_bytes {
                     ctx.rt.record.len()
                 } else {
-                    ctx.rt.record.chars().count()
+                    ctx.rt.record.chars_lossy().count()
                 };
                 Value::Num(n as f64)
             } else {

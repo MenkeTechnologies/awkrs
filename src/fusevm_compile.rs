@@ -1236,7 +1236,7 @@ pub(crate) fn run_compiled_files(
                 // FS is read each record so a rule changing it affects the
                 // next; `set_record_with_current_fs` does that re-read without
                 // the per-record `String` clone `as_str()` costs.
-                rt.set_record_with_current_fs(line);
+                rt.set_record_with_current_fs(line.as_bytes());
                 rt.check_fs_ere().map_err(crate::error::Error::Runtime)?;
                 for ch in main {
                     match runner.run(rt, ch)? {
@@ -1318,7 +1318,7 @@ mod tests {
     fn compiles_field_reads() {
         // Pre-load a record so `$2` resolves; BEGIN reads it through AwkFieldGet.
         let out = run_with("BEGIN { print $2 }", |rt| {
-            rt.set_field_sep_split(" ", "alpha beta gamma");
+            rt.set_field_sep_split(" ", b"alpha beta gamma");
         });
         assert_eq!(out, b"beta\n");
     }
@@ -1358,7 +1358,7 @@ mod tests {
     fn compiles_field_assignment() {
         // $2 = "X" rebuilds the record
         let out = run_with(r#"BEGIN { $2 = "X"; print $0 }"#, |rt| {
-            rt.set_field_sep_split(" ", "a b c");
+            rt.set_field_sep_split(" ", b"a b c");
         });
         assert_eq!(out, b"a X c\n");
         // $0 = ... resplits, so $1 reads the new first field
