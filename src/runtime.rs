@@ -1513,9 +1513,9 @@ pub struct Runtime {
     /// `untyped` twice in gawk.
     pub slot_touched: Vec<bool>,
     /// Compiled regex cache (case-sensitive) — avoids recompiling the same pattern every record.
-    pub regex_cache_cs: AwkMap<String, BytesRegex>,
+    pub regex_cache_cs: AwkMap<Vec<u8>, BytesRegex>,
     /// Compiled regex cache when [`Self::ignore_case_flag`] is true.
-    pub regex_cache_ci: AwkMap<String, BytesRegex>,
+    pub regex_cache_ci: AwkMap<Vec<u8>, BytesRegex>,
     /// Cached substring searchers for literal `sub`/`gsub` patterns — faster than `str::contains` per line.
     pub memmem_finder_cache: AwkMap<String, memmem::Finder<'static>>,
     /// Persistent stdout buffer — shared across record iterations, flushed at file boundaries.
@@ -1674,6 +1674,29 @@ fn read_record_from_stream<R: BufRead>(
         String::from_utf8_lossy(&buf[..end]).into_owned(),
         sep,
     )))
+}
+
+/// [`translate_awk_re_to_rust`] for a pattern that is itself a byte string.
+///
+/// `regex::bytes::RegexBuilder` still takes its pattern as `&str`, so a byte
+/// that no `&str` can name is written into the pattern source as `\xNN` — which,
+/// with Unicode mode off, is exactly that one byte. Valid UTF-8 runs go through
+/// the ordinary rewrite unchanged, so a pattern that is all text behaves exactly
+/// as it did.
+fn translate_awk_re_bytes_to_rust(pat: &[u8]) -> String {
+    match std::str::from_utf8(pat) {
+        Ok(text) => translate_awk_re_to_rust(text),
+        Err(_) => {
+            let mut src = String::with_capacity(pat.len() * 2);
+            for chunk in pat.utf8_chunks() {
+                src.push_str(&translate_awk_re_to_rust(chunk.valid()));
+                for b in chunk.invalid() {
+                    src.push_str(&format!("\\x{b:02x}"));
+                }
+            }
+            src
+        }
+    }
 }
 
 fn translate_awk_re_to_rust(pat: &str) -> String {
@@ -2601,7 +2624,12 @@ impl Runtime {
     }
 
     /// Ensure a regex is compiled and cached. Call before `regex_ref()`.
-    pub fn ensure_regex(&mut self, pat: &str) -> std::result::Result<(), String> {
+    /// [`Self::ensure_regex`] with a byte pattern.
+    ///
+    /// A pattern can itself hold a byte that is not part of valid UTF-8 —
+    /// `$1 ~ $2` where the second field is one — and the cache is keyed on the
+    /// bytes so two different patterns cannot collide on the same rendering.
+    pub fn ensure_regex_bytes(&mut self, pat: &[u8]) -> std::result::Result<(), String> {
         let ic = self.ignore_case_flag();
         let cache = if ic {
             &mut self.regex_cache_ci
@@ -2611,39 +2639,32 @@ impl Runtime {
         if cache.contains_key(pat) {
             return Ok(());
         }
-        // gawk parity: POSIX ERE does not define `\1`..`\9` as backreferences.
-        // gawk treats them as literal `\N` (the regex parser issues a warning
-        // for unknown escape but compiles and matches the literal sequence).
-        // Rust's regex crate parses `\1` as a backreference and errors out.
-        // Escape numeric backrefs to literal before compilation so the cache
-        // key (original `pat`) is preserved but the engine sees the literal form.
-        let translated = translate_awk_re_to_rust(pat);
+        let translated = translate_awk_re_bytes_to_rust(pat);
         let mut b = regex::bytes::RegexBuilder::new(&translated);
-        // The locale picks the character model, and the byte engine has to be
-        // told which. With Unicode off, `.` and the character classes work in
-        // single bytes, so `/^a.b$/` matches a record holding one that is not
-        // part of valid UTF-8 — which gawk, mawk and one-true-awk all do in a
-        // single-byte locale, and which a Unicode-mode engine cannot, because
-        // there is no character there for `.` to match.
         b.unicode(crate::locale_numeric::ctype_is_utf8());
         b.case_insensitive(ic);
-        // gawk: in ERE, `.` matches any byte INCLUDING newline. Rust regex defaults
-        // to `dot_matches_new_line(false)`. Enable it so `/a.*d/` on "ab\ncd"
-        // matches, matching gawk behavior for split/match/gsub/etc.
         b.dot_matches_new_line(true);
         let re = b.build().map_err(|e| e.to_string())?;
-        cache.insert(pat.to_string(), re);
+        cache.insert(pat.to_vec(), re);
         Ok(())
     }
 
-    /// Get a cached regex (must call `ensure_regex` first).
-    pub fn regex_ref(&self, pat: &str) -> &BytesRegex {
-        let ic = self.ignore_case_flag();
-        if ic {
+    /// [`Self::regex_ref`] with a byte pattern.
+    pub fn regex_ref_bytes(&self, pat: &[u8]) -> &BytesRegex {
+        if self.ignore_case_flag() {
             &self.regex_cache_ci[pat]
         } else {
             &self.regex_cache_cs[pat]
         }
+    }
+
+    pub fn ensure_regex(&mut self, pat: &str) -> std::result::Result<(), String> {
+        self.ensure_regex_bytes(pat.as_bytes())
+    }
+
+    /// Get a cached regex (must call `ensure_regex` first).
+    pub fn regex_ref(&self, pat: &str) -> &BytesRegex {
+        self.regex_ref_bytes(pat.as_bytes())
     }
 
     /// gawk **`IGNORECASE`**: truthy value enables case-insensitive regex and string compares.

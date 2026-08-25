@@ -1860,7 +1860,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 // other coercion: `CONVFMT="%.2f"; x=1.23456; "a1.23b" ~ x` is
                 // the pattern `1.23` and matches in all three references. Only
                 // the subject side used to convert this way.
-                let pat = ctx.rt.value_to_str_convfmt(&pat_v).into_owned();
+                let pat = ctx.rt.value_to_bytes_convfmt(&pat_v).into_owned();
                 let v = ctx.pop();
                 v.reject_if_array_scalar()?;
                 // The subject matches as bytes. The engine is
@@ -1868,14 +1868,14 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 // part of valid UTF-8 can find it — rendering the subject first
                 // replaced that byte with `U+FFFD` and the match always failed.
                 let s = ctx.rt.value_to_bytes_convfmt(&v).into_owned();
-                ctx.rt.ensure_regex(&pat).map_err(Error::Runtime)?;
-                let m = ctx.rt.regex_ref(&pat).is_match(&s);
+                ctx.rt.ensure_regex_bytes(&pat).map_err(Error::Runtime)?;
+                let m = ctx.rt.regex_ref_bytes(&pat).is_match(&s);
                 ctx.push(Value::Num(if m { 1.0 } else { 0.0 }));
             }
             Op::RegexNotMatch => {
                 let pat_v = ctx.pop();
                 pat_v.reject_if_array_scalar()?;
-                let pat = ctx.rt.value_to_str_convfmt(&pat_v).into_owned();
+                let pat = ctx.rt.value_to_bytes_convfmt(&pat_v).into_owned();
                 let v = ctx.pop();
                 v.reject_if_array_scalar()?;
                 // The subject matches as bytes. The engine is
@@ -1883,8 +1883,8 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 // part of valid UTF-8 can find it — rendering the subject first
                 // replaced that byte with `U+FFFD` and the match always failed.
                 let s = ctx.rt.value_to_bytes_convfmt(&v).into_owned();
-                ctx.rt.ensure_regex(&pat).map_err(Error::Runtime)?;
-                let m = ctx.rt.regex_ref(&pat).is_match(&s);
+                ctx.rt.ensure_regex_bytes(&pat).map_err(Error::Runtime)?;
+                let m = ctx.rt.regex_ref_bytes(&pat).is_match(&s);
                 ctx.push(Value::Num(if !m { 1.0 } else { 0.0 }));
             }
 
