@@ -714,19 +714,26 @@ fn format_g_decimal_significant_f64(mut n: f64, p: usize) -> String {
             "0".to_string()
         };
     }
-    let e = n.log10().floor() as i32;
-    let sig_scale = 10f64.powi(p as i32 - 1 - e);
-    let r = (n * sig_scale).round() / sig_scale;
-    if r == 0.0 {
-        return if neg {
-            "-0".to_string()
-        } else {
-            "0".to_string()
-        };
-    }
-    let e2 = r.log10().floor() as i32;
-    let frac = (p as i32 - e2 - 1).max(0) as usize;
-    let body = format!("{:.*}", frac, r);
+    // The rounding has to come from Rust's formatter, not from arithmetic.
+    // Scaling by `10^(p-1-e)`, rounding, and scaling back was wrong twice over:
+    // `f64::round` rounds halves *away from zero* where C rounds the exact
+    // binary value half-to-even, and the multiply itself moved the value before
+    // the rounding could see it. `printf "%.1g", 2.5` came out `3` against `2`
+    // in gawk, mawk and one-true-awk alike (and `4.5` → `5` against `4`, `%.2g`
+    // of `1.25` → `1.3` against `1.2`), while `printf "%.1g", 0.15` came out
+    // `0.2` against `0.1` for the other reason: 0.15 is really 0.1499…, but
+    // `0.15 * 10` rounds *up* to exactly 1.5 before `round()` ever runs.
+    //
+    // `{:.*e}` gives the value correctly rounded to `p` significant digits, so
+    // its exponent is the one C uses to pick the fixed-form precision; `{:.*}`
+    // then rounds the original value to that many decimals, again exactly.
+    let sci = format!("{:.*e}", p - 1, n);
+    let exp: i32 = sci
+        .rfind('e')
+        .and_then(|i| sci[i + 1..].parse().ok())
+        .unwrap_or(0);
+    let frac = (p as i32 - 1 - exp).max(0) as usize;
+    let body = format!("{:.*}", frac, n);
     if neg {
         format!("-{body}")
     } else {
@@ -809,7 +816,17 @@ fn format_one(
     thousands_sep: Option<char>,
     mpfr_mode: Option<(u32, Round)>,
 ) -> Result<String, String> {
-    let pad_char = if pad_zero && !left { '0' } else { ' ' };
+    // C / POSIX: for `d i o u x X` a precision makes the `0` flag undefined, and
+    // every reference resolves that the same way — the flag is ignored and the
+    // field pads with spaces. `printf "%08.2d", 42` is `      42` in gawk, mawk
+    // and one-true-awk; awkrs zero-padded to `00000042`. The zero-padding a
+    // precision asks for is applied to the *digits* instead, below.
+    let int_conv_with_prec = matches!(conv, 'd' | 'i' | 'o' | 'u' | 'x' | 'X') && prec.is_some();
+    let pad_char = if pad_zero && !left && !int_conv_with_prec {
+        '0'
+    } else {
+        ' '
+    };
     let w = width.unwrap_or(0);
     // gawk parity: when the locale defines no grouping (C locale → empty
     // `thousands_sep` from `localeconv`), the `'` flag becomes a no-op. Don't
@@ -885,14 +902,7 @@ fn format_one(
             }
             // POSIX: `%.Nd` zero-pads the integer magnitude to at least N digits
             // (the sign is added separately and doesn't count toward N).
-            if let Some(p) = prec {
-                let neg = s.starts_with('-');
-                let mag = if neg { &s[1..] } else { &s[..] };
-                if mag.len() < p {
-                    let padded = format!("{:0>width$}", mag, width = p);
-                    s = if neg { format!("-{padded}") } else { padded };
-                }
-            }
+            pad_int_to_precision(&mut s, prec);
             let pos = !s.starts_with('-');
             apply_sign(&mut s, pos, sign, space);
             if group && sep != '\0' {
@@ -964,6 +974,7 @@ fn format_one(
             if matches!(prec, Some(0)) && s == "0" {
                 s.clear();
             }
+            pad_int_to_precision(&mut s, prec);
             if group && sep != '\0' {
                 s = insert_thousands_sep(s, sep);
             }
@@ -985,7 +996,13 @@ fn format_one(
             if matches!(prec, Some(0)) && s == "0" {
                 s.clear();
             }
-            if alt && s != "0" && !s.is_empty() {
+            pad_int_to_precision(&mut s, prec);
+            // C / POSIX: `#` on `%o` raises the precision far enough to make the
+            // first digit a zero — so it applies after the precision padding,
+            // and it still produces a digit when the precision emptied the
+            // magnitude (`printf "%#.0o", 0` is `0` in all three references,
+            // where plain `%.0o` is empty).
+            if alt && !s.starts_with('0') {
                 s = format!("0{s}");
             }
             pad_numeric(&s, w, left, pad_char)
@@ -1014,9 +1031,12 @@ fn format_one(
             if matches!(prec, Some(0)) && s == "0" {
                 s.clear();
             }
+            let zero_valued = s.is_empty() || s.chars().all(|c| c == '0');
+            pad_int_to_precision(&mut s, prec);
             // POSIX / gawk: `#` adds the `0x`/`0X` prefix only when the value
-            // is non-zero. `printf "%#x", 0` yields "0", not "0x0".
-            if alt && !s.is_empty() && s != "0" {
+            // is non-zero. `printf "%#x", 0` yields "0", not "0x0". The test is
+            // on the value, not the padded text, so `%#.5x` of 0 stays `00000`.
+            if alt && !zero_valued {
                 s = if conv == 'x' {
                     format!("0x{s}")
                 } else {
@@ -1276,6 +1296,25 @@ fn apply_alt_radix(s: &mut String, decimal: char) {
     // is the first `e`/`E` — a hex-float `p` exponent never reaches here.
     let at = s.find(['e', 'E']).unwrap_or(s.len());
     s.insert(at, decimal);
+}
+
+/// C / POSIX precision for `d i o u x X`: the minimum number of digits, reached
+/// by zero-padding the magnitude on the left. Never truncates — a value with
+/// more digits than the precision keeps all of them.
+///
+/// The sign is not a digit and does not count toward the precision, so it is
+/// lifted off and put back. Any `#` prefix (`0x` / the octal leading zero) is
+/// added by the caller *after* this, which is what makes `printf "%#.5x", 255`
+/// come out as `0x000ff` rather than `0x00ff` in gawk, mawk and one-true-awk.
+fn pad_int_to_precision(s: &mut String, prec: Option<usize>) {
+    let Some(p) = prec else { return };
+    let neg = s.starts_with('-');
+    let mag = if neg { &s[1..] } else { &s[..] };
+    if mag.len() >= p {
+        return;
+    }
+    let padded = format!("{mag:0>p$}");
+    *s = if neg { format!("-{padded}") } else { padded };
 }
 
 fn pad_numeric(s: &str, width: usize, left: bool, pad: char) -> Result<String, String> {
@@ -2087,10 +2126,18 @@ mod tests {
 
     #[test]
     fn format_zero_pad_with_precision_v3() {
-        // POSIX: For d, i, o, u, x, X, zero-padding is ignored if precision is present.
+        // POSIX: for d, i, o, u, x, X the `0` flag is ignored when a precision
+        // is present — the precision does the zero-padding (of the digits) and
+        // the field pads with spaces. gawk 5.4.1, mawk 1.3.4 and one-true-awk
+        // 20200816 all print "   00123". This test used to pin awkrs's own
+        // "00000123", against the rule its comment quoted.
         let s = awk_sprintf("%08.5d", &[Value::Num(123.0)]).unwrap();
-        // Current awkrs behavior: "00000123" (does not ignore zero-padding)
-        assert_eq!(s, "00000123");
+        assert_eq!(s, "   00123");
+        // The `0` flag still applies when there is no precision.
+        assert_eq!(
+            awk_sprintf("%08d", &[Value::Num(123.0)]).unwrap(),
+            "00000123"
+        );
     }
 
     #[test]

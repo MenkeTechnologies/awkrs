@@ -1987,3 +1987,98 @@ fn the_fused_array_field_add_matches_the_unfused_form() {
     assert_eq!(code, 0, "stderr {stderr:?}");
     assert_eq!(fused, unfused, "fused -M diverged from the unfused form");
 }
+
+/// C / POSIX precision on the integer conversions (`d i o u x X`): a minimum
+/// digit count, with the `0` flag ignored while it is present.
+///
+/// Every expectation below was produced by running gawk 5.4.1, mawk 1.3.4 and
+/// one-true-awk 20200816 on the same program under `LC_ALL=C`; all three agree
+/// on every line.
+#[test]
+fn integer_conversions_honour_their_precision() {
+    for (program, want) in [
+        // The `0` flag is ignored once a precision is present; the precision
+        // pads the digits and the field pads with spaces.
+        (r#"BEGIN { printf "%08.5d|", 123 }"#, "   00123|"),
+        (r#"BEGIN { printf "%08.2d|", 42 }"#, "      42|"),
+        (r#"BEGIN { printf "%08.0d|", 0 }"#, "        |"),
+        (r#"BEGIN { printf "%08.3d|", -42 }"#, "    -042|"),
+        (r#"BEGIN { printf "%05.1d|", 256 }"#, "  256|"),
+        (r#"BEGIN { printf "%08.5x|", 255 }"#, "   000ff|"),
+        (r#"BEGIN { printf "%#08.5o|", 8 }"#, "   00010|"),
+        (r#"BEGIN { printf "%+012.3X|", 3.14159 }"#, "         003|"),
+        // …and still applies when there is no precision.
+        (r#"BEGIN { printf "%08d|", 42 }"#, "00000042|"),
+        // `o`, `u`, `x` and `X` honour the precision at all, which they did not.
+        (r#"BEGIN { printf "%.5o|", 8 }"#, "00010|"),
+        (r#"BEGIN { printf "%.5u|", 42 }"#, "00042|"),
+        (r#"BEGIN { printf "%.5x|", 255 }"#, "000ff|"),
+        (r#"BEGIN { printf "%.5X|", 255 }"#, "000FF|"),
+        (r#"BEGIN { printf "%+0.10X|", 0 }"#, "0000000000|"),
+        (r#"BEGIN { printf "%-8.5x|", 255 }"#, "000ff   |"),
+        // The `#` prefix goes outside the precision padding, not inside it.
+        (r#"BEGIN { printf "%#.5x|", 255 }"#, "0x000ff|"),
+        (r#"BEGIN { printf "%#.5X|", 255 }"#, "0X000FF|"),
+        (r#"BEGIN { printf "%#.5o|", 8 }"#, "00010|"),
+        (r#"BEGIN { printf "%#.2o|", 8 }"#, "010|"),
+        // `#` on `%o` forces a leading zero even where the precision emptied
+        // the magnitude, which plain `%.0o` leaves empty.
+        (r#"BEGIN { printf "%#.0o|", 0 }"#, "0|"),
+        (r#"BEGIN { printf "%.0o|", 0 }"#, "|"),
+        // `#` on `%x` still keys off the value, so a zero takes no prefix.
+        (r#"BEGIN { printf "%#.0x|", 0 }"#, "|"),
+        (r#"BEGIN { printf "%#.5x|", 0 }"#, "00000|"),
+        // A precision never truncates: more digits than asked for all survive.
+        (r#"BEGIN { printf "%.3d|", -42 }"#, "-042|"),
+        (r#"BEGIN { printf "%.1d|", 12345 }"#, "12345|"),
+    ] {
+        let (code, stdout, stderr) = run_awkrs_stdin(program, "");
+        assert_eq!(code, 0, "{program}: stderr {stderr:?}");
+        assert_eq!(stdout, want, "{program}");
+    }
+}
+
+/// `%g` / `%G` round the way C does — from the exact binary value, halves to
+/// even — not by scaling the value into an integer and calling `f64::round`.
+///
+/// The old spelling was wrong twice: `f64::round` rounds halves away from zero,
+/// and the scaling multiply moved the value before the rounding could see it.
+/// gawk 5.4.1, mawk 1.3.4 and one-true-awk 20200816 agree on every line.
+#[test]
+fn percent_g_rounds_like_c() {
+    for (program, want) in [
+        // Exact halves round to even. 1.5 and 3.5 already agreed (both rules
+        // give the same answer); 2.5 and 4.5 are where they part.
+        (r#"BEGIN { printf "%.1g|", 2.5 }"#, "2|"),
+        (r#"BEGIN { printf "%.1g|", 4.5 }"#, "4|"),
+        (r#"BEGIN { printf "%.1g|", 1.5 }"#, "2|"),
+        (r#"BEGIN { printf "%.1g|", 3.5 }"#, "4|"),
+        (r#"BEGIN { printf "%.1g|", -2.5 }"#, "-2|"),
+        (r#"BEGIN { printf "%.1g|", 0.25 }"#, "0.2|"),
+        (r#"BEGIN { printf "%.2g|", 1.25 }"#, "1.2|"),
+        (r#"BEGIN { printf "%.2g|", 2.25 }"#, "2.2|"),
+        (r#"BEGIN { printf "%.3g|", 1.125 }"#, "1.12|"),
+        // 1.35 is not an exact half in binary — it is a shade above — so it
+        // rounds up, and a ties-to-even rule applied to the decimal text would
+        // get this one wrong in the other direction.
+        (r#"BEGIN { printf "%.2g|", 1.35 }"#, "1.4|"),
+        // 0.15 is a shade *below*, and the old scaling multiply rounded it up
+        // to exactly 1.5 before the rounding ran.
+        (r#"BEGIN { printf "%.1g|", 0.15 }"#, "0.1|"),
+        (r#"BEGIN { printf "%-05.1G|", 2.5 }"#, "2    |"),
+        (r#"BEGIN { printf "%+.1g|", 2.5 }"#, "+2|"),
+        // Cases the rewrite must not disturb.
+        (r#"BEGIN { printf "%.17g|", 0.1 }"#, "0.10000000000000001|"),
+        (r#"BEGIN { printf "%g|", 0.0001 }"#, "0.0001|"),
+        (r#"BEGIN { printf "%g|", 123456789 }"#, "1.23457e+08|"),
+        (r#"BEGIN { printf "%.3g|", 999.9 }"#, "1e+03|"),
+        (r#"BEGIN { printf "%.2g|", 0.000999 }"#, "0.001|"),
+        (r#"BEGIN { printf "%#.5g|", 1.5 }"#, "1.5000|"),
+        (r#"BEGIN { printf "%.1g|", 0.5 }"#, "0.5|"),
+        (r#"BEGIN { printf "%.1g|", 9.5 }"#, "1e+01|"),
+    ] {
+        let (code, stdout, stderr) = run_awkrs_stdin(program, "");
+        assert_eq!(code, 0, "{program}: stderr {stderr:?}");
+        assert_eq!(stdout, want, "{program}");
+    }
+}
