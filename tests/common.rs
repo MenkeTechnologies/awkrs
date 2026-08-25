@@ -12,6 +12,7 @@ use std::process::{Command, Stdio};
 /// and deleted by each of them, so one run's cleanup deletes another run's
 /// fixture mid-assertion. `std::env::temp_dir()` also honours `TMPDIR`, which a
 /// sandboxed runner may point somewhere writable when `/tmp` is not.
+#[allow(dead_code)] // Used by `massive_integration` and `posix_parity_regressions`; unused when `common` is built for the others.
 pub fn unique_tmp_path(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!("{name}_{}", std::process::id()))
 }

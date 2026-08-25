@@ -1828,12 +1828,26 @@ fn an_invalid_regex_separator_is_fatal_like_every_reference() {
     // Unanimously fatal in all three references — verified by running each of
     // `gawk`, `mawk` and `/usr/bin/awk` on `split("xayb", arr, PAT)`.
     for pat in [
-        "[[", "((", "a{2,1}", "{2}", "*x", "+x", "?x", "[]", "[a-", "[[:alpha:]", "[^]", "(?:a)",
+        "[[",
+        "((",
+        "a{2,1}",
+        "{2}",
+        "*x",
+        "+x",
+        "?x",
+        "[]",
+        "[a-",
+        "[[:alpha:]",
+        "[^]",
+        "(?:a)",
         "(?i)a",
     ] {
         let program = format!(r#"BEGIN {{ n = split("xayb", A, "{pat}"); print n }}"#);
         let (code, stdout, stderr) = run_awkrs_stdin(&program, "");
-        assert_eq!(code, 2, "split separator {pat:?} should be fatal: {stdout:?}");
+        assert_eq!(
+            code, 2,
+            "split separator {pat:?} should be fatal: {stdout:?}"
+        );
         assert!(
             stderr.contains("invalid regexp"),
             "split separator {pat:?}: stderr {stderr:?}"
@@ -1861,7 +1875,18 @@ fn an_invalid_regex_separator_is_fatal_like_every_reference() {
     //   `[[:foo:]]`              — one-true-awk accepts
     //   `()` `(|)`               — gawk accepts
     for pat in [
-        "))", "}", "{", "a{", "a}", "a{1,", "|x", "x|", "[z-a]", "[a-b-c]", "[[:foo:]]", "()",
+        "))",
+        "}",
+        "{",
+        "a{",
+        "a}",
+        "a{1,",
+        "|x",
+        "x|",
+        "[z-a]",
+        "[a-b-c]",
+        "[[:foo:]]",
+        "()",
         "(|)",
     ] {
         let program = format!(r#"BEGIN {{ n = split("xayb", A, "{pat}"); print n }}"#);
@@ -1880,7 +1905,8 @@ fn an_invalid_regex_separator_is_fatal_like_every_reference() {
 
     // An `FS` that no record is ever split with stays silent: gawk and mawk are
     // fatal here but one-true-awk exits 0, so the majority rules.
-    let (code, stdout, _stderr) = run_awkrs_stdin(r#"BEGIN { FS = "[[" } END { print "done" }"#, "");
+    let (code, stdout, _stderr) =
+        run_awkrs_stdin(r#"BEGIN { FS = "[[" } END { print "done" }"#, "");
     assert_eq!(code, 0);
     assert_eq!(stdout, "done\n");
 
@@ -1930,7 +1956,8 @@ fn a_split_separator_honours_the_awk_regex_escapes() {
     // Octal escapes, in and out of a bracket expression: `\101` is `A`.
     // gawk 5.4.1, mawk 1.3.4 and one-true-awk 20200816 all print `2|a|b`.
     for sep in [r"\\101", r"[\\101]"] {
-        let program = format!(r#"BEGIN {{ n = split("aAb", x, "{sep}"); print n "|" x[1] "|" x[2] }}"#);
+        let program =
+            format!(r#"BEGIN {{ n = split("aAb", x, "{sep}"); print n "|" x[1] "|" x[2] }}"#);
         let (code, stdout, stderr) = run_awkrs_stdin(&program, "");
         assert_eq!(code, 0, "separator {sep:?}: stderr {stderr:?}");
         assert_eq!(stdout, "2|a|b\n", "separator {sep:?}");
@@ -1938,14 +1965,18 @@ fn a_split_separator_honours_the_awk_regex_escapes() {
 
     // `\d` is not an ERE operator: every reference matches the literal letter
     // `d`, where Rust's regex crate would read a digit class.
-    let (code, stdout, stderr) =
-        run_awkrs_stdin(r#"BEGIN { n = split("a1bdc", x, "\\d"); print n "|" x[1] "|" x[2] }"#, "");
+    let (code, stdout, stderr) = run_awkrs_stdin(
+        r#"BEGIN { n = split("a1bdc", x, "\\d"); print n "|" x[1] "|" x[2] }"#,
+        "",
+    );
     assert_eq!(code, 0, "stderr {stderr:?}");
     assert_eq!(stdout, "2|a1b|c\n");
 
     // `\8` is not an octal digit, so it is the plain character `8`.
-    let (code, stdout, stderr) =
-        run_awkrs_stdin(r#"BEGIN { n = split("a8b", x, "\\8"); print n "|" x[1] "|" x[2] }"#, "");
+    let (code, stdout, stderr) = run_awkrs_stdin(
+        r#"BEGIN { n = split("a8b", x, "\\8"); print n "|" x[1] "|" x[2] }"#,
+        "",
+    );
     assert_eq!(code, 0, "stderr {stderr:?}");
     assert_eq!(stdout, "2|a|b\n");
 }
