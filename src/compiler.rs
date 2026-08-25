@@ -331,8 +331,11 @@ impl Compiler {
         match pat {
             Pattern::Empty => CompiledPattern::Always,
             Pattern::Regexp(re) => {
-                let idx = self.strings.intern(re);
-                if is_literal_regex(re) {
+                // Regex literals are interned in the pool's blob half, not the
+                // `&str` half: `/\351/` is a regex over a byte no `&str` can
+                // hold, and the pattern reaches `ensure_regex_bytes` anyway.
+                let idx = self.strings.intern_blob(re.as_bytes());
+                if is_literal_regex(&re.to_str_lossy()) {
                     CompiledPattern::LiteralRegexp(idx)
                 } else {
                     CompiledPattern::Regexp(idx)
@@ -358,8 +361,8 @@ impl Compiler {
         match pat {
             Pattern::Empty => CompiledRangeEndpoint::Always,
             Pattern::Regexp(re) => {
-                let idx = self.strings.intern(re);
-                if is_literal_regex(re) {
+                let idx = self.strings.intern_blob(re.as_bytes());
+                if is_literal_regex(&re.to_str_lossy()) {
                     CompiledRangeEndpoint::LiteralRegexp(idx)
                 } else {
                     CompiledRangeEndpoint::Regexp(idx)
@@ -781,7 +784,7 @@ impl Compiler {
                 }
             }
             Expr::RegexpLiteral(s) => {
-                let idx = self.strings.intern(s);
+                let idx = self.strings.intern_blob(s.as_bytes());
                 ops.push(Op::PushRegexp(idx));
             }
             Expr::Var(name) => {
@@ -1373,8 +1376,10 @@ impl Compiler {
                         ops.push(Op::CmpEq);
                     }
                     SwitchLabel::Regexp(re) => {
-                        let idx = self.strings.intern(re);
-                        ops.push(Op::PushStr(idx));
+                        // `PushRegexp`, not `PushStr`: the label's index is a
+                        // blob index like every other regex literal's.
+                        let idx = self.strings.intern_blob(re.as_bytes());
+                        ops.push(Op::PushRegexp(idx));
                         ops.push(Op::RegexMatch);
                     }
                 }

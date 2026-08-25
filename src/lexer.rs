@@ -60,7 +60,7 @@ pub enum Token {
     /// `String` variant.
     String(crate::awkstr::AwkStr),
     /// `Regexp` variant.
-    Regexp(String),
+    Regexp(crate::awkstr::AwkStr),
     /// `Plus` variant.
     Plus,
     /// `++` (single token).
@@ -161,7 +161,7 @@ pub enum Token {
 /// `Lexer` — see fields for the structure layout.
 #[derive(Clone)]
 pub struct Lexer<'a> {
-    input: &'a str,
+    input: &'a [u8],
     pos: usize,
     line: usize,
     /// True iff the previously emitted token was an [`Token::Ident`].
@@ -173,7 +173,7 @@ pub struct Lexer<'a> {
 
 impl<'a> Lexer<'a> {
     /// `new` — see implementation for the contract.
-    pub fn new(input: &'a str) -> Self {
+    pub fn new(input: &'a [u8]) -> Self {
         Self {
             input,
             pos: 0,
@@ -189,23 +189,63 @@ impl<'a> Lexer<'a> {
     /// Rewind one byte so a `/` that was lexed as [`Token::Slash`] can be re-read with
     /// [`next_token`](Self::next_token)(`true`) as a `/regex/` literal.
     pub(crate) fn rewind_slash_token(&mut self) {
-        if self.pos > 0 && self.input.as_bytes().get(self.pos - 1) == Some(&b'/') {
+        if self.pos > 0 && self.input.get(self.pos - 1) == Some(&b'/') {
             self.pos -= 1;
         }
     }
 
+    /// The character at the cursor, or `U+FFFD` for a byte that does not begin
+    /// a valid one.
+    ///
+    /// The source is bytes because a string literal, a regex literal or a
+    /// comment may hold a byte no `&str` can name — gawk, mawk and one-true-awk
+    /// all accept one in each of those three places. A stray byte anywhere else
+    /// reads as `U+FFFD`, which matches no token, so it becomes the syntax error
+    /// all three also produce for a byte in code position.
     fn peek(&self) -> Option<char> {
-        self.input[self.pos..].chars().next()
+        let rest = self.input.get(self.pos..)?;
+        if rest.is_empty() {
+            return None;
+        }
+        match std::str::from_utf8(&rest[..rest.len().min(4)]) {
+            Ok(s) => s.chars().next(),
+            Err(e) if e.valid_up_to() > 0 => std::str::from_utf8(&rest[..e.valid_up_to()])
+                .expect("valid prefix")
+                .chars()
+                .next(),
+            Err(_) => Some(char::REPLACEMENT_CHARACTER),
+        }
     }
 
     fn bump(&mut self) -> Option<char> {
         let c = self.peek()?;
-        let len = c.len_utf8();
+        // `U+FFFD` here means "one byte that is not part of a character", so it
+        // advances one byte rather than the three its encoding would take.
+        let len = if c == char::REPLACEMENT_CHARACTER && self.peek_byte() != Some(0xef) {
+            1
+        } else {
+            c.len_utf8()
+        };
         if c == '\n' {
             self.line += 1;
         }
         self.pos += len;
         Some(c)
+    }
+
+    /// The raw byte at the cursor.
+    fn peek_byte(&self) -> Option<u8> {
+        self.input.get(self.pos).copied()
+    }
+
+    /// Consume one raw byte — the literal and comment scanners' unit.
+    fn bump_byte(&mut self) -> Option<u8> {
+        let b = self.peek_byte()?;
+        if b == b'\n' {
+            self.line += 1;
+        }
+        self.pos += 1;
+        Some(b)
     }
 
     fn skip_ws(&mut self) {
@@ -232,13 +272,13 @@ impl<'a> Lexer<'a> {
                 // after the backslash leaves it for the lexer body to report
                 // as `unexpected character '\\'`.
                 let rest = &self.input[self.pos + 1..];
-                let next = rest.chars().next();
-                if next == Some('\n') {
+                let next = rest.first().copied();
+                if next == Some(b'\n') {
                     self.bump(); // backslash
                     self.bump(); // newline (won't become Token::Newline)
                     continue;
                 }
-                if next == Some('\r') && rest[1..].starts_with('\n') {
+                if next == Some(b'\r') && rest.get(1) == Some(&b'\n') {
                     self.bump(); // backslash
                     self.bump(); // CR
                     self.bump(); // LF
@@ -285,25 +325,28 @@ impl<'a> Lexer<'a> {
 
         if c == '/' && regex_mode {
             self.bump();
-            let mut s = String::new();
-            while let Some(d) = self.peek() {
-                if d == '/' && {
+            // Byte by byte: `/\351/` is a regex over one byte in gawk, mawk and
+            // one-true-awk, and no `&str` can hold it. Nothing between the
+            // slashes is interpreted here, so scanning bytes loses nothing.
+            let mut s = crate::awkstr::AwkStr::new();
+            while let Some(d) = self.peek_byte() {
+                if d == b'/' && {
                     // Count consecutive trailing backslashes: odd means the
                     // slash is escaped, even (including zero) means it terminates.
-                    let trailing = s.bytes().rev().take_while(|&b| b == b'\\').count();
+                    let trailing = s.as_bytes().iter().rev().take_while(|&&b| b == b'\\').count();
                     trailing % 2 == 0
                 } {
-                    self.bump();
+                    self.bump_byte();
                     return Ok(Token::Regexp(s));
                 }
-                if d == '\n' {
+                if d == b'\n' {
                     return Err(Error::Parse {
                         line: self.line,
                         msg: "unterminated regex".into(),
                     });
                 }
-                s.push(d);
-                self.bump();
+                s.push_byte(d);
+                self.bump_byte();
             }
             return Err(Error::Parse {
                 line: self.line,
@@ -315,15 +358,25 @@ impl<'a> Lexer<'a> {
         if c == '"' {
             self.bump();
             // A byte string, not a `String`: `"\351"` and `"\xe9"` name a single
-            // byte in gawk, mawk and one-true-awk alike, and no `String` can
-            // hold one. Everything else appended here is a `char`, which
-            // `push_char` encodes as UTF-8 exactly as before.
+            // byte in gawk, mawk and one-true-awk alike, and so does a byte
+            // written raw between the quotes, which all three also accept. The
+            // loop reads *bytes*; every escape it recognises is ASCII, so the
+            // escape arms below still work in characters.
             let mut s = crate::awkstr::AwkStr::new();
-            while let Some(d) = self.peek() {
-                if d == '"' {
-                    self.bump();
+            while let Some(db) = self.peek_byte() {
+                if db == b'"' {
+                    self.bump_byte();
                     return Ok(Token::String(s));
                 }
+                if db != b'\\' && !db.is_ascii() {
+                    // Not part of an escape and not ASCII: copy the byte through
+                    // rather than decoding a character, which is what loses one
+                    // that is not part of valid UTF-8.
+                    s.push_byte(db);
+                    self.bump_byte();
+                    continue;
+                }
+                let d = db as char;
                 if d == '\\' {
                     self.bump();
                     match self.peek() {
@@ -426,8 +479,8 @@ impl<'a> Lexer<'a> {
                         msg: "newline in string".into(),
                     });
                 }
-                s.push_char(d);
-                self.bump();
+                s.push_byte(db);
+                self.bump_byte();
             }
             return Err(Error::Parse {
                 line: self.line,
@@ -442,7 +495,7 @@ impl<'a> Lexer<'a> {
             let start = self.pos;
             if c == '0' {
                 let rest = &self.input[self.pos.saturating_add(1)..];
-                if rest.starts_with('x') || rest.starts_with('X') {
+                if rest.first() == Some(&b'x') || rest.first() == Some(&b'X') {
                     self.bump();
                     self.bump();
                     let hx = self.pos;
@@ -459,7 +512,8 @@ impl<'a> Lexer<'a> {
                             msg: "empty hex literal".into(),
                         });
                     }
-                    let hex_digits = &self.input[hx..self.pos];
+                    let hex_digits = std::str::from_utf8(&self.input[hx..self.pos])
+                        .expect("hex digits are ASCII");
                     let dec =
                         Integer::from_str_radix(hex_digits, 16).map_err(|_| Error::Parse {
                             line: self.line,
@@ -512,7 +566,10 @@ impl<'a> Lexer<'a> {
                     self.pos = save_pos;
                 }
             }
-            let slice = &self.input[start..self.pos];
+            // A numeric literal is ASCII by construction — the scan above only
+            // accepted digits, `.`, `e`/`E` and a sign.
+            let slice = std::str::from_utf8(&self.input[start..self.pos])
+                .expect("numeric literal is ASCII");
             if !had_dot && !had_exp {
                 if slice.len() > 1
                     && slice.starts_with('0')
@@ -547,7 +604,7 @@ impl<'a> Lexer<'a> {
             // `ns::name` — gawk-style qualified identifiers (namespace).
             while self.peek() == Some(':') {
                 let rest = &self.input[self.pos..];
-                if !rest.starts_with("::") {
+                if !rest.starts_with(b"::") {
                     break;
                 }
                 self.pos += 2;
@@ -572,7 +629,9 @@ impl<'a> Lexer<'a> {
                     }
                 }
             }
-            let name = self.input[start..self.pos].to_string();
+            // An identifier is ASCII plus whatever `is_ident_continue`
+            // accepted, all of which decoded as characters to get here.
+            let name = String::from_utf8_lossy(&self.input[start..self.pos]).into_owned();
             let tok = if name.contains("::") {
                 Token::Ident(name)
             } else {
@@ -762,10 +821,7 @@ impl<'a> Lexer<'a> {
         if i >= self.input.len() {
             return false;
         }
-        self.input[i..]
-            .chars()
-            .next()
-            .is_some_and(|c| c.is_ascii_digit())
+        self.input[i].is_ascii_digit()
     }
 }
 
@@ -803,28 +859,33 @@ pub fn is_ident_continue(c: char) -> bool {
 /// quote is what distinguishes the two cases: an odd run means the quote is
 /// already escaped. A value ending in a lone backslash keeps that backslash,
 /// matching all three.
-pub fn unescape_assignment_value(value: &str) -> String {
-    let mut lexable = String::with_capacity(value.len() + 2);
-    lexable.push('"');
+/// [`unescape_assignment_value`] for a value that may hold a byte no `&str` can
+/// name — `-v x=a\351b` is accepted by gawk, mawk and one-true-awk alike.
+///
+/// Wraps the value in quotes and hands it to the string-literal scanner, which
+/// works in bytes, so the escape rules stay in exactly one place.
+pub fn unescape_assignment_value_bytes(value: &[u8]) -> crate::awkstr::AwkStr {
+    let mut lexable: Vec<u8> = Vec::with_capacity(value.len() + 2);
+    lexable.push(b'"');
     let mut trailing_backslashes = 0usize;
-    for c in value.chars() {
-        match c {
+    for &b in value {
+        match b {
             // Already escaped by an odd run of backslashes — pass it through and
             // let the lexer decode `\"` to `"`.
-            '"' if trailing_backslashes % 2 == 1 => {
-                lexable.push('"');
+            b'"' if trailing_backslashes % 2 == 1 => {
+                lexable.push(b'"');
                 trailing_backslashes = 0;
             }
-            '"' => {
-                lexable.push_str("\\\"");
+            b'"' => {
+                lexable.extend_from_slice(b"\\\"");
                 trailing_backslashes = 0;
             }
-            '\\' => {
-                lexable.push('\\');
+            b'\\' => {
+                lexable.push(b'\\');
                 trailing_backslashes += 1;
             }
             _ => {
-                lexable.push(c);
+                lexable.push(b);
                 trailing_backslashes = 0;
             }
         }
@@ -833,16 +894,16 @@ pub fn unescape_assignment_value(value: &str) -> String {
     // leave the string unterminated. Doubling the last one makes it decode back
     // to the single literal backslash every reference keeps.
     if trailing_backslashes % 2 == 1 {
-        lexable.push('\\');
+        lexable.push(b'\\');
     }
-    lexable.push('"');
+    lexable.push(b'"');
 
     let mut lexer = Lexer::new(&lexable);
     match lexer.next_token(false) {
-        Ok(Token::String(s)) => s.to_lossy_string(),
+        Ok(Token::String(s)) => s,
         // Unreachable for a well-formed quoted literal; falling back to the raw
         // text keeps a malformed value usable rather than failing the run.
-        _ => value.to_string(),
+        _ => crate::awkstr::AwkStr::from(value),
     }
 }
 
@@ -851,7 +912,7 @@ mod tests {
     use super::*;
 
     fn tokens_no_regex(src: &str) -> Vec<Token> {
-        let mut l = Lexer::new(src);
+        let mut l = Lexer::new(src.as_bytes());
         let mut out = Vec::new();
         loop {
             let t = l.next_token(false).unwrap();
@@ -865,14 +926,14 @@ mod tests {
 
     #[test]
     fn lex_lt_amp() {
-        let mut l = Lexer::new("<&");
+        let mut l = Lexer::new(b"<&");
         assert_eq!(l.next_token(false).unwrap(), Token::LtAmp);
         assert_eq!(l.next_token(false).unwrap(), Token::Eof);
     }
 
     #[test]
     fn lex_pipe_coproc() {
-        let mut l = Lexer::new("|&");
+        let mut l = Lexer::new(b"|&");
         assert_eq!(l.next_token(false).unwrap(), Token::PipeCoproc);
         assert_eq!(l.next_token(false).unwrap(), Token::Eof);
     }
@@ -924,7 +985,7 @@ mod tests {
 
     #[test]
     fn lex_i64_max_stays_integer_literal_not_f64() {
-        let mut l = Lexer::new("9223372036854775807");
+        let mut l = Lexer::new(b"9223372036854775807");
         assert_eq!(
             l.next_token(false).unwrap(),
             Token::IntegerLiteral("9223372036854775807".into())
@@ -947,7 +1008,7 @@ mod tests {
     #[test]
     fn lex_string_escapes() {
         // Awk source `"a\n\t\"x"` — backslash-newline/tab/quote sequences.
-        let mut l = Lexer::new("\"a\\n\\t\\\"x\"");
+        let mut l = Lexer::new(b"\"a\\n\\t\\\"x\"");
         match l.next_token(false).unwrap() {
             Token::String(s) => assert_eq!(s, "a\n\t\"x"),
             t => panic!("expected String, got {t:?}"),
@@ -959,7 +1020,7 @@ mod tests {
     /// exactly what these escapes are about.
     fn lex_bytes(src: &str) -> Vec<u8> {
         let wrapped = format!("\"{src}\"");
-        let mut l = Lexer::new(&wrapped);
+        let mut l = Lexer::new(&wrapped.as_bytes());
         match l.next_token(false).unwrap() {
             Token::String(s) => s.as_bytes().to_vec(),
             t => panic!("expected String, got {t:?}"),
@@ -969,7 +1030,7 @@ mod tests {
     fn lex_string(src: &str) -> String {
         // Helper: wrap in `"..."` and lex one token.
         let wrapped = format!("\"{src}\"");
-        let mut l = Lexer::new(&wrapped);
+        let mut l = Lexer::new(&wrapped.as_bytes());
         match l.next_token(false).unwrap() {
             Token::String(s) => s.to_lossy_string(),
             t => panic!("expected String, got {t:?}"),
@@ -1160,7 +1221,7 @@ mod tests {
 
     #[test]
     fn lex_regex_mode_slash() {
-        let mut l = Lexer::new("/foo/");
+        let mut l = Lexer::new(b"/foo/");
         match l.next_token(true).unwrap() {
             Token::Regexp(s) => assert_eq!(s, "foo"),
             t => panic!("expected Regexp, got {t:?}"),
@@ -1170,7 +1231,7 @@ mod tests {
     #[test]
     fn lex_regex_escaped_slash() {
         // /a\/b/ — the slash is escaped, regex is "a\/b"
-        let mut l = Lexer::new(r#"/a\/b/"#);
+        let mut l = Lexer::new(r#"/a\/b/"#.as_bytes());
         match l.next_token(true).unwrap() {
             Token::Regexp(s) => assert_eq!(s, r"a\/b"),
             t => panic!("expected Regexp, got {t:?}"),
@@ -1181,7 +1242,7 @@ mod tests {
     fn lex_regex_escaped_backslash_before_slash() {
         // /a\\/ — the backslash is escaped (even count), so / terminates.
         // Regex content is "a\\"
-        let mut l = Lexer::new(r#"/a\\/"#);
+        let mut l = Lexer::new(r#"/a\\/"#.as_bytes());
         match l.next_token(true).unwrap() {
             Token::Regexp(s) => assert_eq!(s, r"a\\"),
             t => panic!("expected Regexp, got {t:?}"),
@@ -1193,7 +1254,7 @@ mod tests {
         // /a\\\\/ — three backslashes then slash: odd count means slash is escaped,
         // Wait, four chars: \\\\  is two escaped backslashes. Let's test /a\\\/b/
         // which is a\\ + \/ + b = regex "a\\\/b" (slash is escaped by 3rd backslash)
-        let mut l = Lexer::new(r#"/a\\\/b/"#);
+        let mut l = Lexer::new(r#"/a\\\/b/"#.as_bytes());
         match l.next_token(true).unwrap() {
             Token::Regexp(s) => assert_eq!(s, r"a\\\/b"),
             t => panic!("expected Regexp, got {t:?}"),
@@ -1202,19 +1263,19 @@ mod tests {
 
     #[test]
     fn lex_regex_mode_unterminated_errors() {
-        let mut l = Lexer::new("/abc");
+        let mut l = Lexer::new(b"/abc");
         assert!(l.next_token(true).is_err());
     }
 
     #[test]
     fn lex_unexpected_ampersand_errors() {
-        let mut l = Lexer::new("&");
+        let mut l = Lexer::new(b"&");
         assert!(l.next_token(false).is_err());
     }
 
     #[test]
     fn lex_line_increments_on_newline() {
-        let mut l = Lexer::new("a\nb");
+        let mut l = Lexer::new(b"a\nb");
         assert_eq!(l.line(), 1);
         assert_eq!(l.next_token(false).unwrap(), Token::Ident("a".into()));
         assert_eq!(l.next_token(false).unwrap(), Token::Newline);
@@ -1272,7 +1333,7 @@ mod tests {
 
     #[test]
     fn lex_empty_string_literal() {
-        let mut l = Lexer::new(r#""""#);
+        let mut l = Lexer::new(r#""""#.as_bytes());
         match l.next_token(false).unwrap() {
             Token::String(s) => assert!(s.is_empty()),
             t => panic!("expected String, got {t:?}"),
@@ -1292,7 +1353,7 @@ mod tests {
 
     #[test]
     fn lex_hex_empty_errors() {
-        let mut l = Lexer::new("0x");
+        let mut l = Lexer::new(b"0x");
         assert!(l.next_token(false).is_err());
     }
 
@@ -1314,7 +1375,7 @@ mod tests {
 
     #[test]
     fn lex_octal_prefix_float_forces_decimal_parse() {
-        let mut l = Lexer::new("077.5");
+        let mut l = Lexer::new(b"077.5");
         match l.next_token(false).unwrap() {
             Token::Number(n) => assert!((n - 77.5).abs() < 1e-12),
             t => panic!("expected Number(77.5), got {t:?}"),
@@ -1323,7 +1384,7 @@ mod tests {
 
     #[test]
     fn lex_unclosed_string_eof_v2() {
-        let mut l = Lexer::new("\"abc");
+        let mut l = Lexer::new(b"\"abc");
         assert!(l.next_token(false).is_err());
     }
 
@@ -1349,7 +1410,7 @@ mod tests {
 
     #[test]
     fn lex_backtick_error_v2() {
-        let mut l = Lexer::new("`");
+        let mut l = Lexer::new(b"`");
         assert!(l.next_token(false).is_err());
     }
 
@@ -1479,19 +1540,19 @@ mod tests {
 
     #[test]
     fn lex_newline_inside_string_errors() {
-        let mut l = Lexer::new("\"a\nb\"");
+        let mut l = Lexer::new(b"\"a\nb\"");
         assert!(l.next_token(false).is_err());
     }
 
     #[test]
     fn lex_string_backslash_at_eof_errors() {
-        let mut l = Lexer::new("\"x\\");
+        let mut l = Lexer::new(b"\"x\\");
         assert!(l.next_token(false).is_err());
     }
 
     #[test]
     fn lex_qualified_ident_requires_segment_after_double_colon() {
-        let mut l = Lexer::new("ns::");
+        let mut l = Lexer::new(b"ns::");
         assert!(l.next_token(false).is_err());
     }
 
@@ -1735,13 +1796,13 @@ mod tests {
 
     #[test]
     fn lex_unterminated_regex_error() {
-        let mut l = Lexer::new("/abc");
+        let mut l = Lexer::new(b"/abc");
         assert!(l.next_token(true).is_err());
     }
 
     #[test]
     fn lex_regex_with_escaped_slash() {
-        let mut l = Lexer::new(r"/\/abc\//");
+        let mut l = Lexer::new(r"/\/abc\//".as_bytes());
         match l.next_token(true).unwrap() {
             Token::Regexp(s) => assert_eq!(s, r"\/abc\/"),
             _ => panic!("Expected regex literal"),
@@ -1870,13 +1931,13 @@ mod tests {
 
     #[test]
     fn lex_unterminated_string_at_newline() {
-        let mut l = Lexer::new("\"abc\ndef\"");
+        let mut l = Lexer::new(b"\"abc\ndef\"");
         assert!(l.next_token(false).is_err());
     }
 
     #[test]
     fn lex_rewind_slash_v2() {
-        let mut l = Lexer::new("x / y / /z/");
+        let mut l = Lexer::new(b"x / y / /z/");
         assert_eq!(l.next_token(false).unwrap(), Token::Ident("x".into()));
         assert_eq!(l.next_token(false).unwrap(), Token::Slash);
         // If we rewind and ask for regex:
@@ -1887,7 +1948,7 @@ mod tests {
 
     #[test]
     fn lex_backslashed_newline_in_string_v2() {
-        let mut l = Lexer::new("\"a\\\nb\"");
+        let mut l = Lexer::new(b"\"a\\\nb\"");
         let t = l.next_token(false);
         if let Ok(Token::String(s)) = t {
             assert!(s == "ab" || s == "a\nb");
@@ -1937,7 +1998,7 @@ mod tests {
     #[test]
     fn lex_dot_error_v2() {
         // dots are not valid except in numbers
-        let mut l = Lexer::new("a.b");
+        let mut l = Lexer::new(b"a.b");
         assert_eq!(l.next_token(false).unwrap(), Token::Ident("a".into()));
         assert!(l.next_token(false).is_err());
     }
@@ -1945,7 +2006,7 @@ mod tests {
     #[test]
     fn lex_triple_colon_v2() {
         // ns:::var -> error because `:` is not a valid ident start after `::`
-        let mut l = Lexer::new("a:::b");
+        let mut l = Lexer::new(b"a:::b");
         assert!(l.next_token(false).is_err());
     }
 
@@ -2018,7 +2079,7 @@ mod tests {
     #[test]
     fn lex_string_with_escaped_newline_v2() {
         // POSIX: backslash-newline in string literal is ignored
-        let mut l = Lexer::new("\"a\\\nb\"");
+        let mut l = Lexer::new(b"\"a\\\nb\"");
         let t = l.next_token(false).unwrap();
         if let Token::String(s) = t {
             assert!(s == "ab" || s == "a\nb");
@@ -2062,7 +2123,7 @@ mod tests {
 
     #[test]
     fn lex_unclosed_regex_error_v2() {
-        let mut l = Lexer::new("/abc");
+        let mut l = Lexer::new(b"/abc");
         assert!(l.next_token(true).is_err());
     }
 
@@ -2075,7 +2136,7 @@ mod tests {
             vec![Token::Colon, Token::Colon, Token::Ident("c".into())]
         );
         // d:: is an error because it expects an identifier after ::
-        let mut l = Lexer::new("d::");
+        let mut l = Lexer::new(b"d::");
         assert!(l.next_token(false).is_err());
     }
 

@@ -42,6 +42,38 @@ fn builtin_regex_pattern_arg(fname: &str, arg_index: usize) -> bool {
         _ => false,
     }
 }
+/// [`parse_program`] for source that may hold a byte no `&str` can name.
+///
+/// gawk, mawk and one-true-awk all accept such a byte inside a string literal,
+/// a regex literal and a comment, and all three reject one in code position.
+/// Valid UTF-8 — every ordinary program — takes exactly the path it always did,
+/// including the `rust { }` desugar and `@include` expansion, which are both
+/// `&str` source transforms.
+///
+/// Those two transforms are the reason this is not simply the only entry point:
+/// they rewrite the program *text*, so they cannot run over bytes they cannot
+/// name. A program that needs both a raw byte and one of those features is
+/// refused by name rather than silently losing one of them.
+pub fn parse_program_bytes(src: &[u8]) -> Result<Program> {
+    if let Ok(text) = std::str::from_utf8(src) {
+        return parse_program(text);
+    }
+    for feature in [&b"rust {"[..], b"@include", b"@namespace", b"@load"] {
+        if memchr::memmem::find(src, feature).is_some() {
+            return Err(Error::Parse {
+                line: 1,
+                msg: format!(
+                    "{} needs a program that is valid UTF-8; this one holds a byte that is not",
+                    String::from_utf8_lossy(feature).trim_end_matches(" {")
+                ),
+            });
+        }
+    }
+    let mut p = Parser::new_bytes(src);
+    let prog = p.parse_program()?;
+    Ok(prog)
+}
+
 /// `parse_program` — see implementation for the contract.
 pub fn parse_program(src: &str) -> Result<Program> {
     // Inline `rust { ... }` FFI blocks are desugared to `BEGIN { __rust_compile(...) }`
@@ -90,6 +122,10 @@ const DOLLAR_FIELD_POSTFIX: &str = "__dollar_field_postfix__";
 
 impl<'a> Parser<'a> {
     fn new(src: &'a str) -> Self {
+        Self::new_bytes(src.as_bytes())
+    }
+
+    fn new_bytes(src: &'a [u8]) -> Self {
         let mut lexer = Lexer::new(src);
         let cur = lexer.next_token(true).unwrap_or(Token::Eof);
         let line = lexer.line();
@@ -319,7 +355,7 @@ impl<'a> Parser<'a> {
                 if self.pattern_regex_stands_alone() {
                     return Ok(Pattern::Regexp(s));
                 }
-                let e = self.parse_expr_from_concat_seed(Self::pattern_regex_match_seed(s))?;
+                let e = self.parse_expr_from_concat_seed(Self::pattern_regex_match_seed(s.to_lossy_string()))?;
                 if self.cur == Token::Comma {
                     self.bump(true)?;
                     let e2 = self.parse_expr(false, false)?;
@@ -1708,7 +1744,7 @@ impl<'a> Parser<'a> {
                                 name == "split" && matches!(self.cur, Token::Regexp(_));
                             let arg = self.parse_expr_allow_gt(false, re_for_arg)?;
                             args.push(match arg {
-                                Expr::Str(s) if literal_re => Expr::RegexpLiteral(s.to_lossy_string()),
+                                Expr::Str(s) if literal_re => Expr::RegexpLiteral(s.to_lossy_string().into()),
                                 other => other,
                             });
                             if self.cur == Token::Comma {

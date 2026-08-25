@@ -1054,7 +1054,7 @@ fn lint_pattern_regex(w: &impl Fn(&str), p: &Pattern) {
         | Pattern::EndFile
         | Pattern::Empty
         | Pattern::Expr(_) => {}
-        Pattern::Regexp(s) => lint_regex_literal(w, s),
+        Pattern::Regexp(s) => lint_regex_literal(w, &s.to_str_lossy()),
         Pattern::Range(a, b) => {
             lint_pattern_regex(w, a);
             lint_pattern_regex(w, b);
@@ -1079,7 +1079,7 @@ fn lint_stmt_regex(w: &impl Fn(&str), s: &Stmt) {
                 match a {
                     SwitchArm::Case { label, stmts } => {
                         if let SwitchLabel::Regexp(re) = label {
-                            lint_regex_literal(w, re);
+                            lint_regex_literal(w, &re.to_str_lossy());
                         }
                         for st in stmts {
                             lint_stmt_regex(w, st);

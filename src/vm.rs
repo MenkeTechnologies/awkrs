@@ -665,21 +665,21 @@ pub fn vm_pattern_matches(
     match &rule.pattern {
         CompiledPattern::Always => Ok(true),
         CompiledPattern::Regexp(idx) => {
-            let pat = cp.strings.get(*idx);
-            rt.ensure_regex(pat).map_err(Error::Runtime)?;
-            Ok(rt.regex_ref(pat).is_match(&&rt.record.to_str_lossy().as_bytes()))
+            let pat = cp.strings.get_blob(*idx);
+            rt.ensure_regex_bytes(pat).map_err(Error::Runtime)?;
+            Ok(rt.regex_ref_bytes(pat).is_match(rt.record.as_bytes()))
         }
         CompiledPattern::LiteralRegexp(idx) => {
-            let pat = cp.strings.get(*idx);
+            let pat = cp.strings.get_blob(*idx);
             // gawk parity: when `IGNORECASE` is set, the literal-regex fast
             // path must still match case-insensitively. Previously awkrs's
             // optimization bypassed regex compilation, so `IGNORECASE=1` had
             // no effect on bare `/abc/` patterns.
             if rt.ignore_case_flag() {
-                rt.ensure_regex(pat).map_err(Error::Runtime)?;
-                Ok(rt.regex_ref(pat).is_match(&rt.record.to_str_lossy().as_bytes()))
+                rt.ensure_regex_bytes(pat).map_err(Error::Runtime)?;
+                Ok(rt.regex_ref_bytes(pat).is_match(rt.record.as_bytes()))
             } else {
-                Ok(rt.record.contains_bytes(pat.as_bytes()))
+                Ok(rt.record.contains_bytes(pat))
             }
         }
         CompiledPattern::Expr(chunk) => {
@@ -708,17 +708,17 @@ pub fn vm_match_range_endpoint(
             Err(Error::Runtime("nested range pattern".into()))
         }
         CompiledRangeEndpoint::Regexp(idx) => {
-            let pat = cp.strings.get(*idx);
-            rt.ensure_regex(pat).map_err(Error::Runtime)?;
-            Ok(rt.regex_ref(pat).is_match(&&rt.record.to_str_lossy().as_bytes()))
+            let pat = cp.strings.get_blob(*idx);
+            rt.ensure_regex_bytes(pat).map_err(Error::Runtime)?;
+            Ok(rt.regex_ref_bytes(pat).is_match(rt.record.as_bytes()))
         }
         CompiledRangeEndpoint::LiteralRegexp(idx) => {
-            let pat = cp.strings.get(*idx);
+            let pat = cp.strings.get_blob(*idx);
             if rt.ignore_case_flag() {
-                rt.ensure_regex(pat).map_err(Error::Runtime)?;
-                Ok(rt.regex_ref(pat).is_match(&rt.record.to_str_lossy().as_bytes()))
+                rt.ensure_regex_bytes(pat).map_err(Error::Runtime)?;
+                Ok(rt.regex_ref_bytes(pat).is_match(rt.record.as_bytes()))
             } else {
-                Ok(rt.record.contains_bytes(pat.as_bytes()))
+                Ok(rt.record.contains_bytes(pat))
             }
         }
         CompiledRangeEndpoint::Expr(chunk) => {
@@ -1204,7 +1204,10 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 let b = ctx.cp.strings.get_blob(idx);
                 ctx.push(Value::StrLit(AwkStr::from(b)));
             }
-            Op::PushRegexp(idx) => ctx.push(Value::Regexp(ctx.str_ref(idx).to_string().into())),
+            Op::PushRegexp(idx) => {
+                let b = ctx.cp.strings.get_blob(idx);
+                ctx.push(Value::Regexp(AwkStr::from(b)));
+            }
 
             // ── Variable access ─────────────────────────────────────────
             Op::GetVar(idx) => {

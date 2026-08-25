@@ -42,7 +42,7 @@ pub enum Pattern {
     /// `Expr` variant.
     Expr(Expr),
     /// `Regexp` variant.
-    Regexp(String),
+    Regexp(crate::awkstr::AwkStr),
     /// Inclusive range: two patterns (`/a/,/b/` or `NR==1,NR==5`).
     Range(Box<Pattern>, Box<Pattern>),
     /// `Empty` variant.
@@ -145,7 +145,7 @@ pub enum SwitchLabel {
     /// `Expr` variant.
     Expr(Expr),
     /// `Regexp` variant.
-    Regexp(String),
+    Regexp(crate::awkstr::AwkStr),
 }
 
 /// Output redirection on `print` / `printf` statements.
@@ -180,7 +180,7 @@ pub enum Expr {
     /// `Str` variant.
     Str(crate::awkstr::AwkStr),
     /// gawk-style regexp constant: `@/pattern/` — value type is **regexp**, not string (`typeof` is **`"regexp"`**).
-    RegexpLiteral(String),
+    RegexpLiteral(crate::awkstr::AwkStr),
     /// `Var` variant.
     Var(String),
     /// `Field` variant.

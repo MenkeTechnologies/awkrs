@@ -44,7 +44,7 @@ fn format_rule(r: &Rule) -> String {
         Pattern::Expr(e) => s.push_str(&format_expr(e)),
         Pattern::Regexp(re) => {
             s.push('/');
-            s.push_str(&escape_regex_slash(re));
+            s.push_str(&escape_regex_slash(&re.to_str_lossy()));
             s.push('/');
         }
         Pattern::Range(a, b) => {
@@ -75,7 +75,7 @@ fn format_rule(r: &Rule) -> String {
 fn format_pattern_inner(p: &Pattern) -> String {
     match p {
         Pattern::Expr(e) => format_expr(e),
-        Pattern::Regexp(re) => format!("/{}/", escape_regex_slash(re)),
+        Pattern::Regexp(re) => format!("/{}/", escape_regex_slash(&re.to_str_lossy())),
         _ => format!("({p:?})"),
     }
 }
@@ -272,7 +272,7 @@ fn format_stmt(st: &Stmt, depth: usize) -> String {
                             }
                             SwitchLabel::Regexp(re) => {
                                 s.push_str(&indent(depth + 1));
-                                s.push_str(&format!("case /{}/:\n", escape_regex_slash(re)));
+                                s.push_str(&format!("case /{}/:\n", escape_regex_slash(&re.to_str_lossy())));
                             }
                         }
                         for st in stmts {
@@ -319,7 +319,7 @@ pub(crate) fn format_expr(e: &Expr) -> String {
         }
         Expr::IntegerLiteral(s) => s.clone(),
         Expr::Str(s) => format_string_literal(&s.to_str_lossy()),
-        Expr::RegexpLiteral(s) => format!("@/{}/", escape_regex_slash(s)),
+        Expr::RegexpLiteral(s) => format!("@/{}/", escape_regex_slash(&s.to_str_lossy())),
         Expr::Var(v) => v.clone(),
         Expr::Field(inner) => format_field_expr(inner),
         Expr::Index { name, indices } => {

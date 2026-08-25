@@ -40,7 +40,7 @@ pub struct Args {
     pub field_sep: Option<String>,
     /// `assigns` field.
     #[arg(short = 'v', long = "assign", value_name = "var=val", action = ArgAction::Append, help = "\x1b[32m//\x1b[0m Assign var=val before the program runs (repeatable)")]
-    pub assigns: Vec<String>,
+    pub assigns: Vec<std::ffi::OsString>,
 
     // --- GNU: program sources ---
     /// `source` field.
@@ -304,7 +304,7 @@ pub struct Args {
         value_name = "program [file ...]",
         help = "\x1b[32m//\x1b[0m awk program text, then input files"
     )]
-    pub rest: Vec<String>,
+    pub rest: Vec<std::ffi::OsString>,
 }
 
 impl Args {
@@ -356,6 +356,7 @@ pub enum MawkWAction {
 mod tests {
     use super::{Args, MawkWAction};
     use clap::Parser;
+    use std::ffi::OsString;
     use std::path::PathBuf;
 
     #[test]
@@ -404,7 +405,7 @@ mod tests {
     #[test]
     fn assign_flag_collects() {
         let a = Args::try_parse_from(["awkrs", "-v", "a=1", "-v", "b=two", "{print a,b}"]).unwrap();
-        assert_eq!(a.assigns, vec!["a=1".to_string(), "b=two".to_string()]);
+        assert_eq!(a.assigns, vec![OsString::from("a=1"), OsString::from("b=two")]);
     }
 
     #[test]
@@ -486,9 +487,9 @@ mod tests {
         assert_eq!(
             a.rest,
             vec![
-                "BEGIN{}".to_string(),
-                "file1".to_string(),
-                "file2".to_string()
+                OsString::from("BEGIN{}"),
+                OsString::from("file1"),
+                OsString::from("file2")
             ]
         );
     }
@@ -500,9 +501,9 @@ mod tests {
         assert_eq!(
             a.rest,
             vec![
-                "-v".to_string(),
-                "not-an-assign".to_string(),
-                "file".to_string()
+                OsString::from("-v"),
+                OsString::from("not-an-assign"),
+                OsString::from("file")
             ]
         );
     }

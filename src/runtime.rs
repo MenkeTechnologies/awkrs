@@ -2346,9 +2346,15 @@ impl Runtime {
             Value::Str("%a %b %e %H:%M:%S %Z %Y".into()),
         );
 
+        // `args_os`, not `args`: the latter panics on an argument that is not
+        // valid UTF-8, and awk accepts one — a program written on the command
+        // line may hold a byte inside a string or regex literal.
         let mut argv_proc = AwkArray::new();
-        for (i, a) in std::env::args().enumerate() {
-            argv_proc.insert(i.to_string(), Value::Str(a.into()));
+        for (i, a) in std::env::args_os().enumerate() {
+            argv_proc.insert(
+                i.to_string(),
+                Value::Str(AwkStr::from(&*crate::os_arg_bytes(&a))),
+            );
         }
         p.insert("argv".into(), Value::Array(argv_proc));
 
@@ -2480,7 +2486,10 @@ impl Runtime {
     /// BSD `/usr/bin/awk` and bell-labs nawk semantics (no basename strip).
     pub fn init_argv(&mut self, files: &[std::path::PathBuf]) {
         use std::env;
-        let raw = env::args().next().unwrap_or_else(|| "awkrs".to_string());
+        let raw = env::args_os()
+            .next()
+            .map(|a| String::from_utf8_lossy(&crate::os_arg_bytes(&a)).into_owned())
+            .unwrap_or_else(|| "awkrs".to_string());
         let bin = if self.traditional {
             raw.clone()
         } else {

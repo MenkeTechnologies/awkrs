@@ -74,6 +74,38 @@ where
 
 /// Like [`run_awkrs_stdin_args`], but sets environment variables (e.g. `LC_NUMERIC`).
 #[allow(dead_code)] // Used by `integration`; unused when only `more_integration` is built.
+/// Run awkrs with a pinned locale where the **arguments themselves** are bytes.
+///
+/// A program written on `argv`, and a `-v` value, may hold a byte that is not
+/// part of valid UTF-8 — gawk, mawk and one-true-awk all accept one — and no
+/// `&str` argument can carry it. On Unix an `OsStr` is exactly the bytes the
+/// kernel passes.
+#[cfg(unix)]
+#[allow(dead_code)] // used by the byte-transparency suite only
+pub fn run_awkrs_byte_args(locale: &str, args: &[&[u8]], stdin: &[u8]) -> (i32, Vec<u8>) {
+    use std::os::unix::ffi::OsStrExt;
+    let bin = env!("CARGO_BIN_EXE_awkrs");
+    let mut cmd = Command::new(bin);
+    cmd.env("LC_ALL", locale)
+        .env("LC_CTYPE", locale)
+        .env("LANG", locale);
+    for a in args {
+        cmd.arg(std::ffi::OsStr::from_bytes(a));
+    }
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().expect("spawn awkrs");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(stdin)
+        .expect("write stdin");
+    let out = child.wait_with_output().expect("wait");
+    (out.status.code().unwrap_or(-1), out.stdout)
+}
+
 /// Run awkrs with a pinned `LC_CTYPE` and get its **bytes** back.
 ///
 /// Byte-transparency assertions need both halves of this: the locale decides

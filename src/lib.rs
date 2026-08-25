@@ -64,7 +64,7 @@ use crate::bytecode::{CompiledPattern, CompiledProgram, Op, RedirKind, SubTarget
 use crate::cli::{Args, MawkWAction};
 use crate::compiler::Compiler;
 use crate::flow::Flow;
-use crate::parser::parse_program;
+use crate::parser::{parse_program, parse_program_bytes};
 use crate::runtime::{AwkMap, Runtime, Value};
 use gettext::Catalog;
 use std::sync::Arc;
@@ -235,32 +235,38 @@ pub fn run(bin_name: &str) -> Result<()> {
         Err(e) => return Err(e),
     };
 
+    // The introspection dumps, the AOT builder, `--tiers` and the fusevm
+    // backend all take source as `&str`. A program holding a byte no `&str` can
+    // name still *runs* — `parse_program_bytes` below takes the bytes — but
+    // those five see a rendering of it. None of them is on the execution path.
+    let program_text_str = String::from_utf8_lossy(&program_text).into_owned();
+
     // Introspection dumps: lexer tokens, parsed AST, or fusevm disassembly.
     // Each runs on the resolved program text (after `rust { }` desugaring) and
     // exits without reading input.
     if args.dump_tokens {
-        return dump_tokens(&program_text);
+        return dump_tokens(&program_text_str);
     }
     if args.dump_ast {
-        return dump_ast(&program_text);
+        return dump_ast(&program_text_str);
     }
     if args.dump_bytecode {
-        return dump_bytecode(&program_text);
+        return dump_bytecode(&program_text_str);
     }
     if args.disasm {
-        return disasm(&program_text);
+        return disasm(&program_text_str);
     }
 
     // `--tiers`: run the program on the fusevm backend, then report which of
     // fusevm's execution tiers took each of its chunks.
     if args.tiers {
-        println!("{}", crate::tiers::report(&args, &program_text, &files)?);
+        println!("{}", crate::tiers::report(&args, &program_text_str, &files)?);
         return Ok(());
     }
 
     // AOT: compile a BEGIN-only program to a native standalone executable.
     if let Some(out) = &args.aot {
-        return match crate::aot::build_native(&program_text, out) {
+        return match crate::aot::build_native(&program_text_str, out) {
             Ok(p) => {
                 eprintln!("awkrs: wrote native binary {}", p.display());
                 Ok(())
@@ -275,7 +281,7 @@ pub fn run(bin_name: &str) -> Result<()> {
     // harness for the migration; becomes the default once parity is proven, after
     // which vm.rs is removed.
     if std::env::var("AWKRS_FUSEVM_NATIVE").as_deref() == Ok("1")
-        && try_native_run(&args, &program_text, &files)?
+        && try_native_run(&args, &program_text_str, &files)?
     {
         return Ok(());
     }
@@ -302,7 +308,7 @@ pub fn run(bin_name: &str) -> Result<()> {
         prog_rules_len = cached_cp.prog_rules_len;
         cp = Arc::new(cached_cp);
     } else {
-        let prog = parse_program(&program_text)?;
+        let prog = parse_program_bytes(&program_text)?;
         parallel_ok = parallel::record_rules_parallel_safe(&prog);
         prog_rules_len = prog.rules.len();
 
@@ -574,7 +580,7 @@ pub fn run(bin_name: &str) -> Result<()> {
 /// lossy but non-erroring view sufficient for inspecting the stream.
 fn dump_tokens(program_text: &str) -> Result<()> {
     let src = crate::rust_ffi::desugar(program_text);
-    let mut lx = crate::lexer::Lexer::new(&src);
+    let mut lx = crate::lexer::Lexer::new(src.as_bytes());
     loop {
         let line = lx.line();
         let tok = lx.next_token(false)?;
@@ -1300,7 +1306,7 @@ enum InlinePattern {
     /// `Always` variant.
     Always,
     /// `LiteralContains` variant.
-    LiteralContains(String),
+    LiteralContains(Vec<u8>),
     /// `NR % modulus` compared to `eq_val` (numeric `==`), e.g. `NR % 2 == 0`.
     NrModEq { modulus: f64, eq_val: f64 },
 }
@@ -1345,7 +1351,7 @@ fn detect_inline_program(
     let pattern = match &rule.pattern {
         CompiledPattern::Always => InlinePattern::Always,
         CompiledPattern::LiteralRegexp(idx) => {
-            InlinePattern::LiteralContains(cp.strings.get(*idx).to_string())
+            InlinePattern::LiteralContains(cp.strings.get_blob(*idx).to_vec())
         }
         CompiledPattern::Expr(chunk) => {
             let (m, eq) = match_nr_mod_eq_pattern(&chunk.ops)?;
@@ -1570,7 +1576,7 @@ fn process_file_slurp_inline(
 
     let literal_finder = match &pattern {
         InlinePattern::LiteralContains(needle) if !needle.is_empty() => {
-            Some(memmem::Finder::new(needle.as_bytes()))
+            Some(memmem::Finder::new(needle.as_slice()))
         }
         _ => None,
     };
@@ -2086,24 +2092,31 @@ fn try_native_run(args: &Args, program_text: &str, files: &[PathBuf]) -> Result<
     Ok(true)
 }
 
-fn resolve_program_and_files(args: &Args) -> Result<(String, Vec<PathBuf>)> {
-    let mut prog = String::new();
+/// The program text, as bytes.
+///
+/// `-f` reads the file with `fs::read` rather than `read_to_string`, and an
+/// inline program comes off `argv` as an `OsStr`: gawk, mawk and one-true-awk
+/// all run a program holding a byte that is not part of valid UTF-8 inside a
+/// string literal, a regex literal or a comment, and awkrs used to exit 2
+/// before the program ran.
+fn resolve_program_and_files(args: &Args) -> Result<(Vec<u8>, Vec<PathBuf>)> {
+    let mut prog: Vec<u8> = Vec::new();
     for p in &args.include {
-        prog.push_str(&std::fs::read_to_string(p).map_err(|e| Error::ProgramFile(p.clone(), e))?);
+        prog.extend_from_slice(&std::fs::read(p).map_err(|e| Error::ProgramFile(p.clone(), e))?);
     }
     for lib in &args.load {
-        prog.push_str(&load_awk_library_source(lib)?);
+        prog.extend_from_slice(load_awk_library_source(lib)?.as_bytes());
     }
     for p in &args.progfiles {
-        prog.push_str(&std::fs::read_to_string(p).map_err(|e| Error::ProgramFile(p.clone(), e))?);
+        prog.extend_from_slice(&std::fs::read(p).map_err(|e| Error::ProgramFile(p.clone(), e))?);
     }
     for e in &args.source {
-        prog.push_str(e);
-        prog.push('\n');
+        prog.extend_from_slice(e.as_bytes());
+        prog.push(b'\n');
     }
     if let Some(exec) = &args.exec_file {
-        prog.push_str(
-            &std::fs::read_to_string(exec).map_err(|e| Error::ProgramFile(exec.clone(), e))?,
+        prog.extend_from_slice(
+            &std::fs::read(exec).map_err(|e| Error::ProgramFile(exec.clone(), e))?,
         );
     }
     if prog.is_empty() {
@@ -2113,7 +2126,7 @@ fn resolve_program_and_files(args: &Args) -> Result<(String, Vec<PathBuf>)> {
                 msg: "no program given".into(),
             });
         }
-        let inline = args.rest[0].clone();
+        let inline = os_arg_bytes(args.rest[0].as_os_str()).to_vec();
         let files: Vec<PathBuf> = args.rest[1..].iter().map(PathBuf::from).collect();
         return Ok((inline, files));
     }
@@ -2139,13 +2152,42 @@ fn load_awk_library_source(name: &str) -> Result<String> {
     )))
 }
 
+/// The bytes of a command-line argument.
+///
+/// `-v x=a\351b` and a program written on `argv` can both carry a byte that is
+/// not part of valid UTF-8, and gawk, mawk and one-true-awk all accept one.
+/// `OsStr` is the only argument type that can hold it; on Unix its bytes are
+/// the bytes the kernel handed us.
+#[cfg(unix)]
+pub(crate) fn os_arg_bytes(s: &std::ffi::OsStr) -> &[u8] {
+    use std::os::unix::ffi::OsStrExt;
+    s.as_bytes()
+}
+
+/// Windows has no byte view of an `OsStr`; arguments there are UTF-16 and the
+/// lossy rendering is the only thing a byte slice can borrow from.
+#[cfg(not(unix))]
+pub(crate) fn os_arg_bytes(s: &std::ffi::OsStr) -> std::borrow::Cow<'_, [u8]> {
+    match s.to_str() {
+        Some(t) => std::borrow::Cow::Borrowed(t.as_bytes()),
+        None => std::borrow::Cow::Owned(s.to_string_lossy().into_owned().into_bytes()),
+    }
+}
+
 fn apply_assigns(args: &Args, rt: &mut Runtime) -> Result<()> {
     for a in &args.assigns {
-        let (name, val) = a.split_once('=').ok_or_else(|| Error::Parse {
+        let bytes = os_arg_bytes(a.as_os_str());
+        let eq = memchr::memchr(b'=', &bytes).ok_or_else(|| Error::Parse {
             line: 1,
-            msg: format!("invalid -v `{a}`, expected name=value"),
+            msg: format!(
+                "invalid -v `{}`, expected name=value",
+                String::from_utf8_lossy(&bytes)
+            ),
         })?;
-        apply_one_assignment(rt, name, val);
+        // A variable *name* is an awk identifier, so it is text; the value is
+        // whatever bytes were passed.
+        let name = String::from_utf8_lossy(&bytes[..eq]).into_owned();
+        apply_one_assignment_bytes(rt, &name, &bytes[eq + 1..]);
     }
     Ok(())
 }
@@ -2227,8 +2269,13 @@ fn split_assignment_operand(operand: &str) -> Option<(&str, &str)> {
 /// otherwise, and keeps `OFS` / `ORS` assignments in step with their cached
 /// byte forms.
 fn apply_one_assignment(rt: &mut Runtime, name: &str, value: &str) {
-    let decoded = crate::lexer::unescape_assignment_value(value);
-    rt.symtab_elem_set(name, Value::Str(decoded.into()));
+    apply_one_assignment_bytes(rt, name, value.as_bytes());
+}
+
+/// [`apply_one_assignment`] for a value that may hold a byte no `&str` can name.
+fn apply_one_assignment_bytes(rt: &mut Runtime, name: &str, value: &[u8]) {
+    let decoded = crate::lexer::unescape_assignment_value_bytes(value);
+    rt.symtab_elem_set(name, Value::Str(decoded));
 }
 
 #[cfg(test)]
@@ -2571,7 +2618,7 @@ mod lib_internal_tests {
                 cp.record_rules[0].body.ops
             );
         };
-        assert!(matches!(pat, InlinePattern::LiteralContains(ref s) if s == "needle"));
+        assert!(matches!(pat, InlinePattern::LiteralContains(ref s) if s == b"needle"));
         assert!(matches!(act, InlineAction::PrintFieldStdout(1)));
     }
 

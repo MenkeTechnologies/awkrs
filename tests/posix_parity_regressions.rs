@@ -10,7 +10,7 @@ mod common;
 
 use common::{
     run_awkrs_file, run_awkrs_operands, run_awkrs_stdin, run_awkrs_stdin_args,
-    run_awkrs_bytes_locale, run_awkrs_stdin_args_env, run_awkrs_stdin_bounded, unique_tmp_path,
+    run_awkrs_byte_args, run_awkrs_bytes_locale, run_awkrs_stdin_args_env, run_awkrs_stdin_bounded, unique_tmp_path,
 };
 use std::io::Write;
 
@@ -2381,4 +2381,80 @@ fn percent_c_of_a_number_follows_the_locale() {
         assert_eq!(code, 0);
         assert_eq!(out, vec![0xff], "%c of -1 under {locale}");
     }
+}
+
+/// A byte that is not part of valid UTF-8 is accepted in the **program text**.
+///
+/// gawk 5.4.1, mawk 1.3.4 and one-true-awk 20200816 all run a program holding
+/// one inside a string literal, a regex literal or a comment, and all three
+/// reject one in code position. awkrs used to exit 2 before the program ran —
+/// from the CLI parser for an inline program or a `-v` value, and from the
+/// program-file read for `-f`.
+///
+/// Asserted over bytes, and with the program itself passed as bytes: a `&str`
+/// argument cannot carry the byte under test.
+#[test]
+fn a_high_byte_is_accepted_in_the_program_text() {
+    const HI: u8 = 0xe9;
+    let line: Vec<u8> = vec![b'a', HI, b'b', b'\n'];
+
+    // Inline program on argv: the byte inside a regex literal, and inside a
+    // string literal used as a dynamic pattern.
+    for prog in [
+        b"{ print ($0 ~ /\xe9/) }".to_vec(),
+        b"{ print ($0 ~ \"\xe9\") }".to_vec(),
+    ] {
+        let (code, out) = run_awkrs_byte_args("C", &[&prog], &line);
+        assert_eq!(code, 0, "argv program {prog:x?}");
+        assert_eq!(String::from_utf8_lossy(&out), "1\n", "argv program {prog:x?}");
+    }
+
+    // The byte survives from a string literal to the output.
+    let (code, out) = run_awkrs_byte_args("C", &[b"BEGIN { printf \"%s\", \"\xe9\" }"], b"");
+    assert_eq!(code, 0);
+    assert_eq!(out, vec![HI]);
+
+    // `-v` value.
+    let (code, out) = run_awkrs_byte_args(
+        "C",
+        &[b"-v", b"x=a\xe9b", b"BEGIN { printf \"%s\", x }"],
+        b"",
+    );
+    assert_eq!(code, 0);
+    assert_eq!(out, vec![b'a', HI, b'b']);
+
+    // A program *file* with the byte in a string literal, a regex literal and a
+    // comment — the three places all three references accept one.
+    for (name, body, want) in [
+        (
+            "awkrs_prog_str",
+            b"{ if ($0 ~ \"\xe9\") print \"hit-str\" }\n".to_vec(),
+            "hit-str\n",
+        ),
+        (
+            "awkrs_prog_re",
+            b"{ if ($0 ~ /\xe9/) print \"hit-re\" }\n".to_vec(),
+            "hit-re\n",
+        ),
+        (
+            "awkrs_prog_cmt",
+            b"# a comment holding \xe9\n{ print \"ok-comment\" }\n".to_vec(),
+            "ok-comment\n",
+        ),
+    ] {
+        let path = unique_tmp_path(name);
+        std::fs::write(&path, &body).expect("write program file");
+        let (code, out) = run_awkrs_byte_args(
+            "C",
+            &[b"-f", path.as_os_str().as_encoded_bytes()],
+            &line,
+        );
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(code, 0, "{name}");
+        assert_eq!(String::from_utf8_lossy(&out), want, "{name}");
+    }
+
+    // In code position it is a syntax error, as in all three references.
+    let (code, _out) = run_awkrs_byte_args("C", &[b"BEGIN { x\xe9 = 1 }"], b"");
+    assert_ne!(code, 0, "a stray byte in code position must not be accepted");
 }
