@@ -2,8 +2,19 @@
 
 use std::ffi::OsString;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+
+/// A temp path unique to this test process.
+///
+/// Several test binaries can be running at once — 16 concurrent editor
+/// instances share this worktree — and a fixed `/tmp/awkrs_<name>` is written
+/// and deleted by each of them, so one run's cleanup deletes another run's
+/// fixture mid-assertion. `std::env::temp_dir()` also honours `TMPDIR`, which a
+/// sandboxed runner may point somewhere writable when `/tmp` is not.
+pub fn unique_tmp_path(name: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("{name}_{}", std::process::id()))
+}
 
 pub fn run_awkrs_stdin(program: &str, stdin: &str) -> (i32, String, String) {
     let bin = env!("CARGO_BIN_EXE_awkrs");

@@ -3,7 +3,7 @@
 
 mod common;
 
-use common::{run_awkrs_stdin, run_awkrs_stdin_args, run_awkrs_stdin_args_env};
+use common::{run_awkrs_stdin, run_awkrs_stdin_args, run_awkrs_stdin_args_env, unique_tmp_path};
 
 #[test]
 fn csv_mode_quoted_fields() {
@@ -1250,7 +1250,8 @@ fn pipe_to_sort() {
 
 #[test]
 fn print_to_file_and_read_back() {
-    let tmp = "/tmp/awkrs_test_file";
+    let tmp = unique_tmp_path("awkrs_test_file");
+    let tmp = tmp.to_str().expect("utf8 temp path");
     let (c, o, _e) = run_awkrs_stdin(
         &format!(
             "BEGIN {{ print \"hello\" > \"{}\"; fflush(\"{}\"); getline < \"{}\"; print $0 }}",
@@ -1282,7 +1283,8 @@ fn extension_revoutput() {
 
 #[test]
 fn extension_readfile() {
-    let tmp = "/tmp/awkrs_readfile_test";
+    let tmp = unique_tmp_path("awkrs_readfile_test");
+    let tmp = tmp.to_str().expect("utf8 temp path");
     std::fs::write(tmp, "content").unwrap();
     let (c, o, _e) = run_awkrs_stdin(&format!("BEGIN {{ print readfile(\"{}\") }}", tmp), "");
     assert_eq!(c, 0, "stderr: {}", _e);
@@ -1292,7 +1294,8 @@ fn extension_readfile() {
 
 #[test]
 fn extension_stat() {
-    let tmp = "/tmp/awkrs_stat_test";
+    let tmp = unique_tmp_path("awkrs_stat_test");
+    let tmp = tmp.to_str().expect("utf8 temp path");
     std::fs::write(tmp, "x").unwrap();
     let (c, o, _e) = run_awkrs_stdin(
         &format!(
@@ -1308,7 +1311,8 @@ fn extension_stat() {
 
 #[test]
 fn extension_readdir() {
-    let dir = "/tmp/awkrs_readdir_test";
+    let dir = unique_tmp_path("awkrs_readdir_test");
+    let dir = dir.to_str().expect("utf8 temp path");
     let _ = std::fs::create_dir_all(dir);
     std::fs::write(format!("{}/f1", dir), "x").unwrap();
     let (c, o, _e) = run_awkrs_stdin(
@@ -1325,8 +1329,10 @@ fn extension_readdir() {
 
 #[test]
 fn extension_rename() {
-    let f1 = "/tmp/awkrs_rename_1";
-    let f2 = "/tmp/awkrs_rename_2";
+    let f1 = unique_tmp_path("awkrs_rename_1");
+    let f1 = f1.to_str().expect("utf8 temp path");
+    let f2 = unique_tmp_path("awkrs_rename_2");
+    let f2 = f2.to_str().expect("utf8 temp path");
     std::fs::write(f1, "x").unwrap();
     let _ = std::fs::remove_file(f2);
     let (c, o, _e) = run_awkrs_stdin(
@@ -1353,7 +1359,8 @@ fn extension_getlocaltime() {
 
 #[test]
 fn extension_writea_reada() {
-    let tmp = "/tmp/awkrs_rwarray_test";
+    let tmp = unique_tmp_path("awkrs_rwarray_test");
+    let tmp = tmp.to_str().expect("utf8 temp path");
     let (c, o, _e) = run_awkrs_stdin(&format!("BEGIN {{ a[1]=100; a[\"x\"]=\"hi\"; writea(\"{}\", a); reada(\"{}\", b); print b[1], b[\"x\"] }}", tmp, tmp), "");
     assert_eq!(c, 0, "stderr: {}", _e);
     assert_eq!(o, "100 hi\n");
