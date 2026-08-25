@@ -81,11 +81,11 @@ impl<'a> VmCtx<'a> {
         self.rt.vm_stack = std::mem::take(&mut self.stack);
     }
 
-    fn emit_print(&mut self, s: &str) {
+    fn emit_print(&mut self, s: &[u8]) {
         if let Some(buf) = self.print_out.as_mut() {
-            buf.push(s.to_string());
+            buf.push(String::from_utf8_lossy(s).into_owned());
         } else {
-            self.rt.print_buf.extend_from_slice(s.as_bytes());
+            self.rt.print_buf.extend_from_slice(s);
         }
     }
 
@@ -2790,8 +2790,10 @@ fn exec_print(ctx: &mut VmCtx<'_>, argc: u16, redir: RedirKind, is_printf: bool)
             ctx.rt.numeric_thousands_sep,
             ctx.rt,
         )?;
-        let s = out.as_str();
-        emit_with_redir(ctx, &s, redir, redir_path.as_deref())?;
+        // The formatted result goes out as bytes: `%s` and `%c` can carry one
+        // that no `&str` could hold.
+        let bytes = out.as_bytes_cow();
+        emit_with_redir(ctx, &bytes, redir, redir_path.as_deref())?;
     } else if redir == RedirKind::Stdout && ctx.print_out.is_none() {
         // ── Fast path: write directly into rt.print_buf, zero intermediate allocs ──
         // Use full OFS/ORS byte slices (may be longer than a few bytes; gawk allows arbitrary ORS).
@@ -2851,14 +2853,14 @@ fn exec_print(ctx: &mut VmCtx<'_>, argc: u16, redir: RedirKind, is_printf: bool)
             parts.join(&ofs).into()
         };
         let chunk = format!("{line}{ors}");
-        emit_with_redir(ctx, &chunk, redir, redir_path.as_deref())?;
+        emit_with_redir(ctx, &chunk.as_bytes(), redir, redir_path.as_deref())?;
     }
     Ok(())
 }
 
 fn emit_with_redir(
     ctx: &mut VmCtx<'_>,
-    data: &str,
+    data: &[u8],
     redir: RedirKind,
     path: Option<&str>,
 ) -> Result<()> {

@@ -2730,7 +2730,7 @@ impl Runtime {
     }
 
     /// `print … | "cmd"` / `printf … | "cmd"` — append bytes to the coprocess stdin (spawn on first use).
-    pub fn write_pipe_line(&mut self, cmd: &str, data: &str) -> Result<()> {
+    pub fn write_pipe_line(&mut self, cmd: &str, data: &[u8]) -> Result<()> {
         self.require_unsandboxed_io()?;
         if self.coproc_handles.contains_key(cmd) {
             return Err(Error::Runtime(format!(
@@ -2763,7 +2763,7 @@ impl Runtime {
                 .insert(cmd.to_string(), BufWriter::new(stdin));
         }
         let w = self.pipe_stdin.get_mut(cmd).unwrap();
-        w.write_all(data.as_bytes()).map_err(Error::Io)?;
+        w.write_all(data).map_err(Error::Io)?;
         Ok(())
     }
 
@@ -2804,10 +2804,10 @@ impl Runtime {
     }
 
     /// `print … |& "cmd"` / `printf … |& "cmd"` — append bytes to the two-way pipe stdin.
-    pub fn write_coproc_line(&mut self, cmd: &str, data: &str) -> Result<()> {
+    pub fn write_coproc_line(&mut self, cmd: &str, data: &[u8]) -> Result<()> {
         self.ensure_coproc(cmd)?;
         let w = self.coproc_handles.get_mut(cmd).unwrap();
-        w.stdin.write_all(data.as_bytes()).map_err(Error::Io)?;
+        w.stdin.write_all(data).map_err(Error::Io)?;
         Ok(())
     }
 
@@ -2876,20 +2876,20 @@ impl Runtime {
 
     /// Write one `print` line (including `ORS`) to `path`. First open uses truncate (`>`) or
     /// append (`>>`); later writes reuse the same handle until `close`.
-    pub fn write_output_line(&mut self, path: &str, data: &str, append: bool) -> Result<()> {
+    pub fn write_output_line(&mut self, path: &str, data: &[u8], append: bool) -> Result<()> {
         self.require_unsandboxed_io()?;
         if is_program_stdout(path) {
             // `>` and `>>` mean the same thing here: there is nothing to
             // truncate on a stream the process already holds open.
             let _ = append;
-            self.print_buf.extend_from_slice(data.as_bytes());
+            self.print_buf.extend_from_slice(data);
             return Ok(());
         }
         if path.starts_with("/inet/udp/") {
             let _ = append;
             self.ensure_inet_udp(path)?;
             let s = self.inet_udp.get_mut(path).unwrap();
-            s.send(data.as_bytes())
+            s.send(data)
                 .map_err(|e| Error::Runtime(format!("inet udp send `{path}`: {e}")))?;
             return Ok(());
         }
@@ -2897,12 +2897,12 @@ impl Runtime {
             let _ = append;
             self.ensure_inet_tcp_pair(path)?;
             let w = self.inet_tcp_write.get_mut(path).unwrap();
-            w.write_all(data.as_bytes()).map_err(Error::Io)?;
+            w.write_all(data).map_err(Error::Io)?;
             return Ok(());
         }
         self.ensure_output_writer(path, append)?;
         let w = self.output_handles.get_mut(path).unwrap();
-        w.write_all(data.as_bytes()).map_err(Error::Io)?;
+        w.write_all(data).map_err(Error::Io)?;
         Ok(())
     }
 

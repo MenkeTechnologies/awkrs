@@ -17,6 +17,7 @@
 use std::cell::{Cell, RefCell};
 
 use crate::error::Error;
+use crate::awkstr::AwkStr;
 use crate::runtime::Runtime;
 
 thread_local! {
@@ -754,9 +755,15 @@ impl fusevm::AwkHost for AwkRuntimeHost {
     }
 
     /// `sprintf(fmt, …)` — format and return the string. Port of the `sprintf` arm.
+    ///
+    /// The result is rendered rather than handed over as bytes, because
+    /// `fusevm::Value` carries a `String`. On this backend `sprintf("%c", 233)`
+    /// therefore still comes back as `U+FFFD`'s bytes; `printf` above does not,
+    /// since it writes into `print_buf` directly. Closing that needs a byte
+    /// string in fusevm itself, which is upstream of this crate.
     fn sprintf(&mut self, fmt: &str, args: &[fusevm::Value]) -> fusevm::Value {
         with_runtime(|rt| match run_sprintf(rt, fmt, args) {
-            Ok(s) => fusevm::Value::str(s),
+            Ok(s) => fusevm::Value::str(s.to_lossy_string()),
             Err(e) => {
                 set_host_error(e);
                 fusevm::Value::str("")
@@ -873,7 +880,7 @@ fn shift(
 /// Format `args` per `fmt` through awkrs's format engine, with the runtime's
 /// CONVFMT / decimal-point / thousands-sep / bignum settings — the same wiring
 /// as `vm.rs::sprintf_simple`, so output matches the interpreter byte for byte.
-fn run_sprintf(rt: &Runtime, fmt: &str, args: &[fusevm::Value]) -> Result<String, Error> {
+fn run_sprintf(rt: &Runtime, fmt: &str, args: &[fusevm::Value]) -> Result<AwkStr, Error> {
     let vals: Vec<crate::runtime::Value> = args.iter().map(|a| fuse_to_awk(a.clone())).collect();
     let mpfr = rt.bignum.then(|| (rt.mpfr_prec_bits(), rt.mpfr_round()));
     let convfmt = rt

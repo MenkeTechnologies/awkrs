@@ -494,7 +494,7 @@ pub(crate) fn exec_builtin_dispatch(
                 ctx.rt,
             )?
             .as_str();
-            ctx.emit_print(&s);
+            ctx.emit_print(&s.as_bytes());
             Value::Num(0.0)
         }
         "and" => {

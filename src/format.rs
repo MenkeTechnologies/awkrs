@@ -1,6 +1,7 @@
 //! `sprintf` / `printf` formatting (POSIX-ish; common awk conversions).
 
 use crate::bignum::{float_trunc_integer, mpfr_string_for_percent_s, value_to_mpfr};
+use crate::awkstr::AwkStr;
 use crate::runtime::Value;
 use rug::float::Round;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -201,9 +202,9 @@ pub fn awk_sprintf_with_convfmt(
     thousands_sep: Option<char>,
     mpfr_mode: Option<(u32, Round)>,
     convfmt: &str,
-) -> Result<String, String> {
+) -> Result<AwkStr, String> {
     let vals = convfmt_preprocess_for_percent_s(fmt, vals, convfmt);
-    awk_sprintf_with_decimal(fmt, &vals, decimal, thousands_sep, mpfr_mode)
+    awk_sprintf_bytes(fmt, &vals, decimal, thousands_sep, mpfr_mode)
 }
 /// `awk_sprintf_with_decimal` — see implementation for the contract.
 pub fn awk_sprintf_with_decimal(
@@ -213,13 +214,28 @@ pub fn awk_sprintf_with_decimal(
     thousands_sep: Option<char>,
     mpfr_mode: Option<(u32, Round)>,
 ) -> Result<String, String> {
-    let mut out = String::new();
+    // The `String` form is for the number-rendering callers (`CONVFMT`,
+    // `OFMT`, the MPFR display paths), whose output is ASCII either way.
+    awk_sprintf_bytes(fmt, vals, decimal, thousands_sep, mpfr_mode).map(|s| s.to_lossy_string())
+}
+
+/// [`awk_sprintf_with_decimal`] without the rendering — what `printf` and
+/// `sprintf` use, so a `%s` of a value holding a byte that is not part of valid
+/// UTF-8 emits that byte instead of `U+FFFD`.
+pub fn awk_sprintf_bytes(
+    fmt: &str,
+    vals: &[Value],
+    decimal: char,
+    thousands_sep: Option<char>,
+    mpfr_mode: Option<(u32, Round)>,
+) -> Result<AwkStr, String> {
+    let mut out = AwkStr::new();
     let mut vi = 0usize;
     let mut i = 0usize;
     while i < fmt.len() {
         let c = fmt_peek(fmt, i).ok_or_else(|| "truncated format".to_string())?;
         if c != '%' {
-            out.push(c);
+            out.push_char(c);
             i += c.len_utf8();
             continue;
         }
@@ -227,7 +243,7 @@ pub fn awk_sprintf_with_decimal(
         if i >= fmt.len() {
             // gawk parity: a trailing `%` with nothing after it is emitted as a
             // literal `%` rather than raising an error.
-            out.push('%');
+            out.push_char('%');
             break;
         }
         // Optional `%m$` — digits must be followed by `$` or we rewind and treat as flags/width.
@@ -269,7 +285,7 @@ pub fn awk_sprintf_with_decimal(
             mpfr_mode,
         )?;
         i = new_i;
-        out.push_str(&piece);
+        out.push_awkstr(&piece);
     }
     Ok(out)
 }
@@ -332,7 +348,7 @@ fn parse_conversion_rest(
     decimal: char,
     thousands_sep: Option<char>,
     mpfr_mode: Option<(u32, Round)>,
-) -> Result<(String, usize), String> {
+) -> Result<(AwkStr, usize), String> {
     let mut left = false;
     let mut sign = false;
     let mut space = false;
@@ -417,7 +433,7 @@ fn parse_conversion_rest(
     i += conv.len_utf8();
 
     if conv == '%' {
-        return Ok(("%".to_string(), i));
+        return Ok((AwkStr::from("%"), i));
     }
 
     // gawk parity: unknown conversion characters are emitted **literally** as `%X`
@@ -425,7 +441,7 @@ fn parse_conversion_rest(
     // the user intended for it). gawk also emits a warning under `--lint`; awkrs
     // stays silent for now.
     if !is_known_conv(conv) {
-        return Ok((format!("%{conv}"), i));
+        return Ok((format!("%{conv}").into(), i));
     }
 
     let v = if let Some(p) = val_pos {
@@ -433,6 +449,12 @@ fn parse_conversion_rest(
     } else {
         take_val(vals, vi)?
     };
+    // `%s` and `%c` are the two conversions whose output is the caller's own
+    // bytes rather than digits awkrs generated, so they are answered before
+    // `format_one`, which works in `String` and cannot carry one.
+    if conv == 's' || conv == 'c' {
+        return Ok((format_str_or_char_bytes(conv, v, left, pad_zero, width, prec)?, i));
+    }
     let piece = format_one(
         conv,
         v,
@@ -448,7 +470,7 @@ fn parse_conversion_rest(
         thousands_sep,
         mpfr_mode,
     )?;
-    Ok((piece, i))
+    Ok((piece.into(), i))
 }
 
 /// Conversion letters that `format_one` understands. Anything outside this set is
@@ -738,6 +760,81 @@ fn format_g_decimal_significant_f64(mut n: f64, p: usize) -> String {
         format!("-{body}")
     } else {
         body
+    }
+}
+
+
+/// The `%s` and `%c` conversions, over bytes.
+///
+/// Everything else `printf` produces is digits awkrs generated, which are ASCII
+/// and lose nothing through a `String`. These two hand back the caller's own
+/// bytes, so they must not: `printf "%s", $0` of a record holding `\351` used to
+/// emit the three bytes of `U+FFFD` where gawk, mawk and one-true-awk all emit
+/// the one byte they were given.
+fn format_str_or_char_bytes(
+    conv: char,
+    v: &Value,
+    left: bool,
+    pad_zero: bool,
+    width: Option<usize>,
+    prec: Option<usize>,
+) -> Result<AwkStr, String> {
+    let w = width.unwrap_or(0);
+    // POSIX / gawk: the `0` flag has no effect on a string conversion — pad with
+    // spaces regardless. BSD `/usr/bin/awk` zero-pads under `%0Ns`, and that
+    // quirk stays selectable through `--traditional`.
+    let pad = if AWK_TRADITIONAL_MODE.load(Ordering::Relaxed) && pad_zero && !left {
+        b'0'
+    } else {
+        b' '
+    };
+    let body = match conv {
+        's' => {
+            let mut b = AwkStr::from_vec(v.as_bytes_cow().into_owned());
+            if let Some(p) = prec {
+                b = b.substr_chars(0, p);
+            }
+            b
+        }
+        _ => sprintf_c_char_bytes(v),
+    };
+    Ok(pad_bytes(body, w, left, pad))
+}
+
+/// [`pad_string`] over bytes, counting the field width in characters the same
+/// way — a byte that does not begin a valid UTF-8 character counts as one.
+fn pad_bytes(body: AwkStr, width: usize, left: bool, pad: u8) -> AwkStr {
+    let len = body.chars_lossy().count();
+    if width <= len {
+        return body;
+    }
+    let padn = width - len;
+    let mut out = AwkStr::with_capacity(body.len() + padn);
+    if left {
+        out.push_awkstr(&body);
+        out.push_bytes(&vec![pad; padn]);
+    } else {
+        out.push_bytes(&vec![pad; padn]);
+        out.push_awkstr(&body);
+    }
+    out
+}
+
+/// [`sprintf_c_char`] over bytes: the first **character** of a string argument,
+/// as the bytes that spell it.
+fn sprintf_c_char_bytes(v: &Value) -> AwkStr {
+    match v {
+        // A numeric string (a field, a `getline` variable, a `split` element)
+        // counts as numeric, so `echo 65 | awk '{printf "%c", $1}'` prints `A`.
+        Value::Str(_) if v.is_numeric_str() => AwkStr::from(sprintf_c_char(v)),
+        Value::Str(s) | Value::StrLit(s) | Value::Regexp(s) => {
+            if s.is_empty() {
+                AwkStr::new()
+            } else {
+                s.substr_chars(0, 1)
+            }
+        }
+        _ => AwkStr::from(sprintf_c_char(v)),
     }
 }
 
