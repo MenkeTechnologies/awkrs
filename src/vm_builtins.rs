@@ -968,7 +968,7 @@ fn fusevm_value_to_awk(v: fusevm::Value) -> Value {
 
 pub(super) fn sort_keys_with_custom_cmp(
     ctx: &mut VmCtx<'_>,
-    keys: &mut [String],
+    keys: &mut [AwkStr],
     fname: &str,
     arr_name: &str,
 ) -> Result<()> {
@@ -990,19 +990,19 @@ pub(super) fn sort_keys_with_custom_cmp(
             return Ordering::Equal;
         }
         let vals = if argc == 2 {
-            vec![Value::Str(a.clone().into()), Value::Str(b.clone().into())]
+            vec![Value::Str(a.clone()), Value::Str(b.clone())]
         } else {
             let va = if arr_name == "SYMTAB" {
-                ctx.rt.symtab_elem_get(a.as_str())
+                ctx.rt.symtab_elem_get(&a.to_str_lossy())
             } else {
-                ctx.rt.array_get(arr_name, a.as_str())
+                ctx.rt.array_get(arr_name, &a.to_str_lossy())
             };
             let vb = if arr_name == "SYMTAB" {
-                ctx.rt.symtab_elem_get(b.as_str())
+                ctx.rt.symtab_elem_get(&b.to_str_lossy())
             } else {
-                ctx.rt.array_get(arr_name, b.as_str())
+                ctx.rt.array_get(arr_name, &b.to_str_lossy())
             };
-            vec![Value::Str(a.clone().into()), va, Value::Str(b.clone().into()), vb]
+            vec![Value::Str(a.clone()), va, Value::Str(b.clone()), vb]
         };
         match exec_call_user_inner(ctx, fname, vals) {
             Ok(v) => {

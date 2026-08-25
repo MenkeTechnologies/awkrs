@@ -172,7 +172,7 @@ fn val_type_rank(v: &Value) -> u8 {
     }
 }
 
-pub(crate) fn sort_for_in_keys(keys: &mut [String], arr: &AwkArray, mode: SortedInMode) {
+pub(crate) fn sort_for_in_keys(keys: &mut [AwkStr], arr: &AwkArray, mode: SortedInMode) {
     use SortedInMode::*;
     match mode {
         Unsorted => {}
@@ -180,38 +180,38 @@ pub(crate) fn sort_for_in_keys(keys: &mut [String], arr: &AwkArray, mode: Sorted
         IndStrAsc => keys.sort(),
         IndStrDesc => keys.sort_by(|a, b| b.cmp(a)),
         IndNumAsc => keys.sort_by(|a, b| {
-            parse_number(a)
-                .partial_cmp(&parse_number(b))
+            parse_number(&a.to_str_lossy())
+                .partial_cmp(&parse_number(&b.to_str_lossy()))
                 .unwrap_or(Ordering::Equal)
         }),
         IndNumDesc => keys.sort_by(|a, b| {
-            parse_number(b)
-                .partial_cmp(&parse_number(a))
+            parse_number(&b.to_str_lossy())
+                .partial_cmp(&parse_number(&a.to_str_lossy()))
                 .unwrap_or(Ordering::Equal)
         }),
         ValStrAsc => keys.sort_by(|ka, kb| {
-            let sa = arr.get(ka).map(|v| v.as_str()).unwrap_or_default();
-            let sb = arr.get(kb).map(|v| v.as_str()).unwrap_or_default();
+            let sa = arr.get_bytes(ka).map(|v| v.as_str()).unwrap_or_default();
+            let sb = arr.get_bytes(kb).map(|v| v.as_str()).unwrap_or_default();
             awk_locale_str_cmp(&sa, &sb)
         }),
         ValStrDesc => keys.sort_by(|ka, kb| {
-            let sa = arr.get(ka).map(|v| v.as_str()).unwrap_or_default();
-            let sb = arr.get(kb).map(|v| v.as_str()).unwrap_or_default();
+            let sa = arr.get_bytes(ka).map(|v| v.as_str()).unwrap_or_default();
+            let sb = arr.get_bytes(kb).map(|v| v.as_str()).unwrap_or_default();
             awk_locale_str_cmp(&sb, &sa)
         }),
         ValNumAsc => keys.sort_by(|ka, kb| {
-            let na = arr.get(ka).map(|v| v.as_number()).unwrap_or(0.0);
-            let nb = arr.get(kb).map(|v| v.as_number()).unwrap_or(0.0);
+            let na = arr.get_bytes(ka).map(|v| v.as_number()).unwrap_or(0.0);
+            let nb = arr.get_bytes(kb).map(|v| v.as_number()).unwrap_or(0.0);
             na.partial_cmp(&nb).unwrap_or(Ordering::Equal)
         }),
         ValNumDesc => keys.sort_by(|ka, kb| {
-            let na = arr.get(ka).map(|v| v.as_number()).unwrap_or(0.0);
-            let nb = arr.get(kb).map(|v| v.as_number()).unwrap_or(0.0);
+            let na = arr.get_bytes(ka).map(|v| v.as_number()).unwrap_or(0.0);
+            let nb = arr.get_bytes(kb).map(|v| v.as_number()).unwrap_or(0.0);
             nb.partial_cmp(&na).unwrap_or(Ordering::Equal)
         }),
         ValTypeAsc => keys.sort_by(|ka, kb| {
-            let va = arr.get(ka.as_str());
-            let vb = arr.get(kb.as_str());
+            let va = arr.get_bytes(ka);
+            let vb = arr.get_bytes(kb);
             let ra = va.map(val_type_rank).unwrap_or(0);
             let rb = vb.map(val_type_rank).unwrap_or(0);
             ra.cmp(&rb).then_with(|| {
@@ -221,8 +221,8 @@ pub(crate) fn sort_for_in_keys(keys: &mut [String], arr: &AwkArray, mode: Sorted
             })
         }),
         ValTypeDesc => keys.sort_by(|ka, kb| {
-            let va = arr.get(ka.as_str());
-            let vb = arr.get(kb.as_str());
+            let va = arr.get_bytes(ka);
+            let vb = arr.get_bytes(kb);
             let ra = va.map(val_type_rank).unwrap_or(0);
             let rb = vb.map(val_type_rank).unwrap_or(0);
             rb.cmp(&ra).then_with(|| {
@@ -2275,7 +2275,7 @@ impl Runtime {
         let mut p = AwkArray::new();
         if let Some(Value::Array(old)) = self.vars.get("PROCINFO") {
             for (k, v) in old.iter() {
-                p.insert(k.clone(), v.clone());
+                p.insert_bytes(k.as_bytes(), v.clone());
             }
         }
         p.insert(
@@ -3032,21 +3032,32 @@ impl Runtime {
     /// — `a[k]` inside `for (k in a)` used to clone the key once per element.
     /// An integral number is written into `buf` through the integer writer
     /// rather than the float formatter, and borrowed from there. Only the rare
-    /// non-integral subscript, which goes through CONVFMT, still allocates.
-    pub fn array_key_in<'a>(&self, v: &'a Value, buf: &'a mut KeyBuf) -> std::borrow::Cow<'a, str> {
+    /// The subscript a value names, in bytes, borrowing when it already holds
+    /// them.
+    ///
+    /// A rendered subscript cannot round-trip: `a[$1]` where the field holds a
+    /// byte that is not part of valid UTF-8 would key on `U+FFFD`, and
+    /// `for (k in a)` would hand that back instead of what the program stored.
+    /// Numbers follow the same integral / `CONVFMT` rules as the rendered form
+    /// — that text is ASCII, so the two agree for every numeric subscript.
+    pub fn array_key_bytes_in<'a>(
+        &self,
+        v: &'a Value,
+        buf: &'a mut KeyBuf,
+    ) -> std::borrow::Cow<'a, [u8]> {
         use std::borrow::Cow;
         match v {
-            Value::Str(s) | Value::StrLit(s) | Value::Regexp(s) => s.to_str_lossy(),
-            Value::Uninit | Value::Array(_) => Cow::Borrowed(""),
+            Value::Str(s) | Value::StrLit(s) | Value::Regexp(s) => Cow::Borrowed(s.as_bytes()),
+            Value::Uninit | Value::Array(_) => Cow::Borrowed(b""),
             // `a[1]` must key on "1", never "1.000000", so an integral value
             // never reaches CONVFMT. Every integral `f64` below 2^53 is exactly
             // an `i64`, so the cast cannot change a digit.
             Value::Num(n)
                 if n.is_finite() && n.fract() == 0.0 && n.abs() < 9_007_199_254_740_992.0 =>
             {
-                Cow::Borrowed(buf.write_i64(*n as i64))
+                Cow::Borrowed(buf.write_i64(*n as i64).as_bytes())
             }
-            other => Cow::Owned(self.value_to_array_key(other)),
+            other => Cow::Owned(self.value_to_array_key(other).into_bytes()),
         }
     }
 
@@ -4255,28 +4266,28 @@ impl Runtime {
     }
 
     /// Enumerate SYMTAB keys (globals, slot-backed names, special scalars).
-    pub fn symtab_keys_reflect(&self) -> Vec<String> {
+    pub fn symtab_keys_reflect(&self) -> Vec<AwkStr> {
         use rustc_hash::FxHashSet;
         let mut seen = FxHashSet::default();
         for k in self.vars.keys() {
             if matches!(k.as_str(), "SYMTAB" | "FUNCTAB" | "PROCINFO") {
                 continue;
             }
-            seen.insert(k.clone());
+            seen.insert(AwkStr::from(k.as_str()));
         }
         if let Some(g) = &self.global_readonly {
             for k in g.keys() {
                 if matches!(k.as_str(), "SYMTAB" | "FUNCTAB" | "PROCINFO") {
                     continue;
                 }
-                seen.insert(k.clone());
+                seen.insert(AwkStr::from(k.as_str()));
             }
         }
         for k in self.symtab_slot_map.keys() {
-            seen.insert(k.clone());
+            seen.insert(AwkStr::from(k.as_str()));
         }
         for &s in crate::namespace::SPECIAL_GLOBAL_NAMES {
-            seen.insert((*s).to_string());
+            seen.insert(AwkStr::from(s));
         }
         let mut out: Vec<_> = seen.into_iter().collect();
         out.sort();
@@ -4370,6 +4381,21 @@ impl Runtime {
             _ => Value::Str(String::new().into()),
         }
     }
+    /// [`Self::array_get`] with a byte subscript.
+    pub fn array_get_bytes(&self, name: &str, key: &[u8]) -> Value {
+        if name == "SYMTAB" {
+            return self.symtab_elem_get(&String::from_utf8_lossy(key));
+        }
+        match self.get_global_var(name) {
+            Some(Value::Array(a)) => match a.get_bytes(key) {
+                Some(Value::Num(n)) => Value::Num(*n),
+                Some(v) => v.clone(),
+                None => Value::Str(AwkStr::new()),
+            },
+            _ => Value::Str(AwkStr::new()),
+        }
+    }
+
     /// `array_set` — see implementation for the contract.
     /// The integer an array subscript names when it is one, so the VM can reach
     /// [`AwkArray`]'s integer half without rendering the number to a string for
@@ -4385,6 +4411,28 @@ impl Runtime {
             }
             _ => None,
         }
+    }
+
+    /// `a[k]` as an rvalue, creating the element POSIX says the read brings into
+    /// existence. Byte subscript — see [`Self::array_key_bytes_in`].
+    pub fn array_get_vivify_bytes(&mut self, name: &str, key: &[u8]) -> Value {
+        if name == "SYMTAB" {
+            return self.symtab_elem_get(&String::from_utf8_lossy(key));
+        }
+        if let Some(Value::Array(a)) = self.vars.get_mut(name) {
+            if let Some(v) = a.get_bytes(key) {
+                return match v {
+                    Value::Num(n) => Value::Num(*n),
+                    other => other.clone(),
+                };
+            }
+            a.insert_bytes(key, Value::Uninit);
+            return Value::Uninit;
+        }
+        // First touch of this name, or one still to be copied out of the
+        // readonly globals: `array_set_bytes` handles both, once per array.
+        self.array_set_bytes(name, key, Value::Uninit);
+        Value::Uninit
     }
 
     /// `a[i]` with an integer subscript — the counted-loop shape, with no key
@@ -4439,30 +4487,41 @@ impl Runtime {
     /// A missing key is created as `Uninit` and read back as `Uninit`, which is
     /// what makes a later `k in a` true and `typeof(a[k])` `"untyped"` rather
     /// than the `"string"` a coerced `""` would report.
-    pub fn array_get_vivify(&mut self, name: &str, key: &str) -> Value {
-        if name == "SYMTAB" {
-            return self.symtab_elem_get(key);
-        }
-        if let Some(Value::Array(a)) = self.vars.get_mut(name) {
-            if let Some(v) = a.get(key) {
-                return match v {
-                    Value::Num(n) => Value::Num(*n),
-                    other => other.clone(),
-                };
-            }
-            a.insert(key.to_string(), Value::Uninit);
-            return Value::Uninit;
-        }
-        // First touch of this name, or one still to be copied out of the
-        // readonly globals: `array_set` handles both, and only once per array.
-        self.array_set(name, key.to_string(), Value::Uninit);
-        Value::Uninit
-    }
 
     /// [`array_set`](Self::array_set) with a borrowed subscript — see
     /// [`AwkArray::insert_str`] for why the borrow matters on this path.
     /// The caller is [`crate::vm::VmCtx::array_elem_set_str`], the store side
     /// of `a[$1] = v` / `a[$1] op= v`, which already holds the key text.
+    /// [`Self::array_set_str`] with a byte subscript.
+    pub fn array_set_bytes(&mut self, name: &str, key: &[u8], val: Value) {
+        if name == "SYMTAB" {
+            self.symtab_elem_set(&String::from_utf8_lossy(key), val);
+            return;
+        }
+        if let Some(existing) = self.vars.get_mut(name) {
+            match existing {
+                Value::Array(a) => {
+                    a.insert_bytes(key, val);
+                }
+                _ => {
+                    let mut m = AwkArray::new();
+                    m.insert_bytes(key, val);
+                    *existing = Value::Array(m);
+                }
+            }
+            return;
+        }
+        if let Some(Value::Array(a)) = self.global_readonly.as_ref().and_then(|g| g.get(name)) {
+            let mut copy = a.clone();
+            copy.insert_bytes(key, val);
+            self.vars.insert(name.to_string(), Value::Array(copy));
+        } else {
+            let mut m = AwkArray::new();
+            m.insert_bytes(key, val);
+            self.vars.insert(name.to_string(), Value::Array(m));
+        }
+    }
+
     pub fn array_set_str(&mut self, name: &str, key: &str, val: Value) {
         if name == "SYMTAB" {
             self.symtab_elem_set(key, val);
@@ -4671,7 +4730,7 @@ impl Runtime {
     /// Keys for `for (k in arr)` / `SYMTAB` in **sorted** order. When `PROCINFO["sorted_in"]` names a
     /// **user function**, sorting requires VM context — use [`crate::vm::VmCtx::for_in_keys`];
     /// this method returns **unsorted** hash iteration order in that case.
-    pub fn array_keys(&self, name: &str) -> Vec<String> {
+    pub fn array_keys(&self, name: &str) -> Vec<AwkStr> {
         if name == "SYMTAB" {
             let mut keys = self.symtab_keys_reflect();
             if self.posix {
@@ -4683,7 +4742,7 @@ impl Runtime {
             }
             let mut tmp = AwkArray::new();
             for k in &keys {
-                tmp.insert(k.clone(), self.symtab_elem_get(k));
+                tmp.insert_bytes(k.as_bytes(), self.symtab_elem_get(&k.to_str_lossy()));
             }
             sort_for_in_keys(&mut keys, &tmp, mode);
             return keys;
@@ -4691,7 +4750,7 @@ impl Runtime {
         let Some(Value::Array(a)) = self.get_global_var(name) else {
             return Vec::new();
         };
-        let mut keys: Vec<String> = a.keys();
+        let mut keys: Vec<AwkStr> = a.keys();
         if self.posix {
             return keys;
         }
@@ -4705,6 +4764,14 @@ impl Runtime {
 
     /// `key in arr` — true iff `arr` is an array that has `key` (POSIX: subscript was used).
     #[inline]
+    /// [`Self::array_has`] with a byte subscript.
+    pub fn array_has_bytes(&self, name: &str, key: &[u8]) -> bool {
+        match self.get_global_var(name) {
+            Some(Value::Array(a)) => a.contains_key_bytes(key),
+            _ => false,
+        }
+    }
+
     pub fn array_has(&self, name: &str, key: &str) -> bool {
         if name == "SYMTAB" {
             return self.symtab_has_key(key);
@@ -4715,7 +4782,7 @@ impl Runtime {
         }
     }
     /// `split_into_array` — see implementation for the contract.
-    pub fn split_into_array(&mut self, arr_name: &str, parts: &[String]) {
+    pub fn split_into_array(&mut self, arr_name: &str, parts: &[AwkStr]) {
         self.array_delete(arr_name, None);
         // `split()` makes the target an array even when it produces no fields:
         // gawk reports `typeof(z)` as `"array"` after `split("", z)`. Without
@@ -4724,7 +4791,7 @@ impl Runtime {
             .entry(arr_name.to_string())
             .or_insert_with(|| Value::Array(AwkArray::new()));
         for (i, p) in parts.iter().enumerate() {
-            self.array_set(arr_name, format!("{}", i + 1), Value::Str(p.clone().into()));
+            self.array_set(arr_name, format!("{}", i + 1), Value::Str(p.clone()));
         }
     }
 }
@@ -4734,14 +4801,14 @@ impl Runtime {
 /// Thin wrapper around `split_string_with_seps`; unused outside this module's
 /// test suite, kept for direct splitter testing without going through `Op::Split`.
 #[allow(dead_code)]
-pub fn split_string_by_field_separator(s: &str, fs: &str, ignore_case: bool) -> Vec<String> {
+pub fn split_string_by_field_separator(s: &[u8], fs: &str, ignore_case: bool) -> Vec<AwkStr> {
     split_string_with_seps(s, fs, ignore_case).0
 }
 
 /// Field-splitting for `split(s, a, fs, seps)` — returns both the fields and the
 /// separator strings between consecutive fields (gawk 4-arg extension).
 /// `seps.len() == fields.len().saturating_sub(1)` on a non-empty record.
-pub fn split_string_with_seps(s: &str, fs: &str, ignore_case: bool) -> (Vec<String>, Vec<String>) {
+pub fn split_string_with_seps(s: &[u8], fs: &str, ignore_case: bool) -> (Vec<AwkStr>, Vec<AwkStr>) {
     split_string_impl(s, fs, ignore_case, false)
 }
 
@@ -4752,19 +4819,19 @@ pub fn split_string_with_seps(s: &str, fs: &str, ignore_case: bool) -> (Vec<Stri
 /// take the regex path for a literal; awkrs used to stringify it and re-enter
 /// the FS rules, so `split("  a  b  ", A, / /)` answered 2 instead of 7.
 pub fn split_string_with_seps_regex(
-    s: &str,
+    s: &[u8],
     re: &str,
     ignore_case: bool,
-) -> (Vec<String>, Vec<String>) {
+) -> (Vec<AwkStr>, Vec<AwkStr>) {
     split_string_impl(s, re, ignore_case, true)
 }
 
 fn split_string_impl(
-    s: &str,
+    s: &[u8],
     fs: &str,
     ignore_case: bool,
     fs_is_regex: bool,
-) -> (Vec<String>, Vec<String>) {
+) -> (Vec<AwkStr>, Vec<AwkStr>) {
     if s.is_empty() {
         return (Vec::new(), Vec::new());
     }
@@ -4773,16 +4840,24 @@ fn split_string_impl(
     // `split("abc", a, //)`. Only the `" "` and single-character shorthands are
     // string-FS rules that a regex literal must bypass.
     if fs.is_empty() {
-        // Empty FS: each character becomes a field; separators between them are empty.
-        let parts: Vec<String> = s.chars().map(|c| c.to_string()).collect();
-        let seps = vec![String::new(); parts.len().saturating_sub(1)];
+        // Empty FS: each character becomes a field; separators between them are
+        // empty. A byte that does not begin a valid UTF-8 character is one
+        // character, the same rule the record splitter uses.
+        let mut parts: Vec<AwkStr> = Vec::new();
+        let mut i = 0usize;
+        while i < s.len() {
+            let n = utf8_char_len(&s[i..]);
+            parts.push(AwkStr::from(&s[i..i + n]));
+            i += n;
+        }
+        let seps = vec![AwkStr::new(); parts.len().saturating_sub(1)];
         return (parts, seps);
     }
     if !fs_is_regex && fs == " " {
         // Default whitespace: leading whitespace is stripped (no leading empty field).
-        let mut parts: Vec<String> = Vec::new();
-        let mut seps: Vec<String> = Vec::new();
-        let bytes = s.as_bytes();
+        let mut parts: Vec<AwkStr> = Vec::new();
+        let mut seps: Vec<AwkStr> = Vec::new();
+        let bytes = s;
         let mut i = 0usize;
         while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t' || bytes[i] == b'\n') {
             i += 1;
@@ -4792,13 +4867,13 @@ fn split_string_impl(
             while i < bytes.len() && bytes[i] != b' ' && bytes[i] != b'\t' && bytes[i] != b'\n' {
                 i += 1;
             }
-            parts.push(s[start..i].to_string());
+            parts.push(AwkStr::from(&s[start..i]));
             let ws_start = i;
             while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t' || bytes[i] == b'\n') {
                 i += 1;
             }
             if i < bytes.len() {
-                seps.push(s[ws_start..i].to_string());
+                seps.push(AwkStr::from(&s[ws_start..i]));
             }
         }
         return (parts, seps);
@@ -4809,8 +4884,11 @@ fn split_string_impl(
     // honors it), so the literal split is always correct here regardless of
     // `ignore_case`.
     if !fs_is_regex && fs.chars().count() == 1 {
-        let parts: Vec<String> = s.split(fs).map(String::from).collect();
-        let seps = vec![fs.to_string(); parts.len().saturating_sub(1)];
+        let parts: Vec<AwkStr> = byte_split(s, fs.as_bytes())
+            .into_iter()
+            .map(AwkStr::from)
+            .collect();
+        let seps = vec![AwkStr::from(fs); parts.len().saturating_sub(1)];
         return (parts, seps);
     }
     // Regex FS (or multi-char / case-insensitive): use the regex engine and
@@ -4820,8 +4898,11 @@ fn split_string_impl(
     // 3.18 s of CPU over 300 000 records where mawk needs 0.04 s.
     with_split_regex(fs, ignore_case, |re| {
         let Some(re) = re else {
-            let parts: Vec<String> = s.split(fs).map(String::from).collect();
-            let seps = vec![fs.to_string(); parts.len().saturating_sub(1)];
+            let parts: Vec<AwkStr> = byte_split(s, fs.as_bytes())
+                .into_iter()
+                .map(AwkStr::from)
+                .collect();
+            let seps = vec![AwkStr::from(fs); parts.len().saturating_sub(1)];
             return (parts, seps);
         };
         split_on_regex_bytes(s, re)
@@ -4830,14 +4911,11 @@ fn split_string_impl(
 
 /// The separator-capturing split, once the engine is in hand.
 ///
-/// Matches over the bytes, because the `FS` engine is `regex::bytes::Regex`
-/// now. The offsets it reports are byte offsets into the same buffer, so the
-/// pieces are cut from the bytes and rendered back — a subject that is valid
-/// UTF-8 (which every caller of the `&str` form has) comes back unchanged.
-fn split_on_regex_bytes(s: &str, re: &BytesRegex) -> (Vec<String>, Vec<String>) {
-    let hay = s.as_bytes();
-    let mut parts: Vec<String> = Vec::new();
-    let mut seps: Vec<String> = Vec::new();
+/// The pieces are cut from the subject's own bytes, so an element of the target
+/// array holds exactly what the record held there.
+fn split_on_regex_bytes(hay: &[u8], re: &BytesRegex) -> (Vec<AwkStr>, Vec<AwkStr>) {
+    let mut parts: Vec<AwkStr> = Vec::new();
+    let mut seps: Vec<AwkStr> = Vec::new();
     let mut last = 0usize;
     for m in re.find_iter(hay) {
         // gawk parity: zero-width matches are ignored during split. Without
@@ -4849,11 +4927,11 @@ fn split_on_regex_bytes(s: &str, re: &BytesRegex) -> (Vec<String>, Vec<String>) 
         if m.start() == m.end() {
             continue;
         }
-        parts.push(String::from_utf8_lossy(&hay[last..m.start()]).into_owned());
-        seps.push(String::from_utf8_lossy(m.as_bytes()).into_owned());
+        parts.push(AwkStr::from(&hay[last..m.start()]));
+        seps.push(AwkStr::from(m.as_bytes()));
         last = m.end();
     }
-    parts.push(String::from_utf8_lossy(&hay[last..]).into_owned());
+    parts.push(AwkStr::from(&hay[last..]));
     (parts, seps)
 }
 
@@ -5135,7 +5213,7 @@ mod value_tests {
 
     #[test]
     fn split_empty_source_zero_fields() {
-        let v = super::split_string_by_field_separator("", ",", false);
+        let v = super::split_string_by_field_separator(b"", ",", false);
         assert!(v.is_empty());
     }
 
@@ -6123,20 +6201,20 @@ mod extra_runtime_tests {
     #[test]
     fn split_string_by_fs_character_mode() {
         // Empty FS -> split into individual characters
-        let res = split_string_by_field_separator("abc", "", false);
+        let res = split_string_by_field_separator(b"abc", "", false);
         assert_eq!(res, vec!["a".to_string(), "b".to_string(), "c".to_string()]);
     }
 
     #[test]
     fn split_string_by_fs_whitespace_mode() {
         // Space FS -> split by any whitespace, stripping leading/trailing
-        let res = split_string_by_field_separator("  x  y   z  ", " ", false);
+        let res = split_string_by_field_separator(b"  x  y   z  ", " ", false);
         assert_eq!(res, vec!["x".to_string(), "y".to_string(), "z".to_string()]);
     }
 
     #[test]
     fn split_string_by_fs_regex_case_insensitive() {
-        let res = split_string_by_field_separator("aXbYc", "[xy]", true);
+        let res = split_string_by_field_separator(b"aXbYc", "[xy]", true);
         assert_eq!(res, vec!["a".to_string(), "b".to_string(), "c".to_string()]);
     }
 
@@ -6156,14 +6234,14 @@ mod extra_runtime_tests {
     fn split_with_seps_regex_captures_each_matched_run() {
         // Regression: `split(s, a, /[0-9]+/, seps)` must populate seps with the
         // actual matched separator strings, not leave them empty.
-        let (parts, seps) = split_string_with_seps("a1b22c333d", "[0-9]+", false);
+        let (parts, seps) = split_string_with_seps(b"a1b22c333d", "[0-9]+", false);
         assert_eq!(parts, vec!["a", "b", "c", "d"]);
         assert_eq!(seps, vec!["1", "22", "333"]);
     }
 
     #[test]
     fn split_with_seps_single_char_fs_separator_is_the_char() {
-        let (parts, seps) = split_string_with_seps("a-b-c", "-", false);
+        let (parts, seps) = split_string_with_seps(b"a-b-c", "-", false);
         assert_eq!(parts, vec!["a", "b", "c"]);
         assert_eq!(seps, vec!["-", "-"]);
     }
@@ -6172,14 +6250,14 @@ mod extra_runtime_tests {
     fn split_with_seps_single_char_fs_is_literal_not_regex_dot() {
         // POSIX awk: single-char FS is always literal. `"."` splits on the dot character,
         // never as "any byte" (the regex metachar meaning).
-        let (parts, seps) = split_string_with_seps("a.b.c", ".", false);
+        let (parts, seps) = split_string_with_seps(b"a.b.c", ".", false);
         assert_eq!(parts, vec!["a", "b", "c"]);
         assert_eq!(seps, vec![".", "."]);
     }
 
     #[test]
     fn split_with_seps_empty_fs_yields_empty_separators_between_chars() {
-        let (parts, seps) = split_string_with_seps("abc", "", false);
+        let (parts, seps) = split_string_with_seps(b"abc", "", false);
         assert_eq!(parts, vec!["a", "b", "c"]);
         assert_eq!(seps, vec!["", ""]);
     }
@@ -6188,21 +6266,21 @@ mod extra_runtime_tests {
     fn split_with_seps_whitespace_fs_captures_actual_whitespace_run() {
         // Default-whitespace FS (`" "`): leading whitespace is dropped (no leading empty
         // field), and each captured separator is the literal whitespace run found.
-        let (parts, seps) = split_string_with_seps("  a   b\tc", " ", false);
+        let (parts, seps) = split_string_with_seps(b"  a   b\tc", " ", false);
         assert_eq!(parts, vec!["a", "b", "c"]);
         assert_eq!(seps, vec!["   ", "\t"]);
     }
 
     #[test]
     fn split_with_seps_no_match_returns_single_field_no_seps() {
-        let (parts, seps) = split_string_with_seps("zzz", "[0-9]+", false);
+        let (parts, seps) = split_string_with_seps(b"zzz", "[0-9]+", false);
         assert_eq!(parts, vec!["zzz"]);
         assert!(seps.is_empty());
     }
 
     #[test]
     fn split_with_seps_empty_input_returns_empty_vec() {
-        let (parts, seps) = split_string_with_seps("", ",", false);
+        let (parts, seps) = split_string_with_seps(b"", ",", false);
         assert!(parts.is_empty());
         assert!(seps.is_empty());
     }
@@ -6211,7 +6289,7 @@ mod extra_runtime_tests {
     fn split_with_seps_trailing_separator_keeps_empty_tail_field() {
         // Single-char FS uses `str::split`, which yields an empty trailing field
         // when the input ends in the separator. seps has one entry (the trailing match).
-        let (parts, seps) = split_string_with_seps("a,b,", ",", false);
+        let (parts, seps) = split_string_with_seps(b"a,b,", ",", false);
         assert_eq!(parts, vec!["a", "b", ""]);
         assert_eq!(seps, vec![",", ","]);
     }
@@ -6413,7 +6491,7 @@ mod extra_runtime_tests {
 #[derive(Debug, Clone, Default)]
 pub struct AwkArray {
     ints: AwkMap<i64, Value>,
-    strs: AwkMap<Box<str>, Value>,
+    strs: AwkMap<Box<[u8]>, Value>,
 }
 
 /// The integer a subscript names, when the subscript is exactly that integer's
@@ -6422,8 +6500,7 @@ pub struct AwkArray {
 /// `"1"` is `1`. `"01"`, `"+1"`, `" 1"`, `"1.0"`, `"-0"` and `"9223372036854775808"`
 /// are not: awk keeps each as its own element, so each has to stay a string
 /// key. Checking by rendering the parse back is what makes that exact.
-fn canonical_int(s: &str) -> Option<i64> {
-    let b = s.as_bytes();
+fn canonical_int(b: &[u8]) -> Option<i64> {
     let (neg, d) = match b.split_first() {
         Some((b'-', rest)) => (true, rest),
         _ => (false, b),
@@ -6451,11 +6528,20 @@ impl AwkArray {
     }
 
     /// The element `key` names, whichever half holds it.
-    pub fn get(&self, key: &str) -> Option<&Value> {
+    ///
+    /// Subscripts are byte strings: `a[$1]` where the field holds a byte that is
+    /// not part of valid UTF-8 has to name an entry, and `for (k in a)` has to
+    /// hand that subscript back unchanged. The `&str` spellings below are thin
+    /// wrappers for the many call sites whose key is text by construction.
+    pub fn get_bytes(&self, key: &[u8]) -> Option<&Value> {
         match canonical_int(key) {
             Some(i) => self.ints.get(&i),
             None => self.strs.get(key),
         }
+    }
+
+    pub fn get(&self, key: &str) -> Option<&Value> {
+        self.get_bytes(key.as_bytes())
     }
 
     /// `a[i]` where the subscript is already an integer — the hot path, with no
@@ -6464,18 +6550,19 @@ impl AwkArray {
         self.ints.get(&i)
     }
 
-    pub fn get_mut(&mut self, key: &str) -> Option<&mut Value> {
+    pub fn get_mut_bytes(&mut self, key: &[u8]) -> Option<&mut Value> {
         match canonical_int(key) {
             Some(i) => self.ints.get_mut(&i),
             None => self.strs.get_mut(key),
         }
     }
 
+    pub fn get_mut(&mut self, key: &str) -> Option<&mut Value> {
+        self.get_mut_bytes(key.as_bytes())
+    }
+
     pub fn insert(&mut self, key: String, val: Value) -> Option<Value> {
-        match canonical_int(&key) {
-            Some(i) => self.ints.insert(i, val),
-            None => self.strs.insert(key.into_boxed_str(), val),
-        }
+        self.insert_bytes(key.as_bytes(), val)
     }
 
     /// `a[k] = v` with a borrowed subscript.
@@ -6486,11 +6573,15 @@ impl AwkArray {
     /// in the `ints` half. That is one wasted allocation per element stored.
     /// Taking the key by reference defers the allocation to the `strs` half,
     /// which is the only half that needs to own it.
-    pub fn insert_str(&mut self, key: &str, val: Value) -> Option<Value> {
+    pub fn insert_bytes(&mut self, key: &[u8], val: Value) -> Option<Value> {
         match canonical_int(key) {
             Some(i) => self.ints.insert(i, val),
             None => self.strs.insert(key.into(), val),
         }
+    }
+
+    pub fn insert_str(&mut self, key: &str, val: Value) -> Option<Value> {
+        self.insert_bytes(key.as_bytes(), val)
     }
 
     /// `a[i] = v` with an integer subscript — stores without building a key.
@@ -6498,18 +6589,26 @@ impl AwkArray {
         self.ints.insert(i, val)
     }
 
-    pub fn remove(&mut self, key: &str) -> Option<Value> {
+    pub fn remove_bytes(&mut self, key: &[u8]) -> Option<Value> {
         match canonical_int(key) {
             Some(i) => self.ints.remove(&i),
             None => self.strs.remove(key),
         }
     }
 
-    pub fn contains_key(&self, key: &str) -> bool {
+    pub fn remove(&mut self, key: &str) -> Option<Value> {
+        self.remove_bytes(key.as_bytes())
+    }
+
+    pub fn contains_key_bytes(&self, key: &[u8]) -> bool {
         match canonical_int(key) {
             Some(i) => self.ints.contains_key(&i),
             None => self.strs.contains_key(key),
         }
+    }
+
+    pub fn contains_key(&self, key: &str) -> bool {
+        self.contains_key_bytes(key.as_bytes())
     }
 
     pub fn len(&self) -> usize {
@@ -6527,38 +6626,41 @@ impl AwkArray {
 
     /// Every subscript, rendered. Owned rather than borrowed because an integer
     /// subscript has no stored string to lend.
-    pub fn keys(&self) -> Vec<String> {
+    pub fn keys(&self) -> Vec<AwkStr> {
         let mut out = Vec::with_capacity(self.len());
         let mut b = KeyBuf::new();
         for i in self.ints.keys() {
-            out.push(b.write_i64(*i).to_string());
+            out.push(AwkStr::from(b.write_i64(*i)));
         }
-        out.extend(self.strs.keys().map(|k| k.to_string()));
+        out.extend(self.strs.keys().map(|k| AwkStr::from(&k[..])));
         out
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (String, &Value)> {
+    pub fn iter(&self) -> impl Iterator<Item = (AwkStr, &Value)> {
         let ints = self.ints.iter().map(|(i, v)| {
             let mut b = KeyBuf::new();
-            (b.write_i64(*i).to_string(), v)
+            (AwkStr::from(b.write_i64(*i)), v)
         });
-        ints.chain(self.strs.iter().map(|(k, v)| (k.to_string(), v)))
+        ints.chain(self.strs.iter().map(|(k, v)| (AwkStr::from(&k[..]), v)))
     }
 
     /// `entry(k).or_insert(v)` in one call — store `val` only when the
     /// subscript is absent, and hand back what the subscript now names.
     pub fn or_insert(&mut self, key: String, val: Value) -> &mut Value {
-        match canonical_int(&key) {
+        match canonical_int(key.as_bytes()) {
             Some(i) => self.ints.entry(i).or_insert(val),
-            None => self.strs.entry(key.into_boxed_str()).or_insert(val),
+            None => self.strs.entry(key.into_bytes().into_boxed_slice()).or_insert(val),
         }
     }
 
     /// [`AwkArray::or_insert`] with the value built only when it is needed.
     pub fn or_insert_with(&mut self, key: String, f: impl FnOnce() -> Value) -> &mut Value {
-        match canonical_int(&key) {
+        match canonical_int(key.as_bytes()) {
             Some(i) => self.ints.entry(i).or_insert_with(f),
-            None => self.strs.entry(key.into_boxed_str()).or_insert_with(f),
+            None => self
+                .strs
+                .entry(key.into_bytes().into_boxed_slice())
+                .or_insert_with(f),
         }
     }
 

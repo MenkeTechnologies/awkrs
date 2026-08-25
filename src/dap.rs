@@ -700,7 +700,7 @@ fn snap_one(
                     .iter()
                     .take(5000)
                     .map(|(k, val)| VarChild {
-                        name: display_key(&k),
+                        name: display_key(&k.to_str_lossy()),
                         repr: truncate(&crate::debugger::format_value(val), MAX_VAR_REPR),
                         var_ref: 0,
                     })

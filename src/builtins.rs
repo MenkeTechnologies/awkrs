@@ -1,5 +1,6 @@
 //! awk builtins: gsub, sub, match, string helpers, math, time (gawk-style), bitwise, sort, typeof.
 
+use crate::awkstr::AwkStr;
 use crate::error::{Error, Result};
 use crate::runtime::{Runtime, Value};
 use chrono::{Local, LocalResult, NaiveDate, TimeZone, Utc};
@@ -893,7 +894,7 @@ pub fn asort(rt: &mut Runtime, src: &str, dest: Option<&str>) -> Result<f64> {
         ));
     }
     let ic = rt.ignore_case_flag();
-    let mut pairs: Vec<(String, Value)> = match rt.get_global_var(src) {
+    let mut pairs: Vec<(AwkStr, Value)> = match rt.get_global_var(src) {
         Some(Value::Array(a)) => a.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
         // gawk parity: an unassigned name (`BEGIN { n=asort(a) }`) is treated
         // as an empty array — returns 0, not a fatal "not an array" error.
@@ -936,7 +937,7 @@ pub fn asorti(rt: &mut Runtime, src: &str, dest: Option<&str>) -> Result<f64> {
         ));
     }
     let ic = rt.ignore_case_flag();
-    let mut keys: Vec<String> = match rt.get_global_var(src) {
+    let mut keys: Vec<AwkStr> = match rt.get_global_var(src) {
         Some(Value::Array(a)) => a.keys(),
         // gawk parity: an unassigned name is an empty array → 0, not a fatal.
         None => Vec::new(),
@@ -945,9 +946,12 @@ pub fn asorti(rt: &mut Runtime, src: &str, dest: Option<&str>) -> Result<f64> {
     // gawk parity: `asorti` honors `IGNORECASE` for key comparisons.
     keys.sort_by(|a, b| {
         if ic {
-            locale_str_cmp_sort(&a.to_lowercase(), &b.to_lowercase())
+            locale_str_cmp_sort(
+                &a.to_str_lossy().to_lowercase(),
+                &b.to_str_lossy().to_lowercase(),
+            )
         } else {
-            locale_str_cmp_sort(a, b)
+            locale_str_cmp_sort(&a.to_str_lossy(), &b.to_str_lossy())
         }
     });
     let n = keys.len();

@@ -316,7 +316,7 @@ fn dump_value(out: &mut dyn Write, name: &str, v: &Value, tag: &str) -> Result<(
             let mut keys: Vec<_> = a.keys();
             keys.sort();
             for k in keys {
-                if let Some(elem) = a.get(&k) {
+                if let Some(elem) = a.get_bytes(&k) {
                     let fq = format!("{name}[\"{k}\"]");
                     dump_value(out, &fq, elem, tag)?;
                 }

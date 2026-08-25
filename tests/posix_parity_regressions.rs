@@ -10,7 +10,7 @@ mod common;
 
 use common::{
     run_awkrs_file, run_awkrs_operands, run_awkrs_stdin, run_awkrs_stdin_args,
-    run_awkrs_stdin_args_env, run_awkrs_stdin_bounded, unique_tmp_path,
+    run_awkrs_bytes_locale, run_awkrs_stdin_args_env, run_awkrs_stdin_bounded, unique_tmp_path,
 };
 use std::io::Write;
 
@@ -2192,4 +2192,121 @@ fn output_printed_before_a_fatal_still_reaches_stdout() {
         run_awkrs_stdin(r#"{ print NR } NR == 2 { x = 1 / 0 }"#, "a\nb\nc\n");
     assert_eq!(code, 2, "stderr {stderr:?}");
     assert_eq!(stdout, "1\n2\n");
+}
+
+/// A byte that is not part of valid UTF-8 survives every path the awk program
+/// can put it through.
+///
+/// awkrs values used to hold a Rust `String`, so any such byte was replaced by
+/// `U+FFFD` on the way in — three bytes out where gawk 5.4.1, mawk 1.3.4 and
+/// one-true-awk 20200816 all emit the one they were given, and a value that
+/// could never match the byte it came from. Every expectation below was
+/// produced by running all three references on the same program under
+/// `LC_ALL=C`; they agree on every line.
+///
+/// Asserted over bytes, not `String`: a lossy conversion would turn the byte
+/// under test into `U+FFFD` and the assertion would hold against exactly the
+/// bug it exists to catch.
+#[test]
+fn a_high_byte_survives_every_path_it_is_put_through() {
+    const HI: u8 = 0xe9;
+    let line: Vec<u8> = vec![b'a', HI, b'b', b' ', b'c', 0xff, b'd', b'\n'];
+
+    for (program, want) in [
+        // Pass-through: the record and the fields it is cut into.
+        ("{ print }", vec![b'a', HI, b'b', b' ', b'c', 0xff, b'd', b'\n']),
+        ("{ print $1 }", vec![b'a', HI, b'b', b'\n']),
+        ("{ print $2 }", vec![b'c', 0xff, b'd', b'\n']),
+        // Inspection: the byte is one character, and it is *that* byte.
+        ("{ print substr($0, 2, 1) }", vec![HI, b'\n']),
+        ("{ print substr($1, 2, 1) }", vec![HI, b'\n']),
+        // Folding leaves it alone — there is no case mapping for it.
+        (
+            "{ print toupper($0) }",
+            vec![b'A', HI, b'B', b' ', b'C', 0xff, b'D', b'\n'],
+        ),
+        // Formatting carries it through both string conversions.
+        ("{ printf \"%s\\n\", $0 }", vec![b'a', HI, b'b', b' ', b'c', 0xff, b'd', b'\n']),
+        ("{ printf \"%c\\n\", substr($0, 2, 1) }", vec![HI, b'\n']),
+        // Concatenation and a round trip through a variable.
+        ("{ x = $1 \"-\" $2; print x }", vec![b'a', HI, b'b', b'-', b'c', 0xff, b'd', b'\n']),
+        ("{ x = sprintf(\"%s\", $0); print x }", vec![b'a', HI, b'b', b' ', b'c', 0xff, b'd', b'\n']),
+        // Array subscripts and the split() element form.
+        (
+            "{ a[$1] = 1; for (k in a) print k }",
+            vec![b'a', HI, b'b', b'\n'],
+        ),
+        (
+            "{ n = split($0, p, \" \"); print p[2] }",
+            vec![b'c', 0xff, b'd', b'\n'],
+        ),
+    ] {
+        let (code, out) = run_awkrs_bytes_locale("C", &[], program, &line);
+        assert_eq!(code, 0, "{program}");
+        assert_eq!(out, want, "{program}: got {out:x?}");
+    }
+
+    // Counting agrees with all three: `length` sees seven characters, and each
+    // unpaired byte is one of them.
+    let (code, out) = run_awkrs_bytes_locale(
+        "C",
+        &[],
+        "{ print length($0), NF, length($1), index($0, \"b\") }",
+        &line,
+    );
+    assert_eq!(code, 0);
+    assert_eq!(String::from_utf8_lossy(&out), "7 2 3 3\n");
+
+    // A binary line with an embedded NUL comes through whole. one-true-awk
+    // truncates at the NUL; gawk and mawk do not, so the majority rules.
+    let (code, out) = run_awkrs_bytes_locale("C", &[], "{ print }", b"\xff\xfe\x00A\n");
+    assert_eq!(code, 0);
+    assert_eq!(out, vec![0xff, 0xfe, 0x00, b'A', b'\n']);
+}
+
+/// `printf "%c"` of a numeric argument follows the locale's character model.
+///
+/// In a single-byte locale gawk, mawk and one-true-awk all emit `N & 0xFF`. In
+/// a UTF-8 locale gawk emits the UTF-8 encoding of the code point while the
+/// other two stay on bytes, so following the locale is the only behaviour no
+/// reference contradicts. awkrs used to emit the UTF-8 encoding unconditionally,
+/// which is the C-locale gap COMPATIBILITY.md section 9 recorded.
+#[test]
+fn percent_c_of_a_number_follows_the_locale() {
+    // Single-byte locale: the low byte, unanimous across all three references.
+    for (n, want) in [
+        (65, vec![0x41u8]),
+        (128, vec![0x80]),
+        (233, vec![0xe9]),
+        (255, vec![0xff]),
+        (300, vec![0x2c]),
+        (955, vec![0xbb]),
+        (1000, vec![0xe8]),
+    ] {
+        let program = format!(r#"BEGIN {{ printf "%c", {n} }}"#);
+        let (code, out) = run_awkrs_bytes_locale("C", &[], &program, b"");
+        assert_eq!(code, 0, "%c of {n}");
+        assert_eq!(out, want, "%c of {n} in the C locale");
+    }
+
+    // UTF-8 locale: the encoding of the code point, which is gawk's answer.
+    for (n, want) in [
+        (233, "é".as_bytes().to_vec()),
+        (255, "ÿ".as_bytes().to_vec()),
+        (955, "λ".as_bytes().to_vec()),
+    ] {
+        let program = format!(r#"BEGIN {{ printf "%c", {n} }}"#);
+        let (code, out) = run_awkrs_bytes_locale("en_US.UTF-8", &[], &program, b"");
+        assert_eq!(code, 0, "%c of {n}");
+        assert_eq!(out, want, "%c of {n} in a UTF-8 locale");
+    }
+
+    // A code point no character can name falls back to the low byte in either
+    // model — mawk and one-true-awk emit it in both locales, where gawk clamps
+    // to NUL, so the majority rules.
+    for locale in ["C", "en_US.UTF-8"] {
+        let (code, out) = run_awkrs_bytes_locale(locale, &[], r#"BEGIN { printf "%c", -1 }"#, b"");
+        assert_eq!(code, 0);
+        assert_eq!(out, vec![0xff], "%c of -1 under {locale}");
+    }
 }

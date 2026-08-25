@@ -24,7 +24,7 @@ const POOL_NAME_STACK_MAX: usize = 128;
 // ── VM context ──────────────────────────────────────────────────────────────
 
 struct ForInState {
-    keys: Vec<String>,
+    keys: Vec<AwkStr>,
     index: usize,
 }
 /// `VmCtx` — see fields for the structure layout.
@@ -160,23 +160,25 @@ impl<'a> VmCtx<'a> {
     /// frame-aware, so reading a missing key from an array passed into a user
     /// function left a stray global behind under the parameter's name — awk,
     /// gawk and mawk all leave the global untouched.
-    fn array_elem_get_vivify(&mut self, name: &str, key: &str) -> Value {
+    /// `a[k]` as an rvalue, creating the element POSIX says the read brings into
+    /// existence. Byte subscript — see [`crate::runtime::Runtime::array_key_bytes_in`].
+    fn array_elem_get_vivify_bytes(&mut self, name: &str, key: &[u8]) -> Value {
         if name == "SYMTAB" {
-            return self.rt.symtab_elem_get(key);
+            return self.rt.symtab_elem_get(&String::from_utf8_lossy(key));
         }
         for frame in self.locals.iter_mut().rev() {
             if let Some(Value::Array(a)) = frame.get_mut(name) {
-                if let Some(v) = a.get(key) {
+                if let Some(v) = a.get_bytes(key) {
                     return match v {
                         Value::Num(n) => Value::Num(*n),
                         other => other.clone(),
                     };
                 }
-                a.insert(key.to_string(), Value::Uninit);
+                a.insert_bytes(key, Value::Uninit);
                 return Value::Uninit;
             }
         }
-        self.rt.array_get_vivify(name, key)
+        self.rt.array_get_vivify_bytes(name, key)
     }
 
     /// Frame-aware snapshot of an array's `(key, value)` pairs for the
@@ -186,7 +188,7 @@ impl<'a> VmCtx<'a> {
     ///
     /// Returns `Ok(Vec::new())` for unassigned names (gawk parity); a scalar
     /// at the same name is a fatal "`{name}` is not an array".
-    fn array_pairs_for_sort(&self, name: &str, fn_name: &str) -> Result<Vec<(String, Value)>> {
+    fn array_pairs_for_sort(&self, name: &str, fn_name: &str) -> Result<Vec<(AwkStr, Value)>> {
         for frame in self.locals.iter().rev() {
             match frame.get(name) {
                 Some(Value::Array(a)) => {
@@ -232,6 +234,41 @@ impl<'a> VmCtx<'a> {
     /// [`array_elem_set`](Self::array_elem_set) with a borrowed subscript, for
     /// the record-loop opcodes that already have the key text in hand. See
     /// [`crate::runtime::AwkArray::insert_str`] for what the borrow saves.
+    /// [`Self::array_elem_set_str`] with a byte subscript.
+    fn array_elem_set_bytes(&mut self, name: &str, key: &[u8], val: Value) {
+        if name == "SYMTAB" {
+            self.rt.symtab_elem_set(&String::from_utf8_lossy(key), val);
+            return;
+        }
+        // POSIX array call-by-reference: writes through a function array
+        // param go to the current frame, not global vars.
+        for frame in self.locals.iter_mut().rev() {
+            if let Some(slot) = frame.get_mut(name) {
+                if let Value::Array(a) = slot {
+                    a.insert_bytes(key, val);
+                    return;
+                }
+                if matches!(slot, Value::Uninit) {
+                    let mut a = crate::runtime::AwkArray::new();
+                    a.insert_bytes(key, val);
+                    *slot = Value::Array(a);
+                    return;
+                }
+            }
+        }
+        self.rt.array_set_bytes(name, key, val);
+    }
+
+    /// [`Self::array_elem_get`] with a byte subscript.
+    fn array_elem_get_bytes(&mut self, name: &str, key: &[u8]) -> Value {
+        for frame in self.locals.iter().rev() {
+            if let Some(Value::Array(a)) = frame.get(name) {
+                return a.get_bytes(key).cloned().unwrap_or(Value::Uninit);
+            }
+        }
+        self.rt.array_get_bytes(name, key)
+    }
+
     fn array_elem_set_str(&mut self, name: &str, key: &str, val: Value) {
         if name == "SYMTAB" {
             self.rt.symtab_elem_set(key, val);
@@ -319,10 +356,10 @@ impl<'a> VmCtx<'a> {
 
     /// Keys for `for (k in …)` / `SYMTAB` iteration order, including **`PROCINFO["sorted_in"]`** and
     /// user-defined comparators (`cmp` with two index arguments).
-    pub(crate) fn for_in_keys(&mut self, name: &str) -> Result<Vec<String>> {
+    pub(crate) fn for_in_keys(&mut self, name: &str) -> Result<Vec<AwkStr>> {
         // POSIX array call-by-reference: check the current frame for an
         // array param with this name before falling through to global vars.
-        let frame_keys: Option<Vec<String>> = self.locals.iter().rev().find_map(|frame| {
+        let frame_keys: Option<Vec<AwkStr>> = self.locals.iter().rev().find_map(|frame| {
             if let Some(Value::Array(a)) = frame.get(name) {
                 Some(a.keys())
             } else {
@@ -345,7 +382,7 @@ impl<'a> VmCtx<'a> {
                     let Some(Value::Array(a)) = self.rt.get_global_var(name) else {
                         return Ok(Vec::new());
                     };
-                    a.keys().into_iter().collect::<Vec<String>>()
+                    a.keys()
                 }
             };
             if self.rt.posix {
@@ -1238,8 +1275,8 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                     Some(i) if ctx.locals.is_empty() => ctx.rt.array_get_vivify_int(name, i),
                     _ => {
                         let mut kbuf = crate::runtime::KeyBuf::new();
-                        let k = ctx.rt.array_key_in(&key_val, &mut kbuf);
-                        ctx.array_elem_get_vivify(name, &k)
+                        let k = ctx.rt.array_key_bytes_in(&key_val, &mut kbuf);
+                        ctx.array_elem_get_vivify_bytes(name, &k)
                     }
                 };
                 ctx.push(v);
@@ -1355,8 +1392,8 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                         // all. `value_to_array_key` allocated one per store and
                         // the integer half of the array then dropped it.
                         let mut kbuf = crate::runtime::KeyBuf::new();
-                        let key = ctx.rt.array_key_in(&key_val, &mut kbuf);
-                        ctx.array_elem_set_str(name, key.as_ref(), val.clone());
+                        let key = ctx.rt.array_key_bytes_in(&key_val, &mut kbuf);
+                        ctx.array_elem_set_bytes(name, key.as_ref(), val.clone());
                     }
                 }
                 ctx.push(val);
@@ -1415,11 +1452,11 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 // per record cost an allocation the array's integer half then
                 // threw away.
                 let mut kbuf = crate::runtime::KeyBuf::new();
-                let key = ctx.rt.array_key_in(&key_val, &mut kbuf);
+                let key = ctx.rt.array_key_bytes_in(&key_val, &mut kbuf);
                 let name = ctx.cp.strings.get(arr);
-                let old = ctx.array_elem_get(name, key.as_ref());
+                let old = ctx.array_elem_get_bytes(name, key.as_ref());
                 let new_val = apply_binop(bop, &old, &rhs, ctx.rt.bignum, ctx.rt)?;
-                ctx.array_elem_set_str(name, key.as_ref(), new_val.clone());
+                ctx.array_elem_set_bytes(name, key.as_ref(), new_val.clone());
                 ctx.push(new_val);
             }
 
@@ -1976,13 +2013,13 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 // (x in a)` is true for every x. Borrowed: a membership test
                 // does not store the key.
                 let mut kbuf = crate::runtime::KeyBuf::new();
-                let k = ctx.rt.array_key_in(&key_val, &mut kbuf);
+                let k = ctx.rt.array_key_bytes_in(&key_val, &mut kbuf);
                 let name = ctx.str_ref(arr).to_string();
                 // gawk parity: `key in x` on a scalar `x` raises "attempt to
                 // use scalar `x' as an array". Earlier awkrs returned 0.
                 check_array_target(ctx, &name)?;
                 let b = if name == "SYMTAB" {
-                    ctx.symtab_has(k.as_ref())
+                    ctx.symtab_has(&String::from_utf8_lossy(k.as_ref()))
                 } else {
                     // Frame-aware: a function array parameter lives in
                     // `ctx.locals`, not the global var map. Walk frames first
@@ -1993,14 +2030,14 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                     for frame in ctx.locals.iter().rev() {
                         match frame.get(name.as_str()) {
                             Some(Value::Array(a)) => {
-                                found = Some(a.contains_key(k.as_ref()));
+                                found = Some(a.contains_key_bytes(k.as_ref()));
                                 break;
                             }
                             Some(Value::Uninit) | None => {}
                             Some(_) => break,
                         }
                     }
-                    found.unwrap_or_else(|| ctx.rt.array_has(&name, k.as_ref()))
+                    found.unwrap_or_else(|| ctx.rt.array_has_bytes(&name, k.as_ref()))
                 };
                 ctx.push(Value::Num(if b { 1.0 } else { 0.0 }));
             }
@@ -2154,9 +2191,11 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                         .map(|v| ctx.rt.value_to_str_convfmt(v).into_owned())
                         .unwrap_or_else(|| " ".into())
                 };
+                // The subject goes in as bytes: an element of the target array
+                // must hold exactly what the record held at that position.
                 let s = {
                     let v = ctx.pop();
-                    ctx.rt.value_to_str_convfmt(&v).into_owned()
+                    ctx.rt.value_to_bytes_convfmt(&v).into_owned()
                 };
                 let arr_name = ctx.str_ref(arr).to_string();
                 let seps_name = seps.map(|i| ctx.str_ref(i).to_string());
@@ -2278,9 +2317,12 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 let ic = ctx.rt.ignore_case_flag();
                 pairs.sort_by(|(ka, _), (kb, _)| {
                     if ic {
-                        builtins::locale_str_cmp_sort(&ka.to_lowercase(), &kb.to_lowercase())
+                        builtins::locale_str_cmp_sort(
+                            &ka.to_str_lossy().to_lowercase(),
+                            &kb.to_str_lossy().to_lowercase(),
+                        )
                     } else {
-                        builtins::locale_str_cmp_sort(ka, kb)
+                        builtins::locale_str_cmp_sort(&ka.to_str_lossy(), &kb.to_str_lossy())
                     }
                 });
                 let n = pairs.len() as f64;
@@ -2314,11 +2356,11 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 // for an array's string value, so omitting it here let
                 // `f = a ""` through while `f = a b` was correctly rejected.
                 v.reject_if_array_scalar()?;
-                let mut s = match v {
-                    Value::Num(n) => ctx.rt.num_to_string_convfmt(n),
-                    Value::Mpfr(ref f) => ctx.rt.mpfr_to_string_convfmt(f),
-                    other => other.into_string(),
-                };
+                // Through `concat_take_left`, not `into_string`: the latter
+                // renders, so `$1 "-"` of a field holding a byte that is not
+                // part of valid UTF-8 lost it here while the unfused `Op::Concat`
+                // beside it kept it.
+                let mut s = concat_take_left(ctx.rt, v);
                 let pool_str = ctx.cp.strings.get(idx);
                 s.push_str(pool_str);
                 // Same rule as `Op::Concat`: a concatenation result is a plain

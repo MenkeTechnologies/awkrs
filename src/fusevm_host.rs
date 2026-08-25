@@ -150,7 +150,13 @@ pub(crate) const BUILTIN_ARRAY_LEN: u16 = 2002;
 fn awk_keys_builtin(vm: &mut fusevm::VM, _argc: u8) -> fusevm::Value {
     let name = vm.pop().to_str();
     let keys = with_runtime(|rt| rt.array_keys(&name));
-    fusevm::Value::array(keys.into_iter().map(fusevm::Value::str).collect())
+    // `fusevm::Value` carries a `String`, so a subscript holding a byte that
+    // is not part of valid UTF-8 is rendered here. See the note on `sprintf`.
+    fusevm::Value::array(
+        keys.into_iter()
+            .map(|k| fusevm::Value::str(k.to_lossy_string()))
+            .collect(),
+    )
 }
 
 fn array_len_builtin(vm: &mut fusevm::VM, _argc: u8) -> fusevm::Value {
@@ -601,7 +607,7 @@ impl fusevm::AwkHost for AwkRuntimeHost {
                     .unwrap_or_else(|| " ".to_string()),
             };
             let (parts, _seps) =
-                crate::runtime::split_string_with_seps(&s.to_str(), &fs_str, rt.ignore_case_flag());
+                crate::runtime::split_string_with_seps(s.to_str().as_bytes(), &fs_str, rt.ignore_case_flag());
             let n = parts.len();
             rt.split_into_array(arr_name, &parts);
             n as i64

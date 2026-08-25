@@ -2,6 +2,7 @@
 //! (`filefuncs`, `time`, `ordchr`, `readfile`, `rwarray`, etc.). Call these as ordinary
 //! builtins; `@load "filefuncs.so"` is not required in awkrs.
 
+use crate::awkstr::AwkStr;
 use crate::error::{Error, Result};
 use crate::runtime::{Runtime, Value};
 use std::fs::{self, File};
@@ -156,7 +157,8 @@ pub(crate) fn fts(rt: &mut Runtime, root: &str, arr_name: &str) -> Result<Value>
         paths.push(e.path().to_string_lossy().into_owned());
     }
     paths.sort();
-    rt.split_into_array(arr_name, &paths);
+    let parts: Vec<AwkStr> = paths.iter().map(|p| AwkStr::from(p.as_str())).collect();
+    rt.split_into_array(arr_name, &parts);
     Ok(Value::Num(paths.len() as f64))
 }
 
@@ -318,8 +320,9 @@ pub(crate) fn writea(rt: &mut Runtime, path: &str, arr_name: &str) -> Result<Val
     };
     writeln!(f, "awkrs-rwarray-v1").map_err(Error::Io)?;
     for k in keys {
-        let v = rt.array_get(arr_name, &k);
-        let line = format!("{}\t{}\n", escape_rw(&k), escape_rw(&v.as_str()));
+        let ks = k.to_str_lossy();
+        let v = rt.array_get(arr_name, &ks);
+        let line = format!("{}\t{}\n", escape_rw(&ks), escape_rw(&v.as_str()));
         f.write_all(line.as_bytes()).map_err(Error::Io)?;
     }
     Ok(Value::Num(0.0))

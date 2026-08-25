@@ -821,12 +821,22 @@ fn pad_bytes(body: AwkStr, width: usize, left: bool, pad: u8) -> AwkStr {
 }
 
 /// [`sprintf_c_char`] over bytes: the first **character** of a string argument,
-/// as the bytes that spell it.
+/// as the bytes that spell it, and the character with the given code for a
+/// numeric one.
+///
+/// The numeric case is where the two character models part. In a single-byte
+/// locale gawk, mawk and one-true-awk all emit `N & 0xFF` — `printf "%c", 233`
+/// is the one byte `\351`, and it stays the low byte above 255 (`300` is `\054`,
+/// `955` is `\273`). In a UTF-8 locale gawk emits the UTF-8 encoding of the code
+/// point instead, and mawk and one-true-awk still emit the low byte. Following
+/// the locale therefore matches gawk in both and the other two in the one they
+/// agree with it on; awkrs used to emit the UTF-8 encoding unconditionally,
+/// which is the C-locale gap section 9 recorded.
 fn sprintf_c_char_bytes(v: &Value) -> AwkStr {
     match v {
         // A numeric string (a field, a `getline` variable, a `split` element)
         // counts as numeric, so `echo 65 | awk '{printf "%c", $1}'` prints `A`.
-        Value::Str(_) if v.is_numeric_str() => AwkStr::from(sprintf_c_char(v)),
+        Value::Str(_) if v.is_numeric_str() => numeric_c_char(v),
         Value::Str(s) | Value::StrLit(s) | Value::Regexp(s) => {
             if s.is_empty() {
                 AwkStr::new()
@@ -834,7 +844,26 @@ fn sprintf_c_char_bytes(v: &Value) -> AwkStr {
                 s.substr_chars(0, 1)
             }
         }
-        _ => AwkStr::from(sprintf_c_char(v)),
+        _ => numeric_c_char(v),
+    }
+}
+
+/// The numeric half of [`sprintf_c_char_bytes`] — see its note on the locale.
+fn numeric_c_char(v: &Value) -> AwkStr {
+    let code = match v {
+        Value::Mpfr(f) => float_trunc_integer(f).to_u32_wrapping(),
+        _ => v.as_number() as i64 as u32,
+    };
+    // A code point no character can name falls back to the low byte in either
+    // model: mawk and one-true-awk emit it in both locales, so it is the
+    // majority answer where gawk clamps to NUL instead.
+    match (crate::locale_numeric::ctype_is_utf8(), char::from_u32(code)) {
+        (true, Some(c)) => AwkStr::from(c),
+        _ => {
+            let mut out = AwkStr::new();
+            out.push_byte((code & 0xff) as u8);
+            out
+        }
     }
 }
 
@@ -2471,16 +2500,23 @@ mod tests {
 
     #[test]
     fn format_percent_c_zero_v3() {
-        // %c with 0 should be null byte
-        assert_eq!(awk_sprintf("%c", &[Value::Num(0.0)]).unwrap(), "\0");
+        // %c with 0 is a NUL byte — gawk, mawk and one-true-awk agree.
+        let s = awk_sprintf_bytes("%c", &[Value::Num(0.0)], '.', Some(','), None).unwrap();
+        assert_eq!(s.as_bytes(), &[0x00]);
     }
 
     #[test]
     fn format_percent_c_negative_v3() {
-        // negative should fallback to empty or 0, let's see what awkrs does
-        // awkrs clamps or wraps. Usually it's character 0 or some wrap
-        let s = awk_sprintf("%c", &[Value::Num(-1.0)]).unwrap();
-        assert_eq!(s.len(), 1); // just ensuring it doesn't panic
+        // `%c` of a negative number has no character to name, so both models
+        // fall back to the low byte of the two's-complement value: `0xff`,
+        // which is what mawk 1.3.4 and one-true-awk 20200816 emit in either
+        // locale. (gawk clamps to NUL there, so the majority rules.) The
+        // locale-dependent cases are pinned in the integration suite, which can
+        // set `LC_ALL` on the process it spawns; this one is the same either
+        // way. Asserted over bytes because `awk_sprintf` renders its result and
+        // 0xff is not a character any rendering can name.
+        let s = awk_sprintf_bytes("%c", &[Value::Num(-1.0)], '.', Some(','), None).unwrap();
+        assert_eq!(s.as_bytes(), &[0xff]);
     }
 
     #[test]
