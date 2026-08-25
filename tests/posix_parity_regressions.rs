@@ -2263,6 +2263,57 @@ fn a_high_byte_survives_every_path_it_is_put_through() {
     assert_eq!(code, 0);
     assert_eq!(out, vec![0xff, 0xfe, 0x00, b'A', b'\n']);
 
+    // Substitution keeps the bytes of whatever it did not replace, for every
+    // target form: `$0`, a field, a variable and an array element. The engine
+    // has matched over bytes for a while, but these four read their subject
+    // through a rendering until now, so `gsub(/b/,"Z")` on `a\351b` answered
+    // `61 ef bf bd 5a` where all three references answer `61 e9 5a`.
+    for (program, want) in [
+        (
+            "{ gsub(/b/,\"Z\"); print }",
+            vec![b'a', HI, b'Z', b' ', b'c', 0xff, b'd', b'\n'],
+        ),
+        (
+            "{ sub(/b/,\"Z\"); print }",
+            vec![b'a', HI, b'Z', b' ', b'c', 0xff, b'd', b'\n'],
+        ),
+        ("{ gsub(/b/,\"Z\",$1); print $1 }", vec![b'a', HI, b'Z', b'\n']),
+        (
+            "{ x = $1; gsub(/b/,\"Z\",x); print x }",
+            vec![b'a', HI, b'Z', b'\n'],
+        ),
+        (
+            "{ a[1] = $1; gsub(/b/,\"Z\",a[1]); print a[1] }",
+            vec![b'a', HI, b'Z', b'\n'],
+        ),
+        // `&` in the replacement is the matched text, which can be the byte.
+        (
+            "{ gsub(/[ab]/,\"[&]\"); print $1 }",
+            vec![b'[', b'a', b']', HI, b'[', b'b', b']', b'\n'],
+        ),
+    ] {
+        let (code, out) = run_awkrs_bytes_locale("C", &[], program, &line);
+        assert_eq!(code, 0, "{program}");
+        assert_eq!(out, want, "{program}: got {out:x?}");
+    }
+
+    // gensub is gawk-only, so gawk is the reference for these two. Both keep
+    // the bytes, including through a `\1` backreference.
+    for (program, want) in [
+        (
+            r#"{ print gensub(/b/,"Z","g") }"#,
+            vec![b'a', HI, b'Z', b' ', b'c', 0xff, b'd', b'\n'],
+        ),
+        (
+            r#"{ print gensub(/(a)(.)/,"\\2\\1","g") }"#,
+            vec![HI, b'a', b'b', b' ', b'c', 0xff, b'd', b'\n'],
+        ),
+    ] {
+        let (code, out) = run_awkrs_bytes_locale("C", &[], program, &line);
+        assert_eq!(code, 0, "{program}");
+        assert_eq!(out, want, "{program}: got {out:x?}");
+    }
+
     // A byte written as a *literal* is the same byte. `"\351"` and `"\xe9"`
     // name one byte in all three references — `length` of either is 1 — where
     // awkrs built the character `U+00E9` and emitted its two UTF-8 bytes, so a

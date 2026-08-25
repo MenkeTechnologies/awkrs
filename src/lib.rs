@@ -1403,7 +1403,9 @@ fn detect_inline_program(
             ) => {
                 let pat = cp.strings.get(*pat_idx);
                 let repl = cp.strings.get(*repl_idx);
-                if !pat.is_empty() && crate::builtins::gsub_literal_eligible(pat, repl) {
+                if !pat.is_empty()
+                    && crate::builtins::gsub_literal_eligible(pat.as_bytes(), repl.as_bytes())
+                {
                     InlineAction::GsubLiteralPrint {
                         pat: *pat_idx,
                         repl: *repl_idx,
@@ -1674,7 +1676,10 @@ fn process_file_gsub_literal_print(
 ) -> Result<usize> {
     let needle = cp.strings.get(pat);
     let repl_s = cp.strings.get(repl);
-    debug_assert!(!needle.is_empty() && crate::builtins::gsub_literal_eligible(needle, repl_s));
+    debug_assert!(
+        !needle.is_empty()
+            && crate::builtins::gsub_literal_eligible(needle.as_bytes(), repl_s.as_bytes())
+    );
 
     let finder = memmem::Finder::new(needle.as_bytes());
 
@@ -1705,7 +1710,7 @@ fn process_file_gsub_literal_print(
             rt.print_buf.extend_from_slice(&rt.ors_bytes);
         } else {
             set_record_from_line_bytes(rt, fs, line_bytes);
-            crate::builtins::gsub(rt, needle, repl_s, None)?;
+            crate::builtins::gsub(rt, needle.as_bytes(), repl_s.as_bytes(), None)?;
             rt.print_buf.extend_from_slice(rt.record.as_bytes());
             rt.print_buf.extend_from_slice(&rt.ors_bytes);
         }

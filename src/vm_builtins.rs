@@ -611,18 +611,20 @@ pub(crate) fn exec_builtin_dispatch(
                 )));
             }
             let target = if argc == 4 {
-                Some(ctx.rt.value_to_str_convfmt(&args[3]).into_owned())
+                Some(crate::awkstr::AwkStr::from_vec(
+                    ctx.rt.value_to_bytes_convfmt(&args[3]).into_owned(),
+                ))
             } else {
                 None
             };
             let out = builtins::awk_gensub(
                 ctx.rt,
-                &ctx.rt.value_to_str_convfmt(&args[0]),
-                &ctx.rt.value_to_str_convfmt(&args[1]),
+                &ctx.rt.value_to_bytes_convfmt(&args[0]),
+                &ctx.rt.value_to_bytes_convfmt(&args[1]),
                 &args[2],
                 target,
             )?;
-            Value::StrLit(out.into())
+            Value::StrLit(out)
         }
         "isarray" => {
             if argc != 1 {

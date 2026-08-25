@@ -1517,7 +1517,7 @@ pub struct Runtime {
     /// Compiled regex cache when [`Self::ignore_case_flag`] is true.
     pub regex_cache_ci: AwkMap<Vec<u8>, BytesRegex>,
     /// Cached substring searchers for literal `sub`/`gsub` patterns — faster than `str::contains` per line.
-    pub memmem_finder_cache: AwkMap<String, memmem::Finder<'static>>,
+    pub memmem_finder_cache: AwkMap<Vec<u8>, memmem::Finder<'static>>,
     /// Persistent stdout buffer — shared across record iterations, flushed at file boundaries.
     pub print_buf: Vec<u8>,
     /// Cached OFS bytes — avoids HashMap lookup + Vec alloc on every `print` call.
@@ -2742,10 +2742,10 @@ impl Runtime {
 
     /// Cached [`memmem::Finder`] for a literal pattern string (non-empty).
     /// Used by literal `gsub`/`sub` to scan records with SIMD-friendly substring search.
-    pub fn literal_substring_finder(&mut self, pat: &str) -> &memmem::Finder<'static> {
+    pub fn literal_substring_finder(&mut self, pat: &[u8]) -> &memmem::Finder<'static> {
         if !self.memmem_finder_cache.contains_key(pat) {
-            let f = memmem::Finder::new(pat.as_bytes()).into_owned();
-            self.memmem_finder_cache.insert(pat.to_string(), f);
+            let f = memmem::Finder::new(pat).into_owned();
+            self.memmem_finder_cache.insert(pat.to_vec(), f);
         }
         &self.memmem_finder_cache[pat]
     }
@@ -3697,8 +3697,8 @@ impl Runtime {
 
     /// Like [`set_field_sep_split`](Self::set_field_sep_split) but takes an owned line (avoids extra
     /// copies when the caller already has a `String`, e.g. `gsub` replacing `$0`).
-    pub fn set_field_sep_split_owned(&mut self, fs: &str, line: String) {
-        self.record = line.into();
+    pub fn set_field_sep_split_owned(&mut self, fs: &str, line: AwkStr) {
+        self.record = line;
         self.record_assigned = true;
         self.record_strnum = true;
         self.field_strnum.clear();
@@ -4039,18 +4039,18 @@ impl Runtime {
     /// go through [`set_record_str_strnum`](Self::set_record_str_strnum) so a
     /// plain string like `$0 = "42"` stays a plain string.
     pub fn set_record_str(&mut self, val: &str) {
-        self.set_record_str_strnum(val, true);
+        self.set_record_str_strnum(val.as_bytes(), true);
     }
 
     /// [`set_record_str`](Self::set_record_str), stating whether the assigned
     /// text is a POSIX numeric string. Splitting always yields numeric-string
     /// fields, so only `$0` itself is affected.
-    pub fn set_record_str_strnum(&mut self, val: &str, strnum: bool) {
+    pub fn set_record_str_strnum(&mut self, val: &[u8], strnum: bool) {
         let fs = self
             .get_global_var("FS")
             .map(|v| v.as_str())
             .unwrap_or_else(|| " ".into());
-        self.set_field_sep_split(&fs, val.as_bytes());
+        self.set_field_sep_split(&fs, val);
         self.ensure_fields_split();
         self.record_strnum = strnum;
         let nf = self.nf() as f64;
@@ -4088,7 +4088,7 @@ impl Runtime {
     /// Treats `val` as a numeric string; [`set_field_strnum`](Self::set_field_strnum)
     /// is the form that says otherwise.
     pub fn set_field(&mut self, i: i32, val: &str) -> crate::error::Result<()> {
-        self.set_field_strnum(i, val, true)
+        self.set_field_strnum(i, val.as_bytes(), true)
     }
 
     /// [`set_field`](Self::set_field), stating whether the assigned text is a
@@ -4097,7 +4097,7 @@ impl Runtime {
     pub fn set_field_strnum(
         &mut self,
         i: i32,
-        val: &str,
+        val: &[u8],
         strnum: bool,
     ) -> crate::error::Result<()> {
         if i == 0 {
@@ -4130,7 +4130,7 @@ impl Runtime {
         if self.fields.len() <= idx {
             self.fields.resize(idx + 1, String::new().into());
         }
-        self.fields[idx] = val.to_string().into();
+        self.fields[idx] = AwkStr::from(val);
         // Absent entries read as `true`, so only a non-numeric-string assignment
         // has to be recorded — and the vec has to reach `idx` to record it.
         if !strnum || self.field_strnum.len() > idx {

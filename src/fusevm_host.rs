@@ -722,10 +722,16 @@ impl fusevm::AwkHost for AwkRuntimeHost {
     ) -> fusevm::Value {
         with_runtime(|rt| {
             let how_awk = fuse_to_awk(how.clone());
-            let target_s = target.map(|t| t.to_str());
-            match crate::builtins::awk_gensub(rt, &re.to_str(), &repl.to_str(), &how_awk, target_s)
-            {
-                Ok(s) => fusevm::Value::str(s),
+            let target_s = target.map(|t| AwkStr::from(t.to_str()));
+            match crate::builtins::awk_gensub(
+                rt,
+                re.to_str().as_bytes(),
+                repl.to_str().as_bytes(),
+                &how_awk,
+                target_s,
+            ) {
+                // `fusevm::Value` carries a `String`; see the note on `sprintf`.
+                Ok(s) => fusevm::Value::str(s.to_lossy_string()),
                 Err(e) => {
                     set_host_error(e);
                     fusevm::Value::str("")
@@ -916,39 +922,46 @@ fn host_substitute(
     with_runtime(|rt| {
         let re_s = re.to_str();
         let repl_s = repl.to_str();
-        let sub_call: fn(&mut Runtime, &str, &str, Option<&mut String>) -> Result<f64, Error> =
+        let sub_call: fn(&mut Runtime, &[u8], &[u8], Option<&mut AwkStr>) -> Result<f64, Error> =
             if global {
                 crate::builtins::gsub
             } else {
                 crate::builtins::sub_fn
             };
 
+        // The pattern and replacement arrive from `fusevm::Value`, which carries
+        // a `String`, so those two are bounded by that backend. The *target* is
+        // read from the runtime and written back to it, so it keeps its bytes.
+        let re_b = re_s.as_bytes();
+        let repl_b = repl_s.as_bytes();
         let res: Result<f64, Error> = match target {
             // `$0` — substitute on the record directly (resplits), like SubTarget::Record.
-            fusevm::AwkLvalue::Field(0) => sub_call(rt, &re_s, &repl_s, None),
+            fusevm::AwkLvalue::Field(0) => sub_call(rt, re_b, repl_b, None),
             fusevm::AwkLvalue::Field(i) => match rt.field(*i as i32) {
                 Ok(v) => {
-                    let mut s = v.as_str();
-                    match sub_call(rt, &re_s, &repl_s, Some(&mut s)) {
-                        Ok(n) => rt.set_field(*i as i32, &s).map(|()| n),
+                    let mut s = AwkStr::from_vec(v.as_bytes_cow().into_owned());
+                    match sub_call(rt, re_b, repl_b, Some(&mut s)) {
+                        Ok(n) => rt
+                            .set_field_strnum(*i as i32, s.as_bytes(), true)
+                            .map(|()| n),
                         Err(e) => Err(e),
                     }
                 }
                 Err(e) => Err(e),
             },
             fusevm::AwkLvalue::Var(name) => {
-                let mut s = rt.symtab_elem_get(name).as_str();
-                let n = sub_call(rt, &re_s, &repl_s, Some(&mut s));
+                let mut s = AwkStr::from_vec(rt.symtab_elem_get(name).as_bytes_cow().into_owned());
+                let n = sub_call(rt, re_b, repl_b, Some(&mut s));
                 if n.is_ok() {
-                    rt.symtab_elem_set(name, crate::runtime::Value::Str(s.into()));
+                    rt.symtab_elem_set(name, crate::runtime::Value::Str(s));
                 }
                 n
             }
             fusevm::AwkLvalue::ArrayElem(name, key) => {
-                let mut s = rt.array_get(name, key).as_str();
-                let n = sub_call(rt, &re_s, &repl_s, Some(&mut s));
+                let mut s = AwkStr::from_vec(rt.array_get(name, key).as_bytes_cow().into_owned());
+                let n = sub_call(rt, re_b, repl_b, Some(&mut s));
                 if n.is_ok() {
-                    rt.array_set(name, key.clone(), crate::runtime::Value::Str(s.into()));
+                    rt.array_set(name, key.clone(), crate::runtime::Value::Str(s));
                 }
                 n
             }

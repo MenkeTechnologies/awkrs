@@ -1245,10 +1245,12 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 // gawk parity: assigning a number to `$n` stringifies via
                 // CONVFMT (so `CONVFMT="%.2f"; $1=3.14159` stores `"3.14"`),
                 // not via the f64 Display default which keeps full precision.
+                // Bytes, not a rendering: `$1 = substr($0, 2, 1)` of a byte
+                // that is not part of valid UTF-8 has to store that byte.
                 let s = match &val {
-                    Value::Num(n) => ctx.rt.num_to_string_convfmt(*n),
-                    Value::Mpfr(f) => ctx.rt.mpfr_to_string_convfmt(f),
-                    _ => val.as_str(),
+                    Value::Num(n) => ctx.rt.num_to_string_convfmt(*n).into_bytes(),
+                    Value::Mpfr(f) => ctx.rt.mpfr_to_string_convfmt(f).into_bytes(),
+                    _ => val.as_bytes_cow().into_owned(),
                 };
                 // The assigned value's own type decides whether the field is a
                 // POSIX numeric string: `$1 = $2` and `$1 = 42` stay numeric,
@@ -3073,8 +3075,11 @@ pub(crate) fn exec_sub_from_values(
     // each converts through CONVFMT. Every one of the three was previously read
     // at full f64 precision, which showed up as `CONVFMT="%.2f"; x=1.23456;
     // gsub(/3/,"9",x)` leaving `1.29456` where all three references leave `1.29`.
-    let repl = ctx.rt.value_to_str_convfmt(&repl_v).into_owned();
-    let re = ctx.rt.value_to_str_convfmt(&re_v).into_owned();
+    // All three reach `sub`/`gsub` as byte strings: the engine matches over
+    // bytes, so a pattern, a replacement or a target holding one that is not
+    // part of valid UTF-8 has to survive the trip.
+    let repl = ctx.rt.value_to_bytes_convfmt(&repl_v).into_owned();
+    let re = ctx.rt.value_to_bytes_convfmt(&re_v).into_owned();
 
     // gawk / mawk / one-true-awk all leave the target **completely untouched**
     // when nothing matched: `BEGIN{ sub(/x/,"y",z); print (z==0) }` still prints
@@ -3098,9 +3103,10 @@ pub(crate) fn exec_sub_from_values(
             // case to a single move rather than a clone.
             let cur = ctx.var_value_cow(&name).into_owned();
             let mut s = match cur {
-                Value::Num(n) => ctx.rt.num_to_string_convfmt(n),
-                Value::Mpfr(ref f) => ctx.rt.mpfr_to_string_convfmt(f),
-                other => other.into_string(),
+                Value::Num(n) => AwkStr::from(ctx.rt.num_to_string_convfmt(n)),
+                Value::Mpfr(ref f) => AwkStr::from(ctx.rt.mpfr_to_string_convfmt(f)),
+                Value::Str(t) | Value::StrLit(t) | Value::Regexp(t) => t,
+                _ => AwkStr::new(),
             };
             let n = if is_global {
                 builtins::gsub(ctx.rt, re.as_ref(), repl.as_ref(), Some(&mut s))?
@@ -3108,7 +3114,7 @@ pub(crate) fn exec_sub_from_values(
                 builtins::sub_fn(ctx.rt, re.as_ref(), repl.as_ref(), Some(&mut s))?
             };
             if n > 0.0 {
-                ctx.set_var(&name, Value::Str(s.into()))?;
+                ctx.set_var(&name, Value::Str(s))?;
             }
             n
         }
@@ -3120,24 +3126,25 @@ pub(crate) fn exec_sub_from_values(
             // chunk-entry prep. Reading via slot_value_live_for_jit would then
             // decode Uninit and run sub on an empty string, silently zeroing
             // out the variable.
-            let mut s = ctx
-                .rt
-                .value_to_str_convfmt(&ctx.rt.slots[slot as usize])
-                .into_owned();
+            let mut s = AwkStr::from_vec(
+                ctx.rt
+                    .value_to_bytes_convfmt(&ctx.rt.slots[slot as usize])
+                    .into_owned(),
+            );
             let n = if is_global {
                 builtins::gsub(ctx.rt, re.as_ref(), repl.as_ref(), Some(&mut s))?
             } else {
                 builtins::sub_fn(ctx.rt, re.as_ref(), repl.as_ref(), Some(&mut s))?
             };
             if n > 0.0 {
-                ctx.rt.slots[slot as usize] = Value::Str(s.into());
+                ctx.rt.slots[slot as usize] = Value::Str(s);
             }
             n
         }
         SubTarget::Field => {
             let i = extra_field_idx.expect("field index for SubTarget::Field");
             let fv = ctx.rt.field(i)?;
-            let mut s = ctx.rt.value_to_str_convfmt(&fv).into_owned();
+            let mut s = AwkStr::from_vec(ctx.rt.value_to_bytes_convfmt(&fv).into_owned());
             let n = if is_global {
                 builtins::gsub(ctx.rt, re.as_ref(), repl.as_ref(), Some(&mut s))?
             } else {
@@ -3156,7 +3163,7 @@ pub(crate) fn exec_sub_from_values(
             let arr_name = ctx.str_ref(arr_idx).to_string();
             let mut s = {
                 let v = ctx.array_elem_get(&arr_name, &key);
-                ctx.rt.value_to_str_convfmt(&v).into_owned()
+                AwkStr::from_vec(ctx.rt.value_to_bytes_convfmt(&v).into_owned())
             };
             let n = if is_global {
                 builtins::gsub(ctx.rt, re.as_ref(), repl.as_ref(), Some(&mut s))?
@@ -3164,7 +3171,7 @@ pub(crate) fn exec_sub_from_values(
                 builtins::sub_fn(ctx.rt, re.as_ref(), repl.as_ref(), Some(&mut s))?
             };
             if n > 0.0 {
-                ctx.array_elem_set(&arr_name, key, Value::Str(s.into()));
+                ctx.array_elem_set(&arr_name, key, Value::Str(s));
             }
             n
         }

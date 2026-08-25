@@ -8,12 +8,12 @@ use chrono::{Local, LocalResult, NaiveDate, TimeZone, Utc};
 use std::cmp::Ordering;
 
 /// Check if a regex pattern is a plain literal (no metacharacters).
-pub(crate) fn is_literal_pattern(pat: &str) -> bool {
+pub(crate) fn is_literal_pattern(pat: &[u8]) -> bool {
     // Empty pattern is NOT a literal fast-path candidate: gawk semantics require
     // a zero-width match at every position (gsub of // on "abc" emits 4 replacements),
     // which the literal substring scanner cannot express.
     !pat.is_empty()
-        && !pat.bytes().any(|b| {
+        && !pat.iter().any(|&b| {
             matches!(
                 b,
                 b'.' | b'*'
@@ -35,28 +35,25 @@ pub(crate) fn is_literal_pattern(pat: &str) -> bool {
 
 /// Literal `gsub` fast path: plain pattern and replacement without `&` / `\` escapes.
 #[inline]
-pub(crate) fn gsub_literal_eligible(re_pat: &str, repl: &str) -> bool {
-    is_literal_pattern(re_pat) && !repl.contains('&') && !repl.contains('\\')
+pub(crate) fn gsub_literal_eligible(re_pat: &[u8], repl: &[u8]) -> bool {
+    is_literal_pattern(re_pat) && !repl.contains(&b'&') && !repl.contains(&b'\\')
 }
 
 /// True when `needle` does not occur in `hay` (same semantics as `!hay.contains(needle)` for `gsub`).
-fn literal_substring_absent(rt: &mut Runtime, needle: &str, hay: &str) -> bool {
+fn literal_substring_absent(rt: &mut Runtime, needle: &[u8], hay: &[u8]) -> bool {
     if needle.is_empty() {
-        return !hay.contains(needle);
+        return false;
     }
-    rt.literal_substring_finder(needle)
-        .find(hay.as_bytes())
-        .is_none()
+    rt.literal_substring_finder(needle).find(hay).is_none()
 }
 
 /// Literal global replace — `memmem::Finder` (cached on `rt`) for repeated scans over the same needle.
-fn literal_replace_all(s: &str, needle: &str, repl: &str, rt: &mut Runtime) -> (String, usize) {
+fn literal_replace_all(hay: &[u8], needle: &[u8], repl: &[u8], rt: &mut Runtime) -> (AwkStr, usize) {
     if needle.is_empty() {
-        return (s.to_string(), 0);
+        return (AwkStr::from(hay), 0);
     }
     let finder = rt.literal_substring_finder(needle);
-    let hay = s.as_bytes();
-    let mut out = String::with_capacity(s.len());
+    let mut out = AwkStr::with_capacity(hay.len());
     let mut count = 0usize;
     let mut last = 0usize;
     let mut off = 0usize;
@@ -65,13 +62,13 @@ fn literal_replace_all(s: &str, needle: &str, repl: &str, rt: &mut Runtime) -> (
             break;
         };
         let abs = off + rel;
-        out.push_str(&s[last..abs]);
-        out.push_str(repl);
+        out.push_bytes(&hay[last..abs]);
+        out.push_bytes(repl);
         count += 1;
         last = abs + needle.len();
         off = last;
     }
-    out.push_str(&s[last..]);
+    out.push_bytes(&hay[last..]);
     (out, count)
 }
 
@@ -79,11 +76,11 @@ fn literal_replace_all(s: &str, needle: &str, repl: &str, rt: &mut Runtime) -> (
 /// Replacement supports `&` (whole match) and `\\`/`&` escapes (subset).
 pub fn gsub(
     rt: &mut Runtime,
-    re_pat: &str,
-    repl: &str,
-    target: Option<&mut String>,
+    re_pat: &[u8],
+    repl: &[u8],
+    target: Option<&mut AwkStr>,
 ) -> Result<f64> {
-    let repl_has_special = repl.contains('&') || repl.contains('\\');
+    let repl_has_special = repl.contains(&b'&') || repl.contains(&b'\\');
     // Fast path: literal pattern + literal replacement → pure string replacement, no regex.
     // But IGNORECASE only takes effect via the regex engine, so when it's on we
     // have to compile a regex even for a plain `"b"` pattern; otherwise
@@ -92,20 +89,20 @@ pub fn gsub(
 
     let n = if let Some(t) = target {
         if use_literal {
-            if literal_substring_absent(rt, re_pat, t) {
+            if literal_substring_absent(rt, re_pat, t.as_bytes()) {
                 0
             } else {
-                let (new_s, c) = literal_replace_all(t.as_str(), re_pat, repl, rt);
+                let (new_s, c) = literal_replace_all(t.as_bytes(), re_pat, repl, rt);
                 *t = new_s;
                 c
             }
         } else {
-            rt.ensure_regex(re_pat).map_err(Error::Runtime)?;
-            let re = rt.regex_ref(re_pat);
-            if !re.is_match(t.as_str().as_bytes()) {
+            rt.ensure_regex_bytes(re_pat).map_err(Error::Runtime)?;
+            let re = rt.regex_ref_bytes(re_pat);
+            if !re.is_match(t.as_bytes()) {
                 0
             } else {
-                let (new_s, c) = replace_all_awk(re, t.as_str(), repl, repl_has_special);
+                let (new_s, c) = replace_all_awk(re, t.as_bytes(), repl, repl_has_special);
                 *t = new_s;
                 c
             }
@@ -114,19 +111,19 @@ pub fn gsub(
         // Replace `$0` in one step — do not restore the old record only to overwrite it again.
         let cur = std::mem::take(&mut rt.record);
         let (new_s, c) = if use_literal {
-            if literal_substring_absent(rt, re_pat, &&cur.to_str_lossy()) {
+            if literal_substring_absent(rt, re_pat, cur.as_bytes()) {
                 rt.record = cur;
                 return Ok(0.0);
             }
-            literal_replace_all(&&cur.to_str_lossy(), re_pat, repl, rt)
+            literal_replace_all(cur.as_bytes(), re_pat, repl, rt)
         } else {
-            rt.ensure_regex(re_pat).map_err(Error::Runtime)?;
-            let re = rt.regex_ref(re_pat);
-            if !re.is_match(&&cur.to_str_lossy().as_bytes()) {
+            rt.ensure_regex_bytes(re_pat).map_err(Error::Runtime)?;
+            let re = rt.regex_ref_bytes(re_pat);
+            if !re.is_match(cur.as_bytes()) {
                 rt.record = cur;
                 return Ok(0.0);
             }
-            replace_all_awk(re, &&cur.to_str_lossy(), repl, repl_has_special)
+            replace_all_awk(re, cur.as_bytes(), repl, repl_has_special)
         };
         drop(cur);
         let fs = rt
@@ -145,23 +142,27 @@ pub fn gsub(
 /// awk `sub(ere, repl [, target])` — first match only.
 pub fn sub_fn(
     rt: &mut Runtime,
-    re_pat: &str,
-    repl: &str,
-    target: Option<&mut String>,
+    re_pat: &[u8],
+    repl: &[u8],
+    target: Option<&mut AwkStr>,
 ) -> Result<f64> {
-    rt.ensure_regex(re_pat).map_err(Error::Runtime)?;
-    let repl_has_special = repl.contains('&') || repl.contains('\\');
+    rt.ensure_regex_bytes(re_pat).map_err(Error::Runtime)?;
+    let repl_has_special = repl.contains(&b'&') || repl.contains(&b'\\');
     let n = if let Some(t) = target {
-        if let Some(m) = rt.regex_ref(re_pat).find(t.as_str().as_bytes()) {
+        let found = rt
+            .regex_ref_bytes(re_pat)
+            .find(t.as_bytes())
+            .map(|m| (m.start(), m.end(), AwkStr::from(m.as_bytes())));
+        if let Some((start, end, matched)) = found {
             let piece = if repl_has_special {
-                expand_repl(repl, &String::from_utf8_lossy(m.as_bytes()))
+                expand_repl(repl, matched.as_bytes())
             } else {
-                repl.to_string()
+                AwkStr::from(repl)
             };
-            let mut out = String::with_capacity(t.len() + piece.len());
-            out.push_str(&t[..m.start()]);
-            out.push_str(&piece);
-            out.push_str(&t[m.end()..]);
+            let mut out = AwkStr::with_capacity(t.len() + piece.len());
+            out.push_bytes(&t.as_bytes()[..start]);
+            out.push_awkstr(&piece);
+            out.push_bytes(&t.as_bytes()[end..]);
             *t = out;
             1.0
         } else {
@@ -169,22 +170,20 @@ pub fn sub_fn(
         }
     } else {
         let cur = std::mem::take(&mut rt.record);
-        // The `~` engine still matches over `&str`, so the offsets it reports
-        // are offsets into this rendering, not into `cur`'s bytes. Cutting the
-        // record with them therefore has to use the same rendering. That makes
-        // `sub` on `$0` exactly as byte-faithful as the regex engine behind it
-        // — no more, and no less — until that engine moves to bytes too.
-        let cur_text = cur.to_lossy_string();
-        if let Some(m) = rt.regex_ref(re_pat).find(cur_text.as_bytes()) {
+        let found = rt
+            .regex_ref_bytes(re_pat)
+            .find(cur.as_bytes())
+            .map(|m| (m.start(), m.end(), AwkStr::from(m.as_bytes())));
+        if let Some((start, end, matched)) = found {
             let piece = if repl_has_special {
-                expand_repl(repl, &String::from_utf8_lossy(m.as_bytes()))
+                expand_repl(repl, matched.as_bytes())
             } else {
-                repl.to_string()
+                AwkStr::from(repl)
             };
-            let mut out = String::with_capacity(cur_text.len() + piece.len());
-            out.push_str(&cur_text[..m.start()]);
-            out.push_str(&piece);
-            out.push_str(&cur_text[m.end()..]);
+            let mut out = AwkStr::with_capacity(cur.len() + piece.len());
+            out.push_bytes(&cur.as_bytes()[..start]);
+            out.push_awkstr(&piece);
+            out.push_bytes(&cur.as_bytes()[end..]);
             drop(cur);
             let fs = rt
                 .vars
@@ -264,21 +263,26 @@ pub fn match_fn(rt: &mut Runtime, s: &str, re_pat: &str, arr_name: Option<&str>)
     }
 }
 
-fn replace_all_awk(re: &BytesRegex, s: &str, repl: &str, repl_has_special: bool) -> (String, usize) {
+fn replace_all_awk(
+    re: &BytesRegex,
+    hay: &[u8],
+    repl: &[u8],
+    repl_has_special: bool,
+) -> (AwkStr, usize) {
     let mut count = 0usize;
-    let mut out = String::with_capacity(s.len());
+    let mut out = AwkStr::with_capacity(hay.len());
     let mut last = 0;
-    for m in re.find_iter(s.as_bytes()) {
+    for m in re.find_iter(hay) {
         count += 1;
-        out.push_str(&s[last..m.start()]);
+        out.push_bytes(&hay[last..m.start()]);
         if repl_has_special {
-            out.push_str(&expand_repl(repl, &String::from_utf8_lossy(m.as_bytes())));
+            out.push_awkstr(&expand_repl(repl, m.as_bytes()));
         } else {
-            out.push_str(repl);
+            out.push_bytes(repl);
         }
         last = m.end();
     }
-    out.push_str(&s[last..]);
+    out.push_bytes(&hay[last..]);
     (out, count)
 }
 
@@ -289,81 +293,85 @@ fn replace_all_awk(re: &BytesRegex, s: &str, repl: &str, repl_has_special: bool)
 /// from matches 2..N (`gensub(/(.)/, "[\\1]", "g", "abc")` produces `[a][][]` in
 /// gawk 5.4, instead of the documented `[a][b][c]`). awkrs implements the
 /// documented per-match capture expansion; do not "fix" this to match the gawk bug.
-fn replace_all_gensub(re: &BytesRegex, s: &str, repl: &str) -> String {
-    let mut out = String::with_capacity(s.len());
+fn replace_all_gensub(re: &BytesRegex, hay: &[u8], repl: &[u8]) -> AwkStr {
+    let mut out = AwkStr::with_capacity(hay.len());
     let mut last = 0;
-    for caps in re.captures_iter(s.as_bytes()) {
+    for caps in re.captures_iter(hay) {
         let whole = caps.get(0).expect("group 0 always present");
-        out.push_str(&s[last..whole.start()]);
-        out.push_str(&expand_repl_with_caps(repl, &caps));
+        out.push_bytes(&hay[last..whole.start()]);
+        out.push_awkstr(&expand_repl_with_caps(repl, &caps));
         last = whole.end();
     }
-    out.push_str(&s[last..]);
+    out.push_bytes(&hay[last..]);
     out
 }
 
 /// gensub-specific: replace the Nth occurrence (1-based) with `\N` backref support.
-fn replace_nth_gensub(re: &BytesRegex, s: &str, repl: &str, n: usize) -> String {
+fn replace_nth_gensub(re: &BytesRegex, hay: &[u8], repl: &[u8], n: usize) -> AwkStr {
     if n == 0 {
-        return replace_all_gensub(re, s, repl);
+        return replace_all_gensub(re, hay, repl);
     }
     let mut i = 0usize;
-    for caps in re.captures_iter(s.as_bytes()) {
+    for caps in re.captures_iter(hay) {
         i += 1;
         if i == n {
             let whole = caps.get(0).expect("group 0 always present");
             let piece = expand_repl_with_caps(repl, &caps);
-            let mut out = String::with_capacity(s.len());
-            out.push_str(&s[..whole.start()]);
-            out.push_str(&piece);
-            out.push_str(&s[whole.end()..]);
+            let mut out = AwkStr::with_capacity(hay.len());
+            out.push_bytes(&hay[..whole.start()]);
+            out.push_awkstr(&piece);
+            out.push_bytes(&hay[whole.end()..]);
             return out;
         }
     }
-    s.to_string()
+    AwkStr::from(hay)
 }
 
 /// Expand `&` (whole match) and `\N` (capture group N, 1..=9) backrefs in a
 /// gensub replacement. `\\` is a literal backslash; `\&` is a literal ampersand.
-fn expand_repl_with_caps(repl: &str, caps: &regex::bytes::Captures<'_>) -> String {
-    let matched = caps
-        .get(0)
-        .map(|m| String::from_utf8_lossy(m.as_bytes()).into_owned())
-        .unwrap_or_default();
-    let mut out = String::new();
-    let mut chars = repl.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '&' {
-            out.push_str(&matched);
-        } else if c == '\\' {
-            match chars.peek() {
-                Some('&') => {
-                    chars.next();
-                    out.push('&');
+fn expand_repl_with_caps(repl: &[u8], caps: &regex::bytes::Captures<'_>) -> AwkStr {
+    let matched = caps.get(0).map(|m| m.as_bytes()).unwrap_or(b"");
+    let mut out = AwkStr::with_capacity(repl.len() + matched.len());
+    let mut i = 0usize;
+    while i < repl.len() {
+        let c = repl[i];
+        if c == b'&' {
+            out.push_bytes(matched);
+            i += 1;
+        } else if c == b'\\' {
+            match repl.get(i + 1) {
+                Some(b'&') => {
+                    out.push_byte(b'&');
+                    i += 2;
                 }
-                Some('\\') => {
-                    chars.next();
-                    out.push('\\');
+                Some(b'\\') => {
+                    out.push_byte(b'\\');
+                    i += 2;
                 }
-                Some(d) if d.is_ascii_digit() && *d != '0' => {
-                    // \1 .. \9 — capture group reference. (\0 is undefined; gawk
-                    // treats it as a literal "0".)
-                    let n = d.to_digit(10).unwrap() as usize;
-                    chars.next();
+                // \1 .. \9 — capture group reference. (\0 is undefined; gawk
+                // treats it as a literal "0".)
+                Some(d) if d.is_ascii_digit() && *d != b'0' => {
+                    let n = (d - b'0') as usize;
                     if let Some(g) = caps.get(n) {
-                        out.push_str(&String::from_utf8_lossy(g.as_bytes()));
+                        out.push_bytes(g.as_bytes());
                     }
                     // Group missing → empty substitution (gawk-compatible).
+                    i += 2;
                 }
-                Some(x) => {
-                    let x = *x;
-                    chars.next();
-                    out.push(x);
+                Some(&x) => {
+                    out.push_byte(x);
+                    i += 2;
                 }
-                None => out.push('\\'),
+                None => {
+                    out.push_byte(b'\\');
+                    i += 1;
+                }
             }
         } else {
-            out.push(c);
+            // Copied byte for byte: a replacement can carry one that is not part
+            // of valid UTF-8, and re-encoding it as a `char` would lose it.
+            out.push_byte(c);
+            i += 1;
         }
     }
     out
@@ -374,18 +382,18 @@ fn expand_repl_with_caps(repl: &str, caps: &regex::bytes::Captures<'_>) -> Strin
 /// that occurrence. gawk treats `0` (and negative integers) as `1` (replace the first match).
 pub fn awk_gensub(
     rt: &mut Runtime,
-    ere: &str,
-    repl: &str,
+    ere: &[u8],
+    repl: &[u8],
     how: &Value,
-    target: Option<String>,
-) -> Result<String> {
+    target: Option<AwkStr>,
+) -> Result<AwkStr> {
     let s = match target {
         Some(t) => t,
-        None => rt.record.to_lossy_string(),
+        None => rt.record.clone(),
     };
-    rt.ensure_regex(ere).map_err(Error::Runtime)?;
-    let re = rt.regex_ref(ere).clone();
-    let s_ref = s.as_str();
+    rt.ensure_regex_bytes(ere).map_err(Error::Runtime)?;
+    let re = rt.regex_ref_bytes(ere).clone();
+    let s_ref = s.as_bytes();
     match how {
         Value::Str(h) | Value::StrLit(h) => {
             let h = h.to_str_lossy();
@@ -433,43 +441,46 @@ pub fn awk_gensub(
 /// * A backslash run that is NOT followed by `&` is emitted verbatim — so
 ///   `\\` stays `\\`, and `\1` stays `\1` (sub/gsub never expand backrefs;
 ///   that's gensub's job).
-fn expand_repl(repl: &str, matched: &str) -> String {
-    let bytes = repl.as_bytes();
-    let mut out = String::with_capacity(repl.len() + matched.len());
+fn expand_repl(repl: &[u8], matched: &[u8]) -> AwkStr {
+    let mut out = AwkStr::with_capacity(repl.len() + matched.len());
     let mut i = 0;
-    while i < bytes.len() {
-        let c = bytes[i];
+    while i < repl.len() {
+        let c = repl[i];
         if c == b'&' {
-            out.push_str(&matched);
+            out.push_bytes(matched);
             i += 1;
             continue;
         }
         if c == b'\\' {
             // Count the run of consecutive backslashes starting here.
             let start = i;
-            while i < bytes.len() && bytes[i] == b'\\' {
+            while i < repl.len() && repl[i] == b'\\' {
                 i += 1;
             }
             let run = i - start;
-            if i < bytes.len() && bytes[i] == b'&' {
+            if i < repl.len() && repl[i] == b'&' {
                 let pairs = run / 2;
-                out.extend(std::iter::repeat_n('\\', pairs));
+                for _ in 0..pairs {
+                    out.push_byte(b'\\');
+                }
                 if run % 2 == 0 {
-                    out.push_str(&matched);
+                    out.push_bytes(matched);
                 } else {
-                    out.push('&');
+                    out.push_byte(b'&');
                 }
                 i += 1; // consume the `&`
             } else {
-                out.extend(std::iter::repeat_n('\\', run));
+                for _ in 0..run {
+                    out.push_byte(b'\\');
+                }
             }
             continue;
         }
-        // Regular bytes — preserve UTF-8 by copying the whole char.
-        let rest = &repl[i..];
-        let ch = rest.chars().next().unwrap();
-        out.push(ch);
-        i += ch.len_utf8();
+        // Copied byte for byte. The old spelling decoded a `char` here to keep
+        // UTF-8 intact, which is exactly what a byte outside it could not
+        // survive.
+        out.push_byte(c);
+        i += 1;
     }
     out
 }
@@ -1038,7 +1049,7 @@ mod tests {
     fn gsub_literal_on_record_replaces_and_resplits() {
         let mut rt = rt_with_fs();
         rt.record = "foofoo".into();
-        let n = gsub(&mut rt, "foo", "bar", None).unwrap();
+        let n = gsub(&mut rt, b"foo", b"bar", None).unwrap();
         assert_eq!(n, 2.0);
         assert_eq!(rt.record, "barbar");
     }
@@ -1047,7 +1058,7 @@ mod tests {
     fn gsub_regex_with_amp_replacement() {
         let mut rt = rt_with_fs();
         rt.record = "ab".into();
-        let n = gsub(&mut rt, "a", "X&Y", None).unwrap();
+        let n = gsub(&mut rt, b"a", b"X&Y", None).unwrap();
         assert_eq!(n, 1.0);
         assert_eq!(rt.record, "XaYb");
     }
@@ -1056,7 +1067,7 @@ mod tests {
     fn sub_first_match_only() {
         let mut rt = rt_with_fs();
         rt.record = "aaa".into();
-        let n = sub_fn(&mut rt, "a", "b", None).unwrap();
+        let n = sub_fn(&mut rt, b"a", b"b", None).unwrap();
         assert_eq!(n, 1.0);
         assert_eq!(rt.record, "baa");
     }
@@ -1109,22 +1120,22 @@ mod tests {
 
     #[test]
     fn is_literal_pattern_accepts_plain_text() {
-        assert!(is_literal_pattern("hello"));
+        assert!(is_literal_pattern(b"hello"));
     }
 
     #[test]
     fn is_literal_pattern_rejects_regex_metachar() {
-        assert!(!is_literal_pattern("a.c"));
+        assert!(!is_literal_pattern(b"a.c"));
     }
 
     #[test]
     fn gsub_literal_eligible_rejects_ampersand_in_replacement() {
-        assert!(!gsub_literal_eligible("x", "a&b"));
+        assert!(!gsub_literal_eligible(b"x", b"a&b"));
     }
 
     #[test]
     fn gsub_literal_eligible_accepts_simple_pair() {
-        assert!(gsub_literal_eligible("needle", "repl"));
+        assert!(gsub_literal_eligible(b"needle", b"repl"));
     }
 
     #[test]
@@ -1276,8 +1287,8 @@ mod tests {
         let mut rt = Runtime::new();
         let r = super::awk_gensub(
             &mut rt,
-            "(.)",
-            "[\\1]",
+            b"(.)",
+            b"[\\1]",
             &Value::Str("g".into()),
             Some("abc".into()),
         )
@@ -1292,8 +1303,8 @@ mod tests {
         let mut rt = Runtime::new();
         let r = super::awk_gensub(
             &mut rt,
-            "(a)(b)",
-            "\\2\\1",
+            b"(a)(b)",
+            b"\\2\\1",
             &Value::Str("g".into()),
             Some("abab".into()),
         )
@@ -1305,7 +1316,7 @@ mod tests {
     fn awk_gensub_global_string_replaces_all_matches() {
         let mut rt = Runtime::new();
         rt.record = "a1b2c".into();
-        let out = awk_gensub(&mut rt, "[0-9]", "X", &Value::Str("g".into()), None).unwrap();
+        let out = awk_gensub(&mut rt, b"[0-9]", b"X", &Value::Str("g".into()), None).unwrap();
         assert_eq!(out, "aXbXc");
     }
 
@@ -1315,8 +1326,8 @@ mod tests {
         let mut rt = Runtime::new();
         let out = awk_gensub(
             &mut rt,
-            "[0-9]",
-            "_",
+            b"[0-9]",
+            b"_",
             &Value::Num(0.0),
             Some("z9y9z".into()),
         )
@@ -1329,8 +1340,8 @@ mod tests {
         let mut rt = Runtime::new();
         let out = awk_gensub(
             &mut rt,
-            "[0-9]",
-            "_",
+            b"[0-9]",
+            b"_",
             &Value::Num(-3.0),
             Some("z9y9z".into()),
         )
@@ -1343,8 +1354,8 @@ mod tests {
         let mut rt = Runtime::new();
         let out = awk_gensub(
             &mut rt,
-            "[0-9]",
-            "X",
+            b"[0-9]",
+            b"X",
             &Value::Num(2.0),
             Some("a1b2c3".into()),
         )
@@ -1357,8 +1368,8 @@ mod tests {
         let mut rt = Runtime::new();
         let e = awk_gensub(
             &mut rt,
-            "a",
-            "b",
+            b"a",
+            b"b",
             &Value::Str("  ".into()),
             Some("x".into()),
         )
@@ -1425,7 +1436,7 @@ mod tests {
         // gawk's behavior: any non-positive numeric `how` is silently treated as 1
         // (replace only the first match) — no error.
         let mut rt = Runtime::new();
-        let out = awk_gensub(&mut rt, "a", "X", &Value::Num(-1.0), Some("aaa".into())).unwrap();
+        let out = awk_gensub(&mut rt, b"a", b"X", &Value::Num(-1.0), Some("aaa".into())).unwrap();
         assert_eq!(out, "Xaa");
     }
 
@@ -1449,8 +1460,8 @@ mod tests {
     fn gsub_overlapping_matches_behavior() {
         let mut rt = rt_with_fs();
         // gsub(/aa/, "X") on "aaa" should yield "Xa" (matches first "aa", then moves past)
-        let mut s = "aaa".to_string();
-        let n = gsub(&mut rt, "aa", "X", Some(&mut s)).unwrap();
+        let mut s = crate::awkstr::AwkStr::from("aaa");
+        let n = gsub(&mut rt, b"aa", b"X", Some(&mut s)).unwrap();
         assert_eq!(n, 1.0);
         assert_eq!(s, "Xa");
     }
@@ -1461,13 +1472,13 @@ mod tests {
         // gensub(/([a-z])([0-9])/, "\\2\\1", "g", "a1b2") -> "1a2b"
         let s = awk_gensub(
             &mut rt,
-            "([a-z])([0-9])",
-            "\\2\\1",
+            b"([a-z])([0-9])",
+            b"\\2\\1",
             &Value::Str("g".into()),
             Some("a1b2".into()),
         )
         .unwrap();
-        assert_eq!(s.as_str(), "1a2b");
+        assert_eq!(s, "1a2b");
     }
 
     #[test]
@@ -1632,9 +1643,9 @@ mod tests {
 
     #[test]
     fn gsub_literal_eligible_v2() {
-        assert!(super::gsub_literal_eligible("abc", "def"));
-        assert!(!super::gsub_literal_eligible("a.c", "def"));
-        assert!(!super::gsub_literal_eligible("abc", "d&f"));
+        assert!(super::gsub_literal_eligible(b"abc", b"def"));
+        assert!(!super::gsub_literal_eligible(b"a.c", b"def"));
+        assert!(!super::gsub_literal_eligible(b"abc", b"d&f"));
     }
 
     #[test]
@@ -1648,8 +1659,8 @@ mod tests {
 
     #[test]
     fn awk_is_literal_pattern_v2() {
-        assert!(super::is_literal_pattern("abc"));
-        assert!(!super::is_literal_pattern("a.c"));
+        assert!(super::is_literal_pattern(b"abc"));
+        assert!(!super::is_literal_pattern(b"a.c"));
     }
 
     #[test]
@@ -1712,9 +1723,9 @@ mod tests {
     #[test]
     fn gsub_backrefs_v2() {
         let mut rt = Runtime::new();
-        let mut s = "aabb".to_string();
+        let mut s = crate::awkstr::AwkStr::from("aabb");
         // gawk: & in replacement means the whole match
-        let n = super::gsub(&mut rt, "a", "x&y", Some(&mut s)).unwrap();
+        let n = super::gsub(&mut rt, b"a", b"x&y", Some(&mut s)).unwrap();
         assert_eq!(n, 2.0);
         assert_eq!(s, "xayxaybb");
     }
@@ -1787,19 +1798,19 @@ mod tests {
     }
     #[test]
     fn awk_is_literal_v10() {
-        assert!(super::is_literal_pattern("abc"));
+        assert!(super::is_literal_pattern(b"abc"));
     }
     #[test]
     fn awk_not_literal_v10() {
-        assert!(!super::is_literal_pattern("a*"));
+        assert!(!super::is_literal_pattern(b"a*"));
     }
     #[test]
     fn awk_gsub_eligible_v10() {
-        assert!(super::gsub_literal_eligible("a", "b"));
+        assert!(super::gsub_literal_eligible(b"a", b"b"));
     }
     #[test]
     fn awk_gsub_not_eligible_v10() {
-        assert!(!super::gsub_literal_eligible("a*", "b"));
+        assert!(!super::gsub_literal_eligible(b"a*", b"b"));
     }
     #[test]
     fn awk_systime_v10() {
@@ -1837,8 +1848,8 @@ mod tests {
         // awkrs (\0 is undefined; gawk treats it as a literal "0".)
         let s = super::awk_gensub(
             &mut rt,
-            "abc",
-            "x\\0y",
+            b"abc",
+            b"x\\0y",
             &Value::Str("g".into()),
             Some("abc".into()),
         )
@@ -1849,7 +1860,7 @@ mod tests {
     #[test]
     fn gensub_numbered_occurrence_v10() {
         let mut rt = Runtime::new();
-        let s = super::awk_gensub(&mut rt, "a", "x", &Value::Num(2.0), Some("aaa".into())).unwrap();
+        let s = super::awk_gensub(&mut rt, b"a", b"x", &Value::Num(2.0), Some("aaa".into())).unwrap();
         assert_eq!(s, "axa");
     }
 
