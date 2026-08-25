@@ -161,7 +161,9 @@ pub(crate) fn exec_builtin_dispatch(
                     "{argc} is invalid as number of arguments for substr"
                 )));
             }
-            let s = ctx.rt.value_to_str_convfmt(&args[0]).into_owned();
+            let s = crate::awkstr::AwkStr::from_vec(
+                ctx.rt.value_to_bytes_convfmt(&args[0]).into_owned(),
+            );
             let start_raw = args[1].as_number();
             let mut m = start_raw as i64;
             let len_opt = if let Some(v) = args.get(2) {
@@ -182,20 +184,17 @@ pub(crate) fn exec_builtin_dispatch(
             }
             let len = len_opt.map(|l| l as usize).unwrap_or(usize::MAX);
             let start0 = (m as usize).saturating_sub(1);
-            if ctx.rt.characters_as_bytes {
-                let b = s.as_bytes();
-                let slice = b
-                    .get(start0..)
-                    .map(|rest| {
-                        let take = len.min(rest.len());
-                        String::from_utf8_lossy(&rest[..take]).into_owned()
-                    })
-                    .unwrap_or_default();
-                Value::StrLit(slice.into())
+            // Cut on the requested boundary and keep the bytes between them.
+            // Collecting characters back into a string instead would re-encode
+            // any byte that is not part of a valid one as `U+FFFD`, so
+            // `substr($0, 2, 1)` of `a\351b` answered three bytes where gawk,
+            // mawk and one-true-awk all answer the single `\351`.
+            let slice = if ctx.rt.characters_as_bytes {
+                s.substr_bytes(start0, len)
             } else {
-                let slice: String = s.chars().skip(start0).take(len).collect();
-                Value::StrLit(slice.into())
-            }
+                s.substr_chars(start0, len)
+            };
+            Value::StrLit(slice)
         }
         "tolower" => {
             // gawk parity: `tolower()` with no args is a runtime error, not a
@@ -205,10 +204,10 @@ pub(crate) fn exec_builtin_dispatch(
                     "{argc} is invalid as number of arguments for tolower"
                 )));
             }
-            Value::StrLit(crate::builtins::awk_to_lower(
-                &ctx.rt.value_to_str_convfmt(&args[0]),
+            Value::StrLit(crate::builtins::awk_to_lower_bytes(
+                &ctx.rt.value_to_bytes_convfmt(&args[0]),
                 ctx.rt.characters_as_bytes,
-            ).into())
+            ))
         }
         "toupper" => {
             if argc != 1 {
@@ -216,10 +215,10 @@ pub(crate) fn exec_builtin_dispatch(
                     "{argc} is invalid as number of arguments for toupper"
                 )));
             }
-            Value::StrLit(crate::builtins::awk_to_upper(
-                &ctx.rt.value_to_str_convfmt(&args[0]),
+            Value::StrLit(crate::builtins::awk_to_upper_bytes(
+                &ctx.rt.value_to_bytes_convfmt(&args[0]),
                 ctx.rt.characters_as_bytes,
-            ).into())
+            ))
         }
         "int" => {
             if argc != 1 {

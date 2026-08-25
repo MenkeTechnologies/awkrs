@@ -202,6 +202,51 @@ impl AwkStr {
         })
     }
 
+    /// Byte offset of the start of character `n` (0-based), or the end of the
+    /// string when there are fewer than `n` characters.
+    ///
+    /// "Character" is a UTF-8 character where the bytes form one and a single
+    /// byte otherwise, which is what makes character indexing total over
+    /// arbitrary input: an unpaired byte is one character and stays itself.
+    #[inline]
+    pub fn char_offset(&self, n: usize) -> usize {
+        let mut i = 0usize;
+        let mut seen = 0usize;
+        while seen < n && i < self.0.len() {
+            i += crate::runtime::utf8_char_len(&self.0[i..]);
+            seen += 1;
+        }
+        i
+    }
+
+    /// `count` characters starting at character `start`, as bytes.
+    ///
+    /// Cutting on character boundaries and copying the **bytes** between them is
+    /// what keeps `substr` byte-faithful: rendering the characters back out
+    /// would turn any unpaired byte into `U+FFFD`.
+    #[inline]
+    pub fn substr_chars(&self, start: usize, count: usize) -> AwkStr {
+        let from = self.char_offset(start);
+        let mut i = from;
+        let mut taken = 0usize;
+        while taken < count && i < self.0.len() {
+            i += crate::runtime::utf8_char_len(&self.0[i..]);
+            taken += 1;
+        }
+        AwkStr(self.0[from..i].to_vec())
+    }
+
+    /// `count` bytes starting at byte `start` — the `-b` counterpart of
+    /// [`Self::substr_chars`].
+    #[inline]
+    pub fn substr_bytes(&self, start: usize, count: usize) -> AwkStr {
+        if start >= self.0.len() {
+            return AwkStr::new();
+        }
+        let end = start.saturating_add(count).min(self.0.len());
+        AwkStr(self.0[start..end].to_vec())
+    }
+
     /// Byte slice of a range, as a new `AwkStr`.
     #[inline]
     pub fn slice(&self, start: usize, end: usize) -> AwkStr {

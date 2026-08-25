@@ -722,6 +722,52 @@ pub fn awk_strtonum(s: &str) -> f64 {
     0.0
 }
 
+/// [`awk_to_upper`] over bytes.
+///
+/// Folds the ASCII letters always, and the rest of Unicode only when `-b` is
+/// off. A byte that is not part of a valid UTF-8 character is passed through
+/// untouched — there is no case mapping for it, and turning it into `U+FFFD`
+/// (which is what folding through a `&str` did) loses the byte the caller was
+/// given. `toupper($0)` of `a\351b` is `A\351B` in gawk, mawk and one-true-awk.
+pub(crate) fn awk_to_upper_bytes(b: &[u8], as_bytes: bool) -> crate::awkstr::AwkStr {
+    fold_bytes(b, as_bytes, simple_uppercase, u8::to_ascii_uppercase)
+}
+
+/// The lowercase half of [`awk_to_upper_bytes`].
+pub(crate) fn awk_to_lower_bytes(b: &[u8], as_bytes: bool) -> crate::awkstr::AwkStr {
+    fold_bytes(b, as_bytes, simple_lowercase, u8::to_ascii_lowercase)
+}
+
+/// Shared walk for the two byte folds: ASCII by byte, whole UTF-8 characters
+/// through `map_char` when Unicode folding is on, anything else verbatim.
+fn fold_bytes(
+    b: &[u8],
+    as_bytes: bool,
+    map_char: fn(char) -> char,
+    map_ascii: fn(&u8) -> u8,
+) -> crate::awkstr::AwkStr {
+    let mut out = crate::awkstr::AwkStr::with_capacity(b.len());
+    let mut i = 0usize;
+    while i < b.len() {
+        let n = crate::runtime::utf8_char_len(&b[i..]);
+        if n == 1 && b[i].is_ascii() {
+            out.push_byte(map_ascii(&b[i]));
+        } else if !as_bytes && n > 1 {
+            // `n > 1` only comes back for bytes that really do decode.
+            let c = std::str::from_utf8(&b[i..i + n])
+                .expect("utf8_char_len validated this")
+                .chars()
+                .next()
+                .expect("non-empty");
+            out.push_char(map_char(c));
+        } else {
+            out.push_bytes(&b[i..i + n]);
+        }
+        i += n;
+    }
+    out
+}
+
 /// `toupper(s)`, honouring the `-b` / `--characters-as-bytes` selection.
 ///
 /// awkrs deliberately makes character semantics UTF-8 rather than locale-driven

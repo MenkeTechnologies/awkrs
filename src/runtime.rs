@@ -1245,7 +1245,7 @@ fn join_awkstrs(parts: &[AwkStr], sep: &[u8]) -> AwkStr {
 /// An unpaired byte counting as one character is what makes a character-wise
 /// operation total over arbitrary input: the references have no multi-byte
 /// character to fold it into either.
-fn utf8_char_len(b: &[u8]) -> usize {
+pub(crate) fn utf8_char_len(b: &[u8]) -> usize {
     let want = match b[0] {
         0x00..=0x7f => return 1,
         0xc2..=0xdf => 2,
@@ -3162,6 +3162,20 @@ impl Runtime {
             Value::Num(n) => Cow::Owned(self.num_to_string_convfmt(*n)),
             Value::Mpfr(f) => Cow::Owned(self.mpfr_to_string_convfmt(f)),
             _ => v.as_str_cow(),
+        }
+    }
+
+    /// [`Self::value_to_str_convfmt`] in bytes — the form for anything the awk
+    /// program can observe.
+    ///
+    /// The `&str` version renders through `U+FFFD`, so a builtin that takes its
+    /// argument that way can never hand back a byte it was given. `CONVFMT`
+    /// output is ASCII, so the two agree for every numeric value.
+    pub fn value_to_bytes_convfmt<'a>(&self, v: &'a Value) -> Cow<'a, [u8]> {
+        match v {
+            Value::Num(n) => Cow::Owned(self.num_to_string_convfmt(*n).into_bytes()),
+            Value::Mpfr(f) => Cow::Owned(self.mpfr_to_string_convfmt(f).into_bytes()),
+            _ => v.as_bytes_cow(),
         }
     }
 
