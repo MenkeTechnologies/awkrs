@@ -2119,3 +2119,46 @@ fn percent_g_rounds_like_c() {
         assert_eq!(stdout, want, "{program}");
     }
 }
+
+/// A fatal inside the record loop still emits whatever the program already
+/// printed.
+///
+/// `print` output is buffered, and the buffer was only flushed once the record
+/// loop returned — so a fatal *inside* the loop discarded every record. The
+/// `BEGIN` block's output survived (its buffer is flushed before the loop
+/// starts), which is what made the loss look arbitrary rather than total.
+///
+/// gawk 5.4.1 and one-true-awk 20200816 both emit the earlier output; mawk
+/// 1.3.4 discards all of it, so this follows the other two.
+#[test]
+fn output_printed_before_a_fatal_still_reaches_stdout() {
+    // Record-loop output, stdin.
+    let (code, stdout, stderr) = run_awkrs_stdin(
+        r#"{ print NR } NR == 3 { n = split("x", a, "[[") }"#,
+        "a\nb\nc\nd\n",
+    );
+    assert_eq!(code, 2, "stderr {stderr:?}");
+    assert_eq!(stdout, "1\n2\n3\n");
+
+    // BEGIN output and record output together, over a file operand — a
+    // different record loop from the stdin one.
+    let path = unique_tmp_path("awkrs_fatal_flush.txt");
+    std::fs::write(&path, "a b\nc d\n").expect("write fixture");
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_awkrs"))
+        .arg(r#"BEGIN { print "from-BEGIN" } { print "rec" NR } NR == 2 { n = split("x", a, "[[") }"#)
+        .arg(&path)
+        .output()
+        .expect("spawn");
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "from-BEGIN\nrec1\nrec2\n"
+    );
+
+    // A fatal that is not the separator check takes the same path.
+    let (code, stdout, stderr) =
+        run_awkrs_stdin(r#"{ print NR } NR == 2 { x = 1 / 0 }"#, "a\nb\nc\n");
+    assert_eq!(code, 2, "stderr {stderr:?}");
+    assert_eq!(stdout, "1\n2\n");
+}

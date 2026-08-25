@@ -1131,7 +1131,32 @@ fn attach_primary_input_before_begin_for_getline(
     }
 }
 
+/// Run one input source's record loop, flushing whatever the program already
+/// printed if it ends in a fatal.
+///
+/// `print` output is buffered in `Runtime::print_buf` and was only flushed once
+/// the record loop had *returned*, so a fatal inside the loop discarded every
+/// record the program had emitted. The `BEGIN` block's output survived, because
+/// that buffer is flushed before the loop starts — which made the loss look
+/// arbitrary: `BEGIN{print "x"} {print NR} NR==3{...fatal...}` printed `x` and
+/// nothing else, where gawk and one-true-awk both print `x`, `1`, `2` and `3`.
+/// (mawk discards the lot, so this follows the other two.)
 fn process_file(
+    path: Option<&Path>,
+    cp: &CompiledProgram,
+    range_state: &mut [bool],
+    rt: &mut Runtime,
+) -> Result<usize> {
+    let result = process_file_records(path, cp, range_state, rt);
+    if result.is_err() {
+        // Best-effort: the fatal already in hand is the one worth reporting, so
+        // a failure to flush on top of it must not replace it.
+        let _ = flush_print_buf(&mut rt.print_buf);
+    }
+    result
+}
+
+fn process_file_records(
     path: Option<&Path>,
     cp: &CompiledProgram,
     range_state: &mut [bool],
