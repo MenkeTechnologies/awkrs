@@ -1,10 +1,10 @@
 //! awk builtins: gsub, sub, match, string helpers, math, time (gawk-style), bitwise, sort, typeof.
 
 use crate::awkstr::AwkStr;
+use regex::bytes::Regex as BytesRegex;
 use crate::error::{Error, Result};
 use crate::runtime::{Runtime, Value};
 use chrono::{Local, LocalResult, NaiveDate, TimeZone, Utc};
-use regex::Regex;
 use std::cmp::Ordering;
 
 /// Check if a regex pattern is a plain literal (no metacharacters).
@@ -102,7 +102,7 @@ pub fn gsub(
         } else {
             rt.ensure_regex(re_pat).map_err(Error::Runtime)?;
             let re = rt.regex_ref(re_pat);
-            if !re.is_match(t.as_str()) {
+            if !re.is_match(t.as_str().as_bytes()) {
                 0
             } else {
                 let (new_s, c) = replace_all_awk(re, t.as_str(), repl, repl_has_special);
@@ -122,7 +122,7 @@ pub fn gsub(
         } else {
             rt.ensure_regex(re_pat).map_err(Error::Runtime)?;
             let re = rt.regex_ref(re_pat);
-            if !re.is_match(&&cur.to_str_lossy()) {
+            if !re.is_match(&&cur.to_str_lossy().as_bytes()) {
                 rt.record = cur;
                 return Ok(0.0);
             }
@@ -152,9 +152,9 @@ pub fn sub_fn(
     rt.ensure_regex(re_pat).map_err(Error::Runtime)?;
     let repl_has_special = repl.contains('&') || repl.contains('\\');
     let n = if let Some(t) = target {
-        if let Some(m) = rt.regex_ref(re_pat).find(t.as_str()) {
+        if let Some(m) = rt.regex_ref(re_pat).find(t.as_str().as_bytes()) {
             let piece = if repl_has_special {
-                expand_repl(repl, m.as_str())
+                expand_repl(repl, &String::from_utf8_lossy(m.as_bytes()))
             } else {
                 repl.to_string()
             };
@@ -175,9 +175,9 @@ pub fn sub_fn(
         // `sub` on `$0` exactly as byte-faithful as the regex engine behind it
         // — no more, and no less — until that engine moves to bytes too.
         let cur_text = cur.to_lossy_string();
-        if let Some(m) = rt.regex_ref(re_pat).find(&cur_text) {
+        if let Some(m) = rt.regex_ref(re_pat).find(cur_text.as_bytes()) {
             let piece = if repl_has_special {
-                expand_repl(repl, m.as_str())
+                expand_repl(repl, &String::from_utf8_lossy(m.as_bytes()))
             } else {
                 repl.to_string()
             };
@@ -207,7 +207,7 @@ pub fn sub_fn(
 pub fn match_fn(rt: &mut Runtime, s: &str, re_pat: &str, arr_name: Option<&str>) -> Result<f64> {
     rt.ensure_regex(re_pat).map_err(Error::Runtime)?;
     let re = rt.regex_ref(re_pat).clone();
-    if let Some(m) = re.find(s) {
+    if let Some(m) = re.find(s.as_bytes()) {
         // `Match::start`/`len` are byte offsets, but awk reports RSTART and
         // RLENGTH as 1-based *character* positions — the same unit `substr`,
         // `index` and `length` use, and the same unit the `arr[i, "start"]`
@@ -216,12 +216,12 @@ pub fn match_fn(rt: &mut Runtime, s: &str, re_pat: &str, arr_name: Option<&str>)
         // input: `match("ééx", /x/, A)` set RSTART to 5 while `A[0,"start"]`
         // was 3, and gawk answers 3 for both.
         let rstart = (s[..m.start()].chars().count() + 1) as f64;
-        let rlength = m.as_str().chars().count() as f64;
+        let rlength = String::from_utf8_lossy(m.as_bytes()).chars().count() as f64;
         rt.vars.insert("RSTART".into(), Value::Num(rstart));
         rt.vars.insert("RLENGTH".into(), Value::Num(rlength));
         if let Some(a) = arr_name {
             rt.array_delete(a, None);
-            if let Some(caps) = re.captures(s) {
+            if let Some(caps) = re.captures(s.as_bytes()) {
                 // gawk parity: a[0] is the whole match, a[1]..a[n] are
                 // parenthesized subexpressions. Previously awkrs skipped
                 // group 0, so `match(s, /(a)|(b)/, arr)` left arr[0] empty.
@@ -240,9 +240,9 @@ pub fn match_fn(rt: &mut Runtime, s: &str, re_pat: &str, arr_name: Option<&str>)
                 for i in 0..caps.len() {
                     if let Some(g) = caps.get(i) {
                         let key = format!("{i}");
-                        rt.array_set(a, key, Value::Str(g.as_str().to_string().into()));
+                        rt.array_set(a, key, Value::Str(AwkStr::from(g.as_bytes())));
                         let char_start = s[..g.start()].chars().count() + 1;
-                        let char_len = g.as_str().chars().count();
+                        let char_len = String::from_utf8_lossy(g.as_bytes()).chars().count();
                         rt.array_set(
                             a,
                             format!("{i}{subsep}start"),
@@ -264,15 +264,15 @@ pub fn match_fn(rt: &mut Runtime, s: &str, re_pat: &str, arr_name: Option<&str>)
     }
 }
 
-fn replace_all_awk(re: &Regex, s: &str, repl: &str, repl_has_special: bool) -> (String, usize) {
+fn replace_all_awk(re: &BytesRegex, s: &str, repl: &str, repl_has_special: bool) -> (String, usize) {
     let mut count = 0usize;
     let mut out = String::with_capacity(s.len());
     let mut last = 0;
-    for m in re.find_iter(s) {
+    for m in re.find_iter(s.as_bytes()) {
         count += 1;
         out.push_str(&s[last..m.start()]);
         if repl_has_special {
-            out.push_str(&expand_repl(repl, m.as_str()));
+            out.push_str(&expand_repl(repl, &String::from_utf8_lossy(m.as_bytes())));
         } else {
             out.push_str(repl);
         }
@@ -289,10 +289,10 @@ fn replace_all_awk(re: &Regex, s: &str, repl: &str, repl_has_special: bool) -> (
 /// from matches 2..N (`gensub(/(.)/, "[\\1]", "g", "abc")` produces `[a][][]` in
 /// gawk 5.4, instead of the documented `[a][b][c]`). awkrs implements the
 /// documented per-match capture expansion; do not "fix" this to match the gawk bug.
-fn replace_all_gensub(re: &Regex, s: &str, repl: &str) -> String {
+fn replace_all_gensub(re: &BytesRegex, s: &str, repl: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut last = 0;
-    for caps in re.captures_iter(s) {
+    for caps in re.captures_iter(s.as_bytes()) {
         let whole = caps.get(0).expect("group 0 always present");
         out.push_str(&s[last..whole.start()]);
         out.push_str(&expand_repl_with_caps(repl, &caps));
@@ -303,12 +303,12 @@ fn replace_all_gensub(re: &Regex, s: &str, repl: &str) -> String {
 }
 
 /// gensub-specific: replace the Nth occurrence (1-based) with `\N` backref support.
-fn replace_nth_gensub(re: &Regex, s: &str, repl: &str, n: usize) -> String {
+fn replace_nth_gensub(re: &BytesRegex, s: &str, repl: &str, n: usize) -> String {
     if n == 0 {
         return replace_all_gensub(re, s, repl);
     }
     let mut i = 0usize;
-    for caps in re.captures_iter(s) {
+    for caps in re.captures_iter(s.as_bytes()) {
         i += 1;
         if i == n {
             let whole = caps.get(0).expect("group 0 always present");
@@ -325,13 +325,16 @@ fn replace_nth_gensub(re: &Regex, s: &str, repl: &str, n: usize) -> String {
 
 /// Expand `&` (whole match) and `\N` (capture group N, 1..=9) backrefs in a
 /// gensub replacement. `\\` is a literal backslash; `\&` is a literal ampersand.
-fn expand_repl_with_caps(repl: &str, caps: &regex::Captures<'_>) -> String {
-    let matched = caps.get(0).map(|m| m.as_str()).unwrap_or("");
+fn expand_repl_with_caps(repl: &str, caps: &regex::bytes::Captures<'_>) -> String {
+    let matched = caps
+        .get(0)
+        .map(|m| String::from_utf8_lossy(m.as_bytes()).into_owned())
+        .unwrap_or_default();
     let mut out = String::new();
     let mut chars = repl.chars().peekable();
     while let Some(c) = chars.next() {
         if c == '&' {
-            out.push_str(matched);
+            out.push_str(&matched);
         } else if c == '\\' {
             match chars.peek() {
                 Some('&') => {
@@ -348,7 +351,7 @@ fn expand_repl_with_caps(repl: &str, caps: &regex::Captures<'_>) -> String {
                     let n = d.to_digit(10).unwrap() as usize;
                     chars.next();
                     if let Some(g) = caps.get(n) {
-                        out.push_str(g.as_str());
+                        out.push_str(&String::from_utf8_lossy(g.as_bytes()));
                     }
                     // Group missing → empty substitution (gawk-compatible).
                 }
@@ -437,7 +440,7 @@ fn expand_repl(repl: &str, matched: &str) -> String {
     while i < bytes.len() {
         let c = bytes[i];
         if c == b'&' {
-            out.push_str(matched);
+            out.push_str(&matched);
             i += 1;
             continue;
         }
@@ -452,7 +455,7 @@ fn expand_repl(repl: &str, matched: &str) -> String {
                 let pairs = run / 2;
                 out.extend(std::iter::repeat_n('\\', pairs));
                 if run % 2 == 0 {
-                    out.push_str(matched);
+                    out.push_str(&matched);
                 } else {
                     out.push('&');
                 }

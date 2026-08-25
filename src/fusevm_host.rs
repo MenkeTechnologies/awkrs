@@ -201,7 +201,7 @@ impl fusevm::ShellHost for AwkRegexHost {
             if rt.ensure_regex(regex).is_err() {
                 return false;
             }
-            rt.regex_ref(regex).is_match(s)
+            rt.regex_ref(regex).is_match(s.as_bytes())
         })
     }
 }

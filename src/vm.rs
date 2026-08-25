@@ -667,7 +667,7 @@ pub fn vm_pattern_matches(
         CompiledPattern::Regexp(idx) => {
             let pat = cp.strings.get(*idx);
             rt.ensure_regex(pat).map_err(Error::Runtime)?;
-            Ok(rt.regex_ref(pat).is_match(&&rt.record.to_str_lossy()))
+            Ok(rt.regex_ref(pat).is_match(&&rt.record.to_str_lossy().as_bytes()))
         }
         CompiledPattern::LiteralRegexp(idx) => {
             let pat = cp.strings.get(*idx);
@@ -677,7 +677,7 @@ pub fn vm_pattern_matches(
             // no effect on bare `/abc/` patterns.
             if rt.ignore_case_flag() {
                 rt.ensure_regex(pat).map_err(Error::Runtime)?;
-                Ok(rt.regex_ref(pat).is_match(&rt.record.to_str_lossy()))
+                Ok(rt.regex_ref(pat).is_match(&rt.record.to_str_lossy().as_bytes()))
             } else {
                 Ok(rt.record.contains_bytes(pat.as_bytes()))
             }
@@ -710,13 +710,13 @@ pub fn vm_match_range_endpoint(
         CompiledRangeEndpoint::Regexp(idx) => {
             let pat = cp.strings.get(*idx);
             rt.ensure_regex(pat).map_err(Error::Runtime)?;
-            Ok(rt.regex_ref(pat).is_match(&&rt.record.to_str_lossy()))
+            Ok(rt.regex_ref(pat).is_match(&&rt.record.to_str_lossy().as_bytes()))
         }
         CompiledRangeEndpoint::LiteralRegexp(idx) => {
             let pat = cp.strings.get(*idx);
             if rt.ignore_case_flag() {
                 rt.ensure_regex(pat).map_err(Error::Runtime)?;
-                Ok(rt.regex_ref(pat).is_match(&rt.record.to_str_lossy()))
+                Ok(rt.regex_ref(pat).is_match(&rt.record.to_str_lossy().as_bytes()))
             } else {
                 Ok(rt.record.contains_bytes(pat.as_bytes()))
             }
@@ -1863,7 +1863,11 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 let pat = ctx.rt.value_to_str_convfmt(&pat_v).into_owned();
                 let v = ctx.pop();
                 v.reject_if_array_scalar()?;
-                let s = ctx.rt.value_to_str_convfmt(&v).into_owned();
+                // The subject matches as bytes. The engine is
+                // `regex::bytes::Regex`, so a pattern naming a byte that is not
+                // part of valid UTF-8 can find it — rendering the subject first
+                // replaced that byte with `U+FFFD` and the match always failed.
+                let s = ctx.rt.value_to_bytes_convfmt(&v).into_owned();
                 ctx.rt.ensure_regex(&pat).map_err(Error::Runtime)?;
                 let m = ctx.rt.regex_ref(&pat).is_match(&s);
                 ctx.push(Value::Num(if m { 1.0 } else { 0.0 }));
@@ -1874,7 +1878,11 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 let pat = ctx.rt.value_to_str_convfmt(&pat_v).into_owned();
                 let v = ctx.pop();
                 v.reject_if_array_scalar()?;
-                let s = ctx.rt.value_to_str_convfmt(&v).into_owned();
+                // The subject matches as bytes. The engine is
+                // `regex::bytes::Regex`, so a pattern naming a byte that is not
+                // part of valid UTF-8 can find it — rendering the subject first
+                // replaced that byte with `U+FFFD` and the match always failed.
+                let s = ctx.rt.value_to_bytes_convfmt(&v).into_owned();
                 ctx.rt.ensure_regex(&pat).map_err(Error::Runtime)?;
                 let m = ctx.rt.regex_ref(&pat).is_match(&s);
                 ctx.push(Value::Num(if !m { 1.0 } else { 0.0 }));
@@ -2340,7 +2348,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             Op::MatchRegexp(idx) => {
                 let pat = ctx.str_ref(idx).to_string();
                 ctx.rt.ensure_regex(&pat).map_err(Error::Runtime)?;
-                let m = ctx.rt.regex_ref(&pat).is_match(&&ctx.rt.record.to_str_lossy());
+                let m = ctx.rt.regex_ref(&pat).is_match(&&ctx.rt.record.to_str_lossy().as_bytes());
                 ctx.push(Value::Num(if m { 1.0 } else { 0.0 }));
             }
 

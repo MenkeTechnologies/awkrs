@@ -40,7 +40,6 @@ pub fn numeric_parse_mode() -> bool {
 }
 use memchr::memmem;
 use regex::bytes::Regex as BytesRegex;
-use regex::{Regex, RegexBuilder};
 
 /// Initial capacity for stdout batching (`print` accumulates here until flush).
 /// Large END blocks (e.g. `for (k in a) print …`) grow this heavily; starting larger
@@ -1084,6 +1083,8 @@ fn split_csv_gawk_fields(record: &[u8], field_ranges: &mut Vec<(u32, u32)>) {
 fn build_fs_regex(fs: &str, ignore_case: bool) -> Option<BytesRegex> {
     let translated = translate_awk_re_to_rust(fs);
     let mut b = regex::bytes::RegexBuilder::new(&translated);
+    // Same locale rule as the `~` engine — see `Runtime::ensure_regex`.
+    b.unicode(crate::locale_numeric::ctype_is_utf8());
     b.case_insensitive(ignore_case);
     b.dot_matches_new_line(true);
     b.build().ok()
@@ -1512,9 +1513,9 @@ pub struct Runtime {
     /// `untyped` twice in gawk.
     pub slot_touched: Vec<bool>,
     /// Compiled regex cache (case-sensitive) — avoids recompiling the same pattern every record.
-    pub regex_cache_cs: AwkMap<String, Regex>,
+    pub regex_cache_cs: AwkMap<String, BytesRegex>,
     /// Compiled regex cache when [`Self::ignore_case_flag`] is true.
-    pub regex_cache_ci: AwkMap<String, Regex>,
+    pub regex_cache_ci: AwkMap<String, BytesRegex>,
     /// Cached substring searchers for literal `sub`/`gsub` patterns — faster than `str::contains` per line.
     pub memmem_finder_cache: AwkMap<String, memmem::Finder<'static>>,
     /// Persistent stdout buffer — shared across record iterations, flushed at file boundaries.
@@ -2617,7 +2618,14 @@ impl Runtime {
         // Escape numeric backrefs to literal before compilation so the cache
         // key (original `pat`) is preserved but the engine sees the literal form.
         let translated = translate_awk_re_to_rust(pat);
-        let mut b = RegexBuilder::new(&translated);
+        let mut b = regex::bytes::RegexBuilder::new(&translated);
+        // The locale picks the character model, and the byte engine has to be
+        // told which. With Unicode off, `.` and the character classes work in
+        // single bytes, so `/^a.b$/` matches a record holding one that is not
+        // part of valid UTF-8 — which gawk, mawk and one-true-awk all do in a
+        // single-byte locale, and which a Unicode-mode engine cannot, because
+        // there is no character there for `.` to match.
+        b.unicode(crate::locale_numeric::ctype_is_utf8());
         b.case_insensitive(ic);
         // gawk: in ERE, `.` matches any byte INCLUDING newline. Rust regex defaults
         // to `dot_matches_new_line(false)`. Enable it so `/a.*d/` on "ab\ncd"
@@ -2629,7 +2637,7 @@ impl Runtime {
     }
 
     /// Get a cached regex (must call `ensure_regex` first).
-    pub fn regex_ref(&self, pat: &str) -> &Regex {
+    pub fn regex_ref(&self, pat: &str) -> &BytesRegex {
         let ic = self.ignore_case_flag();
         if ic {
             &self.regex_cache_ci[pat]
