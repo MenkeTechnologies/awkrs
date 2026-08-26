@@ -7,9 +7,9 @@
 #![allow(rustdoc::broken_intra_doc_links)]
 
 pub mod aot;
-pub mod awkstr;
 mod ast;
 mod ast_fmt;
+pub mod awkstr;
 /// AWKRS ASCII logo + live-stats banner (shared by the REPL and `--help`).
 pub mod banner;
 mod bignum;
@@ -260,7 +260,10 @@ pub fn run(bin_name: &str) -> Result<()> {
     // `--tiers`: run the program on the fusevm backend, then report which of
     // fusevm's execution tiers took each of its chunks.
     if args.tiers {
-        println!("{}", crate::tiers::report(&args, &program_text_str, &files)?);
+        println!(
+            "{}",
+            crate::tiers::report(&args, &program_text_str, &files)?
+        );
         return Ok(());
     }
 
@@ -2177,11 +2180,11 @@ pub(crate) fn os_arg_bytes(s: &std::ffi::OsStr) -> std::borrow::Cow<'_, [u8]> {
 fn apply_assigns(args: &Args, rt: &mut Runtime) -> Result<()> {
     for a in &args.assigns {
         let bytes = os_arg_bytes(a.as_os_str());
-        let eq = memchr::memchr(b'=', &bytes).ok_or_else(|| Error::Parse {
+        let eq = memchr::memchr(b'=', bytes).ok_or_else(|| Error::Parse {
             line: 1,
             msg: format!(
                 "invalid -v `{}`, expected name=value",
-                String::from_utf8_lossy(&bytes)
+                String::from_utf8_lossy(bytes)
             ),
         })?;
         // A variable *name* is an awk identifier, so it is text; the value is

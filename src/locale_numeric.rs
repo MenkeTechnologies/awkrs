@@ -78,6 +78,32 @@ pub fn decimal_point_from_locale() -> char {
             .unwrap_or('.')
     }
 }
+
+/// Whether `LC_CTYPE` selects a multibyte (UTF-8) character set.
+///
+/// Resolved from the environment in POSIX precedence — `LC_ALL`, then
+/// `LC_CTYPE`, then `LANG` — and verified against gawk and one-true-awk, which
+/// both fold `é` only when the winning variable names a UTF-8 locale:
+/// `LC_ALL=C LC_CTYPE=en_US.UTF-8` leaves it alone, `LANG=en_US.UTF-8` alone
+/// folds it. With nothing set at all the answer is "no", which is POSIX's
+/// default `C` locale and what mawk and one-true-awk do there.
+///
+/// This is the switch between awk's two character models, and the reason it has
+/// to exist is that the references do not agree on one: in a UTF-8 locale gawk
+/// counts and emits characters while mawk and one-true-awk stay on bytes, so
+/// matching gawk in both locales is the only behaviour no reference contradicts.
+pub fn ctype_is_utf8() -> bool {
+    for key in ["LC_ALL", "LC_CTYPE", "LANG"] {
+        match std::env::var(key) {
+            Ok(v) if !v.is_empty() => {
+                let v = v.to_ascii_lowercase();
+                return v.contains("utf-8") || v.contains("utf8");
+            }
+            _ => continue,
+        }
+    }
+    false
+}
 /// `set_locale_numeric_from_env` — see implementation for the contract.
 #[cfg(not(unix))]
 pub fn set_locale_numeric_from_env() {}
@@ -121,30 +147,4 @@ mod tests {
             assert!(c == ',' || c == '.' || c == ' ' || c == '\u{a0}' || c == '\u{202f}');
         }
     }
-}
-
-/// Whether `LC_CTYPE` selects a multibyte (UTF-8) character set.
-///
-/// Resolved from the environment in POSIX precedence — `LC_ALL`, then
-/// `LC_CTYPE`, then `LANG` — and verified against gawk and one-true-awk, which
-/// both fold `é` only when the winning variable names a UTF-8 locale:
-/// `LC_ALL=C LC_CTYPE=en_US.UTF-8` leaves it alone, `LANG=en_US.UTF-8` alone
-/// folds it. With nothing set at all the answer is "no", which is POSIX's
-/// default `C` locale and what mawk and one-true-awk do there.
-///
-/// This is the switch between awk's two character models, and the reason it has
-/// to exist is that the references do not agree on one: in a UTF-8 locale gawk
-/// counts and emits characters while mawk and one-true-awk stay on bytes, so
-/// matching gawk in both locales is the only behaviour no reference contradicts.
-pub fn ctype_is_utf8() -> bool {
-    for key in ["LC_ALL", "LC_CTYPE", "LANG"] {
-        match std::env::var(key) {
-            Ok(v) if !v.is_empty() => {
-                let v = v.to_ascii_lowercase();
-                return v.contains("utf-8") || v.contains("utf8");
-            }
-            _ => continue,
-        }
-    }
-    false
 }

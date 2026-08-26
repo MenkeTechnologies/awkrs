@@ -72,8 +72,6 @@ where
     (code, stdout, stderr)
 }
 
-/// Like [`run_awkrs_stdin_args`], but sets environment variables (e.g. `LC_NUMERIC`).
-#[allow(dead_code)] // Used by `integration`; unused when only `more_integration` is built.
 /// Run awkrs with a pinned locale where the **arguments themselves** are bytes.
 ///
 /// A program written on `argv`, and a `-v` value, may hold a byte that is not
@@ -143,6 +141,8 @@ pub fn run_awkrs_bytes_locale(
     (out.status.code().unwrap_or(-1), out.stdout)
 }
 
+/// Like [`run_awkrs_stdin_args`], but sets environment variables (e.g. `LC_NUMERIC`).
+#[allow(dead_code)] // Used by `integration`; unused when only `more_integration` is built.
 pub fn run_awkrs_stdin_args_env<I, S, E>(
     extra_args: I,
     program: &str,

@@ -355,7 +355,9 @@ impl<'a> Parser<'a> {
                 if self.pattern_regex_stands_alone() {
                     return Ok(Pattern::Regexp(s));
                 }
-                let e = self.parse_expr_from_concat_seed(Self::pattern_regex_match_seed(s.to_lossy_string()))?;
+                let e = self.parse_expr_from_concat_seed(Self::pattern_regex_match_seed(
+                    s.to_lossy_string(),
+                ))?;
                 if self.cur == Token::Comma {
                     self.bump(true)?;
                     let e2 = self.parse_expr(false, false)?;
@@ -1596,12 +1598,12 @@ impl<'a> Parser<'a> {
                 let s = s.clone();
                 self.bump(false)?;
                 if re_pat {
-                    Ok(Expr::Str(s.into()))
+                    Ok(Expr::Str(s))
                 } else {
                     Ok(Expr::Binary {
                         op: BinOp::Match,
                         left: Box::new(Expr::Field(Box::new(Expr::Number(0.0)))),
-                        right: Box::new(Expr::Str(s.into())),
+                        right: Box::new(Expr::Str(s)),
                     })
                 }
             }
@@ -1744,7 +1746,9 @@ impl<'a> Parser<'a> {
                                 name == "split" && matches!(self.cur, Token::Regexp(_));
                             let arg = self.parse_expr_allow_gt(false, re_for_arg)?;
                             args.push(match arg {
-                                Expr::Str(s) if literal_re => Expr::RegexpLiteral(s.to_lossy_string().into()),
+                                Expr::Str(s) if literal_re => {
+                                    Expr::RegexpLiteral(s.to_lossy_string().into())
+                                }
                                 other => other,
                             });
                             if self.cur == Token::Comma {

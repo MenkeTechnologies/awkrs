@@ -333,7 +333,12 @@ impl<'a> Lexer<'a> {
                 if d == b'/' && {
                     // Count consecutive trailing backslashes: odd means the
                     // slash is escaped, even (including zero) means it terminates.
-                    let trailing = s.as_bytes().iter().rev().take_while(|&&b| b == b'\\').count();
+                    let trailing = s
+                        .as_bytes()
+                        .iter()
+                        .rev()
+                        .take_while(|&&b| b == b'\\')
+                        .count();
                     trailing % 2 == 0
                 } {
                     self.bump_byte();
@@ -436,8 +441,7 @@ impl<'a> Lexer<'a> {
                                 // one-true-awk, and `length` of it is 1 in all
                                 // three. Encoding it as `U+00E9` gave two bytes
                                 // and a value that could not match the byte.
-                                let v = u8::from_str_radix(&hex, 16)
-                                    .expect("validated hex digits");
+                                let v = u8::from_str_radix(&hex, 16).expect("validated hex digits");
                                 s.push_byte(v);
                             }
                         }
@@ -1020,7 +1024,7 @@ mod tests {
     /// exactly what these escapes are about.
     fn lex_bytes(src: &str) -> Vec<u8> {
         let wrapped = format!("\"{src}\"");
-        let mut l = Lexer::new(&wrapped.as_bytes());
+        let mut l = Lexer::new(wrapped.as_bytes());
         match l.next_token(false).unwrap() {
             Token::String(s) => s.as_bytes().to_vec(),
             t => panic!("expected String, got {t:?}"),
@@ -1030,7 +1034,7 @@ mod tests {
     fn lex_string(src: &str) -> String {
         // Helper: wrap in `"..."` and lex one token.
         let wrapped = format!("\"{src}\"");
-        let mut l = Lexer::new(&wrapped.as_bytes());
+        let mut l = Lexer::new(wrapped.as_bytes());
         match l.next_token(false).unwrap() {
             Token::String(s) => s.to_lossy_string(),
             t => panic!("expected String, got {t:?}"),
@@ -1879,7 +1883,7 @@ mod tests {
         assert_eq!(lex_string(r"\0"), "\x00");
         assert_eq!(lex_string(r"\123"), "S");
         assert_eq!(lex_bytes(r"\377"), vec![0xff]); // one byte, as in all three
-        // more than 3 digits -> first 3 only
+                                                    // more than 3 digits -> first 3 only
         assert_eq!(lex_string(r"\1234"), "S4");
     }
 
@@ -1888,9 +1892,9 @@ mod tests {
         assert_eq!(lex_string(r"\x41"), "A");
         assert_eq!(lex_string(r"\x0a"), "\n");
         assert_eq!(lex_bytes(r"\xff"), vec![0xff]); // one byte, as in all three
-        // more than 2 digits? awkrs seems to consume as many as possible or just 2?
-        // Let's check implementation. It consumes as many as possible.
-        // assert_eq!(lex_string(r"\x4142"), "AB"); // if it consumes all
+                                                    // more than 2 digits? awkrs seems to consume as many as possible or just 2?
+                                                    // Let's check implementation. It consumes as many as possible.
+                                                    // assert_eq!(lex_string(r"\x4142"), "AB"); // if it consumes all
     }
 
     #[test]

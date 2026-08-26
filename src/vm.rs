@@ -1830,7 +1830,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 // string and answers 0, which is what gawk, mawk and
                 // one-true-awk all do. awkrs used to keep the strnum-carrying
                 // `Value::Str` unless *both* sides were literals.
-                ctx.push(Value::StrLit(s.into()));
+                ctx.push(Value::StrLit(s));
             }
             // `s = s …` fused: grow the slot's own string instead of cloning it
             // out (`GetSlot`), concatenating onto the clone, and cloning the
@@ -1852,7 +1852,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 };
                 let mut s = match held {
                     Some(s) => s,
-                    None => concat_take_left(ctx.rt, ctx.rt.slots[i].clone()).into(),
+                    None => concat_take_left(ctx.rt, ctx.rt.slots[i].clone()),
                 };
                 concat_push_right(ctx.rt, &mut s, b);
                 ctx.rt.slots[i] = Value::StrLit(s);
@@ -2283,7 +2283,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 // Move key out of the snapshot vec — avoids cloning each `String`.
                 let key = mem::take(&mut state.keys[state.index]);
                 state.index += 1;
-                ctx.set_var_interned(var, Value::Str(key.into()))?;
+                ctx.set_var_interned(var, Value::Str(key))?;
             }
             Op::ForInEnd => {
                 ctx.for_in_iters.pop();
@@ -2343,7 +2343,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 let reindexed: Vec<(String, Value)> = pairs
                     .into_iter()
                     .enumerate()
-                    .map(|(i, (k, _))| (format!("{}", i + 1), Value::Str(k.into())))
+                    .map(|(i, (k, _))| (format!("{}", i + 1), Value::Str(k)))
                     .collect();
                 let target = dest_name.as_deref().unwrap_or(&src_name);
                 ctx.array_replace(target, reindexed);
@@ -2354,7 +2354,10 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
             Op::MatchRegexp(idx) => {
                 let pat = ctx.str_ref(idx).to_string();
                 ctx.rt.ensure_regex(&pat).map_err(Error::Runtime)?;
-                let m = ctx.rt.regex_ref(&pat).is_match(&&ctx.rt.record.to_str_lossy().as_bytes());
+                let m = ctx
+                    .rt
+                    .regex_ref(&pat)
+                    .is_match(ctx.rt.record.to_str_lossy().as_bytes());
                 ctx.push(Value::Num(if m { 1.0 } else { 0.0 }));
             }
 
@@ -2379,7 +2382,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 s.push_str(pool_str);
                 // Same rule as `Op::Concat`: a concatenation result is a plain
                 // string, so it never participates in a numeric comparison.
-                ctx.push(Value::StrLit(s.into()));
+                ctx.push(Value::StrLit(s));
             }
             Op::GetNR => ctx.push(Value::Num(ctx.rt.nr)),
             Op::GetFNR => ctx.push(Value::Num(ctx.rt.fnr)),
@@ -2909,7 +2912,7 @@ fn exec_print(ctx: &mut VmCtx<'_>, argc: u16, redir: RedirKind, is_printf: bool)
             parts.join(&ofs).into()
         };
         let chunk = format!("{line}{ors}");
-        emit_with_redir(ctx, &chunk.as_bytes(), redir, redir_path.as_deref())?;
+        emit_with_redir(ctx, chunk.as_bytes(), redir, redir_path.as_deref())?;
     }
     Ok(())
 }
@@ -2948,7 +2951,7 @@ fn sprintf_simple(
     // `sprintf("%s","06") == 6` is 0 in gawk, mawk and one-true-awk; returning
     // `Str` made awkrs compare it numerically and answer 1.
     format::awk_sprintf_with_convfmt(fmt, vals, dec, thousands_sep, mpfr, &convfmt)
-        .map(|s| Value::StrLit(s.into()))
+        .map(Value::StrLit)
         .map_err(Error::Runtime)
 }
 
@@ -2980,7 +2983,7 @@ fn apply_getline_line(
                 .get("FS")
                 .map(|v| v.as_str())
                 .unwrap_or_else(|| " ".into());
-            ctx.rt.set_field_sep_split(&fs, &trimmed.as_bytes());
+            ctx.rt.set_field_sep_split(&fs, trimmed.as_bytes());
             ctx.rt.ensure_fields_split();
             let nf = ctx.rt.nf() as f64;
             ctx.rt.vars.insert("NF".into(), Value::Num(nf));
@@ -3271,7 +3274,9 @@ fn run_user_intercepts(ctx: &mut VmCtx<'_>, name: &str, args: &[Value]) -> Resul
     ctx.rt
         .vars
         .insert("INTERCEPT_ARGS".into(), Value::Str(args_joined.into()));
-    ctx.rt.vars.insert("INTERCEPT_CMD".into(), Value::Str(full.into()));
+    ctx.rt
+        .vars
+        .insert("INTERCEPT_CMD".into(), Value::Str(full.into()));
 
     ctx.rt.intercept_call_stack.push(InterceptCall {
         name: name.to_string(),

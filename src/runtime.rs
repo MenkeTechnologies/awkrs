@@ -1863,10 +1863,24 @@ fn translate_awk_re_to_rust(pat: &str) -> String {
 fn rust_knows_escape(c: char) -> bool {
     matches!(
         c,
-        'a' | 'f' | 't' | 'n' | 'r' | 'v' | '0'
-            | 'A' | 'z' | 'Z' | 'b' | 'B'
-            | 's' | 'S' | 'w' | 'W'
-            | 'x' | 'u' | 'U'
+        'a' | 'f'
+            | 't'
+            | 'n'
+            | 'r'
+            | 'v'
+            | '0'
+            | 'A'
+            | 'z'
+            | 'Z'
+            | 'b'
+            | 'B'
+            | 's'
+            | 'S'
+            | 'w'
+            | 'W'
+            | 'x'
+            | 'u'
+            | 'U'
     ) || !c.is_ascii_alphanumeric()
 }
 
@@ -2444,7 +2458,7 @@ impl Runtime {
         for (i, a) in std::env::args_os().enumerate() {
             argv_proc.insert(
                 i.to_string(),
-                Value::Str(AwkStr::from(&*crate::os_arg_bytes(&a))),
+                Value::Str(AwkStr::from(crate::os_arg_bytes(&a))),
             );
         }
         p.insert("argv".into(), Value::Array(argv_proc));
@@ -2579,7 +2593,7 @@ impl Runtime {
         use std::env;
         let raw = env::args_os()
             .next()
-            .map(|a| String::from_utf8_lossy(&crate::os_arg_bytes(&a)).into_owned())
+            .map(|a| String::from_utf8_lossy(crate::os_arg_bytes(&a)).into_owned())
             .unwrap_or_else(|| "awkrs".to_string());
         let bin = if self.traditional {
             raw.clone()
@@ -2788,7 +2802,8 @@ impl Runtime {
     /// `clear_errno` — see implementation for the contract.
     pub fn clear_errno(&mut self) {
         self.errno_code = 0;
-        self.vars.insert("ERRNO".into(), Value::Str(String::new().into()));
+        self.vars
+            .insert("ERRNO".into(), Value::Str(String::new().into()));
     }
     /// `set_errno_io` — see implementation for the contract.
     pub fn set_errno_io(&mut self, e: &std::io::Error) {
@@ -2806,7 +2821,8 @@ impl Runtime {
     /// `set_errno_str` — see implementation for the contract.
     pub fn set_errno_str(&mut self, msg: impl Into<String>) {
         self.errno_code = 0;
-        self.vars.insert("ERRNO".into(), Value::Str(msg.into().into()));
+        self.vars
+            .insert("ERRNO".into(), Value::Str(msg.into().into()));
     }
     /// `ensure_rs_regex_bytes` — see implementation for the contract.
     pub fn ensure_rs_regex_bytes(&mut self) -> Result<()> {
@@ -3872,11 +3888,12 @@ impl Runtime {
             for &(s, e) in &self.field_ranges {
                 let raw = &record[s as usize..e as usize];
                 // CSV doubled-quote escape: `""` → `"` inside a quoted field (gawk / RFC 4180).
-                self.fields.push(if memchr::memmem::find(raw, b"\"\"").is_some() {
-                    AwkStr::from_vec(byte_replace(raw, b"\"\"", b"\""))
-                } else {
-                    AwkStr::from(raw)
-                });
+                self.fields
+                    .push(if memchr::memmem::find(raw, b"\"\"").is_some() {
+                        AwkStr::from_vec(byte_replace(raw, b"\"\"", b"\""))
+                    } else {
+                        AwkStr::from(raw)
+                    });
             }
             self.fields_dirty = true;
             return;
@@ -4016,9 +4033,9 @@ impl Runtime {
             // must come back as `StrLit` — that is what makes `$0 < 7` compare
             // as text after `$0 = "42"`.
             return Ok(if self.record_strnum {
-                Value::Str(rec.into())
+                Value::Str(rec)
             } else {
-                Value::StrLit(rec.into())
+                Value::StrLit(rec)
             });
         }
         self.ensure_fields_split();
@@ -4051,7 +4068,7 @@ impl Runtime {
         }
         let idx = i as usize;
         if idx == 0 {
-            return Ok(parse_number(&&self.record.to_str_lossy()));
+            return Ok(parse_number(&self.record.to_str_lossy()));
         }
         self.ensure_fields_split();
         if self.fields_dirty {
@@ -4064,7 +4081,11 @@ impl Runtime {
             Ok(self
                 .field_ranges
                 .get(idx - 1)
-                .map(|&(s, e)| parse_number(&String::from_utf8_lossy(&self.record[s as usize..e as usize])))
+                .map(|&(s, e)| {
+                    parse_number(&String::from_utf8_lossy(
+                        &self.record[s as usize..e as usize],
+                    ))
+                })
                 .unwrap_or(0.0))
         }
     }
@@ -4616,18 +4637,6 @@ impl Runtime {
         self.array_set(name, k, val);
     }
 
-    /// `a[k]` read with POSIX auto-vivification, resolved in one hash lookup
-    /// when the element is already there.
-    ///
-    /// Spelled out, the read was `array_has`, then `array_set(…, Uninit)` if
-    /// missing, then `array_get` — three hashes of the key and an owned copy of
-    /// it, on every element. Iterating a million-entry array paid all of that a
-    /// million times over.
-    ///
-    /// A missing key is created as `Uninit` and read back as `Uninit`, which is
-    /// what makes a later `k in a` true and `typeof(a[k])` `"untyped"` rather
-    /// than the `"string"` a coerced `""` would report.
-
     /// [`array_set`](Self::array_set) with a borrowed subscript — see
     /// [`AwkArray::insert_str`] for why the borrow matters on this path.
     /// The caller is [`crate::vm::VmCtx::array_elem_set_str`], the store side
@@ -4774,7 +4783,11 @@ impl Runtime {
         }
         let idx = (field - 1) as usize;
         if self.fields_dirty {
-            let key = self.fields.get(idx).map(|s| s.to_str_lossy()).unwrap_or_default();
+            let key = self
+                .fields
+                .get(idx)
+                .map(|s| s.to_str_lossy())
+                .unwrap_or_default();
             Self::apply_array_numeric_delta(
                 &mut self.vars,
                 &self.global_readonly,
@@ -6794,7 +6807,10 @@ impl AwkArray {
     pub fn or_insert(&mut self, key: String, val: Value) -> &mut Value {
         match canonical_int(key.as_bytes()) {
             Some(i) => self.ints.entry(i).or_insert(val),
-            None => self.strs.entry(key.into_bytes().into_boxed_slice()).or_insert(val),
+            None => self
+                .strs
+                .entry(key.into_bytes().into_boxed_slice())
+                .or_insert(val),
         }
     }
 

@@ -494,7 +494,7 @@ pub(crate) fn exec_builtin_dispatch(
                 ctx.rt,
             )?
             .as_str();
-            ctx.emit_print(&s.as_bytes());
+            ctx.emit_print(s.as_bytes());
             Value::Num(0.0)
         }
         "and" => {
@@ -681,7 +681,11 @@ pub(crate) fn exec_builtin_dispatch(
             let domain = args[3].as_str();
             let _ = args[4].as_number() as i32;
             if let Some(cat) = ctx.rt.gettext_catalogs.get(&domain) {
-                Value::Str(cat.ngettext(s1.as_str(), s2.as_str(), n as u64).to_string().into())
+                Value::Str(
+                    cat.ngettext(s1.as_str(), s2.as_str(), n as u64)
+                        .to_string()
+                        .into(),
+                )
             } else {
                 Value::Str((if n == 1.0 { s1 } else { s2 }).to_string().into())
             }

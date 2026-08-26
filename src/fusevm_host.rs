@@ -16,9 +16,13 @@
 
 use std::cell::{Cell, RefCell};
 
-use crate::error::Error;
 use crate::awkstr::AwkStr;
+use crate::error::Error;
 use crate::runtime::Runtime;
+
+/// `gsub` / `sub`: `(runtime, regex, replacement, target)` → substitutions made.
+/// Both builtins share this shape, so the `global` flag picks one at run time.
+type SubFn = fn(&mut Runtime, &[u8], &[u8], Option<&mut AwkStr>) -> Result<f64, Error>;
 
 thread_local! {
     /// Raw pointer to the awk [`Runtime`] currently driving a `vm.run()`.
@@ -606,8 +610,11 @@ impl fusevm::AwkHost for AwkRuntimeHost {
                     .map(|v| v.as_str())
                     .unwrap_or_else(|| " ".to_string()),
             };
-            let (parts, _seps) =
-                crate::runtime::split_string_with_seps(s.to_str().as_bytes(), &fs_str, rt.ignore_case_flag());
+            let (parts, _seps) = crate::runtime::split_string_with_seps(
+                s.to_str().as_bytes(),
+                &fs_str,
+                rt.ignore_case_flag(),
+            );
             let n = parts.len();
             rt.split_into_array(arr_name, &parts);
             n as i64
@@ -678,7 +685,7 @@ impl fusevm::AwkHost for AwkRuntimeHost {
                         .get("FS")
                         .map(|v| v.as_str())
                         .unwrap_or_else(|| " ".to_string());
-                    rt.set_field_sep_split(&fs, &trimmed.as_bytes());
+                    rt.set_field_sep_split(&fs, trimmed.as_bytes());
                     rt.ensure_fields_split();
                     let nf = rt.nf() as f64;
                     rt.vars.insert("NF".into(), crate::runtime::Value::Num(nf));
@@ -922,12 +929,11 @@ fn host_substitute(
     with_runtime(|rt| {
         let re_s = re.to_str();
         let repl_s = repl.to_str();
-        let sub_call: fn(&mut Runtime, &[u8], &[u8], Option<&mut AwkStr>) -> Result<f64, Error> =
-            if global {
-                crate::builtins::gsub
-            } else {
-                crate::builtins::sub_fn
-            };
+        let sub_call: SubFn = if global {
+            crate::builtins::gsub
+        } else {
+            crate::builtins::sub_fn
+        };
 
         // The pattern and replacement arrive from `fusevm::Value`, which carries
         // a `String`, so those two are bounded by that backend. The *target* is

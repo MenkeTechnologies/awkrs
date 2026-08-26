@@ -405,7 +405,10 @@ mod tests {
     #[test]
     fn assign_flag_collects() {
         let a = Args::try_parse_from(["awkrs", "-v", "a=1", "-v", "b=two", "{print a,b}"]).unwrap();
-        assert_eq!(a.assigns, vec![OsString::from("a=1"), OsString::from("b=two")]);
+        assert_eq!(
+            a.assigns,
+            vec![OsString::from("a=1"), OsString::from("b=two")]
+        );
     }
 
     #[test]

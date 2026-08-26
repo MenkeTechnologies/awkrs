@@ -1,7 +1,7 @@
 //! `sprintf` / `printf` formatting (POSIX-ish; common awk conversions).
 
-use crate::bignum::{float_trunc_integer, mpfr_string_for_percent_s, value_to_mpfr};
 use crate::awkstr::AwkStr;
+use crate::bignum::{float_trunc_integer, mpfr_string_for_percent_s, value_to_mpfr};
 use crate::runtime::Value;
 use rug::float::Round;
 use rug::ops::Pow;
@@ -454,7 +454,10 @@ fn parse_conversion_rest(
     // bytes rather than digits awkrs generated, so they are answered before
     // `format_one`, which works in `String` and cannot carry one.
     if conv == 's' || conv == 'c' {
-        return Ok((format_str_or_char_bytes(conv, v, left, pad_zero, width, prec)?, i));
+        return Ok((
+            format_str_or_char_bytes(conv, v, left, pad_zero, width, prec)?,
+            i,
+        ));
     }
     let piece = format_one(
         conv,
@@ -764,7 +767,6 @@ fn format_g_decimal_significant_f64(mut n: f64, p: usize) -> String {
     }
 }
 
-
 /// The `%s` and `%c` conversions, over bytes.
 ///
 /// Everything else `printf` produces is digits awkrs generated, which are ASCII
@@ -932,7 +934,6 @@ fn mpfr_scientific(f: &rug::Float, p: usize) -> String {
     format!("{:.*e}", p + 1, f)
 }
 
-
 fn sprintf_c_char(v: &Value) -> String {
     match v {
         // POSIX: `%c` prints the first character of a *string* argument and the
@@ -943,13 +944,12 @@ fn sprintf_c_char(v: &Value) -> String {
         Value::Str(s) if v.is_numeric_str() => char::from_u32(v.as_number() as u32)
             .unwrap_or('\u{fffd}')
             .to_string(),
-        Value::Str(s) | Value::StrLit(s) | Value::Regexp(s) => {
-            s.to_str_lossy()
-                .chars()
-                .next()
-                .map(|c| c.to_string())
-                .unwrap_or_default()
-        }
+        Value::Str(s) | Value::StrLit(s) | Value::Regexp(s) => s
+            .to_str_lossy()
+            .chars()
+            .next()
+            .map(|c| c.to_string())
+            .unwrap_or_default(),
         Value::Mpfr(f) => {
             let code = float_trunc_integer(f).to_u32_wrapping();
             char::from_u32(code).unwrap_or('\u{fffd}').to_string()

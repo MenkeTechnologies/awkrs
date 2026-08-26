@@ -272,7 +272,10 @@ fn format_stmt(st: &Stmt, depth: usize) -> String {
                             }
                             SwitchLabel::Regexp(re) => {
                                 s.push_str(&indent(depth + 1));
-                                s.push_str(&format!("case /{}/:\n", escape_regex_slash(&re.to_str_lossy())));
+                                s.push_str(&format!(
+                                    "case /{}/:\n",
+                                    escape_regex_slash(&re.to_str_lossy())
+                                ));
                             }
                         }
                         for st in stmts {

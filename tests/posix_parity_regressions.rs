@@ -9,8 +9,9 @@
 mod common;
 
 use common::{
-    run_awkrs_file, run_awkrs_operands, run_awkrs_stdin, run_awkrs_stdin_args,
-    run_awkrs_byte_args, run_awkrs_bytes_locale, run_awkrs_stdin_args_env, run_awkrs_stdin_bounded, unique_tmp_path,
+    run_awkrs_byte_args, run_awkrs_bytes_locale, run_awkrs_file, run_awkrs_operands,
+    run_awkrs_stdin, run_awkrs_stdin_args, run_awkrs_stdin_args_env, run_awkrs_stdin_bounded,
+    unique_tmp_path,
 };
 use std::io::Write;
 
@@ -2214,7 +2215,10 @@ fn a_high_byte_survives_every_path_it_is_put_through() {
 
     for (program, want) in [
         // Pass-through: the record and the fields it is cut into.
-        ("{ print }", vec![b'a', HI, b'b', b' ', b'c', 0xff, b'd', b'\n']),
+        (
+            "{ print }",
+            vec![b'a', HI, b'b', b' ', b'c', 0xff, b'd', b'\n'],
+        ),
         ("{ print $1 }", vec![b'a', HI, b'b', b'\n']),
         ("{ print $2 }", vec![b'c', 0xff, b'd', b'\n']),
         // Inspection: the byte is one character, and it is *that* byte.
@@ -2226,11 +2230,20 @@ fn a_high_byte_survives_every_path_it_is_put_through() {
             vec![b'A', HI, b'B', b' ', b'C', 0xff, b'D', b'\n'],
         ),
         // Formatting carries it through both string conversions.
-        ("{ printf \"%s\\n\", $0 }", vec![b'a', HI, b'b', b' ', b'c', 0xff, b'd', b'\n']),
+        (
+            "{ printf \"%s\\n\", $0 }",
+            vec![b'a', HI, b'b', b' ', b'c', 0xff, b'd', b'\n'],
+        ),
         ("{ printf \"%c\\n\", substr($0, 2, 1) }", vec![HI, b'\n']),
         // Concatenation and a round trip through a variable.
-        ("{ x = $1 \"-\" $2; print x }", vec![b'a', HI, b'b', b'-', b'c', 0xff, b'd', b'\n']),
-        ("{ x = sprintf(\"%s\", $0); print x }", vec![b'a', HI, b'b', b' ', b'c', 0xff, b'd', b'\n']),
+        (
+            "{ x = $1 \"-\" $2; print x }",
+            vec![b'a', HI, b'b', b'-', b'c', 0xff, b'd', b'\n'],
+        ),
+        (
+            "{ x = sprintf(\"%s\", $0); print x }",
+            vec![b'a', HI, b'b', b' ', b'c', 0xff, b'd', b'\n'],
+        ),
         // Array subscripts and the split() element form.
         (
             "{ a[$1] = 1; for (k in a) print k }",
@@ -2277,7 +2290,10 @@ fn a_high_byte_survives_every_path_it_is_put_through() {
             "{ sub(/b/,\"Z\"); print }",
             vec![b'a', HI, b'Z', b' ', b'c', 0xff, b'd', b'\n'],
         ),
-        ("{ gsub(/b/,\"Z\",$1); print $1 }", vec![b'a', HI, b'Z', b'\n']),
+        (
+            "{ gsub(/b/,\"Z\",$1); print $1 }",
+            vec![b'a', HI, b'Z', b'\n'],
+        ),
         (
             "{ x = $1; gsub(/b/,\"Z\",x); print x }",
             vec![b'a', HI, b'Z', b'\n'],
@@ -2406,7 +2422,11 @@ fn a_high_byte_is_accepted_in_the_program_text() {
     ] {
         let (code, out) = run_awkrs_byte_args("C", &[&prog], &line);
         assert_eq!(code, 0, "argv program {prog:x?}");
-        assert_eq!(String::from_utf8_lossy(&out), "1\n", "argv program {prog:x?}");
+        assert_eq!(
+            String::from_utf8_lossy(&out),
+            "1\n",
+            "argv program {prog:x?}"
+        );
     }
 
     // The byte survives from a string literal to the output.
@@ -2444,11 +2464,8 @@ fn a_high_byte_is_accepted_in_the_program_text() {
     ] {
         let path = unique_tmp_path(name);
         std::fs::write(&path, &body).expect("write program file");
-        let (code, out) = run_awkrs_byte_args(
-            "C",
-            &[b"-f", path.as_os_str().as_encoded_bytes()],
-            &line,
-        );
+        let (code, out) =
+            run_awkrs_byte_args("C", &[b"-f", path.as_os_str().as_encoded_bytes()], &line);
         let _ = std::fs::remove_file(&path);
         assert_eq!(code, 0, "{name}");
         assert_eq!(String::from_utf8_lossy(&out), want, "{name}");
@@ -2456,7 +2473,10 @@ fn a_high_byte_is_accepted_in_the_program_text() {
 
     // In code position it is a syntax error, as in all three references.
     let (code, _out) = run_awkrs_byte_args("C", &[b"BEGIN { x\xe9 = 1 }"], b"");
-    assert_ne!(code, 0, "a stray byte in code position must not be accepted");
+    assert_ne!(
+        code, 0,
+        "a stray byte in code position must not be accepted"
+    );
 }
 
 /// awkrs's regex acceptance set now matches the references' rather than Rust's.
@@ -2516,7 +2536,10 @@ fn the_match_operator_accepts_what_the_references_accept() {
         (r#"BEGIN { print ("A" ~ "[\101]") }"#, "1\n"),
         // A regex literal's `\t` is still a tab, which is what the whitespace
         // split idiom depends on.
-        (r#"BEGIN { n = split("a   b\t\tc", A, /[ \t]+/); print n }"#, "3\n"),
+        (
+            r#"BEGIN { n = split("a   b\t\tc", A, /[ \t]+/); print n }"#,
+            "3\n",
+        ),
         // `\p` is not an ERE escape either — the plain letter, not a Unicode
         // class, so this does not match a letter.
         (r#"BEGIN { print ("xayb" ~ "\p{L}") }"#, "0\n"),

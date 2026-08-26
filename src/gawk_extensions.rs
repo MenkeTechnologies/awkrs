@@ -357,7 +357,11 @@ pub(crate) fn reada(rt: &mut Runtime, path: &str, arr_name: &str) -> Result<Valu
         let mut parts = s.splitn(2, '\t');
         let key = parts.next().unwrap_or("");
         let val = parts.next().unwrap_or("");
-        rt.array_set(arr_name, unescape_rw(key), Value::Str(unescape_rw(val).into()));
+        rt.array_set(
+            arr_name,
+            unescape_rw(key),
+            Value::Str(unescape_rw(val).into()),
+        );
         line.clear();
     }
     Ok(Value::Num(0.0))

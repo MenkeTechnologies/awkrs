@@ -1,10 +1,10 @@
 //! awk builtins: gsub, sub, match, string helpers, math, time (gawk-style), bitwise, sort, typeof.
 
 use crate::awkstr::AwkStr;
-use regex::bytes::Regex as BytesRegex;
 use crate::error::{Error, Result};
 use crate::runtime::{Runtime, Value};
 use chrono::{Local, LocalResult, NaiveDate, TimeZone, Utc};
+use regex::bytes::Regex as BytesRegex;
 use std::cmp::Ordering;
 
 /// Check if a regex pattern is a plain literal (no metacharacters).
@@ -48,7 +48,12 @@ fn literal_substring_absent(rt: &mut Runtime, needle: &[u8], hay: &[u8]) -> bool
 }
 
 /// Literal global replace — `memmem::Finder` (cached on `rt`) for repeated scans over the same needle.
-fn literal_replace_all(hay: &[u8], needle: &[u8], repl: &[u8], rt: &mut Runtime) -> (AwkStr, usize) {
+fn literal_replace_all(
+    hay: &[u8],
+    needle: &[u8],
+    repl: &[u8],
+    rt: &mut Runtime,
+) -> (AwkStr, usize) {
     if needle.is_empty() {
         return (AwkStr::from(hay), 0);
     }
@@ -973,19 +978,19 @@ pub fn asorti(rt: &mut Runtime, src: &str, dest: Option<&str>) -> Result<f64> {
         None => {
             rt.array_delete(src, None);
             for (i, k) in keys.iter().enumerate() {
-                rt.array_set(src, format!("{}", i + 1), Value::Str(k.clone().into()));
+                rt.array_set(src, format!("{}", i + 1), Value::Str(k.clone()));
             }
         }
         Some(d) if d == src => {
             rt.array_delete(src, None);
             for (i, k) in keys.iter().enumerate() {
-                rt.array_set(src, format!("{}", i + 1), Value::Str(k.clone().into()));
+                rt.array_set(src, format!("{}", i + 1), Value::Str(k.clone()));
             }
         }
         Some(d) => {
             rt.array_delete(d, None);
             for (i, k) in keys.iter().enumerate() {
-                rt.array_set(d, format!("{}", i + 1), Value::Str(k.clone().into()));
+                rt.array_set(d, format!("{}", i + 1), Value::Str(k.clone()));
             }
         }
     }
@@ -1860,7 +1865,8 @@ mod tests {
     #[test]
     fn gensub_numbered_occurrence_v10() {
         let mut rt = Runtime::new();
-        let s = super::awk_gensub(&mut rt, b"a", b"x", &Value::Num(2.0), Some("aaa".into())).unwrap();
+        let s =
+            super::awk_gensub(&mut rt, b"a", b"x", &Value::Num(2.0), Some("aaa".into())).unwrap();
         assert_eq!(s, "axa");
     }
 

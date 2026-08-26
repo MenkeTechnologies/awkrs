@@ -32,7 +32,7 @@ use std::borrow::Cow;
 use std::fmt;
 use std::ops::Deref;
 
-/// The string payload of [`crate::runtime::Value`]: an arbitrary byte sequence.
+/// The string payload of `crate::runtime::Value`: an arbitrary byte sequence.
 ///
 /// Ordering and equality are over the bytes, which is what awk's string
 /// comparison wants in a single-byte locale and what `strcmp` gives the
@@ -198,7 +198,7 @@ impl AwkStr {
         self.0.utf8_chunks().flat_map(|c| {
             c.valid()
                 .chars()
-                .chain(std::iter::repeat('\u{fffd}').take(c.invalid().len()))
+                .chain(std::iter::repeat_n('\u{fffd}', c.invalid().len()))
         })
     }
 
@@ -446,9 +446,11 @@ mod tests {
     #[test]
     fn equality_and_ordering_are_over_bytes() {
         assert_eq!(AwkStr::from("abc"), "abc");
-        assert!(AwkStr::from("abc") < AwkStr::from("abd"));
+        let (abc, abd) = (AwkStr::from("abc"), AwkStr::from("abd"));
+        assert!(abc < abd);
         // 0xFF sorts above every ASCII byte, as `strcmp` has it.
-        assert!(AwkStr::from("z") < AwkStr::from_vec(vec![0xff]));
+        let (z, high) = (AwkStr::from("z"), AwkStr::from_vec(vec![0xff]));
+        assert!(z < high);
     }
 
     #[test]

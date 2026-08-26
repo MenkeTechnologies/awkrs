@@ -108,7 +108,9 @@ impl Compiler {
     fn compile_regex_operand(&mut self, e: &Expr) -> Result<()> {
         match e {
             Expr::RegexpLiteral(re) => {
-                let c = self.b.add_constant(fusevm::Value::str(re.clone().to_lossy_string()));
+                let c = self
+                    .b
+                    .add_constant(fusevm::Value::str(re.clone().to_lossy_string()));
                 self.b.emit(fusevm::Op::LoadConst(c), 0);
                 Ok(())
             }
@@ -123,7 +125,9 @@ impl Compiler {
             Pattern::Regexp(re) => {
                 self.b.emit(fusevm::Op::LoadInt(0), 0);
                 self.b.emit(fusevm::Op::AwkFieldGet, 0);
-                let c = self.b.add_constant(fusevm::Value::str(re.clone().to_lossy_string()));
+                let c = self
+                    .b
+                    .add_constant(fusevm::Value::str(re.clone().to_lossy_string()));
                 self.b.emit(fusevm::Op::LoadConst(c), 0);
                 self.b.emit(fusevm::Op::RegexMatch, 0);
                 Ok(())
@@ -758,7 +762,9 @@ impl Compiler {
     fn compile_expr(&mut self, e: &Expr) -> Result<()> {
         match e {
             Expr::Str(s) => {
-                let c = self.b.add_constant(fusevm::Value::str(s.clone().to_lossy_string()));
+                let c = self
+                    .b
+                    .add_constant(fusevm::Value::str(s.clone().to_lossy_string()));
                 self.b.emit(fusevm::Op::LoadConst(c), 0);
             }
             Expr::Number(n) => {
@@ -808,7 +814,9 @@ impl Compiler {
             Expr::RegexpLiteral(re) => {
                 self.b.emit(fusevm::Op::LoadInt(0), 0);
                 self.b.emit(fusevm::Op::AwkFieldGet, 0);
-                let c = self.b.add_constant(fusevm::Value::str(re.clone().to_lossy_string()));
+                let c = self
+                    .b
+                    .add_constant(fusevm::Value::str(re.clone().to_lossy_string()));
                 self.b.emit(fusevm::Op::LoadConst(c), 0);
                 self.b.emit(fusevm::Op::RegexMatch, 0);
             }
