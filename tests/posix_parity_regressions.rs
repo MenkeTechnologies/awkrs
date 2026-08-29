@@ -2641,3 +2641,200 @@ fn bignum_fixed_and_scientific_emit_the_requested_digits() {
     assert_eq!(code, 0, "stderr {stderr:?}");
     assert_eq!(stdout, "2.5000|2|1.23e+04");
 }
+
+/// POSIX defines `-F sepstring` as the assignment `FS=sepstring`, and a
+/// command-line assignment value is scanned for escape sequences before it is
+/// stored. gawk 5.4.1, mawk 1.3.4 and one-true-awk 20200816 all decode it, so
+/// `-F '\t'` is a one-character tab. awkrs stored the argument verbatim: `FS`
+/// held the two characters `\` and `t`, and every backslash reached the regex
+/// compiler still escaped — while the identical value written `-v FS='\t'`
+/// went through the string-literal scanner and came out right.
+#[test]
+fn dash_f_decodes_escape_sequences_like_a_command_line_assignment() {
+    // `\t` is one tab, not a two-character `\t`, and `-v FS=` agrees with it.
+    for args in [["-F", r"\t"], ["-v", r"FS=\t"]] {
+        let (code, stdout, stderr) = run_awkrs_stdin_args(
+            args,
+            r#"BEGIN { printf "%d|%d\n", length(FS), (FS == "\t") }"#,
+            "",
+        );
+        assert_eq!(code, 0, "{args:?}: {stderr:?}");
+        assert_eq!(stdout, "1|1\n", "{args:?}");
+    }
+
+    // A doubled backslash decodes to one, leaving the two characters `\.` —
+    // the regex for a literal dot, which is what makes `-F '\\.'` split on
+    // dots rather than on every character.
+    let (code, stdout, stderr) = run_awkrs_stdin_args(
+        ["-F", r"\\."],
+        r#"{ printf "%d|%d|%s\n", length(FS), NF, $2 }"#,
+        "a.b.c\n",
+    );
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "2|3|b\n");
+
+    // A lone backslash stays one character rather than becoming two.
+    let (code, stdout, stderr) =
+        run_awkrs_stdin_args(["-F", r"\"], r#"BEGIN { print length(FS) }"#, "");
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "1\n");
+
+    // Inside a bracket expression the decode still happens once, so the class
+    // holds a real tab and the separator is three characters, not four.
+    let (code, stdout, stderr) = run_awkrs_stdin_args(
+        ["-F", r"[\t]"],
+        r#"{ printf "%d|%d\n", length(FS), NF }"#,
+        "a\tb\tc\n",
+    );
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "3|3\n");
+
+    // A separator with no backslash in it is untouched.
+    let (code, stdout, stderr) = run_awkrs_stdin_args(
+        ["-F", ":"],
+        r#"{ printf "%d|%d\n", length(FS), NF }"#,
+        "a:b:c\n",
+    );
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "1|3\n");
+}
+
+/// An empty `-f` file is a program with no rules: gawk, mawk and one-true-awk
+/// all run it, read nothing and exit 0. awkrs decided whether a program had
+/// been supplied by looking at the assembled program *bytes*, so an empty one
+/// read as "none given" — `awk -f empty.awk data.txt` then took `data.txt` as
+/// the program text and died on a parse error, and `awk -f empty.awk` alone
+/// reported "no program given". An empty program on `argv` already worked,
+/// which is the inconsistency the byte test created.
+#[test]
+fn an_empty_program_file_is_a_program_with_no_rules() {
+    let empty = unique_tmp_path("awkrs_empty_program.awk");
+    std::fs::write(&empty, "").expect("write fixture");
+    let data = unique_tmp_path("awkrs_empty_program_data.txt");
+    std::fs::write(&data, "a\nb\n").expect("write fixture");
+
+    // With an input operand: the operand is data, never the program.
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_awkrs"))
+        .arg("-f")
+        .arg(&empty)
+        .arg(&data)
+        .output()
+        .expect("spawn");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr {:?}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        out.stdout.is_empty(),
+        "{:?}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+
+    // Without one: still a program, and it reads standard input silently.
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_awkrs"))
+        .arg("-f")
+        .arg(&empty)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("spawn");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr {:?}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(out.stdout.is_empty());
+
+    // An empty file alongside a real one contributes nothing and the real
+    // rules still run.
+    let prog = unique_tmp_path("awkrs_empty_program_real.awk");
+    std::fs::write(&prog, "{ print \"got\", $0 }\n").expect("write fixture");
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_awkrs"))
+        .arg("-f")
+        .arg(&empty)
+        .arg("-f")
+        .arg(&prog)
+        .arg(&data)
+        .output()
+        .expect("spawn");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "got a\ngot b\n");
+
+    let _ = std::fs::remove_file(&empty);
+    let _ = std::fs::remove_file(&data);
+    let _ = std::fs::remove_file(&prog);
+}
+
+/// POSIX gives the operand `-` the meaning "standard input". gawk 5.4.1, mawk
+/// 1.3.4 and one-true-awk 20200816 all read stdin for it and report `FILENAME`
+/// as `-`, which is how a pipe is appended to a list of files. awkrs tried to
+/// open a file literally named `-` and died with a fatal "cannot open file",
+/// exiting 2 — even though `getline < "-"` was already redirected onto stdin.
+#[test]
+fn a_dash_operand_reads_standard_input() {
+    // On its own: the records come from stdin and `FILENAME` is the dash.
+    let (code, stdout, stderr) = run_awkrs_operands(
+        r#"{ print FILENAME "|" FNR "|" NR "|" $0 }"#,
+        ["-"],
+        "one\ntwo\n",
+    );
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "-|1|1|one\n-|2|2|two\n");
+
+    // After a real file: `FNR` restarts for the dash while `NR` runs on, so it
+    // is a full operand rather than a continuation of the previous file.
+    let data = unique_tmp_path("awkrs_dash_operand.txt");
+    std::fs::write(&data, "fa\nfb\n").expect("write fixture");
+    let (code, stdout, stderr) = run_awkrs_operands(
+        r#"{ print FILENAME "|" FNR "|" NR "|" $0 }"#,
+        [data.to_str().expect("utf-8 path"), "-"],
+        "sa\nsb\n",
+    );
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(
+        stdout,
+        format!(
+            "{p}|1|1|fa\n{p}|2|2|fb\n-|1|3|sa\n-|2|4|sb\n",
+            p = data.display()
+        )
+    );
+
+    // A second dash finds the stream already drained rather than reopening it.
+    let (code, stdout, stderr) =
+        run_awkrs_operands(r#"{ print FILENAME "|" $0 }"#, ["-", "-"], "only\n");
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "-|only\n");
+
+    let _ = std::fs::remove_file(&data);
+}
+
+/// The name in `-v name=value` has to be an awk identifier. gawk, mawk and
+/// one-true-awk all refuse anything else and exit non-zero (gawk: "`1x' is not
+/// a legal variable name"). awkrs accepted every spelling and created a
+/// variable under a name no program can write, so a mistyped flag ran silently
+/// with the variable still unset. A `namespace::name` qualifier stays legal —
+/// gawk accepts it and awkrs stores it in that namespace.
+#[test]
+fn an_illegal_dash_v_name_is_fatal() {
+    for bad in [
+        "1x=3", "x-y=3", "x =3", " x=3", "x.y=3", "=3", "::x=1", "a::=1",
+    ] {
+        let (code, stdout, _) = run_awkrs_stdin_args(["-v", bad], r#"BEGIN { print "ran" }"#, "");
+        assert_eq!(code, 2, "-v {bad} should be fatal");
+        assert_eq!(stdout, "", "-v {bad} should not run the program");
+    }
+
+    // The legal spellings still assign, qualified names included.
+    for (good, program, want) in [
+        ("x=3", r#"BEGIN { print x }"#, "3\n"),
+        ("_x=3", r#"BEGIN { print _x }"#, "3\n"),
+        ("X_9=3", r#"BEGIN { print X_9 }"#, "3\n"),
+        ("ns::x=3", r#"BEGIN { print ns::x }"#, "3\n"),
+    ] {
+        let (code, stdout, stderr) = run_awkrs_stdin_args(["-v", good], program, "");
+        assert_eq!(code, 0, "-v {good}: {stderr:?}");
+        assert_eq!(stdout, want, "-v {good}");
+    }
+}

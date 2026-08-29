@@ -311,6 +311,22 @@ impl Args {
     /// Hook for merging duplicate long/short flags if we add aliases later.
     pub fn normalize(&mut self) {}
 
+    /// The `FS` value `-F` asks for, with its escape sequences decoded.
+    ///
+    /// POSIX defines `-F sepstring` as the assignment `FS=sepstring`, and a
+    /// command-line assignment value is scanned for escape sequences. gawk,
+    /// mawk and one-true-awk all do it: `-F '\t'` sets `FS` to a one-character
+    /// tab, and `awk -F '\\.'` to the two characters `\.` — a regex matching a
+    /// literal dot. awkrs stored the argument verbatim, so `length(FS)` was 2
+    /// for the tab and every backslash reached the regex compiler undecoded,
+    /// while the same value passed as `-v FS='\t'` was decoded correctly.
+    /// Both spellings now run through the one string-literal scanner.
+    pub fn field_separator(&self) -> Option<crate::awkstr::AwkStr> {
+        self.field_sep
+            .as_ref()
+            .map(|fs| crate::lexer::unescape_assignment_value_bytes(fs.as_bytes()))
+    }
+
     /// Parse `-W` tokens (mawk: comma-separated; `help` / `version` signal early exit).
     pub fn apply_mawk_w(&mut self) -> Result<(), MawkWAction> {
         for w in &self.mawk_w {

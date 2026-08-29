@@ -368,9 +368,8 @@ pub fn run(bin_name: &str) -> Result<()> {
     }
     rt.init_argv(&files);
     apply_assigns(&args, &mut rt)?;
-    if let Some(fs) = &args.field_sep {
-        rt.vars
-            .insert("FS".into(), Value::Str(String::from(fs.as_str()).into()));
+    if let Some(fs) = args.field_separator() {
+        rt.vars.insert("FS".into(), Value::Str(fs));
     }
     if args.csv {
         rt.csv_mode = true;
@@ -522,7 +521,14 @@ pub fn run(bin_name: &str) -> Result<()> {
                     apply_one_assignment(&mut rt, name, value);
                     continue;
                 }
-                let p = PathBuf::from(&operand);
+                // POSIX gives the operand `-` the meaning "standard input", and
+                // gawk, mawk and one-true-awk all read stdin for it while still
+                // reporting `FILENAME` as `-`. awkrs opened a file literally
+                // named `-`, which does not exist, and died with a fatal
+                // "cannot open file" — so `awk '{ … }' data.txt - < more.txt`,
+                // the standard way to append a pipe to a file list, failed.
+                // `getline < "-"` was already redirected; the operand was not.
+                let p = (operand != "-").then(|| PathBuf::from(&operand));
                 rt.vars.insert("ARGIND".into(), Value::Num(arg_idx as f64));
                 rt.filename = operand;
                 rt.fnr = 0.0;
@@ -543,7 +549,7 @@ pub fn run(bin_name: &str) -> Result<()> {
                 }
                 let n = if use_parallel_files {
                     process_file_parallel(
-                        Some(p.as_path()),
+                        p.as_deref(),
                         &cp,
                         &mut rt,
                         threads,
@@ -556,7 +562,7 @@ pub fn run(bin_name: &str) -> Result<()> {
                         worker_jit_enabled,
                     )?
                 } else {
-                    process_file(Some(p.as_path()), cp.as_ref(), &mut range_state, &mut rt)?
+                    process_file(p.as_deref(), cp.as_ref(), &mut range_state, &mut rt)?
                 };
                 nr_global += n as f64;
                 vm_run_endfile(cp.as_ref(), &mut rt)?;
@@ -2067,8 +2073,8 @@ fn try_native_run(args: &Args, program_text: &str, files: &[PathBuf]) -> Result<
 
     let mut rt = Runtime::new();
     rt.characters_as_bytes = args.characters_as_bytes;
-    if let Some(fs) = &args.field_sep {
-        rt.vars.insert("FS".into(), Value::Str(fs.clone().into()));
+    if let Some(fs) = args.field_separator() {
+        rt.vars.insert("FS".into(), Value::Str(fs));
     }
     apply_assigns(args, &mut rt)?;
     rt.init_argv(files);
@@ -2122,7 +2128,18 @@ fn resolve_program_and_files(args: &Args) -> Result<(Vec<u8>, Vec<PathBuf>)> {
             &std::fs::read(exec).map_err(|e| Error::ProgramFile(exec.clone(), e))?,
         );
     }
-    if prog.is_empty() {
+    // Whether a program *source* was named, not whether it produced any text: an
+    // empty `-f` file is still a program, and gawk, mawk and one-true-awk all
+    // run it as one (no rules, exit 0). Keying off the assembled bytes made
+    // `awk -f empty.awk data.txt` consume `data.txt` as the program text and
+    // fail to parse it, while `awk -f empty.awk` alone reported "no program
+    // given" — an empty program on `argv` (`awk '' data.txt`) already worked.
+    let named_a_source = !args.include.is_empty()
+        || !args.load.is_empty()
+        || !args.progfiles.is_empty()
+        || !args.source.is_empty()
+        || args.exec_file.is_some();
+    if !named_a_source {
         if args.rest.is_empty() {
             return Err(Error::Parse {
                 line: 1,
@@ -2190,6 +2207,11 @@ fn apply_assigns(args: &Args, rt: &mut Runtime) -> Result<()> {
         // A variable *name* is an awk identifier, so it is text; the value is
         // whatever bytes were passed.
         let name = String::from_utf8_lossy(&bytes[..eq]).into_owned();
+        if !is_legal_assignment_name(&name) {
+            return Err(Error::Runtime(format!(
+                "`{name}' is not a legal variable name"
+            )));
+        }
         apply_one_assignment_bytes(rt, &name, &bytes[eq + 1..]);
     }
     Ok(())
@@ -2245,14 +2267,32 @@ fn argv_operand_limit(rt: &Runtime) -> usize {
 /// the test is the identifier grammar, not the mere presence of `=`.
 fn split_assignment_operand(operand: &str) -> Option<(&str, &str)> {
     let (name, value) = operand.split_once('=')?;
-    let mut chars = name.chars();
-    if !chars.next().is_some_and(crate::lexer::is_ident_start) {
-        return None;
+    is_awk_identifier(name).then_some((name, value))
+}
+
+/// Whether `s` is spelled like an awk variable name: `[A-Za-z_][A-Za-z_0-9]*`.
+fn is_awk_identifier(s: &str) -> bool {
+    let mut chars = s.chars();
+    chars.next().is_some_and(crate::lexer::is_ident_start)
+        && chars.all(crate::lexer::is_ident_continue)
+}
+
+/// Whether `name` may appear on the left of a `-v` assignment.
+///
+/// An awk identifier, optionally qualified by a `namespace::` prefix of the
+/// same shape — gawk accepts `-v ns::x=1` and awkrs stores it in that
+/// namespace, so the check has to allow it. Everything else (`1x`, `x-y`,
+/// `x.y`, a name with a space, an empty name) is what gawk, mawk and
+/// one-true-awk all reject outright: gawk with `` `1x' is not a legal variable
+/// name ``, mawk with `improper assignment`, one-true-awk with `invalid -v
+/// option argument`, each exiting non-zero. awkrs accepted every one of them
+/// and created a variable under a name no program can spell, so a typo in a
+/// `-v` flag ran silently with the variable unset.
+fn is_legal_assignment_name(name: &str) -> bool {
+    match name.split_once("::") {
+        Some((ns, base)) => is_awk_identifier(ns) && is_awk_identifier(base),
+        None => is_awk_identifier(name),
     }
-    if !chars.all(crate::lexer::is_ident_continue) {
-        return None;
-    }
-    Some((name, value))
 }
 
 /// Store one command-line assignment, from `-v` or from a `var=value` operand.
