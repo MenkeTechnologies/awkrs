@@ -2863,10 +2863,8 @@ fn output_written_before_a_fatal_is_still_flushed() {
 
     // END runs after the records, so both the rule's output and END's own
     // output precede the fatal and both have to survive it.
-    let (code, stdout, _) = run_awkrs_stdin(
-        r#"{ print "rec" } END { print "B"; print 1 / 0 }"#,
-        "one\n",
-    );
+    let (code, stdout, _) =
+        run_awkrs_stdin(r#"{ print "rec" } END { print "B"; print 1 / 0 }"#, "one\n");
     assert_eq!(stdout, "rec\nB\n");
     assert_eq!(code, 2);
 
