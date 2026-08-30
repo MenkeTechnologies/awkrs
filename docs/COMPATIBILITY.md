@@ -209,7 +209,7 @@ Columns: **P** = POSIX / universal core, **B** = BSD awk, **M** = mawk, **G** = 
 | Regex acceptance set | **Match** — `~` accepts what the references accept rather than what Rust's parser does. `(?:…)` and `(?i)…` are fatal (ERE has no non-capturing group and no inline flags, so the `?` has no preceding expression); `))`, `{`, `a{` and `\Qa\E` are literal text; a reversed range like `[z-a]` is the characters as a set (mawk and one-true-awk, against gawk's fatal). Inside a bracket the character escapes keep their character but the class shorthands do not name a class — `[\t]` is a tab while `[\w]` is the letter `w`, matching neither a backslash nor a digit. |
 | `-M` float literals | **Match** — a literal holds the decimal that was written, not the `f64` nearest it, so ten additions of `0.1` come to exactly `1` as in gawk. `%.*f` and `%.*e` emit the number of digits asked for; `rug`'s formatting precision counts significant digits, so `%.4f` of `2.5` used to print `2.500` and `%.0f` the whole binary expansion. |
 | `printf "%c"` of a number | **Match** — the low byte in a single-byte locale (`233` → `\351`, `955` → `\273`), the UTF-8 encoding of the code point in a UTF-8 locale. That is gawk in both locales and mawk / one-true-awk in the C locale, which is the only rule no reference contradicts. awkrs previously emitted the encoding regardless of locale. |
-| Output already printed when a fatal is raised | **Match** with gawk and one-true-awk — a fatal inside the record loop still emits the records the program printed before it. mawk discards them. awkrs previously discarded the record loop's buffer while flushing the `BEGIN` block's. |
+| Output already printed when a fatal is raised | **Match** — a fatal does not un-print what the program already wrote, at any phase. Verified on `BEGIN { print "A"; printf "%d\n" }` (a format that outruns its arguments, which gawk, mawk and one-true-awk all treat as fatal): every reference writes `A` and exits 2, and so does awkrs. Output is buffered, and the flush used to happen on a normal exit and on the record loop's error path only, so a fatal raised in `BEGIN`, `BEGINFILE`, `ENDFILE` or `END` dropped the buffer on the way to the process exit and the run appeared to print nothing — silent data loss in a pipeline. Every phase now flushes what it printed before reporting the fatal (`flush_if_err!` in `src/lib.rs`), and the diagnostic still wins over any error the flush itself hits. |
 
 ---
 
@@ -235,6 +235,14 @@ Columns: **P** = POSIX / universal core, **B** = BSD awk, **M** = mawk, **G** = 
 - **Process / locale / OS**: `PROCINFO["platform"]` mapping uses `posix`/`mingw` style (`procinfo.rs`), not necessarily gawk’s host string for every OS.
 - **For-in order**: Without `-P`, gawk-style `sorted_in` and user comparators apply; hash order still differs across engines when sorting is off.
 - **Exit status**: fatal conditions (runtime faults, an unreadable `-f` file, an input file that cannot be opened, output-redirection I/O errors) exit **2**, matching all three reference awks. Parse diagnostics exit **1**, matching gawk; mawk and one-true-awk exit 2 there. See `Error::exit_status` in `src/error.rs`.
+- **Builtin arity is checked at run time, not at parse time.** `substr()`,
+  `substr("a")`, `length("a","b")`, `index("a")` and `sin()` are all rejected by
+  gawk before the program runs — exit 1, nothing executed — while awkrs compiles
+  them and raises when the call is reached, so a `BEGIN` block that printed first
+  has already written its output and the exit is 2 rather than 1. `split()` is
+  the one already rejected at parse time. The check needs to move to the
+  compiler, where the reference does it; the diagnostic text differs in either
+  case, so the divergence is *when* it is reported and what has run by then.
 - **`printf "%c"` with an empty string**: emits nothing, matching POSIX ("the first character of the string value") and one-true-awk. gawk and mawk emit a NUL byte.
 - **`"0x10" + 0`**: `0`, matching POSIX, gawk and mawk. one-true-awk's `strtod` accepts the `0x` prefix and yields 16.
 - **Namespace-qualified command-line assignments**: `-v ns::x=1` assigns into the namespace as gawk does, but the *operand* form (`awk '…' ns::x=1`) is still read as a file name, and gawk's `awk::` alias for the default namespace is not recognised (`-v awk::x=1` leaves `x` unset where gawk sets it). mawk and one-true-awk cannot parse a qualified name at all, so there is no three-way rule here — only a gawk gap.

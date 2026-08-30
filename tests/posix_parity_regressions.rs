@@ -2838,3 +2838,47 @@ fn an_illegal_dash_v_name_is_fatal() {
         assert_eq!(stdout, want, "-v {good}");
     }
 }
+
+/// Output written before a fatal survives it. A runtime error does not un-print
+/// what the program already printed: gawk's `BEGIN { print "A"; printf "%d\n" }`
+/// writes `A` on stdout and only then dies, and so do mawk and one-true-awk.
+///
+/// awkrs buffers `print` output, and the buffer was flushed on the way out of a
+/// normal run and on the main-input path's error, but not when BEGIN or END
+/// raised — so the buffer went out of scope on the way to the process exit and
+/// the whole run appeared to print nothing. In a pipeline that is silent data
+/// loss: the records already written vanish and only the diagnostic survives.
+#[test]
+fn output_written_before_a_fatal_is_still_flushed() {
+    // BEGIN: a format that outruns its arguments.
+    let (code, stdout, stderr) = run_awkrs_stdin(r#"BEGIN { print "A"; printf "%d\n" }"#, "");
+    assert_eq!(stdout, "A\n", "stdout before the fatal was dropped");
+    assert_eq!(code, 2, "a fatal exits 2");
+    assert!(!stderr.is_empty(), "the fatal is still reported");
+
+    // BEGIN: division by zero, a different fatal down the same path.
+    let (code, stdout, _) = run_awkrs_stdin(r#"BEGIN { print "A"; print 1 / 0 }"#, "");
+    assert_eq!(stdout, "A\n");
+    assert_eq!(code, 2);
+
+    // END runs after the records, so both the rule's output and END's own
+    // output precede the fatal and both have to survive it.
+    let (code, stdout, _) = run_awkrs_stdin(
+        r#"{ print "rec" } END { print "B"; print 1 / 0 }"#,
+        "one\n",
+    );
+    assert_eq!(stdout, "rec\nB\n");
+    assert_eq!(code, 2);
+
+    // A main-rule fatal was already flushed before this change; pinned so the
+    // three paths cannot drift apart again.
+    let (code, stdout, _) = run_awkrs_stdin(r#"{ print "A"; print 1 / 0 }"#, "one\n");
+    assert_eq!(stdout, "A\n");
+    assert_eq!(code, 2);
+
+    // A clean exit keeps flushing, which is the behaviour the fix must not
+    // have reached: `exit` is not an error and its status is the program's.
+    let (code, stdout, _) = run_awkrs_stdin(r#"BEGIN { print "A"; exit 3 }"#, "");
+    assert_eq!(stdout, "A\n");
+    assert_eq!(code, 3);
+}

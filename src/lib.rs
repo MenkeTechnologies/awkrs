@@ -167,6 +167,27 @@ pub fn run_on_interpreter_stack(bin_name: &str) -> Result<()> {
         .unwrap_or_else(|_| Err(Error::Runtime("interpreter thread panicked".into())))
 }
 
+/// Run a phase, flushing whatever the program already printed if it fails.
+///
+/// A fatal does not un-print the output that preceded it — gawk's
+/// `BEGIN { print "A"; printf "%d\n" }` writes `A` and only then dies. Output is
+/// buffered, so without this the buffer goes out of scope on the way to `main`'s
+/// `exit` and the whole run looks like it printed nothing. Best-effort for the
+/// reason `process_file` gives: the fatal already in hand is the one worth
+/// reporting, so a failure to flush must not replace it.
+///
+/// A macro rather than a function because the phase call and the flush each need
+/// `&mut rt`, and only running the call FIRST lets the second borrow begin.
+macro_rules! flush_if_err {
+    ($rt:expr, $call:expr) => {{
+        let r = $call;
+        if r.is_err() {
+            let _ = flush_print_buf(&mut $rt.print_buf);
+        }
+        r
+    }};
+}
+
 /// Run the interpreter. `bin_name` is used for diagnostics and help (e.g. `"awkrs"` or `"ars"`).
 pub fn run(bin_name: &str) -> Result<()> {
     let mut args = Args::parse();
@@ -397,7 +418,7 @@ pub fn run(bin_name: &str) -> Result<()> {
     attach_primary_input_before_begin_for_getline(cp.as_ref(), &files, &mut rt)?;
     // `PROCINFO` / `FUNCTAB` must exist during `BEGIN` (gawk scripts branch on pid, platform, …).
     rt.refresh_special_arrays(cp.as_ref(), bin_name);
-    vm_run_begin(cp.as_ref(), &mut rt)?;
+    flush_if_err!(rt, vm_run_begin(cp.as_ref(), &mut rt))?;
     rt.refresh_special_arrays(cp.as_ref(), bin_name);
     if let Some(ref prog) = prog_for_ast {
         cli_effects::emit_lint_warnings(
@@ -411,7 +432,7 @@ pub fn run(bin_name: &str) -> Result<()> {
     flush_print_buf(&mut rt.print_buf)?;
     if rt.exit_pending {
         rt.detach_input_reader();
-        vm_run_end(cp.as_ref(), &mut rt)?;
+        flush_if_err!(rt, vm_run_end(cp.as_ref(), &mut rt))?;
         flush_print_buf(&mut rt.print_buf)?;
         finalize_cli_outputs(&args, bin_name, &rt, cp.as_ref(), profile_start, threads)?;
         std::process::exit(rt.exit_code);
@@ -476,11 +497,11 @@ pub fn run(bin_name: &str) -> Result<()> {
             }
             rt.vars.insert("ARGIND".into(), Value::Num(0.0));
             rt.filename = "-".into();
-            vm_run_beginfile(cp.as_ref(), &mut rt)?;
+            flush_if_err!(rt, vm_run_beginfile(cp.as_ref(), &mut rt))?;
             if rt.exit_pending {
                 rt.detach_input_reader();
-                vm_run_endfile(cp.as_ref(), &mut rt)?;
-                vm_run_end(cp.as_ref(), &mut rt)?;
+                flush_if_err!(rt, vm_run_endfile(cp.as_ref(), &mut rt))?;
+                flush_if_err!(rt, vm_run_end(cp.as_ref(), &mut rt))?;
                 finalize_cli_outputs(&args, bin_name, &rt, cp.as_ref(), profile_start, threads)?;
                 std::process::exit(rt.exit_code);
             }
@@ -500,7 +521,7 @@ pub fn run(bin_name: &str) -> Result<()> {
             } else {
                 process_file(None, cp.as_ref(), &mut range_state, &mut rt)?;
             }
-            vm_run_endfile(cp.as_ref(), &mut rt)?;
+            flush_if_err!(rt, vm_run_endfile(cp.as_ref(), &mut rt))?;
         } else {
             // Both the bound and each entry are re-read on every pass: a rule may
             // edit `ARGV` or `ARGC` while an earlier file is still being
@@ -532,11 +553,11 @@ pub fn run(bin_name: &str) -> Result<()> {
                 rt.vars.insert("ARGIND".into(), Value::Num(arg_idx as f64));
                 rt.filename = operand;
                 rt.fnr = 0.0;
-                vm_run_beginfile(cp.as_ref(), &mut rt)?;
+                flush_if_err!(rt, vm_run_beginfile(cp.as_ref(), &mut rt))?;
                 if rt.exit_pending {
                     rt.detach_input_reader();
-                    vm_run_endfile(cp.as_ref(), &mut rt)?;
-                    vm_run_end(cp.as_ref(), &mut rt)?;
+                    flush_if_err!(rt, vm_run_endfile(cp.as_ref(), &mut rt))?;
+                    flush_if_err!(rt, vm_run_end(cp.as_ref(), &mut rt))?;
                     finalize_cli_outputs(
                         &args,
                         bin_name,
@@ -565,7 +586,7 @@ pub fn run(bin_name: &str) -> Result<()> {
                     process_file(p.as_deref(), cp.as_ref(), &mut range_state, &mut rt)?
                 };
                 nr_global += n as f64;
-                vm_run_endfile(cp.as_ref(), &mut rt)?;
+                flush_if_err!(rt, vm_run_endfile(cp.as_ref(), &mut rt))?;
                 if rt.exit_pending {
                     break;
                 }
@@ -574,7 +595,7 @@ pub fn run(bin_name: &str) -> Result<()> {
     }
 
     flush_print_buf(&mut rt.print_buf)?;
-    vm_run_end(cp.as_ref(), &mut rt)?;
+    flush_if_err!(rt, vm_run_end(cp.as_ref(), &mut rt))?;
     flush_print_buf(&mut rt.print_buf)?;
     finalize_cli_outputs(&args, bin_name, &rt, cp.as_ref(), profile_start, threads)?;
     if rt.exit_pending {
