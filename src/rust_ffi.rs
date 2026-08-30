@@ -5,7 +5,7 @@
 //! it. This module only supplies the awk-flavored [`fusevm::RustSugar`] config
 //! and the desugar entry the parser calls. The emitted `__rust_compile(...)`
 //! call and every exported bareword are resolved in
-//! [`crate::vm_builtins::exec_builtin_dispatch`].
+//! `vm_builtins::exec_builtin_dispatch`, which is `pub(crate)`.
 //!
 //! awk's top level is a sequence of `pattern { action }` rules — a bare call
 //! statement is not valid there — so a `rust { ... }` block desugars to a whole

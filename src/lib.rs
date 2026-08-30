@@ -4,7 +4,6 @@
 // constants like `MIXED_ADD_FIELDNUM_TO_SLOT`, helper fns like `ops_hash`,
 // `pack_print_redir`) by name in `[`x`]` form for readability of the source. These
 // don't resolve as intra-doc links from rustdoc's POV, so silence the lint.
-#![allow(rustdoc::broken_intra_doc_links)]
 
 pub mod aot;
 mod ast;
