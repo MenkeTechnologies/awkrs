@@ -359,7 +359,9 @@ fn break_outside_a_loop_is_rejected_instead_of_looping_forever() {
     ] {
         let got = run_awkrs_stdin_bounded(program, "x\n", 10);
         let (code, out, err) = got.unwrap_or_else(|| panic!("{program}: did not terminate"));
-        assert_eq!(code, 2, "{program}: stdout {out:?} stderr {err:?}");
+        // 1, not 2: gawk rejects every one of these while parsing. Measured on
+        // gawk 5.3 — all seven exit 1 and print nothing.
+        assert_eq!(code, 1, "{program}: stdout {out:?} stderr {err:?}");
         assert!(out.is_empty(), "{program}: rejected programs run nothing");
         assert!(err.contains("break"), "{program}: stderr {err:?}");
     }
@@ -380,7 +382,9 @@ fn continue_outside_a_loop_is_rejected_instead_of_looping_forever() {
     ] {
         let got = run_awkrs_stdin_bounded(program, "x\n", 10);
         let (code, out, err) = got.unwrap_or_else(|| panic!("{program}: did not terminate"));
-        assert_eq!(code, 2, "{program}: stdout {out:?} stderr {err:?}");
+        // 1, not 2: same parse-time rejection as `break` above, measured the
+        // same way — gawk exits 1 on all six.
+        assert_eq!(code, 1, "{program}: stdout {out:?} stderr {err:?}");
         assert!(out.is_empty(), "{program}: rejected programs run nothing");
         assert!(err.contains("continue"), "{program}: stderr {err:?}");
     }

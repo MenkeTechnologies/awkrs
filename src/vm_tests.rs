@@ -153,7 +153,8 @@ fn vm_begin_atan2_pi_over_four() {
 
 #[test]
 fn vm_begin_atan2_wrong_arity_errors() {
-    let cp = compile("BEGIN { print atan2(1) }");
+    // Indirect: a direct call is rejected by `builtin_arity` before the VM runs.
+    let cp = compile(r#"BEGIN { f = "atan2"; print @f(1) }"#);
     let mut rt = runtime_with_slots(&cp);
     let e = vm_run_begin(&cp, &mut rt).unwrap_err();
     assert!(e.to_string().contains("atan2"), "{e:?}");
@@ -161,7 +162,8 @@ fn vm_begin_atan2_wrong_arity_errors() {
 
 #[test]
 fn vm_begin_systime_with_arg_errors() {
-    let cp = compile("BEGIN { print systime(1) }");
+    // Indirect: a direct call is rejected by `builtin_arity` before the VM runs.
+    let cp = compile(r#"BEGIN { f = "systime"; print @f(1) }"#);
     let mut rt = runtime_with_slots(&cp);
     let e = vm_run_begin(&cp, &mut rt).unwrap_err();
     assert!(e.to_string().contains("systime"), "{e:?}");
@@ -209,7 +211,8 @@ fn vm_begin_sqrt_perfect_square() {
 
 #[test]
 fn vm_begin_sqrt_wrong_arity_errors() {
-    let cp = compile("BEGIN { print sqrt() }");
+    // Indirect: a direct call is rejected by `builtin_arity` before the VM runs.
+    let cp = compile(r#"BEGIN { f = "sqrt"; print @f() }"#);
     let mut rt = runtime_with_slots(&cp);
     let e = vm_run_begin(&cp, &mut rt).unwrap_err();
     assert!(e.to_string().contains("sqrt"), "{e:?}");
@@ -265,7 +268,8 @@ fn vm_begin_sin_zero_and_cos_zero() {
 
 #[test]
 fn vm_begin_sin_wrong_arity_errors() {
-    let cp = compile("BEGIN { print sin() }");
+    // Indirect: a direct call is rejected by `builtin_arity` before the VM runs.
+    let cp = compile(r#"BEGIN { f = "sin"; print @f() }"#);
     let mut rt = runtime_with_slots(&cp);
     let e = vm_run_begin(&cp, &mut rt).unwrap_err();
     assert!(e.to_string().contains("sin"), "{e:?}");
@@ -2288,7 +2292,8 @@ fn calling_undefined_function_errors() {
 
 #[test]
 fn wrong_arity_to_builtin_errors() {
-    let result = run_begin_must_err(r#"BEGIN { x = sqrt() }"#);
+    // Indirect: a direct call is rejected by `builtin_arity` before the VM runs.
+    let result = run_begin_must_err(r#"BEGIN { f = "sqrt"; x = @f() }"#);
     assert!(result.is_err(), "sqrt() with 0 args should error");
 }
 

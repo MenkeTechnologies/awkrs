@@ -25,24 +25,46 @@ pub enum Error {
     /// messages consistent across implementations.
     #[error("cannot open file {0:?} for reading: {1}")]
     InputFile(PathBuf, std::io::Error),
+    /// Rejected by `validate_program` before any rule ran: a builtin called with
+    /// the wrong number of arguments, `break`/`continue` outside a loop, a
+    /// parenthesized comma list where one is not allowed. gawk reports all of
+    /// these while parsing, so they exit 1 like a syntax error rather than 2
+    /// like a fault. Carries no line number because the AST does not record one.
+    #[error("{0}")]
+    Validate(String),
     /// `exit` was evaluated (propagated from functions / expressions).
     #[error("exit {0}")]
     Exit(i32),
 }
 impl Error {
+    /// Re-tag a `validate_program` rejection as the parse-time diagnostic it
+    /// is, so it exits 1 rather than 2.
+    ///
+    /// The validator builds its messages as [`Error::Runtime`] because that is
+    /// the only free-text variant; nothing it reports can actually reach the
+    /// runtime, since it runs before compilation. Other variants pass through.
+    #[must_use]
+    pub fn into_validate(self) -> Self {
+        match self {
+            Error::Runtime(msg) => Error::Validate(msg),
+            other => other,
+        }
+    }
+
     /// Process exit status this error should produce, matching the reference awks.
     ///
     /// * **2** — every *fatal* condition: runtime faults (`1/0`, calling an
     ///   undefined function), an unreadable `-f` program file, an input file that
     ///   cannot be opened, and I/O failures on output redirection. gawk, mawk and
     ///   one-true-awk all exit 2 for these.
-    /// * **1** — parse diagnostics. Here the references disagree (gawk 1,
-    ///   mawk and one-true-awk 2); awkrs follows gawk.
+    /// * **1** — parse diagnostics, including [`Error::Validate`] rejections,
+    ///   which gawk also reports before running the program. Here the references
+    ///   disagree (gawk 1, mawk and one-true-awk 2); awkrs follows gawk.
     ///
     /// [`Error::Exit`] carries the program's own status and never reaches this.
     pub fn exit_status(&self) -> i32 {
         match self {
-            Error::Parse { .. } => 1,
+            Error::Parse { .. } | Error::Validate(_) => 1,
             Error::Exit(code) => *code,
             Error::Io(_) | Error::Runtime(_) | Error::ProgramFile(..) | Error::InputFile(..) => 2,
         }
@@ -56,6 +78,50 @@ pub type Result<T> = std::result::Result<T, Error>;
 mod tests {
     use super::Error;
     use std::path::PathBuf;
+
+    /// gawk reports a `validate_program` rejection while parsing and exits 1;
+    /// a fault that reaches the runtime exits 2. Before `Error::Validate`
+    /// existed the validator borrowed `Error::Runtime` and every rejection
+    /// exited 2, so `awk 'BEGIN { substr() }'` disagreed with gawk on status
+    /// even once it stopped running the program.
+    #[test]
+    fn validate_exits_one_and_runtime_exits_two() {
+        assert_eq!(Error::Validate("0 is invalid".into()).exit_status(), 1);
+        assert_eq!(Error::Runtime("division by zero".into()).exit_status(), 2);
+        assert_eq!(
+            Error::Parse {
+                line: 1,
+                msg: "x".into()
+            }
+            .exit_status(),
+            1
+        );
+    }
+
+    /// `into_validate` re-tags only the free-text variant the validator uses;
+    /// anything else must survive unchanged, or a genuine fault would start
+    /// exiting 1.
+    #[test]
+    fn into_validate_retags_runtime_and_leaves_others_alone() {
+        assert!(matches!(
+            Error::Runtime("m".into()).into_validate(),
+            Error::Validate(m) if m == "m"
+        ));
+        assert!(matches!(
+            Error::InputFile(PathBuf::from("f"), std::io::Error::other("x")).into_validate(),
+            Error::InputFile(..)
+        ));
+        assert!(matches!(Error::Exit(3).into_validate(), Error::Exit(3)));
+    }
+
+    /// The message carries no "runtime error:" prefix, because it is not one.
+    #[test]
+    fn validate_displays_the_bare_message() {
+        assert_eq!(
+            Error::Validate("0 is invalid as number of arguments for sin".into()).to_string(),
+            "0 is invalid as number of arguments for sin"
+        );
+    }
 
     #[test]
     fn parse_error_display_includes_line_and_message() {

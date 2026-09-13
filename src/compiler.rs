@@ -94,7 +94,7 @@ impl Compiler {
     }
 
     pub fn compile_program(prog: &Program) -> Result<CompiledProgram> {
-        validate_program(prog)?;
+        validate_program(prog).map_err(Error::into_validate)?;
         // Pre-pass: collect all names used in array contexts.
         let array_names = collect_array_names(prog);
 
@@ -198,7 +198,7 @@ impl Compiler {
         let src = format!("BEGIN {{ {code}\n}}");
         let prog = crate::parser::parse_program(&src)
             .map_err(|e| Error::Runtime(format!("intercept advice: {e}")))?;
-        validate_program(&prog)?;
+        validate_program(&prog).map_err(Error::into_validate)?;
 
         let mut array_names = collect_array_names(&prog);
         for a in &base.array_var_names {
@@ -2689,6 +2689,29 @@ fn validate_stmt(st: &Stmt, ctx: BreakCtx) -> Result<()> {
     }
 }
 
+/// Argument counts gawk accepts for each builtin, as an inclusive `(min, max)`.
+///
+/// gawk rejects a wrong count while parsing, so the program never runs. awkrs
+/// checks the same ranges from `validate_program`, before any rule executes,
+/// so a bad call cannot print output that gawk would never have produced.
+/// Variadic builtins (`printf`, `sprintf`) and user functions are absent; an
+/// absent name is left unchecked here and reported when the call is reached.
+fn builtin_arity(name: &str) -> Option<(usize, usize)> {
+    Some(match name {
+        "rand" | "systime" => (0, 0),
+        "length" | "srand" => (0, 1),
+        "strftime" => (0, 3),
+        "cos" | "exp" | "int" | "log" | "sin" | "sqrt" | "system" | "tolower" | "toupper" => (1, 1),
+        "close" | "mktime" => (1, 2),
+        "asort" | "asorti" => (1, 3),
+        "atan2" | "index" => (2, 2),
+        "gsub" | "match" | "sub" | "substr" => (2, 3),
+        "patsplit" | "split" => (2, 4),
+        "gensub" => (3, 4),
+        _ => return None,
+    })
+}
+
 fn validate_expr(e: &Expr, allow_tuple: bool) -> Result<()> {
     match e {
         Expr::Tuple(_) if !allow_tuple => Err(Error::Runtime(
@@ -2720,38 +2743,13 @@ fn validate_expr(e: &Expr, allow_tuple: bool) -> Result<()> {
             Ok(())
         }
         Expr::Call { name, args } => {
-            match name.as_str() {
-                "gsub" | "sub" if !(2..=3).contains(&args.len()) => {
+            if let Some((lo, hi)) = builtin_arity(name) {
+                if !(lo..=hi).contains(&args.len()) {
                     return Err(Error::Runtime(format!(
                         "{} is invalid as number of arguments for {name}",
                         args.len()
                     )));
                 }
-                "split" if !(2..=4).contains(&args.len()) => {
-                    return Err(Error::Runtime(format!(
-                        "{} is invalid as number of arguments for split",
-                        args.len()
-                    )));
-                }
-                "match" if !(2..=3).contains(&args.len()) => {
-                    return Err(Error::Runtime(format!(
-                        "{} is invalid as number of arguments for match",
-                        args.len()
-                    )));
-                }
-                "patsplit" if !(2..=4).contains(&args.len()) => {
-                    return Err(Error::Runtime(format!(
-                        "{} is invalid as number of arguments for patsplit",
-                        args.len()
-                    )));
-                }
-                "gensub" if !(3..=4).contains(&args.len()) => {
-                    return Err(Error::Runtime(format!(
-                        "{} is invalid as number of arguments for gensub",
-                        args.len()
-                    )));
-                }
-                _ => {}
             }
             for a in args {
                 validate_expr(a, false)?;
@@ -3089,6 +3087,74 @@ mod tests {
         let prog = parse_program("BEGIN { gensub(/a/, \"b\") }").unwrap();
         let e = validate_program(&prog).unwrap_err();
         assert!(e.to_string().contains("gensub"), "{e}");
+    }
+
+    /// Every count here was measured against gawk 5.3: each is rejected while
+    /// parsing, so nothing before the bad call runs. Ranges live in
+    /// `builtin_arity`.
+    #[test]
+    fn validate_rejects_wrong_arity_for_every_fixed_arity_builtin() {
+        for (src, name) in [
+            ("BEGIN { substr(\"a\") }", "substr"),
+            ("BEGIN { substr(\"a\", 1, 2, 3) }", "substr"),
+            ("BEGIN { length(\"a\", \"b\") }", "length"),
+            ("BEGIN { index(\"a\") }", "index"),
+            ("BEGIN { atan2(1) }", "atan2"),
+            ("BEGIN { sin() }", "sin"),
+            ("BEGIN { cos(1, 2) }", "cos"),
+            ("BEGIN { exp() }", "exp"),
+            ("BEGIN { log(1, 2) }", "log"),
+            ("BEGIN { sqrt() }", "sqrt"),
+            ("BEGIN { int() }", "int"),
+            ("BEGIN { toupper() }", "toupper"),
+            ("BEGIN { tolower(1, 2) }", "tolower"),
+            ("BEGIN { rand(1) }", "rand"),
+            ("BEGIN { srand(1, 2) }", "srand"),
+            ("BEGIN { systime(1) }", "systime"),
+            ("BEGIN { mktime() }", "mktime"),
+            ("BEGIN { system() }", "system"),
+            ("BEGIN { close() }", "close"),
+            ("BEGIN { asort() }", "asort"),
+            ("BEGIN { asorti(1, 2, 3, 4) }", "asorti"),
+            ("BEGIN { strftime(1, 2, 3, 4) }", "strftime"),
+        ] {
+            let prog = parse_program(src).unwrap();
+            let e = validate_program(&prog).expect_err(src);
+            assert!(e.to_string().contains(name), "{src}: {e}");
+        }
+    }
+
+    /// The counterpart: legal calls must still compile. A too-eager range in
+    /// `builtin_arity` would break working programs, which is the worse half.
+    #[test]
+    fn validate_accepts_legal_arity_for_fixed_arity_builtins() {
+        for src in [
+            "BEGIN { substr(\"abc\", 2) }",
+            "BEGIN { substr(\"abc\", 2, 1) }",
+            "BEGIN { length() }",
+            "BEGIN { length(\"a\") }",
+            "BEGIN { index(\"a\", \"a\") }",
+            "BEGIN { atan2(1, 2) }",
+            "BEGIN { sin(1) }",
+            "BEGIN { rand() }",
+            "BEGIN { srand() }",
+            "BEGIN { srand(1) }",
+            "BEGIN { systime() }",
+            "BEGIN { strftime() }",
+            "BEGIN { close(\"f\") }",
+            "BEGIN { toupper(\"a\") }",
+        ] {
+            let prog = parse_program(src).unwrap();
+            validate_program(&prog).unwrap_or_else(|e| panic!("{src} should validate: {e}"));
+        }
+    }
+
+    /// An indirect call carries no name at parse time, so the VM keeps its own
+    /// arity guard. gawk agrees: it runs, prints, then fatals.
+    #[test]
+    fn validate_allows_indirect_call_with_wrong_arity() {
+        let prog = parse_program(r#"BEGIN { f = "sin"; @f() }"#).unwrap();
+        validate_program(&prog).expect("indirect call is checked at run time");
     }
 
     #[test]
@@ -3597,7 +3663,7 @@ mod peephole_pinning {
 
     #[test]
     fn compile_function_call_with_args() {
-        let ops = compile_begin_ops("BEGIN { sin(1, 2) }"); // sin only takes 1, but compiler accepts
+        let ops = compile_begin_ops("BEGIN { atan2(1, 2) }");
         assert!(
             contains_op(&ops, |op| matches!(op, Op::CallBuiltin(_, 2))),
             "expected CallBuiltin with 2 args, got: {ops:?}"
