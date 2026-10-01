@@ -28,6 +28,7 @@ pub mod fusevm_bridge;
 mod fusevm_compile;
 mod fusevm_host;
 mod gawk_extensions;
+mod gawk_random;
 mod gettext_util;
 /// Function-call AOP intercepts (before/after/around advice) — awkrs/zshrs-original
 /// extension; no POSIX awk counterpart. Types + pattern matcher live here; the VM
@@ -870,7 +871,7 @@ fn process_stdin_parallel(
     let shared_globals = Arc::new(rt.vars.clone());
     let shared_slots = Arc::new(rt.slots.clone());
     let fname = rt.filename.clone();
-    let seed_base = rt.rand_state;
+    let seed_base = rt.rand_seed;
     let numeric_dec = rt.numeric_decimal;
     let csv_mode = rt.csv_mode;
     let stdin_nr_offset = rt.nr;
@@ -1068,7 +1069,7 @@ fn process_file_parallel(
     let shared_globals = Arc::new(rt.vars.clone());
     let shared_slots = Arc::new(rt.slots.clone());
     let fname = rt.filename.clone();
-    let seed_base = rt.rand_state;
+    let seed_base = rt.rand_seed;
     let numeric_dec = rt.numeric_decimal;
     let csv_mode = rt.csv_mode;
 

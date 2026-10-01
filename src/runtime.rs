@@ -1539,8 +1539,8 @@ pub struct Runtime {
     pub bignum: bool,
     /// Seed last given to `srand` (what the next `srand` returns).
     pub rand_seed: u64,
-    /// LCG state advanced by every `rand()`; reset to the seed by `srand`.
-    pub rand_state: u64,
+    /// gawk's generator behind `rand()`; reseeded by `srand`.
+    pub rng: crate::gawk_random::GawkRandom,
     /// Radix for `%f` / `%g` / etc. and `print` of numbers when `-N` / `--use-lc-numeric` is set (Unix).
     pub numeric_decimal: char,
     /// Thousands separator for gawk **`%'`** (`printf` / `sprintf` integer grouping), from `localeconv()` when available.
@@ -2323,7 +2323,7 @@ impl Runtime {
             pipe_input_children: HashMap::new(),
             coproc_handles: HashMap::new(),
             rand_seed: 1,
-            rand_state: 1,
+            rng: crate::gawk_random::GawkRandom::default(),
             numeric_decimal: '.',
             // gawk parity: in the C locale, `localeconv` returns an empty
             // `thousands_sep` — `%'d` then prints WITHOUT grouping. Don't fall
@@ -2817,7 +2817,11 @@ impl Runtime {
             pipe_input_children: HashMap::new(),
             coproc_handles: HashMap::new(),
             rand_seed,
-            rand_state: rand_seed,
+            rng: {
+                let mut r = crate::gawk_random::GawkRandom::default();
+                r.seed(rand_seed as u32);
+                r
+            },
             numeric_decimal,
             numeric_thousands_sep,
             slots: Vec::new(),
@@ -3961,10 +3965,10 @@ impl Runtime {
         }
         exit_status
     }
-    /// `rand` — see implementation for the contract.
+    /// `rand()`: gawk's `do_rand` over gawk's `random()`, so a seeded sequence is
+    /// gawk's (see [`crate::gawk_random`]).
     pub fn rand(&mut self) -> f64 {
-        self.rand_state = self.rand_state.wrapping_mul(1103515245).wrapping_add(12345);
-        f64::from((self.rand_state >> 16) as u32 & 0x7fff) / 32768.0
+        self.rng.next_f64()
     }
 
     /// Seed PRNG; **`n`** is the full **`u64`** seed (POSIX/gawk-style **`srand(x)`** truncates **`x`** to an integer first).
@@ -3978,7 +3982,8 @@ impl Runtime {
                 .map(|d| d.as_secs())
                 .unwrap_or(1)
         });
-        self.rand_state = self.rand_seed;
+        // gawk: `srandom((unsigned int) seed)`.
+        self.rng.seed(self.rand_seed as u32);
         (prev & 0xffff_ffff) as f64
     }
     /// `set_field_sep_split` — see implementation for the contract.
@@ -5371,7 +5376,7 @@ impl Clone for Runtime {
             pipe_input_children: HashMap::new(),
             coproc_handles: HashMap::new(),
             rand_seed: self.rand_seed,
-            rand_state: self.rand_state,
+            rng: self.rng.clone(),
             numeric_decimal: self.numeric_decimal,
             numeric_thousands_sep: self.numeric_thousands_sep,
             slots: self.slots.clone(),

@@ -1434,3 +1434,9 @@ BEGIN { v = "foo bar"; print gsub(/\y/, "|", v), v; w = "abc"; print gsub(/\`a/,
 3
 1
 2
+
+#=== rand_sequence_matches_gawk
+# rand() reproduces gawk's sequence for a given seed (and unseeded).
+#--- only gawk
+#--- prog
+BEGIN { printf "%.6f %.6f ", rand(), rand(); srand(42); printf "%.10f %.10f\n", rand(), rand() }

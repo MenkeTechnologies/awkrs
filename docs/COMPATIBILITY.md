@@ -133,7 +133,7 @@ Columns: **P** = POSIX / universal core, **B** = BSD awk, **M** = mawk, **G** = 
 | Builtin | P | B | M | G | awkrs |
 |---------|---|---|---|---|--------|
 | `atan2` `cos` `sin` `exp` `log` `sqrt` `int` | * | * | * | * | **Match** (negative `log`/`sqrt`: warn + NaN like gawk — `runtime::warn_builtin_negative_arg`) |
-| `rand` `srand` | * | * | * | * | **Part** (sequence not guaranteed to match any one engine) |
+| `rand` `srand` | * | * | * | * | **Match** gawk — `rand()` is a port of gawk's generator (its bundled BSD `random(3)`, `TYPE_4` with the 512-entry shuffle, behind `do_rand`), so the sequence from any `srand(n)`, and the unseeded one, is gawk's value for value; mawk and one-true-awk each have their own. `srand` returns the previous seed and `srand()` seeds with the time in whole seconds. awkrs used a 15-bit LCG. |
 | `length` / `length()` | * | * | * | * | **Match** (bare `length` → `$0` — `parser.rs`) |
 | `index` `substr` `sprintf` | * | * | * | * | **Match** |
 | `match` `sub` `gsub` `split` | * | * | * | * | **Match** / **Part** (regex engine = Rust `regex`; subtle differences possible). `gsub(//, …)` produces gawk's zero-width matches at every position; `split(s, a, fs, seps)` populates the 4th-arg `seps` array with the actual separator strings between fields; with the default `" "` separator it also puts leading whitespace in `seps[0]` and trailing whitespace in `seps[n]` (each only when present), as gawk does. `patsplit`'s `seps[0]` / `seps[n]` likewise hold the text before the first and after the last field. |

@@ -414,7 +414,7 @@ pub(crate) fn exec_builtin_dispatch(
                         let f = value_to_float(v, prec, round);
                         Some(bignum::float_trunc_integer(&f).to_u64_wrapping())
                     } else {
-                        Some(v.as_number() as u32 as u64)
+                        Some(v.as_number() as u64)
                     }
                 }
             };
