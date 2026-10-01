@@ -1422,3 +1422,15 @@ BEGIN { s = "x[1] = y[22];"; n = gsub(/[][]/, "", s); print n, s; t = "a[b"; pri
 #--- only gawk
 #--- prog
 BEGIN { v = "foo bar"; print gsub(/\y/, "|", v), v; w = "abc"; print gsub(/\`a/, "X", w), gsub(/c\'/, "Y", w), w; print ("a/b" ~ /a[/]b/) }
+
+#=== output_pipes_close_before_final_stdout_flush
+# At exit (also on `exit`) gawk and mawk close output pipes before flushing
+# standard output, so the pipe's output comes first; awkrs flushed first and,
+# on `exit`, never waited for the pipe at all.
+#--- only gawk,mawk
+#--- prog
+{ print | "sort"; print "rec", $0 } END { print "done"; exit 3 }
+#--- in
+3
+1
+2

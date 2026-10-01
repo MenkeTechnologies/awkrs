@@ -1513,6 +1513,10 @@ pub struct Runtime {
     pub output_handles: HashMap<String, BufWriter<File>>,
     /// `print`/`printf` `| "cmd"` — stdin of `sh -c cmd` (key is the command string).
     pub pipe_stdin: HashMap<String, BufWriter<ChildStdin>>,
+    /// Output pipes opened while `PROCINFO["BUFFERPIPE"]` or
+    /// `PROCINFO[cmd, "BUFFERPIPE"]` existed: written without a flush per
+    /// `print`, as gawk does for them.
+    pub buffered_pipes: std::collections::HashSet<String>,
     /// `pipe_children` field.
     pub pipe_children: HashMap<String, Child>,
     /// `"cmd" | getline …` — stdout of `sh -c cmd`, kept open between calls so the
@@ -2313,6 +2317,7 @@ impl Runtime {
             dir_read: HashMap::new(),
             output_handles: HashMap::new(),
             pipe_stdin: HashMap::new(),
+            buffered_pipes: std::collections::HashSet::new(),
             pipe_children: HashMap::new(),
             pipe_stdout: HashMap::new(),
             pipe_input_children: HashMap::new(),
@@ -2455,6 +2460,16 @@ impl Runtime {
     }
 
     /// Per-input **`PROCINFO[input_name, "READ_TIMEOUT"]`** (gawk), else [`Self::global_read_timeout_ms`].
+    /// gawk `avoid_flush`: `PROCINFO["BUFFERPIPE"]` or `PROCINFO[cmd, "BUFFERPIPE"]`
+    /// exists.
+    pub fn procinfo_buffer_pipe(&self, cmd: &str) -> bool {
+        let Some(Value::Array(m)) = self.get_global_var("PROCINFO") else {
+            return false;
+        };
+        let sep = self.procinfo_subsep_string();
+        m.contains_key("BUFFERPIPE") || m.contains_key(&format!("{cmd}{sep}BUFFERPIPE"))
+    }
+
     pub fn procinfo_read_timeout_ms_for(&self, input_key: &str) -> i32 {
         let sep = self.procinfo_subsep_string();
         let composite = format!("{input_key}{sep}READ_TIMEOUT");
@@ -2796,6 +2811,7 @@ impl Runtime {
             dir_read: HashMap::new(),
             output_handles: HashMap::new(),
             pipe_stdin: HashMap::new(),
+            buffered_pipes: std::collections::HashSet::new(),
             pipe_children: HashMap::new(),
             pipe_stdout: HashMap::new(),
             pipe_input_children: HashMap::new(),
@@ -3048,9 +3064,20 @@ impl Runtime {
             self.pipe_children.insert(cmd.to_string(), child);
             self.pipe_stdin
                 .insert(cmd.to_string(), BufWriter::new(stdin));
+            if self.procinfo_buffer_pipe(cmd) {
+                self.buffered_pipes.insert(cmd.to_string());
+            } else {
+                self.buffered_pipes.remove(cmd);
+            }
         }
         let w = self.pipe_stdin.get_mut(cmd).unwrap();
         w.write_all(data).map_err(Error::Io)?;
+        // gawk flushes an output pipe after every `print` (io.c RED_FLUSH), so
+        // the command sees each line as it is printed, unless the program
+        // asked for buffering with `PROCINFO["BUFFERPIPE"]`.
+        if !self.buffered_pipes.contains(cmd) {
+            w.flush().map_err(Error::Io)?;
+        }
         Ok(())
     }
 
@@ -3100,6 +3127,10 @@ impl Runtime {
             )));
         };
         w.write_all(data).map_err(Error::Io)?;
+        // gawk flushes a two-way pipe after every `print` (builtin.c
+        // do_print), so the coprocess sees the line before awk reads its
+        // reply; without it `print "x" |& "cat"; "cat" |& getline` deadlocked.
+        w.flush().map_err(Error::Io)?;
         Ok(())
     }
 
@@ -5334,6 +5365,7 @@ impl Clone for Runtime {
             dir_read: HashMap::new(),
             output_handles: HashMap::new(),
             pipe_stdin: HashMap::new(),
+            buffered_pipes: std::collections::HashSet::new(),
             pipe_children: HashMap::new(),
             pipe_stdout: HashMap::new(),
             pipe_input_children: HashMap::new(),
@@ -5387,20 +5419,36 @@ impl Clone for Runtime {
     }
 }
 
-impl Drop for Runtime {
-    fn drop(&mut self) {
+impl Runtime {
+    /// Close every output pipe and coprocess, waiting for the children, and
+    /// flush redirected files — what awk does to its redirections at exit.
+    ///
+    /// Called before standard output's own last flush, which is the order
+    /// gawk and mawk use: `{ print | "sort" } END { print "done" }` writes the
+    /// sorted lines and then `done` (one-true-awk writes `done` first). awkrs
+    /// left this to `Drop`, after the flush — and `exit` leaves through
+    /// `process::exit`, which skips `Drop`, so a pipe's output could arrive
+    /// after awkrs had already exited.
+    pub fn close_output_redirects(&mut self) {
         for (_, h) in self.coproc_handles.drain() {
             let _ = shutdown_coproc(h);
         }
         for (_, mut w) in self.output_handles.drain() {
             let _ = w.flush();
         }
+        // Dropping each writer closes the child's standard input.
         for (_, mut w) in self.pipe_stdin.drain() {
             let _ = w.flush();
         }
         for (_, mut ch) in self.pipe_children.drain() {
             let _ = ch.wait();
         }
+    }
+}
+
+impl Drop for Runtime {
+    fn drop(&mut self) {
+        self.close_output_redirects();
         self.pipe_stdout.clear();
         for (_, mut ch) in self.pipe_input_children.drain() {
             let _ = ch.wait();

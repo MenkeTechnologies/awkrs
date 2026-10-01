@@ -429,15 +429,13 @@ pub fn run(bin_name: &str) -> Result<()> {
             rt.lint_runtime_active(),
         );
     }
-    flush_print_buf(&mut rt.print_buf)?;
     if rt.exit_pending {
         rt.detach_input_reader();
         flush_if_err!(rt, vm_run_end(cp.as_ref(), &mut rt))?;
-        flush_print_buf(&mut rt.print_buf)?;
+        finish_output(&mut rt)?;
         finalize_cli_outputs(&args, bin_name, &rt, cp.as_ref(), profile_start, threads)?;
         std::process::exit(rt.exit_code);
     }
-
     let mut range_state: Vec<bool> = vec![false; prog_rules_len];
 
     // POSIX: a program consisting solely of `BEGIN` actions (no main/record rules,
@@ -450,6 +448,10 @@ pub fn run(bin_name: &str) -> Result<()> {
         || !cp.endfile_chunks.is_empty();
 
     if program_reads_input {
+        // What `BEGIN` printed is out before input is read (a prompt shows
+        // before the program blocks on standard input). A program that ends
+        // here keeps it buffered until its output pipes have closed.
+        flush_print_buf(&mut rt.print_buf)?;
         // Parallel record mode: mmap whole files with RS-aware splitting (`record_io::split_input_into_records`).
         // Stdin parallel still chunks on newlines only (see `process_stdin_parallel`).
         // Primary `getline` shares the same stream as the record loop; parallel file mode slurps/mmaps
@@ -509,6 +511,7 @@ pub fn run(bin_name: &str) -> Result<()> {
                 rt.detach_input_reader();
                 flush_if_err!(rt, run_endfile_once(cp.as_ref(), &mut rt))?;
                 flush_if_err!(rt, vm_run_end(cp.as_ref(), &mut rt))?;
+                finish_output(&mut rt)?;
                 finalize_cli_outputs(&args, bin_name, &rt, cp.as_ref(), profile_start, threads)?;
                 std::process::exit(rt.exit_code);
             }
@@ -575,6 +578,7 @@ pub fn run(bin_name: &str) -> Result<()> {
                     rt.detach_input_reader();
                     flush_if_err!(rt, run_endfile_once(cp.as_ref(), &mut rt))?;
                     flush_if_err!(rt, vm_run_end(cp.as_ref(), &mut rt))?;
+                    finish_output(&mut rt)?;
                     finalize_cli_outputs(
                         &args,
                         bin_name,
@@ -611,9 +615,10 @@ pub fn run(bin_name: &str) -> Result<()> {
         }
     }
 
-    flush_print_buf(&mut rt.print_buf)?;
+    // Standard output is not flushed before `END`: like gawk and mawk, awk
+    // keeps it buffered until exit, where the redirections close first.
     flush_if_err!(rt, vm_run_end(cp.as_ref(), &mut rt))?;
-    flush_print_buf(&mut rt.print_buf)?;
+    finish_output(&mut rt)?;
     finalize_cli_outputs(&args, bin_name, &rt, cp.as_ref(), profile_start, threads)?;
     if rt.exit_pending {
         std::process::exit(rt.exit_code);
@@ -1151,6 +1156,15 @@ pub(crate) fn attach_stdin_primary(rt: &mut Runtime) {
     if rt.filename.is_empty() {
         rt.filename = "-".into();
     }
+}
+
+/// awk's output at exit: close the output pipes and coprocesses (waiting for
+/// the children), then flush standard output — the order gawk and mawk use, so
+/// a pipe's output lands before what the program printed to stdout after
+/// opening it.
+fn finish_output(rt: &mut Runtime) -> Result<()> {
+    rt.close_output_redirects();
+    flush_print_buf(&mut rt.print_buf)
 }
 
 /// The record loop's `ENDFILE`, unless plain `getline` already ran it when it

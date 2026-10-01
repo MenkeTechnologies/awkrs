@@ -1169,3 +1169,23 @@ fn arrays_of_arrays_type_errors_are_fatal() {
         assert!(e.contains(msg), "{prog}: stderr: {e}");
     }
 }
+
+// ── Output pipes and coprocesses at exit ─────────────────────────────────────
+
+/// gawk 5.4.1 / mawk order: output pipes close before standard output's last
+/// flush, on a normal end and on `exit`; a coprocess sees each `print` at once.
+#[test]
+fn output_pipes_close_before_final_stdout_flush() {
+    let (c, o, e) = run_awkrs_stdin(
+        r#"{ print | "sort"; print "rec", $0 } END { print "done"; exit 3 }"#,
+        "3\n1\n2\n",
+    );
+    assert_eq!(c, 3, "stderr={e}");
+    assert_eq!(o, "1\n2\n3\nrec 3\nrec 1\nrec 2\ndone\n");
+    let (c, o, e) = run_awkrs_stdin(
+        r#"BEGIN { print "co" |& "cat"; "cat" |& getline v; print v; print "z\ny" | "sort"; print "after" }"#,
+        "",
+    );
+    assert_eq!(c, 0, "stderr={e}");
+    assert_eq!(o, "co\ny\nz\nafter\n");
+}
