@@ -1481,6 +1481,12 @@ pub struct Runtime {
     /// must return `0`, not raise "only valid during normal input" — gawk, mawk and
     /// one-true-awk all return `0` there.
     pub primary_input_done: bool,
+    /// gawk runs `ENDFILE` when plain `getline` reaches the end of a file;
+    /// set then, so the record loop does not run it a second time for that file.
+    pub endfile_ran: bool,
+    /// Set when plain `getline` in `BEGIN` attached standard input and ran its
+    /// `BEGINFILE`, so the record loop does not run it again.
+    pub beginfile_ran: bool,
     /// Next `ARGV` index the operand walk will examine. Shared by the main
     /// record loop and plain `getline`, which in every reference advances to the
     /// next operand at end of file (POSIX `getline` reads "the next record",
@@ -2209,6 +2215,8 @@ impl Runtime {
             exit_code: 0,
             input_reader: None,
             primary_input_done: false,
+            endfile_ran: false,
+            beginfile_ran: false,
             argv_next: 1,
             inet_tcp_read: HashMap::new(),
             inet_tcp_write: HashMap::new(),
@@ -2690,6 +2698,8 @@ impl Runtime {
             exit_code: 0,
             input_reader: None,
             primary_input_done: false,
+            endfile_ran: false,
+            beginfile_ran: false,
             argv_next: 1,
             inet_tcp_read: HashMap::new(),
             inet_tcp_write: HashMap::new(),
@@ -3511,7 +3521,7 @@ impl Runtime {
     }
 
     /// One record from the attached primary reader; `None` at its end of file.
-    fn read_line_primary_current(&mut self) -> Result<Option<String>> {
+    pub(crate) fn read_line_primary_current(&mut self) -> Result<Option<String>> {
         let Some(reader) = self.input_reader.clone() else {
             return Ok(None);
         };
@@ -5226,6 +5236,8 @@ impl Clone for Runtime {
             exit_code: self.exit_code,
             input_reader: None,
             primary_input_done: false,
+            endfile_ran: false,
+            beginfile_ran: false,
             argv_next: 1,
             inet_tcp_read: HashMap::new(),
             inet_tcp_write: HashMap::new(),

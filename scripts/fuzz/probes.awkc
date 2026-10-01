@@ -1396,3 +1396,15 @@ a y 3
 #--- only gawk
 #--- prog
 BEGIN { a[1][2] = 1; print "before"; print a[1] }
+
+#=== getline_crossing_runs_beginfile_endfile
+# Plain getline reaching the end of a file runs ENDFILE for it and BEGINFILE
+# for the next; every BEGINFILE starts from an empty record. awkrs ran
+# neither from getline and showed the previous record in BEGINFILE.
+#--- only gawk
+#--- prog
+BEGIN { ARGV[1] = "input.txt"; ARGV[2] = "input.txt"; ARGC = 3 }
+BEGINFILE { print "BF", ++f, NF, "[" $0 "]" }
+ENDFILE { print "EF", f, FNR }
+FNR == 1 && f == 1 { while ((getline line) > 0) n++; print "read", n, NR, FNR }
+END { print NR }

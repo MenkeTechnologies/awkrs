@@ -500,10 +500,14 @@ pub fn run(bin_name: &str) -> Result<()> {
             rt.argv_next = argv_operand_limit(&rt);
             rt.vars.insert("ARGIND".into(), Value::Num(0.0));
             rt.filename = "-".into();
-            flush_if_err!(rt, vm_run_beginfile(cp.as_ref(), &mut rt))?;
+            // Unless a `getline` in `BEGIN` already attached standard input
+            // and ran it.
+            if !std::mem::take(&mut rt.beginfile_ran) {
+                flush_if_err!(rt, vm_run_beginfile(cp.as_ref(), &mut rt))?;
+            }
             if rt.exit_pending {
                 rt.detach_input_reader();
-                flush_if_err!(rt, vm_run_endfile(cp.as_ref(), &mut rt))?;
+                flush_if_err!(rt, run_endfile_once(cp.as_ref(), &mut rt))?;
                 flush_if_err!(rt, vm_run_end(cp.as_ref(), &mut rt))?;
                 finalize_cli_outputs(&args, bin_name, &rt, cp.as_ref(), profile_start, threads)?;
                 std::process::exit(rt.exit_code);
@@ -524,7 +528,7 @@ pub fn run(bin_name: &str) -> Result<()> {
             } else {
                 process_file(None, cp.as_ref(), &mut range_state, &mut rt)?;
             }
-            flush_if_err!(rt, vm_run_endfile(cp.as_ref(), &mut rt))?;
+            flush_if_err!(rt, run_endfile_once(cp.as_ref(), &mut rt))?;
         } else {
             // Both the bound and each entry are re-read on every pass: a rule may
             // edit `ARGV` or `ARGC` while an earlier file is still being
@@ -538,7 +542,7 @@ pub fn run(bin_name: &str) -> Result<()> {
                 let p = (rt.filename != "-").then(|| PathBuf::from(&rt.filename));
                 nr_global +=
                     process_file(p.as_deref(), cp.as_ref(), &mut range_state, &mut rt)? as f64;
-                flush_if_err!(rt, vm_run_endfile(cp.as_ref(), &mut rt))?;
+                flush_if_err!(rt, run_endfile_once(cp.as_ref(), &mut rt))?;
             }
             // The cursor lives in the runtime because plain `getline` advances
             // it too ([`open_next_primary_operand`]).
@@ -569,7 +573,7 @@ pub fn run(bin_name: &str) -> Result<()> {
                 flush_if_err!(rt, vm_run_beginfile(cp.as_ref(), &mut rt))?;
                 if rt.exit_pending {
                     rt.detach_input_reader();
-                    flush_if_err!(rt, vm_run_endfile(cp.as_ref(), &mut rt))?;
+                    flush_if_err!(rt, run_endfile_once(cp.as_ref(), &mut rt))?;
                     flush_if_err!(rt, vm_run_end(cp.as_ref(), &mut rt))?;
                     finalize_cli_outputs(
                         &args,
@@ -599,7 +603,7 @@ pub fn run(bin_name: &str) -> Result<()> {
                     process_file(p.as_deref(), cp.as_ref(), &mut range_state, &mut rt)?
                 };
                 nr_global += n as f64;
-                flush_if_err!(rt, vm_run_endfile(cp.as_ref(), &mut rt))?;
+                flush_if_err!(rt, run_endfile_once(cp.as_ref(), &mut rt))?;
                 if rt.exit_pending {
                     break;
                 }
@@ -1149,6 +1153,22 @@ pub(crate) fn attach_stdin_primary(rt: &mut Runtime) {
     }
 }
 
+/// The record loop's `ENDFILE`, unless plain `getline` already ran it when it
+/// reached the end of this file.
+fn run_endfile_once(cp: &CompiledProgram, rt: &mut Runtime) -> Result<()> {
+    if std::mem::take(&mut rt.endfile_ran) {
+        return Ok(());
+    }
+    vm_run_endfile(cp, rt)
+}
+
+/// Whether an input-file operand (not an assignment) remains from the cursor.
+pub(crate) fn has_remaining_input_file(rt: &Runtime) -> bool {
+    (rt.argv_next..argv_operand_limit(rt))
+        .filter_map(|i| current_argv_operand(rt, i))
+        .any(|operand| split_assignment_operand(&operand).is_none())
+}
+
 /// Walk `ARGV` from [`Runtime::argv_next`] to the next input-file operand, apply
 /// the `var=value` operands passed on the way, and attach that file as the
 /// primary stream with `FILENAME` / `ARGIND` / `FNR` set for it. `false` when no
@@ -1156,8 +1176,8 @@ pub(crate) fn attach_stdin_primary(rt: &mut Runtime) {
 ///
 /// This is the operand step plain `getline` takes — at end of file and, from
 /// `BEGIN`, for the first record — sharing the cursor with the record loop so a
-/// file `getline` has opened or finished is not read again. (gawk also runs
-/// `ENDFILE` / `BEGINFILE` when `getline` crosses a file; this does not.)
+/// file `getline` has opened or finished is not read again. The `BEGINFILE` /
+/// `ENDFILE` rules a crossing runs are the VM's (`read_primary_with_file_rules`).
 pub(crate) fn open_next_primary_operand(rt: &mut Runtime) -> Result<bool> {
     while rt.argv_next < argv_operand_limit(rt) {
         let arg_idx = rt.argv_next;

@@ -805,6 +805,32 @@ fn beginfile_endfile_run_around_slurped_file() {
     assert_eq!(o, "BF\nrow\nEF\n");
 }
 
+/// gawk 5.4.1: plain `getline` reaching the end of a file runs `ENDFILE` for it
+/// and `BEGINFILE` for the next one (the record loop does not repeat them), and
+/// every `BEGINFILE` starts from an empty record.
+#[test]
+fn getline_crossing_files_runs_beginfile_and_endfile() {
+    let dir = std::env::temp_dir();
+    let a = dir.join(format!("awkrs_gx_a_{}.txt", std::process::id()));
+    let b = dir.join(format!("awkrs_gx_b_{}.txt", std::process::id()));
+    std::fs::write(&a, "a1\na2\na3\n").unwrap();
+    std::fs::write(&b, "b1\nb2\n").unwrap();
+    let (c, o, e) = run_awkrs_operands(
+        r#"BEGINFILE { print "BF", ++f, NF, "[" $0 "]" }
+ENDFILE { print "EF", f, FNR }
+{ print "rec", $0; getline; print "after", $0, FNR }"#,
+        [a.to_str().unwrap(), b.to_str().unwrap()],
+        "",
+    );
+    let _ = std::fs::remove_file(&a);
+    let _ = std::fs::remove_file(&b);
+    assert_eq!(c, 0, "stderr={e}");
+    assert_eq!(
+        o,
+        "BF 1 0 []\nrec a1\nafter a2 2\nrec a3\nEF 1 3\nBF 2 0 []\nafter b1 1\nrec b2\nEF 2 2\nafter b2 2\n"
+    );
+}
+
 // ── I/O errors: **stat**, **readfile**, **ERRNO** ───────────────────────────
 
 #[test]

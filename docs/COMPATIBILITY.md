@@ -89,7 +89,7 @@ References: special variables and builtins lists in `src/compiler.rs` (`SPECIAL_
 | Construct | BSD | mawk | gawk | awkrs |
 |-----------|-----|------|------|-------|
 | `BEGIN` / `END` | Yes | Yes | Yes | Yes | **Match** |
-| `BEGINFILE` / `ENDFILE` | No | No | No | Yes (Ext) | **Match** (gawk-style; `next`/`nextfile` invalid in `BEGINFILE` per `vm.rs`) |
+| `BEGINFILE` / `ENDFILE` | No | No | No | Yes (Ext) | **Match** (gawk-style; `next`/`nextfile` invalid in `BEGINFILE` per `vm.rs`). Every `BEGINFILE` starts from an empty record (`$0` is `""`, `NF` is 0), as in gawk; awkrs used to show the previous file's last record there. |
 | Range patterns (`pat1,pat2`) | Yes | Yes | Yes | **Match** |
 | Regex record patterns + compound (`/re/ && expr`) | Yes | Yes | Yes | **Match** (tests in `tests/extra_integration.rs`) |
 | `next` / `nextfile` / `exit` | Yes | Yes | Yes | **Match** |
@@ -99,7 +99,7 @@ References: special variables and builtins lists in `src/compiler.rs` (`SPECIAL_
 | `switch` | No | No | Yes | Yes | **Match** |
 | Indirect function call (`@` / function pointer) | No | No | Yes | Yes | **Part** (see `Expr::IndirectCall`; edge cases vs gawk) |
 | Coprocess (`\|&`) | No | No | Yes | **Part** — `print \|& cmd`, `cmd \|& getline [var]` and `getline [var] <& cmd` share one two-way process, and `close(cmd, "to")` closes only its input so a filter such as `sort` sees EOF while its output stays readable. awkrs used to parse `cmd \|& getline` as a one-way `\|`, which started a second process reading awk's own stdin. No pty mode (`PROCINFO[cmd, "pty"]`). |
-| `getline` variants | Yes | Yes | Yes | **Part** (incl. `PROCINFO` timeout/retry — see `runtime.rs`). Plain `getline` continues into the next input operand at end of file (applying `var=value` operands on the way, setting `FILENAME`/`FNR`), and in `BEGIN` opens the first operand; awkrs used to stop at the first file's end and leave `FILENAME` empty in `BEGIN`. gawk also runs `ENDFILE`/`BEGINFILE` when `getline` crosses a file; awkrs does not. `cmd | getline [var]` binds tighter than comparison and assignment, as in all three references: `while ("cmd" | getline line > 0)` compares getline's result, and `r = "cmd" | getline x` assigns it (the first used to be a parse error, the second piped the assignment). |
+| `getline` variants | Yes | Yes | Yes | **Part** (incl. `PROCINFO` timeout/retry — see `runtime.rs`). Plain `getline` continues into the next input operand at end of file (applying `var=value` operands on the way, setting `FILENAME`/`FNR`), and in `BEGIN` opens the first operand; awkrs used to stop at the first file's end and leave `FILENAME` empty in `BEGIN`. When `getline` reaches the end of a file it runs `ENDFILE` for it and, moving on, `BEGINFILE` for the next (from `BEGIN`, `BEGINFILE` for the first file or standard input it opens), and the record loop does not run them a second time — gawk's order; awkrs used to run neither, and ran `ENDFILE` once for the last file at the end. `cmd | getline [var]` binds tighter than comparison and assignment, as in all three references: `while ("cmd" | getline line > 0)` compares getline's result, and `r = "cmd" | getline x` assigns it (the first used to be a parse error, the second piped the assignment). |
 
 ---
 

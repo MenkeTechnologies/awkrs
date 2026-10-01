@@ -723,6 +723,11 @@ pub fn vm_run_end(cp: &CompiledProgram, rt: &mut Runtime) -> Result<()> {
 }
 /// `vm_run_beginfile` — see implementation for the contract.
 pub fn vm_run_beginfile(cp: &CompiledProgram, rt: &mut Runtime) -> Result<()> {
+    // gawk starts every input file with an empty record: in `BEGINFILE`, `$0`
+    // is `""` and `NF` is 0, not the previous file's last record.
+    if !cp.beginfile_chunks.is_empty() {
+        rt.set_record_with_current_fs(b"");
+    }
     let mut ctx = VmCtx::new(cp, rt);
     for chunk in &cp.beginfile_chunks {
         match execute(chunk, &mut ctx)? {
@@ -3091,6 +3096,43 @@ fn apply_getline_line(
     Ok(())
 }
 
+/// Plain `getline` on the main input. Moving from one input file to the next
+/// runs gawk's `ENDFILE` rules for the file just finished and `BEGINFILE` for
+/// the one opened, and opening the first file from `BEGIN` runs `BEGINFILE`,
+/// as in gawk. Reaching the end of the last file runs its `ENDFILE` too, and
+/// [`Runtime::endfile_ran`] keeps the record loop from running it again.
+fn read_primary_with_file_rules(ctx: &mut VmCtx<'_>) -> Result<Option<String>> {
+    if ctx.cp.beginfile_chunks.is_empty() && ctx.cp.endfile_chunks.is_empty() {
+        return ctx.rt.read_line_primary();
+    }
+    if ctx.rt.input_reader.is_none() {
+        if ctx.rt.primary_input_done {
+            return Ok(None);
+        }
+        if !crate::open_next_primary_operand(ctx.rt)? {
+            // No file operand: standard input, whose `BEGINFILE` the record
+            // loop would otherwise run.
+            crate::attach_stdin_primary(ctx.rt);
+            ctx.rt.beginfile_ran = true;
+        }
+        vm_run_beginfile(ctx.cp, ctx.rt)?;
+    }
+    loop {
+        if let Some(line) = ctx.rt.read_line_primary_current()? {
+            return Ok(Some(line));
+        }
+        if !ctx.rt.endfile_ran {
+            ctx.rt.endfile_ran = true;
+            vm_run_endfile(ctx.cp, ctx.rt)?;
+        }
+        if !crate::has_remaining_input_file(ctx.rt) || !crate::open_next_primary_operand(ctx.rt)? {
+            return Ok(None);
+        }
+        ctx.rt.endfile_ran = false;
+        vm_run_beginfile(ctx.cp, ctx.rt)?;
+    }
+}
+
 fn exec_getline(
     ctx: &mut VmCtx<'_>,
     var: Option<u32>,
@@ -3117,7 +3159,7 @@ fn exec_getline(
     };
 
     let line_res = match source {
-        GetlineSource::Primary => ctx.rt.read_line_primary(),
+        GetlineSource::Primary => read_primary_with_file_rules(ctx),
         GetlineSource::File => ctx.rt.read_line_file(file_path.as_ref().unwrap().as_str()),
         GetlineSource::Coproc => ctx
             .rt
