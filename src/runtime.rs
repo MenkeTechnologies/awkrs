@@ -51,25 +51,6 @@ pub(crate) type SharedInputReader = Arc<Mutex<BufReader<Box<dyn Read + Send>>>>;
 /// Default precision for [`Value::Mpfr`] when `-M` / `--bignum` is enabled (MPFR bits).
 pub const MPFR_PREC: u32 = 256;
 
-/// POSIX / gawk: string ordering via `strcoll` on Unix (used by `for-in` value sorts and comparisons).
-pub fn awk_locale_str_cmp(a: &str, b: &str) -> Ordering {
-    #[cfg(unix)]
-    {
-        use std::ffi::CString;
-        match (CString::new(a), CString::new(b)) {
-            (Ok(ca), Ok(cb)) => unsafe {
-                let r = libc::strcoll(ca.as_ptr(), cb.as_ptr());
-                r.cmp(&0)
-            },
-            _ => a.cmp(b),
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        a.cmp(b)
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SortedInMode {
     /// `Unsorted` variant.
@@ -161,75 +142,122 @@ pub(crate) fn sorted_in_mode(rt: &Runtime) -> SortedInMode {
     }
 }
 
-#[inline]
-fn val_type_rank(v: &Value) -> u8 {
-    match v {
-        Value::Uninit => 0,
-        Value::Num(_) | Value::Mpfr(_) => 1,
-        Value::Str(_) | Value::StrLit(_) | Value::Regexp(_) => 2,
-        Value::Array(_) => 3,
+/// gawk `cmp_awknums` (node.c): NaN sorts above every number and all NaNs
+/// are equal.
+fn cmp_awknums(a: f64, b: f64) -> Ordering {
+    match (a.is_nan(), b.is_nan()) {
+        (true, true) => Ordering::Equal,
+        (true, false) => Ordering::Greater,
+        (false, true) => Ordering::Less,
+        _ => a.partial_cmp(&b).unwrap_or(Ordering::Equal),
     }
 }
 
-/// gawk `@val_type_*` order: by type rank (untyped, number, string, array),
-/// then numbers numerically and strings by string comparison — so `2 3 10`,
-/// not the `10 2 3` a string comparison of the numbers gives.
+/// An element gawk sorts as a scalar value (`Node_val`): not a subarray and
+/// not an element that was referenced but never assigned (`Node_elem_new`).
+fn is_scalar_elem(v: Option<&Value>) -> bool {
+    !matches!(v, None | Some(Value::Uninit | Value::Array(_)))
+}
+
+/// gawk `fixtype` for sorting: numbers, and strings that look numeric
+/// (input-derived strnums), compare as numbers.
+fn sorts_as_number(v: &Value) -> bool {
+    match v {
+        Value::Num(_) | Value::Mpfr(_) => true,
+        Value::Str(_) => v.is_numeric_str(),
+        _ => false,
+    }
+}
+
+/// gawk `do_sort_up_value_type` (array.c): unassigned elements, then scalars,
+/// then subarrays; among scalars numbers (numerically) before strings (by
+/// bytes).
 fn val_type_cmp(va: Option<&Value>, vb: Option<&Value>) -> Ordering {
-    let ra = va.map(val_type_rank).unwrap_or(0);
-    let rb = vb.map(val_type_rank).unwrap_or(0);
-    ra.cmp(&rb).then_with(|| {
-        if ra == 1 {
-            let na = va.map(|v| v.as_number()).unwrap_or(0.0);
-            let nb = vb.map(|v| v.as_number()).unwrap_or(0.0);
-            na.partial_cmp(&nb).unwrap_or(Ordering::Equal)
-        } else {
-            let sa = va.map(|v| v.as_str()).unwrap_or_default();
-            let sb = vb.map(|v| v.as_str()).unwrap_or_default();
-            awk_locale_str_cmp(&sa, &sb)
+    let rank = |v: Option<&Value>| match v {
+        Some(Value::Array(_)) => 2,
+        v if is_scalar_elem(v) => 1,
+        _ => 0,
+    };
+    let (ra, rb) = (rank(va), rank(vb));
+    if ra != 1 || rb != 1 {
+        return ra.cmp(&rb);
+    }
+    let (a, b) = (va.expect("scalar"), vb.expect("scalar"));
+    match (sorts_as_number(a), sorts_as_number(b)) {
+        (true, true) => cmp_awknums(a.as_number(), b.as_number()),
+        (true, false) => Ordering::Less,
+        (false, true) => Ordering::Greater,
+        (false, false) => a.as_str().as_bytes().cmp(b.as_str().as_bytes()),
+    }
+}
+
+/// The ascending comparison behind a `PROCINFO["sorted_in"]` `@ind_*`/`@val_*`
+/// mode, ported from gawk's `sort_up_*` functions (array.c). Every one ends in
+/// a tie-break on the index string (gawk `cmp_strings`: bytes, shorter prefix
+/// first), so no two elements compare equal and the order is total; a
+/// descending mode is the exact reverse. Values that are not scalars (a
+/// subarray or an unassigned element) send `@val_str`/`@val_num` to the
+/// `@val_type` comparison, as gawk does.
+fn sorted_in_cmp(arr: &AwkArray, ka: &AwkStr, kb: &AwkStr, by: SortKey) -> Ordering {
+    let index = || ka.as_bytes().cmp(kb.as_bytes());
+    let (va, vb) = (arr.get_bytes(ka), arr.get_bytes(kb));
+    match by {
+        SortKey::IndStr => index(),
+        SortKey::IndNum => cmp_awknums(
+            parse_number(&ka.to_str_lossy()),
+            parse_number(&kb.to_str_lossy()),
+        )
+        .then_with(index),
+        SortKey::ValType => val_type_cmp(va, vb).then_with(index),
+        _ if !(is_scalar_elem(va) && is_scalar_elem(vb)) => val_type_cmp(va, vb).then_with(index),
+        SortKey::ValStr => {
+            let (a, b) = (va.expect("scalar"), vb.expect("scalar"));
+            a.as_str()
+                .as_bytes()
+                .cmp(b.as_str().as_bytes())
+                .then_with(index)
         }
-    })
+        SortKey::ValNum => {
+            let (a, b) = (va.expect("scalar"), vb.expect("scalar"));
+            cmp_awknums(a.as_number(), b.as_number())
+                .then_with(|| a.as_str().as_bytes().cmp(b.as_str().as_bytes()))
+                .then_with(index)
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum SortKey {
+    IndStr,
+    IndNum,
+    ValStr,
+    ValNum,
+    ValType,
 }
 
 pub(crate) fn sort_for_in_keys(keys: &mut [AwkStr], arr: &AwkArray, mode: SortedInMode) {
     use SortedInMode::*;
-    match mode {
-        Unsorted => {}
-        CustomFn(_) => {}
-        IndStrAsc => keys.sort(),
-        IndStrDesc => keys.sort_by(|a, b| b.cmp(a)),
-        IndNumAsc => keys.sort_by(|a, b| {
-            parse_number(&a.to_str_lossy())
-                .partial_cmp(&parse_number(&b.to_str_lossy()))
-                .unwrap_or(Ordering::Equal)
-        }),
-        IndNumDesc => keys.sort_by(|a, b| {
-            parse_number(&b.to_str_lossy())
-                .partial_cmp(&parse_number(&a.to_str_lossy()))
-                .unwrap_or(Ordering::Equal)
-        }),
-        ValStrAsc => keys.sort_by(|ka, kb| {
-            let sa = arr.get_bytes(ka).map(|v| v.as_str()).unwrap_or_default();
-            let sb = arr.get_bytes(kb).map(|v| v.as_str()).unwrap_or_default();
-            awk_locale_str_cmp(&sa, &sb)
-        }),
-        ValStrDesc => keys.sort_by(|ka, kb| {
-            let sa = arr.get_bytes(ka).map(|v| v.as_str()).unwrap_or_default();
-            let sb = arr.get_bytes(kb).map(|v| v.as_str()).unwrap_or_default();
-            awk_locale_str_cmp(&sb, &sa)
-        }),
-        ValNumAsc => keys.sort_by(|ka, kb| {
-            let na = arr.get_bytes(ka).map(|v| v.as_number()).unwrap_or(0.0);
-            let nb = arr.get_bytes(kb).map(|v| v.as_number()).unwrap_or(0.0);
-            na.partial_cmp(&nb).unwrap_or(Ordering::Equal)
-        }),
-        ValNumDesc => keys.sort_by(|ka, kb| {
-            let na = arr.get_bytes(ka).map(|v| v.as_number()).unwrap_or(0.0);
-            let nb = arr.get_bytes(kb).map(|v| v.as_number()).unwrap_or(0.0);
-            nb.partial_cmp(&na).unwrap_or(Ordering::Equal)
-        }),
-        ValTypeAsc => keys.sort_by(|ka, kb| val_type_cmp(arr.get_bytes(ka), arr.get_bytes(kb))),
-        ValTypeDesc => keys.sort_by(|ka, kb| val_type_cmp(arr.get_bytes(kb), arr.get_bytes(ka))),
-    }
+    let (by, desc) = match mode {
+        Unsorted | CustomFn(_) => return,
+        IndStrAsc => (SortKey::IndStr, false),
+        IndStrDesc => (SortKey::IndStr, true),
+        IndNumAsc => (SortKey::IndNum, false),
+        IndNumDesc => (SortKey::IndNum, true),
+        ValStrAsc => (SortKey::ValStr, false),
+        ValStrDesc => (SortKey::ValStr, true),
+        ValNumAsc => (SortKey::ValNum, false),
+        ValNumDesc => (SortKey::ValNum, true),
+        ValTypeAsc => (SortKey::ValType, false),
+        ValTypeDesc => (SortKey::ValType, true),
+    };
+    keys.sort_by(|a, b| {
+        let o = sorted_in_cmp(arr, a, b, by);
+        if desc {
+            o.reverse()
+        } else {
+            o
+        }
+    });
 }
 
 #[cfg(unix)]
@@ -4962,9 +4990,16 @@ impl Runtime {
             sort_for_in_keys(&mut keys, &tmp, mode);
             return keys;
         }
-        let Some(Value::Array(a)) = self.get_global_var(name) else {
-            return Vec::new();
-        };
+        match self.get_global_var(name) {
+            Some(Value::Array(a)) => self.for_in_keys_of(a),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The subscripts of `a` in `for (k in a)` order: `PROCINFO["sorted_in"]`'s
+    /// built-in orderings applied (not under `--posix`). A user comparison
+    /// function is left to the caller, which can call back into the program.
+    pub fn for_in_keys_of(&self, a: &AwkArray) -> Vec<AwkStr> {
         let mut keys: Vec<AwkStr> = a.keys();
         if self.posix {
             return keys;
@@ -6099,38 +6134,38 @@ mod parse_inet_pinning {
     }
 }
 
-// ── awk_locale_str_cmp: pin string ordering contract ─────────────────────────
+// ── value coercion and option parsing ─────────────────────────
 #[cfg(test)]
-mod awk_locale_str_cmp_pinning {
-    use super::awk_locale_str_cmp;
-    use std::cmp::Ordering;
-
+mod coercion_and_ordering_pinning {
+    /// gawk 5.4.1 `sorted_in` tie-breaks: equal values fall back to the index
+    /// string, a descending mode reverses the whole order (ties included), and
+    /// unassigned elements sort by type, below every scalar.
     #[test]
-    fn equal_strings_compare_equal() {
-        assert_eq!(awk_locale_str_cmp("abc", "abc"), Ordering::Equal);
-    }
-
-    #[test]
-    fn empty_string_orders_first() {
-        assert_eq!(awk_locale_str_cmp("", "a"), Ordering::Less);
-        assert_eq!(awk_locale_str_cmp("a", ""), Ordering::Greater);
-        assert_eq!(awk_locale_str_cmp("", ""), Ordering::Equal);
-    }
-
-    #[test]
-    fn null_byte_falls_back_to_byte_compare() {
-        // CString::new fails on embedded NUL — the function must fall back to
-        // a.cmp(b) instead of panicking or returning Equal incorrectly.
-        let with_nul = "a\0b";
-        let without = "ab";
-        let o = awk_locale_str_cmp(with_nul, without);
-        // Should not panic; the relative ordering is implementation-defined but
-        // must be one of Less/Greater (not erroneously Equal).
-        assert_ne!(
-            o,
-            Ordering::Equal,
-            "NUL-containing strings shouldn't compare equal to clean strings"
-        );
+    fn sorted_in_ties_break_on_the_index_like_gawk() {
+        use super::{sort_for_in_keys, AwkArray, SortedInMode, Value};
+        let mut a = AwkArray::new();
+        for (k, v) in [("x", 1.0), ("y", 1.0), ("b", 1.0), ("c", 2.0)] {
+            a.insert_str(k, Value::Num(v));
+        }
+        let order = |a: &AwkArray, mode| {
+            let mut keys = a.keys();
+            sort_for_in_keys(&mut keys, a, mode);
+            keys.iter()
+                .map(|k| k.to_str_lossy().into_owned())
+                .collect::<String>()
+        };
+        assert_eq!(order(&a, SortedInMode::ValNumAsc), "bxyc");
+        assert_eq!(order(&a, SortedInMode::ValNumDesc), "cyxb");
+        a.insert_str("u", Value::Uninit);
+        assert_eq!(order(&a, SortedInMode::ValNumAsc), "ubxyc");
+        let mut n = AwkArray::new();
+        for k in ["10", "1e1", "010", "9"] {
+            n.insert_str(k, Value::Uninit);
+        }
+        let mut keys = n.keys();
+        sort_for_in_keys(&mut keys, &n, SortedInMode::IndNumAsc);
+        let keys: Vec<_> = keys.iter().map(|k| k.to_str_lossy().into_owned()).collect();
+        assert_eq!(keys, ["9", "010", "10", "1e1"]);
     }
 
     #[test]

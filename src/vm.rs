@@ -358,9 +358,12 @@ impl<'a> VmCtx<'a> {
     pub(crate) fn for_in_keys(&mut self, name: &str) -> Result<Vec<AwkStr>> {
         // POSIX array call-by-reference: check the current frame for an
         // array param with this name before falling through to global vars.
+        // A parameter array honors `PROCINFO["sorted_in"]` exactly as a global
+        // one does; its keys used to come back in hash order.
+        let rt = &*self.rt;
         let frame_keys: Option<Vec<AwkStr>> = self.locals.iter().rev().find_map(|frame| {
             if let Some(Value::Array(a)) = frame.get(name) {
-                Some(a.keys())
+                Some(rt.for_in_keys_of(a))
             } else {
                 None
             }

@@ -1367,3 +1367,12 @@ BEGIN { print or(2^54, 1), xor(2^60, 1), lshift(1, 70), rshift(5, 64), compl(2^6
 #--- only gawk
 #--- prog
 BEGIN { printf "%x %X %o|%x|%-8x|%x\n", 2^64 - 2048, 2^63, 2^63, 1e30, -1e30, -log(0) }
+
+#=== sorted_in_orders_function_array_parameter
+# PROCINFO["sorted_in"] applies to `for (k in arr)` over a function's array
+# parameter and a local array; awkrs sorted only global arrays and handed a
+# parameter's keys back in hash order.
+#--- only gawk
+#--- prog
+function show(arr,   k, loc) { for (k in arr) { printf "%s ", k; loc[k] } ; for (k in loc) printf "%s ", k; print "" }
+BEGIN { for (i = 1; i <= 12; i++) a["k" i] = (i * 7) % 13; PROCINFO["sorted_in"] = "@ind_str_asc"; show(a); PROCINFO["sorted_in"] = "@val_num_desc"; show(a) }
