@@ -501,82 +501,17 @@ pub(crate) fn exec_builtin_dispatch(
             ctx.emit_print(s.as_bytes());
             Value::Num(0.0)
         }
-        "and" => {
-            if argc < 2 {
-                return Err(Error::Runtime(
-                    "and: called with less than two arguments".into(),
-                ));
-            }
-            let mut acc = bignum::awk_and_values(&args[0], &args[1], ctx.rt);
-            for a in &args[2..] {
-                acc = bignum::awk_and_values(&acc, a, ctx.rt);
-            }
-            acc
+        "and" | "or" | "xor" => {
+            let op = bignum::BitFold::from_name(name).expect("matched a fold name");
+            bignum::awk_bit_fold_values(op, &args, ctx.rt)?
         }
-        "or" => {
-            if argc < 2 {
-                return Err(Error::Runtime(
-                    "or: called with less than two arguments".into(),
-                ));
-            }
-            let mut acc = bignum::awk_or_values(&args[0], &args[1], ctx.rt);
-            for a in &args[2..] {
-                acc = bignum::awk_or_values(&acc, a, ctx.rt);
-            }
-            acc
-        }
-        "xor" => {
-            if argc < 2 {
-                return Err(Error::Runtime(
-                    "xor: called with less than two arguments".into(),
-                ));
-            }
-            let mut acc = bignum::awk_xor_values(&args[0], &args[1], ctx.rt);
-            for a in &args[2..] {
-                acc = bignum::awk_xor_values(&acc, a, ctx.rt);
-            }
-            acc
-        }
-        "lshift" => {
+        "lshift" | "rshift" => {
             if argc != 2 {
                 return Err(Error::Runtime(format!(
-                    "{argc} is invalid as number of arguments for lshift"
+                    "{argc} is invalid as number of arguments for {name}"
                 )));
             }
-            // gawk parity: negative shift count is a fatal runtime error.
-            let av = args[0].as_number();
-            let bv = args[1].as_number();
-            if av < 0.0 {
-                return Err(Error::Runtime(format!(
-                    "lshift({av:.6}, {bv:.6}): negative values are not allowed"
-                )));
-            }
-            if bv < 0.0 {
-                return Err(Error::Runtime(format!(
-                    "lshift({av:.6}, {bv:.6}): negative values are not allowed"
-                )));
-            }
-            bignum::awk_lshift_values(&args[0], &args[1], ctx.rt)
-        }
-        "rshift" => {
-            if argc != 2 {
-                return Err(Error::Runtime(format!(
-                    "{argc} is invalid as number of arguments for rshift"
-                )));
-            }
-            let av = args[0].as_number();
-            let bv = args[1].as_number();
-            if av < 0.0 {
-                return Err(Error::Runtime(format!(
-                    "rshift({av:.6}, {bv:.6}): negative values are not allowed"
-                )));
-            }
-            if bv < 0.0 {
-                return Err(Error::Runtime(format!(
-                    "rshift({av:.6}, {bv:.6}): negative values are not allowed"
-                )));
-            }
-            bignum::awk_rshift_values(&args[0], &args[1], ctx.rt)
+            bignum::awk_shift_values(name == "lshift", &args[0], &args[1], ctx.rt)?
         }
         "compl" => {
             if argc != 1 {
@@ -584,13 +519,7 @@ pub(crate) fn exec_builtin_dispatch(
                     "{argc} is invalid as number of arguments for compl"
                 )));
             }
-            let av = args[0].as_number();
-            if av < 0.0 {
-                return Err(Error::Runtime(format!(
-                    "compl({av:.6}): negative value is not allowed"
-                )));
-            }
-            bignum::awk_compl_values(&args[0], ctx.rt)
+            bignum::awk_compl_values(&args[0], ctx.rt)?
         }
         "strtonum" => {
             if argc != 1 {

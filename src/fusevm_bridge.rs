@@ -462,17 +462,16 @@ pub fn is_fusevm_eligible<'s>(
             // (fusevm 0.13.6+) — interpreter on fusevm now, block-JIT codegen
             // pending.
             Op::CallBuiltin(idx, 1) if matches!(resolve_name(*idx), "sqrt" | "log") => continue,
-            // `lshift(a, n)` / `rshift(a, n)`: fatal "negative values are not
-            // allowed" when either operand is negative; non-negative path is
-            // `(a as i64) << (n & 0x3f)` / `>> (n & 0x3f)`. Lower to
-            // `Op::AwkLshiftJit` / `Op::AwkRshiftJit`.
+            // `lshift(a, n)` / `rshift(a, n)` / `compl(a)`: gawk fatal on a
+            // negative operand, else gawk's `(uintmax_t)` arithmetic narrowed by
+            // `adjust_uint` (a shift count >= 64 yields 0; `compl(0)` is
+            // 2^53-1). fusevm (>= 0.26.8) computes exactly that in every tier and
+            // raises the gawk fatal text itself. Lower to `Op::AwkLshiftJit` /
+            // `Op::AwkRshiftJit` / `Op::AwkComplJit`.
             Op::CallBuiltin(idx, 2) if matches!(resolve_name(*idx), "lshift" | "rshift") => {
                 continue
             }
-            // `compl(a)` is NOT admitted: fusevm `Op::AwkComplJit` returns
-            // `!(a as i64)` (`compl(0)` = -1), while gawk narrows the complement
-            // with `adjust_uint` (`compl(0)` = 2^53-1). It stays on the host
-            // builtin (`builtins::awk_compl`) until fusevm carries that rule.
+            Op::CallBuiltin(idx, 1) if resolve_name(*idx) == "compl" => continue,
             // `$N` numeric field read with compile-time N. Lowers to
             // `fusevm::Op::AwkGetFieldNum(N)`, which calls the thread-local
             // host hook installed by [`crate::vm::try_fusevm_dispatch`] right
@@ -491,14 +490,11 @@ pub fn is_fusevm_eligible<'s>(
                 continue
             }
             Op::CallBuiltin(idx, 2) if resolve_name(*idx) == "atan2" => continue,
-            // `and`/`or`/`xor` are variadic (≥2 args) pure-integer bitwise folds
-            // — operands truncated+saturated to i64 (matching awkrs's
-            // `num_to_u64`), no host state, no value-dependent trap. They lower
-            // to native fusevm `Op::AwkAnd`/`AwkOr`/`AwkXor` (Cranelift
-            // band/bor/bxor) so the chunk stays block-JIT-eligible. `lshift`/
-            // `rshift`/`compl` are NOT admitted: they raise a fatal on negative
-            // args, which a pure native op cannot reproduce (same reason as
-            // div/mod). The arg count must fit fusevm's `u8` payload.
+            // `and`/`or`/`xor` are variadic (≥2 args) bitwise folds with gawk's
+            // `(uintmax_t)` + `adjust_uint` semantics and negative-operand fatal,
+            // computed the same way by every fusevm tier. They lower to native
+            // fusevm `Op::AwkAnd`/`AwkOr`/`AwkXor` so the chunk stays
+            // block-JIT-eligible. The arg count must fit fusevm's `u8` payload.
             Op::CallBuiltin(idx, argc)
                 if *argc >= 2
                     && *argc <= u8::MAX as u16
@@ -567,7 +563,7 @@ fn stack_delta<'s>(op: &bytecode::Op, resolve_name: impl Fn(u32) -> &'s str) -> 
         Op::CallBuiltin(idx, 1)
             if matches!(
                 resolve_name(*idx),
-                "int" | "mkbool" | "sqrt" | "log" | "sin" | "cos" | "exp"
+                "int" | "mkbool" | "sqrt" | "log" | "sin" | "cos" | "exp" | "compl"
             ) =>
         {
             0
@@ -935,14 +931,17 @@ pub fn build_numeric_chunk<'s>(
             Op::CallBuiltin(idx, 1) if resolve_name(*idx) == "log" => {
                 builder.emit(fusevm::Op::AwkLogJit, 0);
             }
-            // lshift/rshift fatal-trap on negative; awkrs's existing message
-            // format ("lshift(<a>, <n>): ...") differs from the JIT path's
-            // generic "lshift: negative values are not allowed". Documented.
+            // lshift/rshift/compl: fusevm raises gawk's fatal text verbatim on a
+            // negative operand (`lshift(-1.000000, 2.000000): negative values
+            // are not allowed`), the same text the host builtin reports.
             Op::CallBuiltin(idx, 2) if resolve_name(*idx) == "lshift" => {
                 builder.emit(fusevm::Op::AwkLshiftJit, 0);
             }
             Op::CallBuiltin(idx, 2) if resolve_name(*idx) == "rshift" => {
                 builder.emit(fusevm::Op::AwkRshiftJit, 0);
+            }
+            Op::CallBuiltin(idx, 1) if resolve_name(*idx) == "compl" => {
+                builder.emit(fusevm::Op::AwkComplJit, 0);
             }
             // `$N` numeric read with compile-time N: emit `AwkGetFieldNum(N)`.
             // The active Runtime is exposed to the libcall via the thread-local

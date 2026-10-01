@@ -673,54 +673,6 @@ fn scan_mktime_fields(s: &str) -> Vec<i64> {
     out
 }
 
-#[inline]
-fn num_to_u64(n: f64) -> u64 {
-    n.trunc() as i64 as u64
-}
-
-/// gawk bitwise `and(a, b)`; operands are truncated to integers.
-pub fn awk_and(a: f64, b: f64) -> f64 {
-    (num_to_u64(a) & num_to_u64(b)) as i64 as f64
-}
-/// `awk_or` — see implementation for the contract.
-pub fn awk_or(a: f64, b: f64) -> f64 {
-    (num_to_u64(a) | num_to_u64(b)) as i64 as f64
-}
-/// `awk_xor` — see implementation for the contract.
-pub fn awk_xor(a: f64, b: f64) -> f64 {
-    (num_to_u64(a) ^ num_to_u64(b)) as i64 as f64
-}
-/// `awk_lshift` — see implementation for the contract.
-pub fn awk_lshift(a: f64, b: f64) -> f64 {
-    let x = num_to_u64(a);
-    let n = (num_to_u64(b) & 0x3f) as u32;
-    (x << n) as i64 as f64
-}
-/// `awk_rshift` — see implementation for the contract.
-pub fn awk_rshift(a: f64, b: f64) -> f64 {
-    let x = num_to_u64(a);
-    let n = (num_to_u64(b) & 0x3f) as u32;
-    (x >> n) as i64 as f64
-}
-/// gawk `compl(a)`: complement the 64-bit integer, then narrow it with
-/// [`adjust_uint`] so the result is exact in a double — `compl(0)` is
-/// `2^53 - 1`, not `-1`.
-pub fn awk_compl(a: f64) -> f64 {
-    adjust_uint(!num_to_u64(a)) as f64
-}
-
-/// Port of gawk `adjust_uint` (floatcomp.c): a `uintmax_t` wider than a
-/// double's 53-bit fraction keeps its low-order set bits exact by dropping the
-/// leading bits that cannot be represented. Trailing zero bits (at most 11, the
-/// width difference) are kept as a shift so power-of-two-scaled values survive.
-fn adjust_uint(n: u64) -> u64 {
-    const FRACTION_BITS: u32 = f64::MANTISSA_DIGITS;
-    let sentinel = 1u64 << (u64::BITS - FRACTION_BITS);
-    let shift = (n | sentinel).trailing_zeros();
-    let mask = (1u64 << FRACTION_BITS) - 1;
-    ((n >> shift) & mask) << shift
-}
-
 /// gawk `strtonum` — hex `0x…`, octal `0…`, else decimal float parse.
 pub fn awk_strtonum(s: &str) -> f64 {
     let t = s.trim();
@@ -1415,58 +1367,91 @@ mod tests {
 
     // ── Bitwise builtins: pin gawk bitop semantics ───────────────────────────
     //
-    // gawk truncates operands to u64 before applying. Negative numbers wrap
-    // (twos complement). Shifts mask the count to 6 bits (mod 64).
+    // gawk casts operands to `uintmax_t`, computes in 64 bits and narrows the
+    // result with `adjust_uint`; a shift count of 64 or more yields 0 and a
+    // negative operand is a fatal. `bit` runs the builtin the VM dispatches.
+
+    fn bit(name: &str, args: &[f64]) -> std::result::Result<f64, String> {
+        let rt = Runtime::new();
+        let vals: Vec<Value> = args.iter().map(|&n| Value::Num(n)).collect();
+        let r = match name {
+            "lshift" | "rshift" => {
+                crate::bignum::awk_shift_values(name == "lshift", &vals[0], &vals[1], &rt)
+            }
+            "compl" => crate::bignum::awk_compl_values(&vals[0], &rt),
+            _ => crate::bignum::awk_bit_fold_values(
+                crate::bignum::BitFold::from_name(name).unwrap(),
+                &vals,
+                &rt,
+            ),
+        };
+        r.map(|v| v.as_number()).map_err(|e| e.to_string())
+    }
 
     #[test]
     fn awk_and_clears_complementary_bits() {
-        assert_eq!(super::awk_and(0xFF as f64, 0x0F as f64), 0x0F as f64);
-        assert_eq!(super::awk_and(0xFF as f64, 0x00 as f64), 0.0);
+        assert_eq!(
+            bit("and", &[0xFF as f64, 0x0F as f64]).unwrap(),
+            0x0F as f64
+        );
+        assert_eq!(bit("and", &[0xFF as f64, 0x00 as f64]).unwrap(), 0.0);
     }
 
     #[test]
     fn awk_or_sets_all_bits() {
-        assert_eq!(super::awk_or(0xF0 as f64, 0x0F as f64), 0xFF as f64);
+        assert_eq!(bit("or", &[0xF0 as f64, 0x0F as f64]).unwrap(), 0xFF as f64);
     }
 
     #[test]
     fn awk_xor_toggles_bits() {
-        assert_eq!(super::awk_xor(0xFF as f64, 0x0F as f64), 0xF0 as f64);
-        assert_eq!(super::awk_xor(0xAA as f64, 0xAA as f64), 0.0);
+        assert_eq!(
+            bit("xor", &[0xFF as f64, 0x0F as f64]).unwrap(),
+            0xF0 as f64
+        );
+        assert_eq!(bit("xor", &[0xAA as f64, 0xAA as f64]).unwrap(), 0.0);
     }
 
     #[test]
     fn awk_lshift_shifts_left() {
-        assert_eq!(super::awk_lshift(1.0, 4.0), 16.0);
-        assert_eq!(super::awk_lshift(1.0, 0.0), 1.0);
+        assert_eq!(bit("lshift", &[1.0, 4.0]).unwrap(), 16.0);
+        assert_eq!(bit("lshift", &[1.0, 0.0]).unwrap(), 1.0);
     }
 
     #[test]
     fn awk_rshift_shifts_right() {
-        assert_eq!(super::awk_rshift(16.0, 4.0), 1.0);
-        assert_eq!(super::awk_rshift(255.0, 1.0), 127.0);
+        assert_eq!(bit("rshift", &[16.0, 4.0]).unwrap(), 1.0);
+        assert_eq!(bit("rshift", &[255.0, 1.0]).unwrap(), 127.0);
     }
 
     #[test]
-    fn awk_shift_count_masked_to_six_bits() {
-        // Shift count 64 should mask to 0 (no shift), not panic/overflow.
-        assert_eq!(super::awk_lshift(1.0, 64.0), 1.0);
-        assert_eq!(super::awk_rshift(4.0, 64.0), 4.0);
+    fn awk_shift_count_of_64_or_more_is_zero() {
+        // gawk 5.4.1: lshift(1, 64) = lshift(3, 70) = rshift(4, 64) = 0 — the
+        // count is not masked to 6 bits.
+        assert_eq!(bit("lshift", &[1.0, 64.0]).unwrap(), 0.0);
+        assert_eq!(bit("lshift", &[3.0, 70.0]).unwrap(), 0.0);
+        assert_eq!(bit("rshift", &[4.0, 64.0]).unwrap(), 0.0);
+        assert_eq!(bit("lshift", &[1.0, 63.0]).unwrap(), 9223372036854775808.0);
     }
 
     #[test]
     fn awk_compl_flips_all_bits() {
         // gawk 5.4.1: compl(0) = 2^53-1, compl(1) = 2^54-2, compl(5) = 2^54-6
         // (`adjust_uint` keeps the low set bits exact in a double).
-        assert_eq!(super::awk_compl(0.0), 9007199254740991.0);
-        assert_eq!(super::awk_compl(1.0), 18014398509481982.0);
-        assert_eq!(super::awk_compl(5.0), 18014398509481978.0);
-        assert_eq!(super::awk_compl(9007199254740992.0), 9007199254740991.0);
+        assert_eq!(bit("compl", &[0.0]).unwrap(), 9007199254740991.0);
+        assert_eq!(bit("compl", &[1.0]).unwrap(), 18014398509481982.0);
+        assert_eq!(bit("compl", &[5.0]).unwrap(), 18014398509481978.0);
+        assert_eq!(
+            bit("compl", &[9007199254740992.0]).unwrap(),
+            9007199254740991.0
+        );
     }
 
     #[test]
     fn awk_and_zero_with_anything_is_zero() {
-        assert_eq!(super::awk_and(0.0, 0xFFFF_FFFF_FFFF_FFFF_u64 as f64), 0.0);
+        assert_eq!(
+            bit("and", &[0.0, 0xFFFF_FFFF_FFFF_FFFF_u64 as f64]).unwrap(),
+            0.0
+        );
     }
 
     #[test]
@@ -1567,14 +1552,52 @@ mod tests {
     }
 
     #[test]
-    fn awk_bitwise_negative_numbers() {
-        // gawk bitwise operations use u64 wrapping.
-        // and(-1, 1) -> 1
-        assert_eq!(super::awk_and(-1.0, 1.0), 1.0);
-        // or(-1, 0) -> -1 (which is u64::MAX)
-        assert_eq!(super::awk_or(-1.0, 0.0), -1.0);
-        // xor(-1, -1) -> 0
-        assert_eq!(super::awk_xor(-1.0, -1.0), 0.0);
+    fn awk_bitwise_negative_operand_is_gawk_fatal() {
+        // gawk 5.4.1 reports the right-most negative argument of a fold.
+        let e = bit("and", &[-1.0, -2.0, 3.0]).unwrap_err();
+        assert!(
+            e.contains("and: argument 2 negative value -2 is not allowed"),
+            "{e}"
+        );
+        let e = bit("xor", &[3.0, 2.0, -5.5]).unwrap_err();
+        assert!(
+            e.contains("xor: argument 3 negative value -5.5 is not allowed"),
+            "{e}"
+        );
+        let e = bit("lshift", &[-1.0, 2.0]).unwrap_err();
+        assert!(
+            e.contains("lshift(-1.000000, 2.000000): negative values are not allowed"),
+            "{e}"
+        );
+        let e = bit("compl", &[-3.0]).unwrap_err();
+        assert!(
+            e.contains("compl(-3.000000): negative value is not allowed"),
+            "{e}"
+        );
+        let e = bit("or", &[1.0]).unwrap_err();
+        assert!(e.contains("or: called with less than two arguments"), "{e}");
+    }
+
+    #[test]
+    fn awk_bitwise_results_narrow_like_adjust_uint() {
+        // gawk 5.4.1 values: the low-order set bits survive, the high ones that
+        // a double cannot hold beside them are dropped.
+        let two54 = 18014398509481984.0;
+        assert_eq!(bit("or", &[two54, 1.0]).unwrap(), 1.0);
+        assert_eq!(bit("xor", &[2f64.powi(60), 1.0]).unwrap(), 1.0);
+        assert_eq!(bit("lshift", &[two54, 2.0]).unwrap(), 72057594037927936.0);
+        // A fold narrows once, at the end: (2^60|2^12|1) & (2^61|2^60|1) & (2^60|2^12)
+        // is 2^60, which a pairwise narrowing would lose.
+        let (a, b, c) = (
+            2f64.powi(60) + 4096.0 + 1.0,
+            2f64.powi(61) + 2f64.powi(60) + 1.0,
+            2f64.powi(60) + 4096.0,
+        );
+        assert_eq!(bit("and", &[a, b, c]).unwrap(), 2f64.powi(60));
+        // An operand past 2^64 saturates (Rust's cast; gawk on aarch64 agrees), so
+        // compl(2^64) is 0 and or(1e30, 0) is 2^53-1.
+        assert_eq!(bit("compl", &[2f64.powi(64)]).unwrap(), 0.0);
+        assert_eq!(bit("or", &[1e30, 0.0]).unwrap(), 9007199254740991.0);
     }
 
     #[test]
@@ -1676,12 +1699,12 @@ mod tests {
 
     #[test]
     fn awk_bitwise_direct_v2() {
-        assert_eq!(super::awk_and(255.0, 15.0), 15.0);
-        assert_eq!(super::awk_or(240.0, 15.0), 255.0);
-        assert_eq!(super::awk_xor(255.0, 15.0), 240.0);
-        assert_eq!(super::awk_lshift(1.0, 4.0), 16.0);
-        assert_eq!(super::awk_rshift(16.0, 4.0), 1.0);
-        assert_eq!(super::awk_compl(0.0), 9007199254740991.0);
+        assert_eq!(bit("and", &[255.0, 15.0]).unwrap(), 15.0);
+        assert_eq!(bit("or", &[240.0, 15.0]).unwrap(), 255.0);
+        assert_eq!(bit("xor", &[255.0, 15.0]).unwrap(), 240.0);
+        assert_eq!(bit("lshift", &[1.0, 4.0]).unwrap(), 16.0);
+        assert_eq!(bit("rshift", &[16.0, 4.0]).unwrap(), 1.0);
+        assert_eq!(bit("compl", &[0.0]).unwrap(), 9007199254740991.0);
     }
 
     #[test]
@@ -1732,7 +1755,7 @@ mod tests {
     #[test]
     fn awk_and_large_values_v3() {
         assert_eq!(
-            super::awk_and(0xFFFFFFFFu64 as f64, 0x0000000Fu64 as f64),
+            bit("and", &[0xFFFFFFFFu64 as f64, 0x0000000Fu64 as f64]).unwrap(),
             15.0
         );
     }
@@ -1740,7 +1763,7 @@ mod tests {
     #[test]
     fn awk_or_large_values_v3() {
         assert_eq!(
-            super::awk_or(0xF0000000u64 as f64, 0x0F000000u64 as f64),
+            bit("or", &[0xF0000000u64 as f64, 0x0F000000u64 as f64]).unwrap(),
             0xFF000000u64 as f64
         );
     }
@@ -1748,19 +1771,19 @@ mod tests {
     #[test]
     fn awk_xor_large_values_v3() {
         assert_eq!(
-            super::awk_xor(0xFFFFFFFFu64 as f64, 0x0F0F0F0Fu64 as f64),
+            bit("xor", &[0xFFFFFFFFu64 as f64, 0x0F0F0F0Fu64 as f64]).unwrap(),
             0xF0F0F0F0u64 as f64
         );
     }
 
     #[test]
     fn awk_lshift_large_v3() {
-        assert_eq!(super::awk_lshift(1.0, 32.0), 4294967296.0);
+        assert_eq!(bit("lshift", &[1.0, 32.0]).unwrap(), 4294967296.0);
     }
 
     #[test]
     fn awk_rshift_large_v3() {
-        assert_eq!(super::awk_rshift(4294967296.0, 32.0), 1.0);
+        assert_eq!(bit("rshift", &[4294967296.0, 32.0]).unwrap(), 1.0);
     }
 
     #[test]
@@ -1805,27 +1828,27 @@ mod tests {
 
     #[test]
     fn awk_and_v10() {
-        assert_eq!(super::awk_and(1.0, 1.0), 1.0);
+        assert_eq!(bit("and", &[1.0, 1.0]).unwrap(), 1.0);
     }
     #[test]
     fn awk_or_v10() {
-        assert_eq!(super::awk_or(1.0, 0.0), 1.0);
+        assert_eq!(bit("or", &[1.0, 0.0]).unwrap(), 1.0);
     }
     #[test]
     fn awk_xor_v10() {
-        assert_eq!(super::awk_xor(1.0, 1.0), 0.0);
+        assert_eq!(bit("xor", &[1.0, 1.0]).unwrap(), 0.0);
     }
     #[test]
     fn awk_compl_v10() {
-        assert_eq!(super::awk_compl(-1.0), 0.0);
+        assert!(bit("compl", &[-1.0]).is_err());
     }
     #[test]
     fn awk_lshift_v10() {
-        assert_eq!(super::awk_lshift(1.0, 1.0), 2.0);
+        assert_eq!(bit("lshift", &[1.0, 1.0]).unwrap(), 2.0);
     }
     #[test]
     fn awk_rshift_v10() {
-        assert_eq!(super::awk_rshift(2.0, 1.0), 1.0);
+        assert_eq!(bit("rshift", &[2.0, 1.0]).unwrap(), 1.0);
     }
     #[test]
     fn awk_typeof_num_v10() {
@@ -1862,27 +1885,27 @@ mod tests {
 
     #[test]
     fn awk_bitwise_and_v33() {
-        assert_eq!(super::awk_and(3.0, 1.0), 1.0);
+        assert_eq!(bit("and", &[3.0, 1.0]).unwrap(), 1.0);
     }
     #[test]
     fn awk_bitwise_or_v33() {
-        assert_eq!(super::awk_or(2.0, 1.0), 3.0);
+        assert_eq!(bit("or", &[2.0, 1.0]).unwrap(), 3.0);
     }
     #[test]
     fn awk_bitwise_xor_v33() {
-        assert_eq!(super::awk_xor(3.0, 1.0), 2.0);
+        assert_eq!(bit("xor", &[3.0, 1.0]).unwrap(), 2.0);
     }
     #[test]
     fn awk_bitwise_compl_v33() {
-        assert_eq!(super::awk_compl(-1.0), 0.0);
+        assert!(bit("compl", &[-1.0]).is_err());
     }
     #[test]
     fn awk_bitwise_lshift_v33() {
-        assert_eq!(super::awk_lshift(1.0, 1.0), 2.0);
+        assert_eq!(bit("lshift", &[1.0, 1.0]).unwrap(), 2.0);
     }
     #[test]
     fn awk_bitwise_rshift_v33() {
-        assert_eq!(super::awk_rshift(2.0, 1.0), 1.0);
+        assert_eq!(bit("rshift", &[2.0, 1.0]).unwrap(), 1.0);
     }
 
     #[test]

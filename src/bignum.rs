@@ -89,10 +89,6 @@ pub fn float_trunc_integer(f: &Float) -> Integer {
         .unwrap_or_else(|| Integer::from(0))
 }
 
-/// Bitwise operands use gawk’s unsigned-64 reinterpretation of the signed truncated value.
-pub fn float_trunc_u64(f: &Float) -> u64 {
-    float_trunc_integer(f).to_u64_wrapping()
-}
 /// `awk_int_value` — see implementation for the contract.
 pub fn awk_int_value(v: &Value, rt: &Runtime) -> Value {
     if !rt.bignum {
@@ -138,76 +134,160 @@ pub fn awk_strtonum_value(s: &str, rt: &Runtime) -> Value {
     let round = rt.mpfr_round();
     Value::Mpfr(numeric_string_to_mpfr(s, prec, round))
 }
-/// `awk_and_values` — see implementation for the contract.
-pub fn awk_and_values(a: &Value, b: &Value, rt: &Runtime) -> Value {
-    if !rt.bignum {
-        return Value::Num(crate::builtins::awk_and(a.as_number(), b.as_number()));
-    }
-    let prec = rt.mpfr_prec_bits();
-    let round = rt.mpfr_round();
-    let ua = float_trunc_u64(&value_to_mpfr(a, prec, round));
-    let ub = float_trunc_u64(&value_to_mpfr(b, prec, round));
-    let r = ua & ub;
-    Value::Mpfr(Float::with_val_round(prec, Integer::from(r), round).0)
+/// gawk's three bitwise folds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BitFold {
+    /// `and(v1, v2, ...)`
+    And,
+    /// `or(v1, v2, ...)`
+    Or,
+    /// `xor(v1, v2, ...)`
+    Xor,
 }
-/// `awk_or_values` — see implementation for the contract.
-pub fn awk_or_values(a: &Value, b: &Value, rt: &Runtime) -> Value {
-    if !rt.bignum {
-        return Value::Num(crate::builtins::awk_or(a.as_number(), b.as_number()));
+
+impl BitFold {
+    /// The fold a builtin name selects, if it names one.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "and" => Some(Self::And),
+            "or" => Some(Self::Or),
+            "xor" => Some(Self::Xor),
+            _ => None,
+        }
     }
-    let prec = rt.mpfr_prec_bits();
-    let round = rt.mpfr_round();
-    let ua = float_trunc_u64(&value_to_mpfr(a, prec, round));
-    let ub = float_trunc_u64(&value_to_mpfr(b, prec, round));
-    let r = ua | ub;
-    Value::Mpfr(Float::with_val_round(prec, Integer::from(r), round).0)
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::And => "and",
+            Self::Or => "or",
+            Self::Xor => "xor",
+        }
+    }
+
+    fn code(self) -> u8 {
+        use fusevm::awk_host::bit_code;
+        match self {
+            Self::And => bit_code::AND,
+            Self::Or => bit_code::OR,
+            Self::Xor => bit_code::XOR,
+        }
+    }
 }
-/// `awk_xor_values` — see implementation for the contract.
-pub fn awk_xor_values(a: &Value, b: &Value, rt: &Runtime) -> Value {
-    if !rt.bignum {
-        return Value::Num(crate::builtins::awk_xor(a.as_number(), b.as_number()));
-    }
-    let prec = rt.mpfr_prec_bits();
-    let round = rt.mpfr_round();
-    let ua = float_trunc_u64(&value_to_mpfr(a, prec, round));
-    let ub = float_trunc_u64(&value_to_mpfr(b, prec, round));
-    let r = ua ^ ub;
-    Value::Mpfr(Float::with_val_round(prec, Integer::from(r), round).0)
+
+/// `true` for a value below zero (`-0` and NaN are not), gawk's `mpfr_sgn < 0`.
+fn mpfr_negative(f: &Float) -> bool {
+    f.cmp0() == Some(std::cmp::Ordering::Less)
 }
-/// `awk_lshift_values` — see implementation for the contract.
-pub fn awk_lshift_values(a: &Value, b: &Value, rt: &Runtime) -> Value {
-    if !rt.bignum {
-        return Value::Num(crate::builtins::awk_lshift(a.as_number(), b.as_number()));
-    }
-    let prec = rt.mpfr_prec_bits();
-    let round = rt.mpfr_round();
-    let x = float_trunc_u64(&value_to_mpfr(a, prec, round));
-    let n = float_trunc_u64(&value_to_mpfr(b, prec, round)) & 0x3f;
-    let r = x << n;
-    Value::Mpfr(Float::with_val_round(prec, Integer::from(r), round).0)
+
+/// gawk's `%Rg` rendering of an operand in a `-M` fatal message.
+fn mpfr_fatal_g(f: &Float) -> String {
+    fusevm::awk_host::awk_fmt_g(f.to_f64())
 }
-/// `awk_rshift_values` — see implementation for the contract.
-pub fn awk_rshift_values(a: &Value, b: &Value, rt: &Runtime) -> Value {
+
+/// gawk `and`/`or`/`xor` over every argument. `Err` carries gawk's fatal: fewer
+/// than two arguments, or a negative operand — gawk pops the last argument
+/// first, so the right-most negative one is reported.
+///
+/// Without `-M` this is gawk's 64-bit computation (shared with fusevm). With
+/// `-M` gawk folds the truncated arbitrary-precision integers (`mpfr.c`
+/// `do_mpfr_and`), so `or(2^70, 1)` is `2^70 + 1`, and words the fatal
+/// `argument #N`.
+pub fn awk_bit_fold_values(op: BitFold, args: &[Value], rt: &Runtime) -> Result<Value> {
     if !rt.bignum {
-        return Value::Num(crate::builtins::awk_rshift(a.as_number(), b.as_number()));
+        let nums: Vec<f64> = args.iter().map(Value::as_number).collect();
+        return fusevm::awk_host::awk_bit_fold_checked(op.code(), &nums)
+            .map(Value::Num)
+            .map_err(Error::Runtime);
+    }
+    if args.len() < 2 {
+        return Err(Error::Runtime(format!(
+            "{}: called with less than two arguments",
+            op.name()
+        )));
     }
     let prec = rt.mpfr_prec_bits();
     let round = rt.mpfr_round();
-    let x = float_trunc_u64(&value_to_mpfr(a, prec, round));
-    let n = float_trunc_u64(&value_to_mpfr(b, prec, round)) & 0x3f;
-    let r = x >> n;
-    Value::Mpfr(Float::with_val_round(prec, Integer::from(r), round).0)
+    let vals: Vec<Float> = args.iter().map(|a| value_to_mpfr(a, prec, round)).collect();
+    if let Some(i) = vals.iter().rposition(mpfr_negative) {
+        return Err(Error::Runtime(format!(
+            "{}: argument #{} negative value {} is not allowed",
+            op.name(),
+            i + 1,
+            mpfr_fatal_g(&vals[i])
+        )));
+    }
+    let mut acc = float_trunc_integer(&vals[0]);
+    for f in &vals[1..] {
+        let x = float_trunc_integer(f);
+        match op {
+            BitFold::And => acc &= x,
+            BitFold::Or => acc |= x,
+            BitFold::Xor => acc ^= x,
+        }
+    }
+    Ok(Value::Mpfr(Float::with_val_round(prec, acc, round).0))
 }
-/// `awk_compl_values` — see implementation for the contract.
-pub fn awk_compl_values(a: &Value, rt: &Runtime) -> Value {
+
+/// gawk `lshift(a, n)` (`left`) / `rshift(a, n)`. `Err` carries gawk's fatal
+/// for a negative operand.
+///
+/// Without `-M`: 64-bit unsigned shift, a count of 64 or more yields 0, then
+/// `adjust_uint` (shared with fusevm). With `-M` the integer shifts without a
+/// width limit (`lshift(1, 70)` is `2^70`) and the fatal names the first
+/// negative argument as `argument #N`.
+pub fn awk_shift_values(left: bool, a: &Value, n: &Value, rt: &Runtime) -> Result<Value> {
     if !rt.bignum {
-        return Value::Num(crate::builtins::awk_compl(a.as_number()));
+        return fusevm::awk_host::awk_shift_checked(left, a.as_number(), n.as_number())
+            .map(Value::Num)
+            .map_err(Error::Runtime);
+    }
+    let name = if left { "lshift" } else { "rshift" };
+    let prec = rt.mpfr_prec_bits();
+    let round = rt.mpfr_round();
+    let fa = value_to_mpfr(a, prec, round);
+    let fn_ = value_to_mpfr(n, prec, round);
+    for (i, f) in [&fa, &fn_].into_iter().enumerate() {
+        if mpfr_negative(f) {
+            return Err(Error::Runtime(format!(
+                "{name}: argument #{} negative value {} is not allowed",
+                i + 1,
+                mpfr_fatal_g(f)
+            )));
+        }
+    }
+    let x = float_trunc_integer(&fa);
+    let count = float_trunc_integer(&fn_).to_u32().unwrap_or(u32::MAX);
+    let r = if left { x << count } else { x >> count };
+    Ok(Value::Mpfr(Float::with_val_round(prec, r, round).0))
+}
+
+/// gawk `compl(a)`. `Err` carries gawk's fatal for a negative operand.
+///
+/// Without `-M` it is the 64-bit complement narrowed by `adjust_uint`
+/// (`compl(0)` = `2^53 - 1`). With `-M` gawk complements the arbitrary-precision
+/// integer (`compl(0)` = `-1`); its fatal reads `negative values` for an
+/// integral operand (gawk's mpz path) and `negative value` otherwise.
+pub fn awk_compl_values(a: &Value, rt: &Runtime) -> Result<Value> {
+    if !rt.bignum {
+        return fusevm::awk_host::awk_compl_checked(a.as_number())
+            .map(Value::Num)
+            .map_err(Error::Runtime);
     }
     let prec = rt.mpfr_prec_bits();
     let round = rt.mpfr_round();
-    // gawk -M complements the arbitrary-precision integer: compl(0) = -1.
-    let r = !float_trunc_integer(&value_to_mpfr(a, prec, round));
-    Value::Mpfr(Float::with_val_round(prec, r, round).0)
+    let f = value_to_mpfr(a, prec, round);
+    if mpfr_negative(&f) {
+        return Err(Error::Runtime(if f.is_integer() {
+            format!(
+                "compl({}): negative values are not allowed",
+                float_trunc_integer(&f)
+            )
+        } else {
+            format!("compl({}): negative value is not allowed", mpfr_fatal_g(&f))
+        }));
+    }
+    let r = !float_trunc_integer(&f);
+    Ok(Value::Mpfr(Float::with_val_round(prec, r, round).0))
 }
 
 /// `%s` conversion for [`Float`]: exact integers as decimal digit strings (no MPFR fixed-point tail);
@@ -372,67 +452,42 @@ mod tests {
     }
 
     #[test]
-    fn float_trunc_u64_positive_integer() {
-        let f = Float::with_val(64, 42.9);
-        assert_eq!(float_trunc_u64(&f), 42u64);
-    }
-
-    #[test]
     fn float_trunc_integer_truncates_toward_zero() {
         let f = Float::with_val(64, -9.7);
         let i = float_trunc_integer(&f);
         assert_eq!(format!("{i}"), "-9");
     }
 
-    #[test]
-    fn awk_and_values_matches_builtin_bit_pattern_f64() {
-        let rt = Runtime::new();
-        let v = awk_and_values(&Value::Num(12.0), &Value::Num(10.0), &rt);
-        assert_eq!(v.as_number(), crate::builtins::awk_and(12.0, 10.0));
+    fn fold(op: BitFold, args: &[f64], rt: &Runtime) -> Result<Value> {
+        let vals: Vec<Value> = args.iter().map(|&n| Value::Num(n)).collect();
+        awk_bit_fold_values(op, &vals, rt)
     }
 
     #[test]
-    fn awk_or_xor_values_match_builtins_f64() {
+    fn awk_bit_values_without_bignum_are_gawk_64_bit() {
         let rt = Runtime::new();
         assert_eq!(
-            awk_or_values(&Value::Num(8.0), &Value::Num(1.0), &rt).as_number(),
-            crate::builtins::awk_or(8.0, 1.0)
+            fold(BitFold::And, &[12.0, 10.0], &rt).unwrap().as_number(),
+            8.0
         );
         assert_eq!(
-            awk_xor_values(&Value::Num(15.0), &Value::Num(3.0), &rt).as_number(),
-            crate::builtins::awk_xor(15.0, 3.0)
+            fold(BitFold::Or, &[8.0, 1.0], &rt).unwrap().as_number(),
+            9.0
         );
-    }
-
-    #[test]
-    fn awk_lshift_masks_shift_count_with_0x3f() {
-        let rt = Runtime::new();
-        // 65 & 0x3f == 1 → 1 << 1 == 2
         assert_eq!(
-            awk_lshift_values(&Value::Num(1.0), &Value::Num(65.0), &rt).as_number(),
-            2.0
+            fold(BitFold::Xor, &[15.0, 3.0, 1.0], &rt)
+                .unwrap()
+                .as_number(),
+            13.0
         );
-        // 64 & 0x3f == 0 →3 << 0 == 3
+        let sh = |l, a, n| awk_shift_values(l, &Value::Num(a), &Value::Num(n), &rt).unwrap();
+        assert_eq!(sh(true, 1.0, 65.0).as_number(), 0.0);
+        assert_eq!(sh(false, 16.0, 2.0).as_number(), 4.0);
         assert_eq!(
-            awk_lshift_values(&Value::Num(3.0), &Value::Num(64.0), &rt).as_number(),
-            3.0
+            awk_compl_values(&Value::Num(0.0), &rt).unwrap().as_number(),
+            9007199254740991.0
         );
-    }
-
-    #[test]
-    fn awk_rshift_matches_builtin_f64() {
-        let rt = Runtime::new();
-        assert_eq!(
-            awk_rshift_values(&Value::Num(16.0), &Value::Num(2.0), &rt).as_number(),
-            crate::builtins::awk_rshift(16.0, 2.0)
-        );
-    }
-
-    #[test]
-    fn awk_compl_values_neg_one_to_zero_f64() {
-        let rt = Runtime::new();
-        assert_eq!(crate::builtins::awk_compl(-1.0), 0.0);
-        assert_eq!(awk_compl_values(&Value::Num(-1.0), &rt).as_number(), 0.0);
+        assert!(awk_compl_values(&Value::Num(-1.0), &rt).is_err());
     }
 
     fn mpfr_dec(v: &Value, rt: &Runtime) -> String {
@@ -450,24 +505,92 @@ mod tests {
     fn awk_bitwise_bignum_path_agrees_with_f64_small_operands() {
         let mut rt = Runtime::new();
         rt.bignum = true;
-        let a = Value::Num(12.0);
-        let b = Value::Num(10.0);
-        assert_eq!(mpfr_dec(&awk_and_values(&a, &b, &rt), &rt), "8");
-        assert_eq!(mpfr_dec(&awk_or_values(&a, &b, &rt), &rt), "14");
-        assert_eq!(mpfr_dec(&awk_xor_values(&a, &b, &rt), &rt), "6");
         assert_eq!(
-            mpfr_dec(
-                &awk_lshift_values(&Value::Num(3.0), &Value::Num(2.0), &rt),
-                &rt
-            ),
-            "12"
+            mpfr_dec(&fold(BitFold::And, &[12.0, 10.0], &rt).unwrap(), &rt),
+            "8"
         );
         assert_eq!(
-            mpfr_dec(
-                &awk_rshift_values(&Value::Num(17.0), &Value::Num(1.0), &rt),
-                &rt
-            ),
-            "8"
+            mpfr_dec(&fold(BitFold::Or, &[12.0, 10.0], &rt).unwrap(), &rt),
+            "14"
+        );
+        assert_eq!(
+            mpfr_dec(&fold(BitFold::Xor, &[12.0, 10.0], &rt).unwrap(), &rt),
+            "6"
+        );
+        let sh = |l, a, n| awk_shift_values(l, &Value::Num(a), &Value::Num(n), &rt).unwrap();
+        assert_eq!(mpfr_dec(&sh(true, 3.0, 2.0), &rt), "12");
+        assert_eq!(mpfr_dec(&sh(false, 17.0, 1.0), &rt), "8");
+    }
+
+    /// gawk 5.4.1 `-M` works on the arbitrary-precision integer: no 64-bit
+    /// width, no `adjust_uint`, fractions truncated.
+    #[test]
+    fn awk_bitwise_bignum_is_unbounded_integer_math() {
+        let mut rt = Runtime::new();
+        rt.bignum = true;
+        let two70 = 2f64.powi(70);
+        assert_eq!(
+            mpfr_dec(&fold(BitFold::Or, &[two70, 1.0], &rt).unwrap(), &rt),
+            "1180591620717411303425"
+        );
+        // 2^70 + 4 is not a double; the operand string keeps it exact.
+        let big = Value::Str("1180591620717411303428".into());
+        let x = awk_bit_fold_values(BitFold::Xor, &[big, Value::Num(3.0), Value::Num(1.0)], &rt);
+        assert_eq!(mpfr_dec(&x.unwrap(), &rt), "1180591620717411303430");
+        let sh = |l, a, n| awk_shift_values(l, &Value::Num(a), &Value::Num(n), &rt).unwrap();
+        assert_eq!(
+            mpfr_dec(&sh(true, 1.0, 70.0), &rt),
+            "1180591620717411303424"
+        );
+        assert_eq!(
+            mpfr_dec(&sh(false, two70, 3.0), &rt),
+            "147573952589676412928"
+        );
+        assert_eq!(mpfr_dec(&sh(true, 1.9, 2.9), &rt), "4");
+    }
+
+    /// gawk 5.4.1 `-M` fatals: `argument #N`, the right-most negative argument
+    /// of a fold but the first of a shift, and `compl` wording that depends on
+    /// whether the operand is integral.
+    #[test]
+    fn awk_bitwise_bignum_negative_fatals() {
+        let mut rt = Runtime::new();
+        rt.bignum = true;
+        let err = |r: Result<Value>| r.unwrap_err().to_string();
+        let e = err(fold(BitFold::And, &[-1.0, -2.0, 3.0], &rt));
+        assert!(
+            e.contains("and: argument #2 negative value -2 is not allowed"),
+            "{e}"
+        );
+        let e = err(awk_shift_values(
+            true,
+            &Value::Num(-1.0),
+            &Value::Num(-2.0),
+            &rt,
+        ));
+        assert!(
+            e.contains("lshift: argument #1 negative value -1 is not allowed"),
+            "{e}"
+        );
+        let e = err(awk_shift_values(
+            false,
+            &Value::Num(1.0),
+            &Value::Num(-2.5),
+            &rt,
+        ));
+        assert!(
+            e.contains("rshift: argument #2 negative value -2.5 is not allowed"),
+            "{e}"
+        );
+        let e = err(awk_compl_values(&Value::Num(-3.0), &rt));
+        assert!(
+            e.contains("compl(-3): negative values are not allowed"),
+            "{e}"
+        );
+        let e = err(awk_compl_values(&Value::Num(-0.5), &rt));
+        assert!(
+            e.contains("compl(-0.5): negative value is not allowed"),
+            "{e}"
         );
     }
 
@@ -477,9 +600,9 @@ mod tests {
     fn awk_compl_bignum_is_integer_complement() {
         let mut rt = Runtime::new();
         rt.bignum = true;
-        let v = awk_compl_values(&Value::Num(0.0), &rt);
+        let v = awk_compl_values(&Value::Num(0.0), &rt).unwrap();
         assert_eq!(mpfr_dec(&v, &rt), "-1");
-        let v = awk_compl_values(&Value::Num(2f64.powi(70)), &rt);
+        let v = awk_compl_values(&Value::Num(2f64.powi(70)), &rt).unwrap();
         assert_eq!(mpfr_dec(&v, &rt), "-1180591620717411303425");
     }
 
@@ -628,7 +751,7 @@ mod tests {
         let rt = Runtime::new();
         let a = Value::Num(255.0);
         let b = Value::Num(15.0);
-        let res = super::awk_and_values(&a, &b, &rt);
+        let res = super::awk_bit_fold_values(BitFold::And, &[a, b], &rt).unwrap();
         assert_eq!(res.as_number(), 15.0);
     }
 
@@ -637,7 +760,7 @@ mod tests {
         let rt = Runtime::new();
         let a = Value::Num(240.0);
         let b = Value::Num(15.0);
-        let res = super::awk_or_values(&a, &b, &rt);
+        let res = super::awk_bit_fold_values(BitFold::Or, &[a, b], &rt).unwrap();
         assert_eq!(res.as_number(), 255.0);
     }
 
@@ -646,29 +769,29 @@ mod tests {
         let rt = Runtime::new();
         let a = Value::Num(255.0);
         let b = Value::Num(15.0);
-        let res = super::awk_xor_values(&a, &b, &rt);
+        let res = super::awk_bit_fold_values(BitFold::Xor, &[a, b], &rt).unwrap();
         assert_eq!(res.as_number(), 240.0);
     }
 
     #[test]
     fn awk_compl_bignum_v2() {
         let rt = Runtime::new();
-        // compl(-1) -> !(-1u64) -> !0xFFFF... -> 0
-        let res = super::awk_compl_values(&Value::Num(-1.0), &rt);
-        assert_eq!(res.as_number(), 0.0);
+        // gawk: compl(-1) is a fatal, not a wrapped complement.
+        assert!(super::awk_compl_values(&Value::Num(-1.0), &rt).is_err());
     }
 
     #[test]
     fn awk_lshift_bignum_v15() {
         let rt = Runtime::new();
-        let res = super::awk_lshift_values(&Value::Num(1.0), &Value::Num(10.0), &rt);
+        let res = super::awk_shift_values(true, &Value::Num(1.0), &Value::Num(10.0), &rt).unwrap();
         assert_eq!(res.as_number(), 1024.0);
     }
 
     #[test]
     fn awk_rshift_bignum_v15() {
         let rt = Runtime::new();
-        let res = super::awk_rshift_values(&Value::Num(1024.0), &Value::Num(10.0), &rt);
+        let res =
+            super::awk_shift_values(false, &Value::Num(1024.0), &Value::Num(10.0), &rt).unwrap();
         assert_eq!(res.as_number(), 1.0);
     }
 

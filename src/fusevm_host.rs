@@ -474,41 +474,32 @@ impl fusevm::AwkHost for AwkRuntimeHost {
 
     /// `and(v1, v2, …)` — bitwise AND folded across all args (≥2 required).
     fn and(&mut self, args: &[fusevm::Value]) -> fusevm::Value {
-        bit_fold(args, "and", crate::bignum::awk_and_values)
+        bit_fold(args, crate::bignum::BitFold::And)
     }
 
     /// `or(v1, v2, …)` — bitwise OR folded across all args.
     fn or(&mut self, args: &[fusevm::Value]) -> fusevm::Value {
-        bit_fold(args, "or", crate::bignum::awk_or_values)
+        bit_fold(args, crate::bignum::BitFold::Or)
     }
 
     /// `xor(v1, v2, …)` — bitwise XOR folded across all args.
     fn xor(&mut self, args: &[fusevm::Value]) -> fusevm::Value {
-        bit_fold(args, "xor", crate::bignum::awk_xor_values)
+        bit_fold(args, crate::bignum::BitFold::Xor)
     }
 
     /// `lshift(v, n)` — left shift; negative operands are fatal (gawk).
     fn lshift(&mut self, v: &fusevm::Value, n: &fusevm::Value) -> fusevm::Value {
-        shift("lshift", v, n, crate::bignum::awk_lshift_values)
+        shift(true, v, n)
     }
 
     /// `rshift(v, n)` — right shift; negative operands are fatal (gawk).
     fn rshift(&mut self, v: &fusevm::Value, n: &fusevm::Value) -> fusevm::Value {
-        shift("rshift", v, n, crate::bignum::awk_rshift_values)
+        shift(false, v, n)
     }
 
     /// `compl(v)` — bitwise complement; negative operand is fatal (gawk).
     fn compl(&mut self, v: &fusevm::Value) -> fusevm::Value {
-        with_runtime(|rt| {
-            let av = fuse_num(v);
-            if av < 0.0 {
-                set_host_error(Error::Runtime(format!(
-                    "compl({av:.6}): negative value is not allowed"
-                )));
-                return fusevm::Value::Int(0);
-            }
-            awk_to_fuse(crate::bignum::awk_compl_values(&fuse_to_awk(v.clone()), rt))
-        })
+        with_runtime(|rt| host_result(crate::bignum::awk_compl_values(&fuse_to_awk(v.clone()), rt)))
     }
 
     /// `strtonum(s)` — numeric value honoring 0x/0 prefixes (gawk).
@@ -852,47 +843,36 @@ fn array_key(rt: &Runtime, key: &fusevm::Value) -> String {
 }
 
 /// Fold a 2-arg bitwise op across `args` (`and`/`or`/`xor`); ≥2 args required.
-fn bit_fold(
-    args: &[fusevm::Value],
-    name: &str,
-    op: fn(&crate::runtime::Value, &crate::runtime::Value, &Runtime) -> crate::runtime::Value,
-) -> fusevm::Value {
+/// A host builtin's result as a fusevm value; an `Err` is parked for the VM to
+/// raise after the call (the placeholder `0` is never observed).
+fn host_result(r: Result<crate::runtime::Value, Error>) -> fusevm::Value {
+    match r {
+        Ok(v) => awk_to_fuse(v),
+        Err(e) => {
+            set_host_error(e);
+            fusevm::Value::Int(0)
+        }
+    }
+}
+
+/// `and`/`or`/`xor`: fold every argument (gawk arity and negative fatals).
+fn bit_fold(args: &[fusevm::Value], op: crate::bignum::BitFold) -> fusevm::Value {
     with_runtime(|rt| {
-        if args.len() < 2 {
-            set_host_error(Error::Runtime(format!(
-                "{name}: called with less than two arguments"
-            )));
-            return fusevm::Value::Int(0);
-        }
-        let mut acc = op(
-            &fuse_to_awk(args[0].clone()),
-            &fuse_to_awk(args[1].clone()),
-            rt,
-        );
-        for a in &args[2..] {
-            acc = op(&acc, &fuse_to_awk(a.clone()), rt);
-        }
-        awk_to_fuse(acc)
+        let vals: Vec<crate::runtime::Value> =
+            args.iter().map(|a| fuse_to_awk(a.clone())).collect();
+        host_result(crate::bignum::awk_bit_fold_values(op, &vals, rt))
     })
 }
 
-/// `lshift`/`rshift`: two args, both non-negative (negative is a gawk fatal).
-fn shift(
-    name: &str,
-    v: &fusevm::Value,
-    n: &fusevm::Value,
-    op: fn(&crate::runtime::Value, &crate::runtime::Value, &Runtime) -> crate::runtime::Value,
-) -> fusevm::Value {
+/// `lshift` (`left`) / `rshift`: both operands non-negative (else a gawk fatal).
+fn shift(left: bool, v: &fusevm::Value, n: &fusevm::Value) -> fusevm::Value {
     with_runtime(|rt| {
-        let av = fuse_num(v);
-        let bv = fuse_num(n);
-        if av < 0.0 || bv < 0.0 {
-            set_host_error(Error::Runtime(format!(
-                "{name}({av:.6}, {bv:.6}): negative values are not allowed"
-            )));
-            return fusevm::Value::Int(0);
-        }
-        awk_to_fuse(op(&fuse_to_awk(v.clone()), &fuse_to_awk(n.clone()), rt))
+        host_result(crate::bignum::awk_shift_values(
+            left,
+            &fuse_to_awk(v.clone()),
+            &fuse_to_awk(n.clone()),
+            rt,
+        ))
     })
 }
 
