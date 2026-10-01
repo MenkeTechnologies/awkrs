@@ -240,7 +240,12 @@ impl Compiler {
                 self.compile_expr(idx)?;
                 self.b.emit(fusevm::Op::AwkFieldSet, 0);
             }
-            IncDecTarget::Index { name, indices } => {
+            IncDecTarget::Index { path, .. } if !path.is_empty() => {
+                return Err(Error::Runtime(
+                    "fusevm_compile: unsupported subarray element".into(),
+                ));
+            }
+            IncDecTarget::Index { name, indices, .. } => {
                 self.compile_index_key(indices)?;
                 let ni = self.b.add_name(name);
                 self.b.emit(fusevm::Op::AwkArrayGet(ni), 0);
@@ -655,7 +660,12 @@ impl Compiler {
             // `for (k in a) body` — materialize the keys as a fusevm Array (host
             // builtin), then iterate by index. Loop temps are frame slots; the
             // loop variable `k` is host-backed like any scalar.
-            Stmt::ForIn { var, arr, body } => {
+            Stmt::ForIn {
+                var,
+                arr,
+                path,
+                body,
+            } if path.is_empty() => {
                 let keys_slot = self.alloc_slot();
                 let len_slot = self.alloc_slot();
                 let i_slot = self.alloc_slot();
@@ -737,8 +747,9 @@ impl Compiler {
             // op and is deferred.
             Stmt::Delete {
                 name,
+                path,
                 indices: Some(idxs),
-            } => {
+            } if path.is_empty() => {
                 self.compile_index_key(idxs)?;
                 let ni = self.b.add_name(name);
                 self.b.emit(fusevm::Op::AwkArrayDelete(ni), 0);
@@ -748,6 +759,7 @@ impl Compiler {
             Stmt::Delete {
                 name,
                 indices: None,
+                ..
             } => {
                 let ni = self.b.add_name(name);
                 self.b.emit(fusevm::Op::AwkArrayClear(ni), 0);
@@ -903,7 +915,11 @@ impl Compiler {
             Expr::Call { name, args } => self.compile_call(name, args)?,
             // `a[k]` read. Single subscript only for now (multi-dim SUBSEP join
             // is a later refinement).
-            Expr::Index { name, indices } => {
+            Expr::Index {
+                name,
+                path,
+                indices,
+            } if path.is_empty() => {
                 self.compile_index_key(indices)?;
                 let ni = self.b.add_name(name);
                 self.b.emit(fusevm::Op::AwkArrayGet(ni), 0);
@@ -913,10 +929,11 @@ impl Compiler {
             // pops it.
             Expr::AssignIndex {
                 name,
+                path,
                 indices,
                 op,
                 rhs,
-            } => {
+            } if path.is_empty() => {
                 if let Some(bop) = op {
                     self.compile_index_key(indices)?;
                     let ni = self.b.add_name(name);
@@ -932,7 +949,7 @@ impl Compiler {
                 self.b.emit(fusevm::Op::AwkArraySet(ni), 0);
             }
             // `k in a` → Bool.
-            Expr::In { key, arr } => {
+            Expr::In { key, arr, path } if path.is_empty() => {
                 self.compile_expr(key)?;
                 let ni = self.b.add_name(arr);
                 self.b.emit(fusevm::Op::AwkArrayExists(ni), 0);

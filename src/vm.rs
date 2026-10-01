@@ -38,6 +38,9 @@ pub struct VmCtx<'a> {
     print_out: Option<&'a mut Vec<String>>,
     for_in_iters: Vec<ForInState>,
     stack: Vec<Value>,
+    /// Elements copied out by `Op::ElemBind` and not yet stored back: the
+    /// array name, the subscripts, and the hidden variable holding the copy.
+    elem_binds: Vec<(String, Vec<Vec<u8>>, u32)>,
 }
 
 impl<'a> VmCtx<'a> {
@@ -54,6 +57,7 @@ impl<'a> VmCtx<'a> {
             print_out: None,
             for_in_iters: Vec::new(),
             stack,
+            elem_binds: Vec::new(),
         }
     }
     /// `with_print_capture` — see implementation for the contract.
@@ -72,6 +76,7 @@ impl<'a> VmCtx<'a> {
             print_out: Some(out),
             for_in_iters: Vec::new(),
             stack,
+            elem_binds: Vec::new(),
         }
     }
 
@@ -235,28 +240,28 @@ impl<'a> VmCtx<'a> {
     /// the record-loop opcodes that already have the key text in hand. See
     /// [`crate::runtime::AwkArray::insert_str`] for what the borrow saves.
     /// [`Self::array_elem_set_str`] with a byte subscript.
-    fn array_elem_set_bytes(&mut self, name: &str, key: &[u8], val: Value) {
+    /// Returns the value the store replaced, if any.
+    fn array_elem_set_bytes(&mut self, name: &str, key: &[u8], val: Value) -> Option<Value> {
         if name == "SYMTAB" {
             self.rt.symtab_elem_set(&String::from_utf8_lossy(key), val);
-            return;
+            return None;
         }
         // POSIX array call-by-reference: writes through a function array
         // param go to the current frame, not global vars.
         for frame in self.locals.iter_mut().rev() {
             if let Some(slot) = frame.get_mut(name) {
                 if let Value::Array(a) = slot {
-                    a.insert_bytes(key, val);
-                    return;
+                    return a.insert_bytes(key, val);
                 }
                 if matches!(slot, Value::Uninit) {
                     let mut a = crate::runtime::AwkArray::new();
                     a.insert_bytes(key, val);
                     *slot = Value::Array(a);
-                    return;
+                    return None;
                 }
             }
         }
-        self.rt.array_set_bytes(name, key, val);
+        self.rt.array_set_bytes(name, key, val)
     }
 
     /// [`Self::array_elem_get`] with a byte subscript.
@@ -1387,6 +1392,11 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                         ctx.array_elem_get_vivify_bytes(name, &k)
                     }
                 };
+                // gawk arrays of arrays: an element holding a subarray cannot
+                // be read as a scalar.
+                if matches!(v, Value::Array(_)) {
+                    return Err(vm_subarray::subarray_read_fatal(ctx, name, &key_val));
+                }
                 ctx.push(v);
             }
             Op::SymtabKeyCount => {
@@ -1491,7 +1501,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 // the array's integer half, building no key. An array reached
                 // through a function parameter lives in a frame, so that case
                 // keeps the frame-aware path.
-                match crate::runtime::Runtime::subscript_int(&key_val) {
+                let replaced = match crate::runtime::Runtime::subscript_int(&key_val) {
                     Some(i) if ctx.locals.is_empty() => ctx.rt.array_set_int(name, i, val.clone()),
                     _ => {
                         // Borrowed: the key text is already inside `key_val`
@@ -1501,8 +1511,17 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                         // the integer half of the array then dropped it.
                         let mut kbuf = crate::runtime::KeyBuf::new();
                         let key = ctx.rt.array_key_bytes_in(&key_val, &mut kbuf);
-                        ctx.array_elem_set_bytes(name, key.as_ref(), val.clone());
+                        ctx.array_elem_set_bytes(name, key.as_ref(), val.clone())
                     }
+                };
+                // gawk arrays of arrays: a subarray cannot be overwritten by a
+                // scalar. The check rides on the value the store replaced, so
+                // an ordinary store pays nothing for it; the rare failure puts
+                // the subarray back before raising the fatal.
+                if let Some(Value::Array(sub)) = replaced {
+                    return Err(vm_subarray::subarray_overwrite_fatal(
+                        ctx, name, &key_val, sub,
+                    ));
                 }
                 ctx.push(val);
             }
@@ -2120,6 +2139,19 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                     Err(e) => return exit_signal_or(e),
                 }
             }
+
+            // gawk arrays of arrays (see vm_subarray.rs).
+            Op::SubGet(..)
+            | Op::SubSet(..)
+            | Op::SubCompound(..)
+            | Op::SubIncDec(..)
+            | Op::SubIn(..)
+            | Op::SubDelete(..)
+            | Op::SubForInStart(..)
+            | Op::ElemAny(..)
+            | Op::ElemRef(..)
+            | Op::ElemBind { .. }
+            | Op::ElemUnbind(_) => vm_subarray::exec_subarray_op(ctx, &ops[pc])?,
 
             // ── Array ops ───────────────────────────────────────────────
             Op::InArray(arr) => {
@@ -3277,11 +3309,18 @@ fn exec_sub(ctx: &mut VmCtx<'_>, target: SubTarget, is_global: bool) -> Result<(
     Ok(())
 }
 
+// gawk arrays of arrays (implemented in vm_subarray.rs).
+#[path = "vm_subarray.rs"]
+mod vm_subarray;
+use vm_subarray::decode_elem_ref;
+pub(crate) use vm_subarray::ELEM_REF_MARKER;
+
 // ── Builtin calls (implemented in vm_builtins.rs) ────────────────────────────
 #[path = "vm_builtins.rs"]
 mod vm_builtins;
 use vm_builtins::{
-    exec_call_builtin, exec_call_user_inner, sort_keys_with_custom_cmp, sort_pairs_with_custom_cmp,
+    exec_call_builtin, exec_call_user_inner, sort_keys_by_user_fn, sort_keys_with_custom_cmp,
+    sort_pairs_with_custom_cmp,
 };
 
 /// Pop the AOP call frame and unset the `INTERCEPT_*` / `__intercept_proceed`
@@ -3525,10 +3564,62 @@ fn exec_call_user_bind_arrays(ctx: &mut VmCtx<'_>, name: &str, argc: u16) -> Res
     let argc = argc as usize;
     let total = argc * 2;
     let start = ctx.stack.len() - total;
+
+    // Element arguments that turned out to hold scalars need no write-back:
+    // when nothing else does either, take the plain call path, decided on the
+    // stack before anything is moved or allocated.
+    let (name_vals, arg_vals) = ctx.stack[start..].split_at(argc);
+    let writeback = name_vals.iter().zip(arg_vals).any(|(n, v)| {
+        let n: &[u8] = match n {
+            Value::Str(s) | Value::StrLit(s) => s.as_bytes(),
+            _ => b"",
+        };
+        !n.is_empty() && (n != ELEM_REF_MARKER.as_bytes() || matches!(v, Value::Array(_)))
+    });
+    if !writeback {
+        let vals: Vec<Value> = ctx.stack.drain(start + argc..).collect();
+        ctx.stack.truncate(start);
+        if !ctx.rt.intercepts.is_empty() {
+            if let Some(v) = run_user_intercepts(ctx, name, &vals)? {
+                ctx.push(v);
+                return Ok(());
+            }
+        }
+        let result = exec_call_user_inner(ctx, name, vals)?;
+        ctx.push(result);
+        return Ok(());
+    }
+
     // drain returns values in stack order (bottom→top); names come first.
     let mut all: Vec<Value> = ctx.stack.drain(start..).collect();
-    let vals: Vec<Value> = all.split_off(argc);
+    let mut vals: Vec<Value> = all.split_off(argc);
     let names: Vec<String> = all.into_iter().map(|v| v.into_string()).collect();
+
+    // gawk arrays of arrays: an element argument that holds (or may become) a
+    // subarray arrives as a reference; pass the element and remember where it
+    // lives so an array the callee leaves in the parameter is written back.
+    // Allocated only when an element reference is present.
+    let mut elem_refs: Vec<Option<(String, Vec<Vec<u8>>)>> = Vec::new();
+    for (i, caller_name) in names.iter().enumerate() {
+        if caller_name != ELEM_REF_MARKER {
+            continue;
+        }
+        if let Value::Array(r) = &vals[i] {
+            let (arr, keys) = decode_elem_ref(r);
+            let (key, path) = keys
+                .split_last()
+                .expect("element reference has a subscript");
+            vals[i] = if path.is_empty() {
+                ctx.elem_any_flat(&arr, key)?
+            } else {
+                ctx.elem_any(&arr, path, key)?
+            };
+            if elem_refs.is_empty() {
+                elem_refs.resize(argc, None);
+            }
+            elem_refs[i] = Some((arr, keys));
+        }
+    }
 
     // AOP join point (same as `exec_call_user`). When advice fully handles the
     // call, array-by-reference write-back is skipped — the advice controls the
@@ -3557,6 +3648,21 @@ fn exec_call_user_bind_arrays(ctx: &mut VmCtx<'_>, name: &str, argc: u16) -> Res
         let Some(param_name) = param_names.get(i) else {
             continue;
         };
+        if caller_name == ELEM_REF_MARKER {
+            if let (Some(Some((arr, keys))), Some(v @ Value::Array(_))) =
+                (elem_refs.get(i), frame_after.get(param_name))
+            {
+                let (key, path) = keys
+                    .split_last()
+                    .expect("element reference has a subscript");
+                if path.is_empty() {
+                    ctx.array_elem_set_bytes(arr, key, v.clone());
+                } else {
+                    ctx.subarray_mut(arr, path)?.insert_bytes(key, v.clone());
+                }
+            }
+            continue;
+        }
         if let Some(v) = frame_after.get(param_name) {
             if matches!(v, Value::Array(_)) {
                 // Frame-aware write-back: if the caller name lives in an

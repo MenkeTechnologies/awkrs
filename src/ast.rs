@@ -74,6 +74,9 @@ pub enum Stmt {
     ForIn {
         var: String,
         arr: String,
+        /// gawk arrays of arrays: the subscript lists that select a subarray of
+        /// `arr` (`for (k in a[i][j])` is `[[i], [j]]`); empty for `arr` itself.
+        path: Vec<Vec<Expr>>,
         body: Vec<Stmt>,
     },
     /// `Block` variant.
@@ -102,6 +105,9 @@ pub enum Stmt {
     Exit(Option<Expr>),
     Delete {
         name: String,
+        /// Subarray of `name` the deletion applies to (gawk arrays of arrays,
+        /// see [`Expr::Index`]); empty for `name` itself.
+        path: Vec<Vec<Expr>>,
         /// `None` = delete entire array; `Some(vec)` = delete one key (possibly multidimensional).
         indices: Option<Vec<Expr>>,
     },
@@ -187,6 +193,10 @@ pub enum Expr {
     Field(Box<Expr>),
     Index {
         name: String,
+        /// gawk arrays of arrays: the subscript lists of the brackets before the
+        /// last one, outermost first. `a[i][j,k][l]` is `name: "a"`,
+        /// `path: [[i], [j, k]]`, `indices: [l]`. Empty for a plain `a[l]`.
+        path: Vec<Vec<Expr>>,
         /// One or more indices; multiple are joined with `SUBSEP` (multidimensional arrays).
         indices: Vec<Expr>,
     },
@@ -211,6 +221,8 @@ pub enum Expr {
     },
     AssignIndex {
         name: String,
+        /// Subarray path, as in [`Expr::Index`].
+        path: Vec<Vec<Expr>>,
         indices: Vec<Expr>,
         op: Option<BinOp>,
         rhs: Box<Expr>,
@@ -233,6 +245,8 @@ pub enum Expr {
     In {
         key: Box<Expr>,
         arr: String,
+        /// Subarray of `arr` tested (`k in a[i]`), as in [`Expr::Index`].
+        path: Vec<Vec<Expr>>,
     },
     /// Parenthesized comma list `(e1, e2, …)` — gawk: multidimensional `in` key and lone `print` arg.
     Tuple(Vec<Expr>),
@@ -272,6 +286,8 @@ pub enum IncDecTarget {
     Field(Box<Expr>),
     Index {
         name: String,
+        /// Subarray path, as in [`Expr::Index`].
+        path: Vec<Vec<Expr>>,
         indices: Vec<Expr>,
     },
 }
@@ -387,6 +403,7 @@ mod ast_tests {
     fn ast_multidim_subscript_v2() {
         let e = Expr::Index {
             name: "a".into(),
+            path: vec![],
             indices: vec![Expr::Number(1.0), Expr::Number(2.0)],
         };
         if let Expr::Index { indices, .. } = e {
@@ -398,10 +415,12 @@ mod ast_tests {
     fn ast_delete_variants_v2() {
         let d1 = Stmt::Delete {
             name: "a".into(),
+            path: vec![],
             indices: None,
         };
         let d2 = Stmt::Delete {
             name: "a".into(),
+            path: vec![],
             indices: Some(vec![Expr::Number(1.0)]),
         };
         assert_ne!(d1, d2);
@@ -629,6 +648,7 @@ mod ast_tests {
     fn ast_expr_index_v8() {
         let _ = Expr::Index {
             name: "a".into(),
+            path: vec![],
             indices: vec![],
         }
         .clone();
@@ -681,6 +701,7 @@ mod ast_tests {
         let _ = Expr::In {
             key: Box::new(Expr::Number(1.0)),
             arr: "a".into(),
+            path: vec![],
         }
         .clone();
     }
@@ -742,6 +763,7 @@ mod ast_tests {
         let _ = Stmt::ForIn {
             var: "k".into(),
             arr: "a".into(),
+            path: vec![],
             body: vec![],
         }
         .clone();
@@ -782,6 +804,7 @@ mod ast_tests {
     fn ast_stmt_delete_v8() {
         let _ = Stmt::Delete {
             name: "a".into(),
+            path: vec![],
             indices: None,
         }
         .clone();
@@ -827,6 +850,7 @@ mod ast_tests {
     fn ast_expr_v53_4() {
         let _ = Expr::Index {
             name: "a".into(),
+            path: vec![],
             indices: vec![Expr::Number(1.0)],
         }
         .clone();
@@ -879,6 +903,7 @@ mod ast_tests {
         let _ = Expr::In {
             key: Box::new(Expr::Number(1.0)),
             arr: "a".into(),
+            path: vec![],
         }
         .clone();
     }
@@ -964,6 +989,7 @@ mod ast_tests {
         let _ = Stmt::ForIn {
             var: "k".into(),
             arr: "a".into(),
+            path: vec![],
             body: vec![],
         }
         .clone();
@@ -996,6 +1022,7 @@ mod ast_tests {
     fn ast_stmt_v53_14() {
         let _ = Stmt::Delete {
             name: "a".into(),
+            path: vec![],
             indices: None,
         }
         .clone();

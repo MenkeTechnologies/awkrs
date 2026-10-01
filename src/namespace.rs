@@ -127,9 +127,13 @@ fn qualify_name(name: &str, ns: &str, locals: &FxHashSet<String>) -> String {
 fn qualify_expr(e: &mut Expr, ns: &str, locals: &FxHashSet<String>) {
     match e {
         Expr::Var(name) => *name = qualify_name(name, ns, locals),
-        Expr::Index { name, indices } => {
+        Expr::Index {
+            name,
+            path,
+            indices,
+        } => {
             *name = qualify_name(name, ns, locals);
-            for x in indices {
+            for x in path.iter_mut().flatten().chain(indices) {
                 qualify_expr(x, ns, locals);
             }
         }
@@ -138,10 +142,14 @@ fn qualify_expr(e: &mut Expr, ns: &str, locals: &FxHashSet<String>) {
             qualify_expr(rhs, ns, locals);
         }
         Expr::AssignIndex {
-            name, indices, rhs, ..
+            name,
+            path,
+            indices,
+            rhs,
+            ..
         } => {
             *name = qualify_name(name, ns, locals);
-            for x in indices {
+            for x in path.iter_mut().flatten().chain(indices) {
                 qualify_expr(x, ns, locals);
             }
             qualify_expr(rhs, ns, locals);
@@ -160,9 +168,12 @@ fn qualify_expr(e: &mut Expr, ns: &str, locals: &FxHashSet<String>) {
                 qualify_expr(a, ns, locals);
             }
         }
-        Expr::In { key, arr } => {
+        Expr::In { key, arr, path } => {
             qualify_expr(key, ns, locals);
             *arr = qualify_name(arr, ns, locals);
+            for x in path.iter_mut().flatten() {
+                qualify_expr(x, ns, locals);
+            }
         }
         Expr::Tuple(parts) => {
             for p in parts {
@@ -183,9 +194,13 @@ fn qualify_expr(e: &mut Expr, ns: &str, locals: &FxHashSet<String>) {
         Expr::IncDec { target, .. } => match target {
             IncDecTarget::Var(name) => *name = qualify_name(name, ns, locals),
             IncDecTarget::Field(inner) => qualify_expr(inner, ns, locals),
-            IncDecTarget::Index { name, indices } => {
+            IncDecTarget::Index {
+                name,
+                path,
+                indices,
+            } => {
                 *name = qualify_name(name, ns, locals);
-                for x in indices {
+                for x in path.iter_mut().flatten().chain(indices) {
                     qualify_expr(x, ns, locals);
                 }
             }
@@ -273,9 +288,17 @@ fn qualify_stmt(s: &mut Stmt, ns: &str, locals: &FxHashSet<String>) {
                 qualify_stmt(x, ns, locals);
             }
         }
-        Stmt::ForIn { var, arr, body } => {
+        Stmt::ForIn {
+            var,
+            arr,
+            path,
+            body,
+        } => {
             *var = qualify_name(var, ns, locals);
             *arr = qualify_name(arr, ns, locals);
+            for x in path.iter_mut().flatten() {
+                qualify_expr(x, ns, locals);
+            }
             for x in body {
                 qualify_stmt(x, ns, locals);
             }
@@ -316,8 +339,15 @@ fn qualify_stmt(s: &mut Stmt, ns: &str, locals: &FxHashSet<String>) {
                 qualify_expr(x, ns, locals);
             }
         }
-        Stmt::Delete { name, indices } => {
+        Stmt::Delete {
+            name,
+            path,
+            indices,
+        } => {
             *name = qualify_name(name, ns, locals);
+            for x in path.iter_mut().flatten() {
+                qualify_expr(x, ns, locals);
+            }
             if let Some(idxs) = indices {
                 for x in idxs {
                     qualify_expr(x, ns, locals);
@@ -530,6 +560,7 @@ mod tests {
             stmts: vec![Stmt::ForIn {
                 var: "k".into(),
                 arr: "data".into(),
+                path: vec![],
                 body: vec![],
             }],
         });
@@ -592,11 +623,12 @@ mod tests {
             stmts: vec![Stmt::Expr(Expr::In {
                 key: Box::new(Expr::Var("k".into())),
                 arr: "tbl".into(),
+                path: vec![],
             })],
         });
         apply_default_namespace(&mut prog, Some("ns"));
         match &prog.rules[0].stmts[0] {
-            Stmt::Expr(Expr::In { key, arr }) => {
+            Stmt::Expr(Expr::In { key, arr, .. }) => {
                 assert!(matches!(**key, Expr::Var(ref s) if s == "ns::k"));
                 assert_eq!(arr, "ns::tbl");
             }
@@ -630,12 +662,13 @@ mod tests {
             pattern: Pattern::Begin,
             stmts: vec![Stmt::Delete {
                 name: "a".into(),
+                path: vec![],
                 indices: None,
             }],
         });
         apply_default_namespace(&mut prog, Some("ns"));
         match &prog.rules[0].stmts[0] {
-            Stmt::Delete { name, indices } => {
+            Stmt::Delete { name, indices, .. } => {
                 assert_eq!(name, "ns::a");
                 assert!(indices.is_none());
             }
@@ -649,6 +682,7 @@ mod tests {
             pattern: Pattern::Begin,
             stmts: vec![Stmt::Delete {
                 name: "a".into(),
+                path: vec![],
                 indices: Some(vec![Expr::Var("i".into())]),
             }],
         });
@@ -657,6 +691,7 @@ mod tests {
             Stmt::Delete {
                 name,
                 indices: Some(idxs),
+                ..
             } => {
                 assert_eq!(name, "ns::a");
                 assert!(matches!(&idxs[0], Expr::Var(s) if s == "ns::i"));

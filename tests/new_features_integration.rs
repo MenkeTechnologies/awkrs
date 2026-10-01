@@ -1036,3 +1036,85 @@ fn posix_mode_rejects_gawk_builtin() {
     let (c, _o, _e) = run_awkrs_stdin_args(["-P"], r#"BEGIN { print typeof(1) }"#, "");
     assert_ne!(c, 0, "posix mode should reject typeof()");
 }
+
+// ── gawk arrays of arrays ────────────────────────────────────────────────────
+//
+// Expected output is gawk 5.4.1's.
+
+/// The canonical tree walk: subarrays created on store, tested with `isarray`,
+/// passed by reference to a recursive function and iterated in `sorted_in`
+/// order there.
+#[test]
+fn arrays_of_arrays_recursive_walk() {
+    let (c, o, e) = run_awkrs_stdin(
+        r#"function walk(arr, pre,   k) {
+  for (k in arr)
+    if (isarray(arr[k])) walk(arr[k], pre k ".")
+    else print pre k "=" arr[k]
+}
+BEGIN {
+  t["a"]["b"] = 1; t["a"]["c"]["d"] = 2; t["e"] = 3; t[1, 2]["x"] = 4
+  PROCINFO["sorted_in"] = "@ind_str_asc"
+  walk(t, "")
+  print length(t), length(t["a"]), ("c" in t["a"]), ("z" in t["a"])
+}"#,
+        "",
+    );
+    assert_eq!(c, 0, "stderr: {e}");
+    assert_eq!(o, "1\u{1c}2.x=4\na.b=1\na.c.d=2\ne=3\n3 2 1 0\n");
+}
+
+/// Element updates, deletion at depth, a callee filling a missing element as a
+/// subarray, and builtins that fill an array (`split`, `asort`, `match`) or edit
+/// a scalar (`sub`) given a subarray element.
+#[test]
+fn arrays_of_arrays_update_delete_and_builtin_targets() {
+    let (c, o, e) = run_awkrs_stdin(
+        r#"function fill(s) { s["k"] = 1 }
+{ n[$1][$2] += $3 }
+END {
+  PROCINFO["sorted_in"] = "@ind_str_asc"
+  for (k in n) for (j in n[k]) printf "%s.%s=%s ", k, j, n[k][j]; print ""
+  n["a"]["x"]++; print n["a"]["x"]--, n["a"]["x"]
+  delete n["a"]["x"]; print length(n["a"]), isarray(n["a"])
+  fill(m["new"]); print length(m), isarray(m["new"]), m["new"]["k"]
+  print split("p q r", s["w"]), s["w"][3], asort(s["w"], d["sorted"]), d["sorted"][1]
+  match("abc", /b+/, r["m"]); print r["m"][0]
+  t["x"]["y"] = "foo"; print sub(/o/, "0", t["x"]["y"]), t["x"]["y"]
+}"#,
+        "a x 1\na y 2\nb x 3\na x 4\n",
+    );
+    assert_eq!(c, 0, "stderr: {e}");
+    assert_eq!(
+        o,
+        "a.x=5 a.y=2 b.x=3 \n6 5\n1 1\n1 1 1\n3 r 3 p\nb\n1 f0o\n"
+    );
+}
+
+/// gawk's fatals (exit 2): a subarray read or overwritten as a scalar, a scalar
+/// element used as an array, and an element that a read made a scalar.
+#[test]
+fn arrays_of_arrays_type_errors_are_fatal() {
+    for (prog, msg) in [
+        (
+            r#"BEGIN { a[1][2] = 1; print a[1] }"#,
+            "attempt to use array `a[\"1\"]' in a scalar context",
+        ),
+        (
+            r#"BEGIN { a[1][2] = 1; a[1] = 5 }"#,
+            "attempt to use array `a[\"1\"]' in a scalar context",
+        ),
+        (
+            r#"BEGIN { a[1][2] = 1; x = a[1][2][3] }"#,
+            "attempt to use scalar `a[\"1\"][\"2\"]' as an array",
+        ),
+        (
+            r#"BEGIN { x = a["k"]; a["k"]["j"] = 1 }"#,
+            "attempt to use scalar `a[\"k\"]' as an array",
+        ),
+    ] {
+        let (c, _, e) = run_awkrs_stdin(prog, "");
+        assert_eq!(c, 2, "{prog}: stderr: {e}");
+        assert!(e.contains(msg), "{prog}: stderr: {e}");
+    }
+}

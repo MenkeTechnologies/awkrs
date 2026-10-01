@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="awkrs — fast AWK in Rust. 98-opcode bytecode VM, Cranelift JIT, rkyv-cached compiled scripts, parallel records, 3,994 tests, 2,137 parity files vs gawk/mawk/BSD awk.">
+  <meta name="description" content="awkrs — fast AWK in Rust. 109-opcode bytecode VM, Cranelift JIT, rkyv-cached compiled scripts, parallel records, 3,994 tests, 2,138 parity files vs gawk/mawk/BSD awk.">
   <title>awkrs — Documentation</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -146,7 +146,7 @@
             <span class="sep">/</span>
             <a href="https://docs.rs/awkrs" target="_blank" rel="noopener noreferrer">docs.rs</a>
           </nav>
-          <p class="docs-build-line" id="awkrsBuildLine">awkrs v0.5.6 · Rust-powered · Parallel records (-j) · fusevm/Cranelift JIT offload · rkyv bytecode cache · 2,137 parity tests vs gawk/mawk/BSD awk</p>
+          <p class="docs-build-line" id="awkrsBuildLine">awkrs v0.5.6 · Rust-powered · Parallel records (-j) · fusevm/Cranelift JIT offload · rkyv bytecode cache · 2,138 parity tests vs gawk/mawk/BSD awk</p>
         </div>
         <div class="tutorial-toolbar">
           <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
@@ -296,7 +296,7 @@ aw '/error/i { print FILENAME ":" NR ":" $0 }' *.log</pre>
           <div class="cat-card"><h4>Time (gawk)</h4><p><code>systime mktime strftime gettimeofday getlocaltime</code></p></div>
           <div class="cat-card"><h4>Bit ops (gawk)</h4><p><code>and or xor compl lshift rshift</code> — <code>and/or/xor</code> are variadic (&ge;2 args)</p></div>
           <div class="cat-card"><h4>Type / convert (gawk)</h4><p><code>typeof isarray strtonum mkbool ord chr</code></p></div>
-          <div class="cat-card"><h4>Array (gawk)</h4><p><code>asort asorti</code> — plus the <code>delete</code> statement</p></div>
+          <div class="cat-card"><h4>Array (gawk)</h4><p><code>asort asorti</code> — plus the <code>delete</code> statement and arrays of arrays (<code>a[i][j]</code>, <code>for (k in a[i])</code>)</p></div>
           <div class="cat-card"><h4>Filesystem (gawk ext)</h4><p><code>stat statvfs readdir readfile fts chdir rename sleep fflush</code></p></div>
           <div class="cat-card"><h4>Persistence (gawk ext)</h4><p><code>reada writea inplace_tmpfile inplace_commit</code></p></div>
           <div class="cat-card"><h4>I18N (gawk)</h4><p><code>bindtextdomain dcgettext dcngettext</code> — <code>.mo</code> catalogs</p></div>
@@ -530,7 +530,7 @@ rm ~/.awkrs/scripts.rkyv</pre>
           <li><strong>Crate</strong> — <a href="https://crates.io/crates/awkrs">crates.io/crates/awkrs</a> (<code>cargo install awkrs</code>)</li>
           <li><strong>Rust API docs</strong> — <a href="https://docs.rs/awkrs">docs.rs/awkrs</a></li>
           <li><strong>Issues</strong> — <a href="https://github.com/MenkeTechnologies/awkrs/issues">github.com/MenkeTechnologies/awkrs/issues</a></li>
-          <li><strong>Parity tests</strong> — <code>parity/</code> holds 2,137 cases run byte-for-byte against gawk, mawk, and BSD awk on every push (2,062 POSIX-portable across <code>cases/</code> + <code>cases_portable/</code>, 75 gawk-only in <code>cases_gawk/</code> for <code>typeof</code>, <code>FPAT</code>, <code>gensub</code>, <code>**=</code>, <code>strftime</code>, bit ops, arity messages).</li>
+          <li><strong>Parity tests</strong> — <code>parity/</code> holds 2,138 cases run byte-for-byte against gawk, mawk, and BSD awk on every push (2,062 POSIX-portable across <code>cases/</code> + <code>cases_portable/</code>, 76 gawk-only in <code>cases_gawk/</code> for <code>typeof</code>, <code>FPAT</code>, <code>gensub</code>, <code>**=</code>, <code>strftime</code>, bit ops, arity messages).</li>
         </ul>
       </section>
     </main>

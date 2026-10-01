@@ -246,6 +246,50 @@ pub enum Op {
     /// Pop key, delete `arr[key]`.
     DeleteElem(u32),
 
+    // ── gawk arrays of arrays ─────────────────────────────────────────
+    // Each takes the array name and `depth`, the number of subscripts that
+    // select a subarray of it; those subscripts are pushed first, outermost
+    // first, each already joined with SUBSEP. A missing subarray on the way
+    // is created; a scalar on the way is a fatal.
+    /// Pop key and `depth` path subscripts, push `arr[p1]..[pn][key]`
+    /// (created as unassigned when missing). A subarray there is a fatal.
+    SubGet(u32, u16),
+    /// Pop value, key and path; store `arr[p1]..[pn][key] = value`; push value.
+    SubSet(u32, u16),
+    /// Pop rhs, key and path; `arr[p1]..[pn][key] op= rhs`; push the result.
+    SubCompound(u32, u16, BinOp),
+    /// Pop key and path; `++`/`--` on `arr[p1]..[pn][key]`; push the result.
+    SubIncDec(u32, u16, IncDecOp),
+    /// Pop key and path; push 1 if `key in arr[p1]..[pn]`, else 0.
+    SubIn(u32, u16),
+    /// Pop key and path; delete `arr[p1]..[pn][key]` (a scalar or a subarray).
+    SubDelete(u32, u16),
+    /// Pop path; start `for (k in arr[p1]..[pn])` (see [`Op::ForInStart`]).
+    SubForInStart(u32, u16),
+    /// Pop `depth` subscripts; push the element `arr[k1]..[kn]` whatever it
+    /// holds — a subarray is pushed as an array value, a missing element is
+    /// created unassigned. For the arguments of `length`, `isarray`, `typeof`
+    /// and user functions, which accept a subarray.
+    ElemAny(u32, u16),
+    /// Pop `depth` subscripts; push a reference to the element `arr[k1]..[kn]`
+    /// for a user-function argument, so a subarray passed by reference can be
+    /// written back (see [`Op::CallUserBindArrays`]).
+    ElemRef(u32, u16),
+    /// Pop `depth` subscripts and copy the element `arr[k1]..[kn]` into the
+    /// hidden variable `tmp`, so a builtin that takes a variable (`split`
+    /// target, `asort` source, `sub` target, …) can work on it; [`Op::ElemUnbind`]
+    /// stores it back. `array`: the element is used as an array (created when
+    /// missing, a scalar is a fatal), else as a scalar (a subarray is a fatal).
+    ElemBind {
+        arr: u32,
+        depth: u16,
+        tmp: u32,
+        array: bool,
+    },
+    /// Store the hidden variable `tmp` back into the element the matching
+    /// [`Op::ElemBind`] copied it from.
+    ElemUnbind(u32),
+
     // ── Multi-dimensional array key ─────────────────────────────────────
     /// Pop `n` values, join with SUBSEP, push combined key string.
     JoinArrayKey(u16),

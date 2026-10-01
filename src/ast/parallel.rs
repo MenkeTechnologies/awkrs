@@ -55,7 +55,8 @@ fn stmt_blocks_parallel(s: &Stmt) -> bool {
         Stmt::While { body, .. } => body.iter().any(stmt_blocks_parallel),
         Stmt::DoWhile { body, .. } => body.iter().any(stmt_blocks_parallel),
         Stmt::ForC { body, .. } => body.iter().any(stmt_blocks_parallel),
-        Stmt::ForIn { body, .. } => body.iter().any(stmt_blocks_parallel),
+        // A subarray path vivifies the subarray it walks — a write.
+        Stmt::ForIn { path, body, .. } => !path.is_empty() || body.iter().any(stmt_blocks_parallel),
         Stmt::Block(ss) => ss.iter().any(stmt_blocks_parallel),
         Stmt::Expr(e) => expr_blocks_parallel(e),
         Stmt::Print { args, redir } => redir.is_some() || args.iter().any(expr_blocks_parallel),
@@ -97,12 +98,15 @@ fn expr_blocks_parallel(e: &Expr) -> bool {
         }
         // Dynamic callee — cannot prove parallel-safety.
         Expr::IndirectCall { .. } => true,
-        Expr::Index { indices, .. } => indices.iter().any(expr_blocks_parallel),
+        // Reading `a[i][j]` vivifies the subarray `a[i]` — a write.
+        Expr::Index { path, indices, .. } => {
+            !path.is_empty() || indices.iter().any(expr_blocks_parallel)
+        }
         Expr::Field(inner) => expr_blocks_parallel(inner),
         Expr::Ternary { cond, then_, else_ } => {
             expr_blocks_parallel(cond) || expr_blocks_parallel(then_) || expr_blocks_parallel(else_)
         }
-        Expr::In { key, .. } => expr_blocks_parallel(key),
+        Expr::In { key, path, .. } => !path.is_empty() || expr_blocks_parallel(key),
         Expr::Tuple(parts) => parts.iter().any(expr_blocks_parallel),
         Expr::GetLine {
             pipe_cmd: Some(_), ..

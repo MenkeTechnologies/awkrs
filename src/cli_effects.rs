@@ -166,11 +166,9 @@ fn collect_stmt_strings(s: &Stmt, out: &mut BTreeMap<String, usize>) {
                 GetlineRedir::File(e) | GetlineRedir::Coproc(e) => collect_expr_strings(e, out),
             }
         }
-        Stmt::Delete { indices, .. } => {
-            if let Some(ix) = indices {
-                for e in ix {
-                    collect_expr_strings(e, out);
-                }
+        Stmt::Delete { path, indices, .. } => {
+            for e in path.iter().flatten().chain(indices.iter().flatten()) {
+                collect_expr_strings(e, out);
             }
         }
         Stmt::Switch { expr, arms } => {
@@ -212,8 +210,8 @@ fn collect_expr_strings(e: &Expr, out: &mut BTreeMap<String, usize>) {
         Expr::RegexpLiteral(_) => {}
         Expr::Number(_) | Expr::IntegerLiteral(_) | Expr::Var(_) => {}
         Expr::Field(inner) => collect_expr_strings(inner, out),
-        Expr::Index { indices, .. } => {
-            for x in indices {
+        Expr::Index { path, indices, .. } => {
+            for x in path.iter().flatten().chain(indices) {
                 collect_expr_strings(x, out);
             }
         }
@@ -229,8 +227,10 @@ fn collect_expr_strings(e: &Expr, out: &mut BTreeMap<String, usize>) {
             collect_expr_strings(field, out);
             collect_expr_strings(rhs, out);
         }
-        Expr::AssignIndex { rhs, indices, .. } => {
-            for x in indices {
+        Expr::AssignIndex {
+            path, indices, rhs, ..
+        } => {
+            for x in path.iter().flatten().chain(indices) {
                 collect_expr_strings(x, out);
             }
             collect_expr_strings(rhs, out);
@@ -251,7 +251,11 @@ fn collect_expr_strings(e: &Expr, out: &mut BTreeMap<String, usize>) {
             collect_expr_strings(then_, out);
             collect_expr_strings(else_, out);
         }
-        Expr::In { key, .. } => collect_expr_strings(key, out),
+        Expr::In { key, path, .. } => {
+            for x in std::iter::once(key.as_ref()).chain(path.iter().flatten()) {
+                collect_expr_strings(x, out);
+            }
+        }
         Expr::Tuple(parts) => {
             for p in parts {
                 collect_expr_strings(p, out);
@@ -259,8 +263,8 @@ fn collect_expr_strings(e: &Expr, out: &mut BTreeMap<String, usize>) {
         }
         Expr::IncDec { target, .. } => match target {
             crate::ast::IncDecTarget::Field(inner) => collect_expr_strings(inner, out),
-            crate::ast::IncDecTarget::Index { indices, .. } => {
-                for x in indices {
+            crate::ast::IncDecTarget::Index { path, indices, .. } => {
+                for x in path.iter().flatten().chain(indices) {
                     collect_expr_strings(x, out);
                 }
             }
@@ -656,11 +660,9 @@ fn stmt_collect_defines(s: &Stmt, out: &mut FxHashSet<String>) {
                 GetlineRedir::File(e) | GetlineRedir::Coproc(e) => expr_collect_defines(e, out),
             }
         }
-        Stmt::Delete { indices, .. } => {
-            if let Some(ix) = indices {
-                for e in ix {
-                    expr_collect_defines(e, out);
-                }
+        Stmt::Delete { path, indices, .. } => {
+            for e in path.iter().flatten().chain(indices.iter().flatten()) {
+                expr_collect_defines(e, out);
             }
         }
         Stmt::Switch { expr, arms } => {
@@ -700,9 +702,13 @@ fn expr_collect_defines(e: &Expr, out: &mut FxHashSet<String>) {
         | Expr::RegexpLiteral(_)
         | Expr::Var(_) => {}
         Expr::Field(inner) => expr_collect_defines(inner, out),
-        Expr::Index { name, indices } => {
+        Expr::Index {
+            name,
+            path,
+            indices,
+        } => {
             out.insert(name.clone());
-            for x in indices {
+            for x in path.iter().flatten().chain(indices) {
                 expr_collect_defines(x, out);
             }
         }
@@ -720,10 +726,14 @@ fn expr_collect_defines(e: &Expr, out: &mut FxHashSet<String>) {
             expr_collect_defines(rhs, out);
         }
         Expr::AssignIndex {
-            name, indices, rhs, ..
+            name,
+            path,
+            indices,
+            rhs,
+            ..
         } => {
             out.insert(name.clone());
-            for x in indices {
+            for x in path.iter().flatten().chain(indices) {
                 expr_collect_defines(x, out);
             }
             expr_collect_defines(rhs, out);
@@ -744,7 +754,12 @@ fn expr_collect_defines(e: &Expr, out: &mut FxHashSet<String>) {
             expr_collect_defines(then_, out);
             expr_collect_defines(else_, out);
         }
-        Expr::In { key, .. } => expr_collect_defines(key, out),
+        Expr::In { key, path, .. } => {
+            expr_collect_defines(key, out);
+            for x in path.iter().flatten() {
+                expr_collect_defines(x, out);
+            }
+        }
         Expr::Tuple(parts) => {
             for p in parts {
                 expr_collect_defines(p, out);
@@ -755,9 +770,13 @@ fn expr_collect_defines(e: &Expr, out: &mut FxHashSet<String>) {
                 out.insert(n.clone());
             }
             IncDecTarget::Field(inner) => expr_collect_defines(inner, out),
-            IncDecTarget::Index { name, indices } => {
+            IncDecTarget::Index {
+                name,
+                path,
+                indices,
+            } => {
                 out.insert(name.clone());
-                for x in indices {
+                for x in path.iter().flatten().chain(indices) {
                     expr_collect_defines(x, out);
                 }
             }
@@ -926,11 +945,9 @@ fn stmt_lint_reads(
                 }
             }
         }
-        Stmt::Delete { indices, .. } => {
-            if let Some(ix) = indices {
-                for e in ix {
-                    expr_lint_reads(e, global_def, params, warned, w);
-                }
+        Stmt::Delete { path, indices, .. } => {
+            for e in path.iter().flatten().chain(indices.iter().flatten()) {
+                expr_lint_reads(e, global_def, params, warned, w);
             }
         }
         Stmt::Switch { expr, arms } => {
@@ -973,8 +990,8 @@ fn expr_lint_reads(
         Expr::Number(_) | Expr::IntegerLiteral(_) | Expr::Str(_) | Expr::RegexpLiteral(_) => {}
         Expr::Var(name) => warn_uninit_var(name, global_def, params, warned, w),
         Expr::Field(inner) => expr_lint_reads(inner, global_def, params, warned, w),
-        Expr::Index { indices, .. } => {
-            for x in indices {
+        Expr::Index { path, indices, .. } => {
+            for x in path.iter().flatten().chain(indices) {
                 expr_lint_reads(x, global_def, params, warned, w);
             }
         }
@@ -993,8 +1010,10 @@ fn expr_lint_reads(
             expr_lint_reads(field, global_def, params, warned, w);
             expr_lint_reads(rhs, global_def, params, warned, w);
         }
-        Expr::AssignIndex { indices, rhs, .. } => {
-            for x in indices {
+        Expr::AssignIndex {
+            path, indices, rhs, ..
+        } => {
+            for x in path.iter().flatten().chain(indices) {
                 expr_lint_reads(x, global_def, params, warned, w);
             }
             expr_lint_reads(rhs, global_def, params, warned, w);
@@ -1015,7 +1034,11 @@ fn expr_lint_reads(
             expr_lint_reads(then_, global_def, params, warned, w);
             expr_lint_reads(else_, global_def, params, warned, w);
         }
-        Expr::In { key, .. } => expr_lint_reads(key, global_def, params, warned, w),
+        Expr::In { key, path, .. } => {
+            for x in std::iter::once(key.as_ref()).chain(path.iter().flatten()) {
+                expr_lint_reads(x, global_def, params, warned, w);
+            }
+        }
         Expr::Tuple(parts) => {
             for p in parts {
                 expr_lint_reads(p, global_def, params, warned, w);
@@ -1024,8 +1047,8 @@ fn expr_lint_reads(
         Expr::IncDec { target, .. } => match target {
             IncDecTarget::Var(n) => warn_uninit_var(n, global_def, params, warned, w),
             IncDecTarget::Field(inner) => expr_lint_reads(inner, global_def, params, warned, w),
-            IncDecTarget::Index { indices, .. } => {
-                for x in indices {
+            IncDecTarget::Index { path, indices, .. } => {
+                for x in path.iter().flatten().chain(indices) {
                     expr_lint_reads(x, global_def, params, warned, w);
                 }
             }
@@ -1161,8 +1184,8 @@ fn lint_expr_printf_deep(w: &impl Fn(&str), e: &Expr) {
         | Expr::RegexpLiteral(_)
         | Expr::Var(_) => {}
         Expr::Field(inner) => lint_expr_printf_deep(w, inner),
-        Expr::Index { indices, .. } => {
-            for x in indices {
+        Expr::Index { path, indices, .. } => {
+            for x in path.iter().flatten().chain(indices) {
                 lint_expr_printf_deep(w, x);
             }
         }
@@ -1176,8 +1199,10 @@ fn lint_expr_printf_deep(w: &impl Fn(&str), e: &Expr) {
             lint_expr_printf_deep(w, field);
             lint_expr_printf_deep(w, rhs);
         }
-        Expr::AssignIndex { indices, rhs, .. } => {
-            for x in indices {
+        Expr::AssignIndex {
+            path, indices, rhs, ..
+        } => {
+            for x in path.iter().flatten().chain(indices) {
                 lint_expr_printf_deep(w, x);
             }
             lint_expr_printf_deep(w, rhs);
@@ -1187,7 +1212,11 @@ fn lint_expr_printf_deep(w: &impl Fn(&str), e: &Expr) {
             lint_expr_printf_deep(w, then_);
             lint_expr_printf_deep(w, else_);
         }
-        Expr::In { key, .. } => lint_expr_printf_deep(w, key),
+        Expr::In { key, path, .. } => {
+            for x in std::iter::once(key.as_ref()).chain(path.iter().flatten()) {
+                lint_expr_printf_deep(w, x);
+            }
+        }
         Expr::Tuple(parts) => {
             for p in parts {
                 lint_expr_printf_deep(w, p);
@@ -1195,8 +1224,8 @@ fn lint_expr_printf_deep(w: &impl Fn(&str), e: &Expr) {
         }
         Expr::IncDec { target, .. } => match target {
             IncDecTarget::Field(inner) => lint_expr_printf_deep(w, inner),
-            IncDecTarget::Index { indices, .. } => {
-                for x in indices {
+            IncDecTarget::Index { path, indices, .. } => {
+                for x in path.iter().flatten().chain(indices) {
                     lint_expr_printf_deep(w, x);
                 }
             }
@@ -1419,11 +1448,9 @@ fn lint_stmt_printf_args(w: &impl Fn(&str), stmt: &Stmt) {
                 GetlineRedir::File(e) | GetlineRedir::Coproc(e) => lint_expr_printf_deep(w, e),
             }
         }
-        Stmt::Delete { indices, .. } => {
-            if let Some(ix) = indices {
-                for e in ix {
-                    lint_expr_printf_deep(w, e);
-                }
+        Stmt::Delete { path, indices, .. } => {
+            for e in path.iter().flatten().chain(indices.iter().flatten()) {
+                lint_expr_printf_deep(w, e);
             }
         }
         Stmt::Switch { expr, arms } => {

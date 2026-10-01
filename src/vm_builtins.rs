@@ -911,16 +911,26 @@ pub(super) fn sort_keys_with_custom_cmp(
     fname: &str,
     arr_name: &str,
 ) -> Result<()> {
-    let argc = user_cmp_arity(ctx, fname, || {
-        format!("sorted_in: unknown function `{fname}`")
-    })?;
-    let elem = |ctx: &VmCtx<'_>, k: &AwkStr| {
+    sort_keys_by_user_fn(ctx, keys, fname, |ctx, k| {
         if arr_name == "SYMTAB" {
             ctx.rt.symtab_elem_get(&k.to_str_lossy())
         } else {
             ctx.rt.array_get(arr_name, &k.to_str_lossy())
         }
-    };
+    })
+}
+
+/// `PROCINFO["sorted_in"]` naming a user function: order `keys` by calling it
+/// with `(i1, i2)` or `(i1, v1, i2, v2)`, the values looked up by `elem`.
+pub(super) fn sort_keys_by_user_fn(
+    ctx: &mut VmCtx<'_>,
+    keys: &mut [AwkStr],
+    fname: &str,
+    elem: impl Fn(&VmCtx<'_>, &AwkStr) -> Value,
+) -> Result<()> {
+    let argc = user_cmp_arity(ctx, fname, || {
+        format!("sorted_in: unknown function `{fname}`")
+    })?;
     sort_by_user_cmp(ctx, keys, fname, |ctx, a, b| {
         if argc == 2 {
             vec![Value::Str(a.clone()), Value::Str(b.clone())]

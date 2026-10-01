@@ -4706,20 +4706,21 @@ impl Runtime {
     }
 
     /// `a[i] = v` with an integer subscript.
-    pub fn array_set_int(&mut self, name: &str, i: i64, val: Value) {
+    /// Returns the value the store replaced, when the array already existed.
+    pub fn array_set_int(&mut self, name: &str, i: i64, val: Value) -> Option<Value> {
         if name == "SYMTAB" {
             let mut b = KeyBuf::new();
             let k = b.write_i64(i).to_string();
             self.symtab_elem_set(&k, val);
-            return;
+            return None;
         }
         if let Some(Value::Array(a)) = self.vars.get_mut(name) {
-            a.insert_int(i, val);
-            return;
+            return a.insert_int(i, val);
         }
         let mut b = KeyBuf::new();
         let k = b.write_i64(i).to_string();
         self.array_set(name, k, val);
+        None
     }
 
     /// [`array_set`](Self::array_set) with a borrowed subscript — see
@@ -4727,23 +4728,22 @@ impl Runtime {
     /// The caller is [`crate::vm::VmCtx::array_elem_set_str`], the store side
     /// of `a[$1] = v` / `a[$1] op= v`, which already holds the key text.
     /// [`Self::array_set_str`] with a byte subscript.
-    pub fn array_set_bytes(&mut self, name: &str, key: &[u8], val: Value) {
+    /// Returns the value the store replaced, when the array already existed.
+    pub fn array_set_bytes(&mut self, name: &str, key: &[u8], val: Value) -> Option<Value> {
         if name == "SYMTAB" {
             self.symtab_elem_set(&String::from_utf8_lossy(key), val);
-            return;
+            return None;
         }
         if let Some(existing) = self.vars.get_mut(name) {
             match existing {
-                Value::Array(a) => {
-                    a.insert_bytes(key, val);
-                }
+                Value::Array(a) => return a.insert_bytes(key, val),
                 _ => {
                     let mut m = AwkArray::new();
                     m.insert_bytes(key, val);
                     *existing = Value::Array(m);
                 }
             }
-            return;
+            return None;
         }
         if let Some(Value::Array(a)) = self.global_readonly.as_ref().and_then(|g| g.get(name)) {
             let mut copy = a.clone();
@@ -4754,6 +4754,7 @@ impl Runtime {
             m.insert_bytes(key, val);
             self.vars.insert(name.to_string(), Value::Array(m));
         }
+        None
     }
 
     pub fn array_set_str(&mut self, name: &str, key: &str, val: Value) {

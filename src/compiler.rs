@@ -549,11 +549,21 @@ impl Compiler {
                 }
             }
 
-            Stmt::ForIn { var, arr, body } => {
+            Stmt::ForIn {
+                var,
+                arr,
+                path,
+                body,
+            } => {
                 let arr_idx = self.strings.intern(arr);
                 let var_idx = self.strings.intern(var);
 
-                ops.push(Op::ForInStart(arr_idx));
+                if path.is_empty() {
+                    ops.push(Op::ForInStart(arr_idx));
+                } else {
+                    let depth = self.compile_subarray_path(path, ops);
+                    ops.push(Op::SubForInStart(arr_idx, depth));
+                }
 
                 let loop_top = ops.len();
                 self.structural_stack.push(StructuralKind::Loop {
@@ -649,13 +659,22 @@ impl Compiler {
                 }
             }
 
-            Stmt::Delete { name, indices } => {
+            Stmt::Delete {
+                name,
+                path,
+                indices,
+            } => {
                 let arr_idx = self.strings.intern(name);
+                let depth = self.compile_subarray_path(path, ops);
                 match indices {
                     None => ops.push(Op::DeleteArray(arr_idx)),
                     Some(ixs) => {
                         self.compile_array_key(ixs, ops);
-                        ops.push(Op::DeleteElem(arr_idx));
+                        ops.push(if depth == 0 {
+                            Op::DeleteElem(arr_idx)
+                        } else {
+                            Op::SubDelete(arr_idx, depth)
+                        });
                     }
                 }
             }
@@ -807,10 +826,19 @@ impl Compiler {
                 self.compile_expr(inner, ops);
                 ops.push(Op::GetField);
             }
-            Expr::Index { name, indices } => {
+            Expr::Index {
+                name,
+                path,
+                indices,
+            } => {
                 let arr_idx = self.strings.intern(name);
+                let depth = self.compile_subarray_path(path, ops);
                 self.compile_array_key(indices, ops);
-                ops.push(Op::GetArrayElem(arr_idx));
+                ops.push(if depth == 0 {
+                    Op::GetArrayElem(arr_idx)
+                } else {
+                    Op::SubGet(arr_idx, depth)
+                });
             }
 
             // Short-circuit logical operators
@@ -912,18 +940,21 @@ impl Compiler {
 
             Expr::AssignIndex {
                 name,
+                path,
                 indices,
                 op,
                 rhs,
             } => {
                 let arr_idx = self.strings.intern(name);
+                let depth = self.compile_subarray_path(path, ops);
                 self.compile_array_key(indices, ops);
                 self.compile_expr(rhs, ops);
-                if let Some(bop) = op {
-                    ops.push(Op::CompoundAssignIndex(arr_idx, *bop));
-                } else {
-                    ops.push(Op::SetArrayElem(arr_idx));
-                }
+                ops.push(match (op, depth) {
+                    (Some(bop), 0) => Op::CompoundAssignIndex(arr_idx, *bop),
+                    (Some(bop), _) => Op::SubCompound(arr_idx, depth, *bop),
+                    (None, 0) => Op::SetArrayElem(arr_idx),
+                    (None, _) => Op::SubSet(arr_idx, depth),
+                });
             }
 
             Expr::Call { name, args } => {
@@ -952,13 +983,18 @@ impl Compiler {
                 ops[jump_end] = Op::Jump(after);
             }
 
-            Expr::In { key, arr } => {
+            Expr::In { key, arr, path } => {
                 let arr_idx = self.strings.intern(arr);
+                let depth = self.compile_subarray_path(path, ops);
                 match key.as_ref() {
                     Expr::Tuple(parts) => self.compile_array_key(parts, ops),
                     _ => self.compile_expr(key, ops),
                 }
-                ops.push(Op::InArray(arr_idx));
+                ops.push(if depth == 0 {
+                    Op::InArray(arr_idx)
+                } else {
+                    Op::SubIn(arr_idx, depth)
+                });
             }
 
             Expr::Tuple(_) => {
@@ -978,10 +1014,19 @@ impl Compiler {
                     self.compile_expr(inner, ops);
                     ops.push(Op::IncDecField(*op));
                 }
-                IncDecTarget::Index { name, indices } => {
+                IncDecTarget::Index {
+                    name,
+                    path,
+                    indices,
+                } => {
                     let arr_idx = self.strings.intern(name);
+                    let depth = self.compile_subarray_path(path, ops);
                     self.compile_array_key(indices, ops);
-                    ops.push(Op::IncDecIndex(arr_idx, *op));
+                    ops.push(if depth == 0 {
+                        Op::IncDecIndex(arr_idx, *op)
+                    } else {
+                        Op::SubIncDec(arr_idx, depth, *op)
+                    });
                 }
             },
 
@@ -1028,7 +1073,83 @@ impl Compiler {
         }
     }
 
+    /// gawk arrays of arrays: a builtin that names a variable to read or fill
+    /// (`split`/`patsplit` targets, `asort`/`asorti` arrays, the `match`
+    /// array, a `sub`/`gsub` target inside a subarray) may be given an
+    /// element instead. Each such argument is copied into a hidden variable by
+    /// [`Op::ElemBind`] and the call is compiled against that variable; the
+    /// caller stores it back with [`Op::ElemUnbind`]. `None` when no argument
+    /// needs it.
+    fn bind_element_args(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+        ops: &mut Vec<Op>,
+    ) -> Option<BoundElementArgs> {
+        let positions: &[usize] = match name {
+            "split" | "patsplit" => &[1, 3],
+            "asort" | "asorti" => &[0, 1],
+            "match" => &[2],
+            "sub" | "gsub" => &[2],
+            _ => return None,
+        };
+        let as_array = !matches!(name, "sub" | "gsub");
+        let binds = |i: usize, e: &Expr| {
+            positions.contains(&i)
+                && match e {
+                    Expr::Index { path, .. } => as_array || !path.is_empty(),
+                    _ => false,
+                }
+        };
+        if !args.iter().enumerate().any(|(i, e)| binds(i, e)) {
+            return None;
+        }
+        let mut bound = BoundElementArgs {
+            args: args.to_vec(),
+            tmps: Vec::new(),
+        };
+        for (i, e) in args.iter().enumerate() {
+            let Expr::Index {
+                name: arr,
+                path,
+                indices,
+            } = e
+            else {
+                continue;
+            };
+            if !binds(i, e) {
+                continue;
+            }
+            let tmp_name = format!(
+                "\0elem{}",
+                ELEM_TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            );
+            // Never a slot: `Op::ElemBind` stores it in the global variables.
+            self.array_names.insert(tmp_name.clone());
+            let arr = self.strings.intern(arr);
+            let tmp = self.strings.intern(&tmp_name);
+            let depth = self.compile_subarray_path(path, ops);
+            self.compile_array_key(indices, ops);
+            ops.push(Op::ElemBind {
+                arr,
+                depth: depth + 1,
+                tmp,
+                array: as_array,
+            });
+            bound.args[i] = Expr::Var(tmp_name);
+            bound.tmps.push(tmp);
+        }
+        Some(bound)
+    }
+
     fn compile_call(&mut self, name: &str, args: &[Expr], ops: &mut Vec<Op>) {
+        if let Some(bound) = self.bind_element_args(name, args, ops) {
+            self.compile_call(name, &bound.args, ops);
+            for tmp in bound.tmps.into_iter().rev() {
+                ops.push(Op::ElemUnbind(tmp));
+            }
+            return;
+        }
         match name {
             "stat" | "statvfs" | "fts" | "writea" | "reada" | "readdir" => {
                 if args.len() == 2 {
@@ -1071,19 +1192,20 @@ impl Compiler {
                     args.len() as u16,
                 ));
             }
-            "length" => {
+            "length" | "isarray" => {
                 if args.len() == 1 {
                     if let Expr::Var(arr) = &args[0] {
-                        if arr == "SYMTAB" {
+                        if arr == "SYMTAB" && name == "length" {
                             ops.push(Op::SymtabKeyCount);
                             return;
                         }
                     }
                 }
+                // An element argument may be a subarray (gawk arrays of arrays).
                 for a in args {
-                    self.compile_expr(a, ops);
+                    self.compile_elem_any(a, ops);
                 }
-                let name_idx = self.strings.intern("length");
+                let name_idx = self.strings.intern(name);
                 ops.push(Op::CallBuiltin(name_idx, args.len() as u16));
             }
             "sub" => self.compile_sub_gsub(args, false, ops),
@@ -1111,10 +1233,18 @@ impl Compiler {
                             ops.push(Op::TypeofVar(idx));
                         }
                     }
-                    Expr::Index { name, indices } => {
+                    Expr::Index {
+                        name,
+                        path,
+                        indices,
+                    } if path.is_empty() => {
                         let arr_idx = self.strings.intern(name);
                         self.compile_array_key(indices, ops);
                         ops.push(Op::TypeofArrayElem(arr_idx));
+                    }
+                    Expr::Index { .. } => {
+                        self.compile_elem_any(&args[0], ops);
+                        ops.push(Op::TypeofValue);
                     }
                     Expr::Field(inner) => {
                         self.compile_expr(inner, ops);
@@ -1140,10 +1270,14 @@ impl Compiler {
                 // array (it may be a function param itself, indirected).
                 // The runtime write-back is a noop for non-Array values,
                 // so emitting CallUserBindArrays for any Var arg is safe.
+                // An element argument may hold a subarray (gawk arrays of
+                // arrays), which is passed by reference too: it is marked
+                // and pushed through `Op::ElemRef`.
                 let by_ref_array_args: Vec<Option<String>> = if is_user_fn {
                     args.iter()
                         .map(|a| match a {
                             Expr::Var(n) => Some(n.clone()),
+                            Expr::Index { .. } => Some(crate::vm::ELEM_REF_MARKER.to_string()),
                             _ => None,
                         })
                         .collect()
@@ -1161,7 +1295,7 @@ impl Compiler {
                         ops.push(Op::PushStr(idx));
                     }
                     for a in args {
-                        self.compile_expr(a, ops);
+                        self.compile_arg_ref(a, ops);
                     }
                     let name_idx = self.strings.intern(name);
                     let argc = args.len() as u16;
@@ -1195,7 +1329,12 @@ impl Compiler {
                     self.compile_expr(inner, ops);
                     SubTarget::Field
                 }
-                Expr::Index { name, indices } => {
+                // A subarray element as the target is rejected by `validate_program`.
+                Expr::Index {
+                    name,
+                    path,
+                    indices,
+                } if path.is_empty() => {
                     let arr_idx = self.strings.intern(name);
                     self.compile_array_key(indices, ops);
                     SubTarget::Index(arr_idx)
@@ -1455,6 +1594,63 @@ impl Compiler {
             ops.push(Op::JoinArrayKey(indices.len() as u16));
         }
     }
+
+    /// A user-function argument: an array element goes through [`Op::ElemRef`]
+    /// so a subarray in it is passed by reference; anything else is compiled
+    /// as an ordinary expression.
+    fn compile_arg_ref(&mut self, e: &Expr, ops: &mut Vec<Op>) {
+        match e {
+            Expr::Index {
+                name,
+                path,
+                indices,
+            } => {
+                let arr_idx = self.strings.intern(name);
+                let depth = self.compile_subarray_path(path, ops);
+                self.compile_array_key(indices, ops);
+                ops.push(Op::ElemRef(arr_idx, depth + 1));
+            }
+            other => self.compile_expr(other, ops),
+        }
+    }
+
+    /// Push the element an `Expr::Index` names, subarray or not, through
+    /// [`Op::ElemAny`]; anything else is compiled as an ordinary expression.
+    fn compile_elem_any(&mut self, e: &Expr, ops: &mut Vec<Op>) {
+        match e {
+            Expr::Index {
+                name,
+                path,
+                indices,
+            } => {
+                let arr_idx = self.strings.intern(name);
+                let depth = self.compile_subarray_path(path, ops);
+                self.compile_array_key(indices, ops);
+                ops.push(Op::ElemAny(arr_idx, depth + 1));
+            }
+            other => self.compile_expr(other, ops),
+        }
+    }
+
+    /// Push one key per bracket of a gawk subarray path (`a[i][j,k]...` pushes
+    /// `i` and `j SUBSEP k`), outermost first; returns how many it pushed.
+    fn compile_subarray_path(&mut self, path: &[Vec<Expr>], ops: &mut Vec<Op>) -> u16 {
+        for group in path {
+            self.compile_array_key(group, ops);
+        }
+        path.len() as u16
+    }
+}
+
+/// Numbers the hidden variables of [`Compiler::bind_element_args`]; each call
+/// site gets its own, so a comparison function that reaches another site
+/// while one is bound cannot clobber it.
+static ELEM_TMP_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// The rewritten arguments and hidden variables of a bound builtin call.
+struct BoundElementArgs {
+    args: Vec<Expr>,
+    tmps: Vec<u32>,
 }
 
 #[cfg(test)]
@@ -1717,8 +1913,13 @@ fn collect_names_stmt(s: &Stmt, names: &mut HashSet<String>, scalars: bool) {
                 collect_names_stmt(t, names, scalars);
             }
         }
-        Stmt::ForIn { arr, body, .. } => {
+        Stmt::ForIn {
+            arr, path, body, ..
+        } => {
             names.insert(arr.clone());
+            for e in path.iter().flatten() {
+                collect_names_expr(e, names, scalars);
+            }
             for t in body {
                 collect_names_stmt(t, names, scalars);
             }
@@ -1742,12 +1943,14 @@ fn collect_names_stmt(s: &Stmt, names: &mut HashSet<String>, scalars: bool) {
                 }
             }
         }
-        Stmt::Delete { name, indices } => {
+        Stmt::Delete {
+            name,
+            path,
+            indices,
+        } => {
             names.insert(name.clone());
-            if let Some(ixs) = indices {
-                for e in ixs {
-                    collect_names_expr(e, names, scalars);
-                }
+            for e in path.iter().flatten().chain(indices.iter().flatten()) {
+                collect_names_expr(e, names, scalars);
             }
         }
         Stmt::Exit(Some(e)) | Stmt::Return(Some(e)) => collect_names_expr(e, names, scalars),
@@ -1815,24 +2018,35 @@ fn collect_names_expr(e: &Expr, names: &mut HashSet<String>, scalars: bool) {
         }
     }
     match e {
-        Expr::Index { name, indices } => {
+        Expr::Index {
+            name,
+            path,
+            indices,
+        } => {
             names.insert(name.clone());
-            for ix in indices {
+            for ix in path.iter().flatten().chain(indices) {
                 collect_names_expr(ix, names, scalars);
             }
         }
         Expr::AssignIndex {
-            name, indices, rhs, ..
+            name,
+            path,
+            indices,
+            rhs,
+            ..
         } => {
             names.insert(name.clone());
-            for ix in indices {
+            for ix in path.iter().flatten().chain(indices) {
                 collect_names_expr(ix, names, scalars);
             }
             collect_names_expr(rhs, names, scalars);
         }
-        Expr::In { arr, key } => {
+        Expr::In { arr, key, path } => {
             names.insert(arr.clone());
             collect_names_expr(key, names, scalars);
+            for ix in path.iter().flatten() {
+                collect_names_expr(ix, names, scalars);
+            }
         }
         Expr::Binary { left, right, .. } => {
             collect_names_expr(left, names, scalars);
@@ -1887,9 +2101,13 @@ fn collect_names_expr(e: &Expr, names: &mut HashSet<String>, scalars: bool) {
             collect_names_expr(else_, names, scalars);
         }
         Expr::IncDec { target, .. } => match target {
-            IncDecTarget::Index { name, indices } => {
+            IncDecTarget::Index {
+                name,
+                path,
+                indices,
+            } => {
                 names.insert(name.clone());
-                for ix in indices {
+                for ix in path.iter().flatten().chain(indices) {
                     collect_names_expr(ix, names, scalars);
                 }
             }

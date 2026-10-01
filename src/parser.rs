@@ -16,8 +16,13 @@ fn assign_expr(lhs: Expr, op: Option<BinOp>, rhs: Expr, line: usize) -> Result<E
             op,
             rhs: Box::new(rhs),
         }),
-        Expr::Index { name, indices } => Ok(Expr::AssignIndex {
+        Expr::Index {
             name,
+            path,
+            indices,
+        } => Ok(Expr::AssignIndex {
+            name,
+            path,
             indices,
             op,
             rhs: Box::new(rhs),
@@ -548,6 +553,7 @@ impl<'a> Parser<'a> {
                         };
                         let arr = arr.clone();
                         self.bump(false)?;
+                        let path = self.parse_subscript_chain()?;
                         if self.cur != Token::RParen {
                             return Err(Error::Parse {
                                 line: self.line,
@@ -556,7 +562,12 @@ impl<'a> Parser<'a> {
                         }
                         self.bump(false)?;
                         let body = self.parse_stmt_block()?;
-                        return Ok(Stmt::ForIn { var, arr, body });
+                        return Ok(Stmt::ForIn {
+                            var,
+                            arr,
+                            path,
+                            body,
+                        });
                     }
                 }
                 let init = if self.cur == Token::Semi {
@@ -745,24 +756,18 @@ impl<'a> Parser<'a> {
                 let name = name.clone();
                 self.bump(false)?;
                 if self.cur == Token::LBracket {
-                    self.bump(true)?;
-                    let indices = self.parse_index_list()?;
-                    if self.cur != Token::RBracket {
-                        return Err(Error::Parse {
-                            line: self.line,
-                            msg: "expected `]`".into(),
-                        });
-                    }
-                    self.bump(false)?;
+                    let (path, indices) = self.parse_element_ref()?;
                     self.consume_stmt_end()?;
                     Ok(Stmt::Delete {
                         name,
+                        path,
                         indices: Some(indices),
                     })
                 } else {
                     self.consume_stmt_end()?;
                     Ok(Stmt::Delete {
                         name,
+                        path: Vec::new(),
                         indices: None,
                     })
                 }
@@ -1293,9 +1298,11 @@ impl<'a> Parser<'a> {
                 };
                 let arr = arr.clone();
                 self.bump(false)?;
+                let path = self.parse_subscript_chain()?;
                 e = Expr::In {
                     key: Box::new(e),
                     arr,
+                    path,
                 };
                 continue;
             }
@@ -1563,12 +1570,47 @@ impl<'a> Parser<'a> {
         match e {
             Expr::Var(name) => Ok(IncDecTarget::Var(name)),
             Expr::Field(inner) => Ok(IncDecTarget::Field(inner)),
-            Expr::Index { name, indices } => Ok(IncDecTarget::Index { name, indices }),
+            Expr::Index {
+                name,
+                path,
+                indices,
+            } => Ok(IncDecTarget::Index {
+                name,
+                path,
+                indices,
+            }),
             _ => Err(Error::Parse {
                 line,
                 msg: "invalid `++`/`--` operand".into(),
             }),
         }
+    }
+
+    /// One or more bracketed subscript lists, starting at the current `[`:
+    /// `[i][j, k]` is `[[i], [j, k]]`. Every bracket after the first selects a
+    /// subarray (gawk arrays of arrays).
+    fn parse_subscript_chain(&mut self) -> Result<Vec<Vec<Expr>>> {
+        let mut groups = Vec::new();
+        while self.cur == Token::LBracket {
+            self.bump(true)?;
+            groups.push(self.parse_index_list()?);
+            if self.cur != Token::RBracket {
+                return Err(Error::Parse {
+                    line: self.line,
+                    msg: "expected `]` after array index".into(),
+                });
+            }
+            self.bump(false)?;
+        }
+        Ok(groups)
+    }
+
+    /// An element reference `name[...]...[...]` split into the subarray path
+    /// and the last subscript list, starting at the current `[`.
+    fn parse_element_ref(&mut self) -> Result<(Vec<Vec<Expr>>, Vec<Expr>)> {
+        let mut path = self.parse_subscript_chain()?;
+        let indices = path.pop().expect("chain starts at `[`");
+        Ok((path, indices))
     }
 
     fn parse_index_list(&mut self) -> Result<Vec<Expr>> {
@@ -1645,16 +1687,12 @@ impl<'a> Parser<'a> {
                         self.bump(false)?;
                         // Accept `@a[k](...)` too — the callee can be an array element.
                         if self.cur == Token::LBracket {
-                            self.bump(true)?;
-                            let indices = self.parse_index_list()?;
-                            if self.cur != Token::RBracket {
-                                return Err(Error::Parse {
-                                    line: self.line,
-                                    msg: "expected `]`".into(),
-                                });
+                            let (path, indices) = self.parse_element_ref()?;
+                            Expr::Index {
+                                name,
+                                path,
+                                indices,
                             }
-                            self.bump(false)?;
-                            Expr::Index { name, indices }
                         } else {
                             Expr::Var(name)
                         }
@@ -1722,16 +1760,12 @@ impl<'a> Parser<'a> {
                 let name = name.clone();
                 self.bump(false)?;
                 if self.cur == Token::LBracket {
-                    self.bump(true)?;
-                    let indices = self.parse_index_list()?;
-                    if self.cur != Token::RBracket {
-                        return Err(Error::Parse {
-                            line: self.line,
-                            msg: "expected `]` after array index".into(),
-                        });
-                    }
-                    self.bump(false)?;
-                    return Ok(Expr::Index { name, indices });
+                    let (path, indices) = self.parse_element_ref()?;
+                    return Ok(Expr::Index {
+                        name,
+                        path,
+                        indices,
+                    });
                 }
                 // POSIX call-vs-concat: `name(` (no space → `TightLParen`) is
                 // always a function call. `name (` (whitespace → `LParen`) is a
@@ -2385,7 +2419,7 @@ mod tests {
     fn parses_delete_whole_array() {
         let p = parse_program("BEGIN { delete a }").unwrap();
         match first_begin_stmt(&p) {
-            Stmt::Delete { name, indices } => {
+            Stmt::Delete { name, indices, .. } => {
                 assert_eq!(name, "a");
                 assert!(indices.is_none());
             }
@@ -2397,7 +2431,7 @@ mod tests {
     fn parses_delete_array_element() {
         let p = parse_program("BEGIN { delete a[1,2] }").unwrap();
         match first_begin_stmt(&p) {
-            Stmt::Delete { name, indices } => {
+            Stmt::Delete { name, indices, .. } => {
                 assert_eq!(name, "a");
                 assert_eq!(indices.as_ref().unwrap().len(), 2);
             }
@@ -2472,7 +2506,7 @@ mod tests {
             Some(Stmt::Print { args, .. }) => {
                 assert_eq!(args.len(), 1);
                 match &args[0] {
-                    Expr::In { key, arr } => {
+                    Expr::In { key, arr, .. } => {
                         assert_eq!(arr, "a");
                         assert!(matches!(key.as_ref(), Expr::Str(s) if s == "k"));
                     }
@@ -2493,7 +2527,7 @@ mod tests {
             .unwrap();
         match rule.stmts.first() {
             Some(Stmt::Print { args, .. }) => match &args[0] {
-                Expr::In { key, arr } => {
+                Expr::In { key, arr, .. } => {
                     assert_eq!(arr, "a");
                     match key.as_ref() {
                         Expr::Tuple(parts) => {
@@ -2696,7 +2730,7 @@ mod tests {
     fn parses_delete_entire_array_stmt() {
         let p = parse_program("BEGIN { delete a }").unwrap();
         match first_begin_stmt(&p) {
-            Stmt::Delete { name, indices } => {
+            Stmt::Delete { name, indices, .. } => {
                 assert_eq!(name, "a");
                 assert!(indices.is_none());
             }
@@ -2752,7 +2786,7 @@ mod tests {
             Stmt::Expr(Expr::IncDec { op, target }) => {
                 assert_eq!(*op, IncDecOp::PostDec);
                 match target {
-                    IncDecTarget::Index { name, indices } => {
+                    IncDecTarget::Index { name, indices, .. } => {
                         assert_eq!(name, "a");
                         assert_eq!(indices.len(), 1);
                         assert!(expr_is_int(&indices[0], 1));
@@ -2811,7 +2845,7 @@ mod tests {
     fn parses_delete_entire_array() {
         let p = parse_program("BEGIN { delete a }").unwrap();
         match first_begin_stmt(&p) {
-            Stmt::Delete { name, indices } => {
+            Stmt::Delete { name, indices, .. } => {
                 assert_eq!(name, "a");
                 assert!(indices.is_none());
             }
@@ -2823,7 +2857,7 @@ mod tests {
     fn parses_for_in_loop() {
         let p = parse_program("BEGIN { for (k in arr) print k }").unwrap();
         match first_begin_stmt(&p) {
-            Stmt::ForIn { var, arr, body } => {
+            Stmt::ForIn { var, arr, body, .. } => {
                 assert_eq!(var, "k");
                 assert_eq!(arr, "arr");
                 assert_eq!(body.len(), 1);
@@ -2836,7 +2870,7 @@ mod tests {
     fn parses_delete_array_element_multidimensional() {
         let p = parse_program("BEGIN { delete a[1,2] }").unwrap();
         match first_begin_stmt(&p) {
-            Stmt::Delete { name, indices } => {
+            Stmt::Delete { name, indices, .. } => {
                 assert_eq!(name, "a");
                 let ix = indices.as_ref().expect("indexed delete");
                 assert_eq!(ix.len(), 2);

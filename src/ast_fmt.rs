@@ -165,8 +165,14 @@ fn format_stmt(st: &Stmt, depth: usize) -> String {
             s.push_str("}\n");
             s
         }
-        Stmt::ForIn { var, arr, body } => {
-            let mut s = format!("{ind}for ({var} in {arr}) {{\n");
+        Stmt::ForIn {
+            var,
+            arr,
+            path,
+            body,
+        } => {
+            let sub = format_subscripts(path, None);
+            let mut s = format!("{ind}for ({var} in {arr}{sub}) {{\n");
             for t in body {
                 s.push_str(&format_stmt(t, depth + 1));
             }
@@ -223,13 +229,14 @@ fn format_stmt(st: &Stmt, depth: usize) -> String {
                 format!("{ind}return;\n")
             }
         }
-        Stmt::Delete { name, indices } => match indices {
-            None => format!("{ind}delete {name};\n"),
-            Some(ix) => {
-                let parts: Vec<_> = ix.iter().map(format_expr).collect();
-                format!("{ind}delete {name}[{}];\n", parts.join(", "))
-            }
-        },
+        Stmt::Delete {
+            name,
+            path,
+            indices,
+        } => format!(
+            "{ind}delete {name}{};\n",
+            format_subscripts(path, indices.as_deref())
+        ),
         Stmt::GetLine {
             pipe_cmd,
             var,
@@ -325,10 +332,11 @@ pub(crate) fn format_expr(e: &Expr) -> String {
         Expr::RegexpLiteral(s) => format!("@/{}/", escape_regex_slash(&s.to_str_lossy())),
         Expr::Var(v) => v.clone(),
         Expr::Field(inner) => format_field_expr(inner),
-        Expr::Index { name, indices } => {
-            let parts: Vec<_> = indices.iter().map(format_expr).collect();
-            format!("{name}[{}]", parts.join(", "))
-        }
+        Expr::Index {
+            name,
+            path,
+            indices,
+        } => format!("{name}{}", format_subscripts(path, Some(indices))),
         Expr::Binary { op, left, right } => {
             format!(
                 "({} {} {})",
@@ -359,12 +367,12 @@ pub(crate) fn format_expr(e: &Expr) -> String {
         }
         Expr::AssignIndex {
             name,
+            path,
             indices,
             op,
             rhs,
         } => {
-            let ix: Vec<_> = indices.iter().map(format_expr).collect();
-            let lhs = format!("{name}[{}]", ix.join(", "));
+            let lhs = format!("{name}{}", format_subscripts(path, Some(indices)));
             if let Some(bop) = op {
                 format!("{lhs} {} {}", binop_str(*bop), format_expr(rhs))
             } else {
@@ -385,7 +393,11 @@ pub(crate) fn format_expr(e: &Expr) -> String {
             format_expr(then_),
             format_expr(else_)
         ),
-        Expr::In { key, arr } => format!("{} in {}", format_expr(key), arr),
+        Expr::In { key, arr, path } => format!(
+            "{} in {arr}{}",
+            format_expr(key),
+            format_subscripts(path, None)
+        ),
         Expr::Tuple(parts) => {
             let p: Vec<_> = parts.iter().map(format_expr).collect();
             format!("({})", p.join(", "))
@@ -393,10 +405,14 @@ pub(crate) fn format_expr(e: &Expr) -> String {
         Expr::IncDec { op, target } => match target {
             IncDecTarget::Var(n) => format_incdec_var(op, n),
             IncDecTarget::Field(inner) => format_incdec_field(op, inner),
-            IncDecTarget::Index { name, indices } => {
-                let ix: Vec<_> = indices.iter().map(format_expr).collect();
-                format_incdec_index(op, &format!("{name}[{}]", ix.join(", ")))
-            }
+            IncDecTarget::Index {
+                name,
+                path,
+                indices,
+            } => format_incdec_index(
+                op,
+                &format!("{name}{}", format_subscripts(path, Some(indices))),
+            ),
         },
         Expr::GetLine {
             pipe_cmd,
@@ -442,6 +458,18 @@ fn format_incdec_var(op: &IncDecOp, name: &str) -> String {
 fn format_incdec_field(op: &IncDecOp, inner: &Expr) -> String {
     let f = format!("$({})", format_expr(inner));
     format_incdec_index(op, &f)
+}
+
+/// `[i][j, k]` for a subarray path, followed by `last` when there is one.
+fn format_subscripts(path: &[Vec<Expr>], last: Option<&[Expr]>) -> String {
+    path.iter()
+        .map(Vec::as_slice)
+        .chain(last)
+        .map(|group| {
+            let parts: Vec<_> = group.iter().map(format_expr).collect();
+            format!("[{}]", parts.join(", "))
+        })
+        .collect()
 }
 
 fn format_incdec_index(op: &IncDecOp, lhs: &str) -> String {

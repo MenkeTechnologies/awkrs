@@ -1376,3 +1376,23 @@ BEGIN { printf "%x %X %o|%x|%-8x|%x\n", 2^64 - 2048, 2^63, 2^63, 1e30, -1e30, -l
 #--- prog
 function show(arr,   k, loc) { for (k in arr) { printf "%s ", k; loc[k] } ; for (k in loc) printf "%s ", k; print "" }
 BEGIN { for (i = 1; i <= 12; i++) a["k" i] = (i * 7) % 13; PROCINFO["sorted_in"] = "@ind_str_asc"; show(a); PROCINFO["sorted_in"] = "@val_num_desc"; show(a) }
+
+#=== arrays_of_arrays_walk_and_update
+# gawk arrays of arrays: `a[i][j]` stores, reads, updates and deletes at depth,
+# `k in a[i]`, `for (k in a[i])`, and subarrays passed by reference to a
+# recursive function. awkrs rejected `a[i][j]` as a parse error.
+#--- only gawk
+#--- prog
+function walk(arr, pre,   k) { for (k in arr) if (isarray(arr[k])) walk(arr[k], pre k "."); else print pre k "=" arr[k] }
+{ t[$1][$2] += $3 }
+END { PROCINFO["sorted_in"] = "@ind_str_asc"; walk(t, ""); t["a"]["x"]++; delete t["b"]; print t["a"]["x"], length(t), ("y" in t["a"]), isarray(t["a"]) }
+#--- in
+a x 1
+b y 2
+a y 3
+
+#=== arrays_of_arrays_scalar_context_is_fatal
+# Reading a subarray as a scalar is gawk's fatal (exit 2).
+#--- only gawk
+#--- prog
+BEGIN { a[1][2] = 1; print "before"; print a[1] }
