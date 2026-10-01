@@ -238,6 +238,11 @@ impl<'a> Lexer<'a> {
         self.input.get(self.pos).copied()
     }
 
+    /// The raw byte `ahead` bytes past the cursor.
+    fn peek_byte_at(&self, ahead: usize) -> Option<u8> {
+        self.input.get(self.pos + ahead).copied()
+    }
+
     /// Consume one raw byte — the literal and comment scanners' unit.
     fn bump_byte(&mut self) -> Option<u8> {
         let b = self.peek_byte()?;
@@ -329,26 +334,52 @@ impl<'a> Lexer<'a> {
             // one-true-awk, and no `&str` can hold it. Nothing between the
             // slashes is interpreted here, so scanning bytes loses nothing.
             let mut s = crate::awkstr::AwkStr::new();
+            // gawk's regexp scan (awkgram.y `yylex`): a `/` inside a bracket
+            // expression does not end the regexp, so `/a[/]b/` and `/[]/]/` are
+            // one token. `[` opens a bracket expression (or, inside one, a
+            // `[:class:]`), and a `]` first in the list — after an optional
+            // `^` — is a member rather than the close.
+            let mut in_brack = 0u32;
+            let mut brack_start = 0usize;
             while let Some(d) = self.peek_byte() {
-                if d == b'/' && {
-                    // Count consecutive trailing backslashes: odd means the
-                    // slash is escaped, even (including zero) means it terminates.
-                    let trailing = s
-                        .as_bytes()
-                        .iter()
-                        .rev()
-                        .take_while(|&&b| b == b'\\')
-                        .count();
-                    trailing % 2 == 0
-                } {
-                    self.bump_byte();
-                    return Ok(Token::Regexp(s));
-                }
                 if d == b'\n' {
                     return Err(Error::Parse {
                         line: self.line,
                         msg: "unterminated regex".into(),
                     });
+                }
+                if d == b'\\' {
+                    // An escape is two bytes; the second is never a delimiter.
+                    s.push_byte(d);
+                    self.bump_byte();
+                    match self.peek_byte() {
+                        Some(e) if e != b'\n' => {
+                            s.push_byte(e);
+                            self.bump_byte();
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+                if d == b'/' && in_brack == 0 {
+                    self.bump_byte();
+                    return Ok(Token::Regexp(s));
+                }
+                let pos = s.as_bytes().len();
+                match d {
+                    b'[' if in_brack == 0 => {
+                        in_brack = 1;
+                        brack_start = pos;
+                    }
+                    b'[' if self.peek_byte_at(1) == Some(b':') => in_brack += 1,
+                    b']' if in_brack > 0 => {
+                        let first = pos == brack_start + 1
+                            || (pos == brack_start + 2 && s.as_bytes()[brack_start + 1] == b'^');
+                        if !first {
+                            in_brack -= 1;
+                        }
+                    }
+                    _ => {}
                 }
                 s.push_byte(d);
                 self.bump_byte();
@@ -1221,6 +1252,24 @@ mod tests {
             tokens_no_regex("# whole line comment\nx"),
             vec![Token::Newline, Token::Ident("x".into())]
         );
+    }
+
+    /// gawk: a `/` inside a bracket expression does not end a regexp literal,
+    /// including after a leading `]` member; it does after the bracket closes.
+    #[test]
+    fn lex_regex_slash_inside_bracket_expression() {
+        for (src, want) in [
+            (&b"/a[/]b/"[..], "a[/]b"),
+            (b"/[]/]/", "[]/]"),
+            (b"/[^]/]x/", "[^]/]x"),
+            (b"/[[:alpha:]/]/", "[[:alpha:]/]"),
+            (b"/[a]/", "[a]"),
+        ] {
+            match Lexer::new(src).next_token(true).unwrap() {
+                Token::Regexp(s) => assert_eq!(s, want),
+                t => panic!("expected Regexp, got {t:?}"),
+            }
+        }
     }
 
     #[test]

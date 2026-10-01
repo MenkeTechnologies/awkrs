@@ -1408,3 +1408,17 @@ BEGINFILE { print "BF", ++f, NF, "[" $0 "]" }
 ENDFILE { print "EF", f, FNR }
 FNR == 1 && f == 1 { while ((getline line) > 0) n++; print "read", n, NR, FNR }
 END { print NR }
+
+#=== bracket_expression_members
+# POSIX bracket expressions: `[` is an ordinary member and a leading `]` is a
+# member. awkrs handed `[[]` and `[][]` to Rust's regex parser, which read the
+# inner `[` as a nested class and failed with a fatal "unclosed character class".
+#--- prog
+BEGIN { s = "x[1] = y[22];"; n = gsub(/[][]/, "", s); print n, s; t = "a[b"; print gsub(/[[]/, "<", t), t; print ("x]" ~ /^[]x]+$/), ("]" ~ /[^]]/) }
+
+#=== gawk_word_boundary_and_string_anchors
+# gawk's \y matches at a word boundary, \` at the start and \' at the end of
+# the string; awkrs read them as the plain characters.
+#--- only gawk
+#--- prog
+BEGIN { v = "foo bar"; print gsub(/\y/, "|", v), v; w = "abc"; print gsub(/\`a/, "X", w), gsub(/c\'/, "Y", w), w; print ("a/b" ~ /a[/]b/) }

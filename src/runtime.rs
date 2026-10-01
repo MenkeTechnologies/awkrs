@@ -1828,6 +1828,15 @@ fn translate_awk_re_to_rust(pat: &str) -> String {
                 i += 2;
                 continue;
             }
+            if let Some(anchor) = gawk_regexp_operator(next) {
+                // gawk's own operators: `\y` is a word boundary, `` \` `` and
+                // `\'` the start and end of the whole string. Rust spells them
+                // `\b`, `\A` and `\z`; left alone, `\y` became the letter `y`
+                // and the other two literal punctuation.
+                out.push_str(anchor);
+                i += 2;
+                continue;
+            }
             if !rust_knows_escape(next) {
                 // An escape Rust's parser does not know is a hard error there,
                 // while gawk, mawk and one-true-awk all read it as the plain
@@ -1883,8 +1892,55 @@ fn translate_awk_re_to_rust(pat: &str) -> String {
             i += 1;
             continue;
         }
+        if in_bracket && c == '[' {
+            // POSIX: inside a bracket expression `[` is an ordinary character
+            // unless it opens a `[:class:]`, `[.coll.]` or `[=equiv=]` element.
+            // Rust reads a bare `[` there as a nested class, so `[[]` and
+            // `[][]` were parse errors (fatal) where every reference matches a
+            // bracket.
+            match chars.get(i + 1) {
+                Some(&kind @ (':' | '.' | '=')) if posix_element_end(&chars, i, kind).is_some() => {
+                    let end = posix_element_end(&chars, i, kind).expect("checked");
+                    if kind == ':' {
+                        // Rust understands `[:alpha:]` inside a class: copy it.
+                        out.extend(&chars[i..end]);
+                    } else {
+                        // A collating element or equivalence class of one
+                        // character is that character.
+                        for &ch in &chars[i + 2..end - 2] {
+                            push_class_literal(&mut out, ch);
+                        }
+                    }
+                    i = end;
+                }
+                _ => {
+                    out.push_str("\\[");
+                    i += 1;
+                }
+            }
+            continue;
+        }
+        if in_bracket && matches!(c, '&' | '~') {
+            // Rust's class set operators (`&&`, `~~`) have no POSIX meaning.
+            push_class_literal(&mut out, c);
+            i += 1;
+            continue;
+        }
         if c == '[' && !in_bracket {
             in_bracket = true;
+            out.push('[');
+            i += 1;
+            if chars.get(i) == Some(&'^') {
+                out.push('^');
+                i += 1;
+            }
+            // A `]` first in the list (after an optional `^`) is a member, not
+            // the end of the expression.
+            if chars.get(i) == Some(&']') {
+                out.push_str("\\]");
+                i += 1;
+            }
+            continue;
         } else if c == ']' && in_bracket {
             in_bracket = false;
         }
@@ -1892,6 +1948,33 @@ fn translate_awk_re_to_rust(pat: &str) -> String {
         i += 1;
     }
     out
+}
+
+/// The index just past the `]` closing the bracket element that opens at
+/// `open` (`[:name:]`, `[.c.]`, `[=c=]`, with `kind` its delimiter); `None`
+/// when it never closes.
+fn posix_element_end(chars: &[char], open: usize, kind: char) -> Option<usize> {
+    (open + 2..chars.len().saturating_sub(1))
+        .find(|&j| chars[j] == kind && chars[j + 1] == ']')
+        .map(|j| j + 2)
+}
+
+/// One character as a literal member of a Rust character class.
+fn push_class_literal(out: &mut String, ch: char) {
+    if matches!(ch, '[' | ']' | '\\' | '^' | '-' | '&' | '~') {
+        out.push('\\');
+    }
+    out.push(ch);
+}
+
+/// The Rust spelling of a gawk-only regexp operator (`\y`, `` \` ``, `\'`).
+fn gawk_regexp_operator(c: char) -> Option<&'static str> {
+    match c {
+        'y' => Some("\\b"),
+        '`' => Some("\\A"),
+        '\'' => Some("\\z"),
+        _ => None,
+    }
 }
 
 /// Whether Rust's regex parser gives `\<c>` a meaning.
@@ -5364,6 +5447,40 @@ mod regex_translator_tests {
     #[test]
     fn handles_multiple_octal_escapes_in_one_pattern() {
         assert_eq!(translate_awk_re_to_rust(r"(.)(.)\1\2"), r"(.)(.)\x{1}\x{2}");
+    }
+
+    /// POSIX bracket expressions as gawk reads them: `[` is an ordinary member
+    /// unless it opens `[:class:]` / `[.c.]` / `[=c=]`, a `]` first in the list
+    /// is a member, and `&`/`~` are plain characters. Rust reads a bare `[` as a
+    /// nested class and `&&`/`~~` as set operators, so each needs escaping.
+    #[test]
+    fn posix_bracket_members_are_escaped_for_rust() {
+        assert_eq!(translate_awk_re_to_rust("[[]"), r"[\[]");
+        assert_eq!(translate_awk_re_to_rust("[][]"), r"[\]\[]");
+        assert_eq!(translate_awk_re_to_rust("[^]x]"), r"[^\]x]");
+        assert_eq!(translate_awk_re_to_rust("[[:alpha:]_]"), "[[:alpha:]_]");
+        assert_eq!(translate_awk_re_to_rust("[[=e=][.-.]]"), r"[e\-]");
+        assert_eq!(translate_awk_re_to_rust("[a&&b~]"), r"[a\&\&b\~]");
+        for (pat, hay, want) in [
+            ("[[]", "a[b", true),
+            ("[][]", "]", true),
+            ("[^]]", "]", false),
+            ("[&&]", "&", true),
+        ] {
+            let re = regex::Regex::new(&translate_awk_re_to_rust(pat)).unwrap();
+            assert_eq!(re.is_match(hay), want, "{pat} on {hay}");
+        }
+    }
+
+    /// gawk's regexp operators: `\y` (word boundary), `` \` `` and `\'`
+    /// (start and end of the string).
+    #[test]
+    fn gawk_regexp_operators_translate() {
+        assert_eq!(translate_awk_re_to_rust(r"\yb"), r"\bb");
+        assert_eq!(translate_awk_re_to_rust(r"\`a"), r"\Aa");
+        assert_eq!(translate_awk_re_to_rust(r"c\'"), r"c\z");
+        // Inside a bracket expression `\y` is just `y`.
+        assert_eq!(translate_awk_re_to_rust(r"[\y]"), "[y]");
     }
 
     /// A bracket expression is not an exception: `("\001" ~ /[\1\2]/)` and
