@@ -109,7 +109,10 @@ pub const SPECIAL_GLOBAL_NAMES: &[&str] = &[
 ];
 
 fn qualify_name(name: &str, ns: &str, locals: &FxHashSet<String>) -> String {
-    if name.contains("::") {
+    if let Some(base) = name.strip_prefix(AWK_NS_PREFIX) {
+        return base.to_string();
+    }
+    if name.contains("::") || ns.is_empty() {
         return name.to_string();
     }
     if locals.contains(name) {
@@ -399,12 +402,33 @@ fn qualify_stmt(s: &mut Stmt, ns: &str, locals: &FxHashSet<String>) {
     }
 }
 
+/// gawk's name for the default namespace: `awk::x` is the global `x`, from
+/// any namespace.
+pub const AWK_NS_PREFIX: &str = "awk::";
+
+/// The variable a command-line assignment names: `awk::x` is `x`.
+pub fn canonical_global_name(name: &str) -> &str {
+    name.strip_prefix(AWK_NS_PREFIX).unwrap_or(name)
+}
+
+/// Rewrite every `awk::x` in the program to the global `x` it names. Only
+/// needed when no `@namespace` is in effect: [`apply_default_namespace`]
+/// does it as part of qualifying.
+pub fn strip_awk_namespace(prog: &mut Program) {
+    qualify_program(prog, "");
+}
+
 /// Apply gawk default namespace to all rules and functions (after `@namespace "…"` preprocessing).
 pub fn apply_default_namespace(prog: &mut Program, ns: Option<&str>) {
     let Some(ns) = ns else { return };
     if ns.is_empty() {
         return;
     }
+    qualify_program(prog, ns);
+}
+
+/// Qualify every name in `prog` with `ns` (an empty `ns` only resolves `awk::`).
+fn qualify_program(prog: &mut Program, ns: &str) {
     let locals_empty = FxHashSet::default();
     for rule in &mut prog.rules {
         qualify_pattern(&mut rule.pattern, ns, &locals_empty);
@@ -1129,16 +1153,22 @@ mod tests {
         }
     }
 
+    /// gawk: `awk::x` is the global `x`, inside a namespace and without one.
     #[test]
-    fn awk_namespace_stays_qualified_v2() {
-        let mut prog = prog_one_rule(Rule {
-            pattern: Pattern::Begin,
-            stmts: vec![Stmt::Expr(Expr::Var("awk::x".into()))],
-        });
-        apply_default_namespace(&mut prog, Some("ns"));
-        match &prog.rules[0].stmts[0] {
-            Stmt::Expr(Expr::Var(n)) => assert_eq!(n, "awk::x"),
-            _ => panic!("expected Var"),
+    fn awk_namespace_names_the_global_v2() {
+        for ns in [Some("ns"), None] {
+            let mut prog = prog_one_rule(Rule {
+                pattern: Pattern::Begin,
+                stmts: vec![Stmt::Expr(Expr::Var("awk::x".into()))],
+            });
+            match ns {
+                Some(ns) => apply_default_namespace(&mut prog, Some(ns)),
+                None => strip_awk_namespace(&mut prog),
+            }
+            match &prog.rules[0].stmts[0] {
+                Stmt::Expr(Expr::Var(n)) => assert_eq!(n, "x"),
+                _ => panic!("expected Var"),
+            }
         }
     }
 }

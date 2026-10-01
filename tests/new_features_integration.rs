@@ -9,7 +9,10 @@
 
 mod common;
 
-use common::{run_awkrs_file, run_awkrs_stdin, run_awkrs_stdin_args, run_awkrs_stdin_args_env};
+use common::{
+    run_awkrs_file, run_awkrs_operands, run_awkrs_stdin, run_awkrs_stdin_args,
+    run_awkrs_stdin_args_env,
+};
 use std::ffi::OsString;
 use std::process::{Command, Stdio};
 
@@ -749,6 +752,28 @@ fn namespace_prefixes_unqualified_identifier() {
     );
     assert_eq!(c, 0);
     assert_eq!(o.trim(), "5");
+}
+
+/// gawk's `awk::` is the default namespace: `awk::x` is the global `x` in the
+/// program, in `-v` and in an operand assignment, and an operand may assign a
+/// qualified name. Expected output is gawk 5.4.1's.
+#[test]
+fn awk_namespace_prefix_names_the_global() {
+    let (c, o, e) = run_awkrs_stdin_args(
+        ["-v", "awk::v=1", "-v", "ns::w=2"],
+        r#"function f() { return 7 }
+BEGIN { awk::z = 4; print v, awk::v, ns::w, z, awk::f() }"#,
+        "",
+    );
+    assert_eq!(c, 0, "stderr: {e}");
+    assert_eq!(o, "1 1 2 4 7\n");
+    let (c, o, e) = run_awkrs_operands(
+        "@namespace \"ns\"\nBEGIN { awk::g = 1 }\n{ print y, ns::y, awk::x, x, awk::g, g }",
+        ["ns::y=5", "awk::x=3", "-"],
+        "line\n",
+    );
+    assert_eq!(c, 0, "stderr: {e}");
+    assert_eq!(o, "5 5 3  1 \n");
 }
 
 #[test]

@@ -79,6 +79,18 @@ pub fn parse_program_bytes(src: &[u8]) -> Result<Program> {
     Ok(prog)
 }
 
+/// Qualify names with the `@namespace` in effect, and resolve gawk's `awk::x`
+/// (the global `x`) when there is none.
+fn resolve_namespaces(prog: &mut Program, expanded: &crate::source_expand::ExpandedSource) {
+    match expanded.default_namespace.as_deref() {
+        Some(ns) if !ns.is_empty() => crate::namespace::apply_default_namespace(prog, Some(ns)),
+        _ if expanded.text.contains(crate::namespace::AWK_NS_PREFIX) => {
+            crate::namespace::strip_awk_namespace(prog)
+        }
+        _ => {}
+    }
+}
+
 /// `parse_program` — see implementation for the contract.
 pub fn parse_program(src: &str) -> Result<Program> {
     // Inline `rust { ... }` FFI blocks are desugared to `BEGIN { __rust_compile(...) }`
@@ -87,7 +99,7 @@ pub fn parse_program(src: &str) -> Result<Program> {
     let expanded = crate::source_expand::expand_source_directives(&src)?;
     let mut p = Parser::new(&expanded.text);
     let mut prog = p.parse_program()?;
-    crate::namespace::apply_default_namespace(&mut prog, expanded.default_namespace.as_deref());
+    resolve_namespaces(&mut prog, &expanded);
     Ok(prog)
 }
 
@@ -100,7 +112,7 @@ pub fn parse_program_debug(src: &str) -> Result<Program> {
     let mut p = Parser::new(&expanded.text);
     p.debug_lines = true;
     let mut prog = p.parse_program()?;
-    crate::namespace::apply_default_namespace(&mut prog, expanded.default_namespace.as_deref());
+    resolve_namespaces(&mut prog, &expanded);
     Ok(prog)
 }
 

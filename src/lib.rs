@@ -2326,10 +2326,11 @@ fn argv_operand_limit(rt: &Runtime) -> usize {
 ///
 /// POSIX restricts the form to an assignment whose left side is a valid awk
 /// identifier, which is what keeps `./a=b` and `2x=3` readable as file names:
-/// the test is the identifier grammar, not the mere presence of `=`.
+/// the test is the identifier grammar, not the mere presence of `=`. gawk also
+/// takes a namespace-qualified name (`ns::x=1`, `awk::x=1`), as with `-v`.
 fn split_assignment_operand(operand: &str) -> Option<(&str, &str)> {
     let (name, value) = operand.split_once('=')?;
-    is_awk_identifier(name).then_some((name, value))
+    is_legal_assignment_name(name).then_some((name, value))
 }
 
 /// Whether `s` is spelled like an awk variable name: `[A-Za-z_][A-Za-z_0-9]*`.
@@ -2380,6 +2381,8 @@ fn apply_one_assignment(rt: &mut Runtime, name: &str, value: &str) {
 /// [`apply_one_assignment`] for a value that may hold a byte no `&str` can name.
 fn apply_one_assignment_bytes(rt: &mut Runtime, name: &str, value: &[u8]) {
     let decoded = crate::lexer::unescape_assignment_value_bytes(value);
+    // gawk: `awk::x` names the global `x`.
+    let name = crate::namespace::canonical_global_name(name);
     rt.symtab_elem_set(name, Value::Str(decoded));
 }
 
