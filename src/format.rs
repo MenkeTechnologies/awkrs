@@ -996,6 +996,37 @@ fn parse_width_or_star(
     Ok((None, false, i))
 }
 
+/// `-M` operand of `%o %x %X`: gawk prints the whole truncated integer in the
+/// base (`printf "%x", 2^64` is `10000000000000000`). A negative one keeps the
+/// 64-bit two's complement awkrs has always printed; gawk 5.4.1 itself emits a
+/// malformed `0x-ff` or an internal error there.
+fn mpfr_unsigned_digits(f: &rug::Float) -> rug::Integer {
+    let int = float_trunc_integer(f);
+    if int < 0 {
+        rug::Integer::from(int.to_u64_wrapping())
+    } else {
+        int
+    }
+}
+
+/// gawk `format_integer_digits` (printf.c) operand rule for `%o %u %x %X`:
+/// truncate, cast to `uintmax_t` (through `intmax_t` when negative, so a
+/// negative wraps to its two's complement), and accept the result only if it
+/// converts back to the same truncated value. `None` means out of range, which
+/// gawk prints with `%g`. Rust's saturating casts give the value the C casts
+/// produce on aarch64, so 2^64 is `u64::MAX` (`printf "%x", 2^64` is
+/// `ffffffffffffffff`) while 1e30 is out of range.
+fn gawk_unsigned_operand(n: f64) -> Option<u64> {
+    let t = n.trunc();
+    if t < 0.0 {
+        let u = t as i64 as u64;
+        (u as i64 as f64 == t).then_some(u)
+    } else {
+        let u = t as u64;
+        (u as f64 == t).then_some(u)
+    }
+}
+
 #[allow(clippy::too_many_arguments)] // mirrors sprintf flag bundle (width, prec, pad, …)
 fn format_one(
     conv: char,
@@ -1033,6 +1064,36 @@ fn format_one(
     } else {
         '\0'
     };
+    // gawk `format_unsigned_integer` / `format_integer_digits` (printf.c): a
+    // value `%o %u %x %X` cannot hold exactly is not wrapped or saturated. NaN
+    // and infinity print as `+nan`/`-inf` (upper-cased for `%X`), space-padded
+    // to the width; any other value whose truncation does not survive the
+    // round trip through `uintmax_t` (`intmax_t` when negative) falls back to
+    // `%g` with the same flags, width and precision — `printf "%x", 1e30` is
+    // `1e+30`. `%u` drops `#` first, as gawk's `adjust_flags` does for base 10.
+    if matches!(conv, 'u' | 'o' | 'x' | 'X') {
+        let n = v.as_number();
+        if let Some(s) = format_non_finite(n, conv == 'X') {
+            return pad_string(&s, w, left, ' ');
+        }
+        if mpfr_mode.is_none() && gawk_unsigned_operand(n).is_none() {
+            return format_one(
+                'g',
+                v,
+                left,
+                sign,
+                space,
+                alt && conv != 'u',
+                pad_zero,
+                group,
+                width,
+                prec,
+                decimal,
+                thousands_sep,
+                None,
+            );
+        }
+    }
     match conv {
         's' => {
             // POSIX / gawk: the `0` flag has no effect on string conversions —
@@ -1122,49 +1183,10 @@ fn format_one(
                     format!("{}", int)
                 }
             } else {
-                // gawk: `%u` of a negative number wraps via i64 → u64 (two's complement)
-                // — `printf "%u", -5` yields 18446744073709551611, not 0. For
-                // positive values that exceed i64 (but still fit u64), the
-                // intermediate `i64` saturates, so we test the i64-range first
-                // and fall back to the u64 path or f64 truncation for huge values.
-                let n = v.as_number();
-                const I64_BOUND: f64 = 9_223_372_036_854_775_808.0; // 2^63
-                const U64_BOUND: f64 = 18_446_744_073_709_551_616.0; // 2^64
-                if !n.is_finite() {
-                    format_non_finite(n, false).unwrap_or_default()
-                } else if (-I64_BOUND..I64_BOUND).contains(&n) {
-                    let u = n as i64 as u64;
-                    format!("{u}")
-                } else if (0.0..U64_BOUND).contains(&n) {
-                    let u = n as u64;
-                    format!("{u}")
-                } else if n == U64_BOUND {
-                    // gawk parity: 2^64 in f64 is exactly U64_BOUND (the next
-                    // representable double above u64::MAX). gawk renders this
-                    // boundary value as u64::MAX digits (saturating-cast
-                    // behavior). For strictly larger values it falls back to
-                    // `%g`-style formatting below.
-                    format!("{}", u64::MAX)
-                } else if n > U64_BOUND {
-                    // gawk parity: positive values past 2^64 fall back to
-                    // `%g`-style formatting (e.g. 2^65 → "3.68935e+19").
-                    crate::format::awk_sprintf_with_decimal(
-                        "%.6g",
-                        &[Value::Num(n)],
-                        '.',
-                        None,
-                        None,
-                    )
-                    .unwrap_or_else(|_| format!("{}", u64::MAX))
-                } else {
-                    // Very negative (past -2^63): emit the truncated decimal.
-                    let trunc = n.trunc();
-                    if trunc.is_sign_negative() {
-                        format!("-{:.0}", trunc.abs())
-                    } else {
-                        format!("{:.0}", trunc)
-                    }
-                }
+                // `%u -5` wraps to 18446744073709551611; NaN, infinity and
+                // out-of-range values were formatted above.
+                let u = gawk_unsigned_operand(v.as_number()).unwrap_or_default();
+                format!("{u}")
             };
             // POSIX %.Nu with N==0 and value 0 → empty (gawk parity).
             if matches!(prec, Some(0)) && s == "0" {
@@ -1182,11 +1204,9 @@ fn format_one(
                     Value::Mpfr(f) => f.clone(),
                     _ => value_to_mpfr(v, pr, rd),
                 };
-                let un = float_trunc_integer(&f).to_u64_wrapping();
-                format!("{un:o}")
+                format!("{:o}", mpfr_unsigned_digits(&f))
             } else {
-                let n = v.as_number() as i64;
-                let un = n as u64;
+                let un = gawk_unsigned_operand(v.as_number()).unwrap_or_default();
                 format!("{un:o}")
             };
             if matches!(prec, Some(0)) && s == "0" {
@@ -1209,15 +1229,14 @@ fn format_one(
                     Value::Mpfr(f) => f.clone(),
                     _ => value_to_mpfr(v, pr, rd),
                 };
-                let un = float_trunc_integer(&f).to_u64_wrapping();
+                let un = mpfr_unsigned_digits(&f);
                 if conv == 'x' {
                     format!("{un:x}")
                 } else {
                     format!("{un:X}")
                 }
             } else {
-                let n = v.as_number() as i64;
-                let un = n as u64;
+                let un = gawk_unsigned_operand(v.as_number()).unwrap_or_default();
                 if conv == 'x' {
                     format!("{un:x}")
                 } else {
@@ -1566,6 +1585,31 @@ mod tests {
     fn star_width() {
         let s = awk_sprintf("%*d", &[Value::Num(5.0), Value::Num(3.0)]).unwrap();
         assert_eq!(s, "    3");
+    }
+
+    /// gawk 5.4.1 `format_integer_digits`: `%o %u %x %X` take the value through
+    /// `uintmax_t` and print it only if it survives the round trip; otherwise
+    /// `%g` with the same flags. NaN/inf print as signed words.
+    #[test]
+    fn unsigned_conversions_follow_gawk_range_rule() {
+        let f = |fmt: &str, n: f64| awk_sprintf(fmt, &[Value::Num(n)]).unwrap().to_string();
+        assert_eq!(f("%x", 2f64.powi(64)), "ffffffffffffffff");
+        assert_eq!(f("%X", 2f64.powi(63)), "8000000000000000");
+        assert_eq!(f("%o", 2f64.powi(64)), "1777777777777777777777");
+        assert_eq!(f("%x", 2f64.powi(63) + 2f64.powi(62)), "c000000000000000");
+        assert_eq!(f("%x", -1.0), "ffffffffffffffff");
+        assert_eq!(f("%u", -(2f64.powi(63))), "9223372036854775808");
+        // Out of range: %g with the conversion's flags, width and precision.
+        assert_eq!(f("%x", 1e30), "1e+30");
+        assert_eq!(f("%x", -1e30), "-1e+30");
+        assert_eq!(f("%+x", 1e30), "+1e+30");
+        assert_eq!(f("%#x", 1e30), "1.00000e+30");
+        assert_eq!(f("%-12x|", 1e30), "1e+30       |");
+        assert_eq!(f("%u", 2f64.powi(65)), "3.68935e+19");
+        // Non-finite: space-padded even under the `0` flag.
+        assert_eq!(f("%05x", f64::NEG_INFINITY), " -inf");
+        assert_eq!(f("%X", f64::INFINITY), "+INF");
+        assert_eq!(f("%x", -f64::NAN), "-nan");
     }
 
     #[test]

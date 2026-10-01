@@ -1356,4 +1356,14 @@ BEGIN { print "before"; print xor(3, 2, -5.5); print "after" }
 # 6-bit shift mask (`or(2^54, 1)` was 2^54, `lshift(1, 70)` was 64).
 #--- only gawk
 #--- prog
-BEGIN { print or(2^54, 1), xor(2^60, 1), lshift(1, 70), rshift(5, 64), compl(2^64), or(1e30, 0) }
+BEGIN { print or(2^54, 1), xor(2^60, 1), lshift(1, 70), rshift(5, 64), compl(2^63) }
+
+#=== printf_unsigned_conversion_out_of_range
+# gawk prints %o/%u/%x/%X of a value that does not survive the uintmax_t round
+# trip with %g, and NaN/inf as signed words; awkrs wrapped through i64
+# (`printf "%x", 2^63` was 7fffffffffffffff, `%x` of 1e30 likewise). Operands
+# of 2^64 and beyond are left out: gawk's C cast of them is undefined and
+# differs between aarch64 and x86-64.
+#--- only gawk
+#--- prog
+BEGIN { printf "%x %X %o|%x|%-8x|%x\n", 2^64 - 2048, 2^63, 2^63, 1e30, -1e30, -log(0) }
