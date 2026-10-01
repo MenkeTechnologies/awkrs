@@ -67,7 +67,7 @@ Use byte length for
 .BR index .
 .TP
 .BR \-c ", " \-\-traditional
-Traditional POSIX awk mode (stored on the runtime; minimal effect today).
+Traditional awk mode: the gawk\-extension builtins are refused, and the BSD awk zero\-padding quirk for %0Ns / %0Nc is enabled.
 .TP
 .BR \-C ", " \-\-copyright
 Print copyright information.
@@ -170,7 +170,9 @@ Wall\-clock summary plus per\-record\-rule hit counts
 only). Not gawk's per\-line profiler.
 .TP
 .BR \-P ", " \-\-posix
-Strict POSIX mode (stored on the runtime; minimal effect today).
+Strict POSIX mode: the gawk\-extension builtins are refused, and
+.B PROCINFO["sorted_in"]
+is ignored (unsorted array traversal).
 .TP
 .BR \-r ", " \-\-re\-interval
 Accepted as a no\-op;

@@ -1025,7 +1025,12 @@ gawk's interactive debugger (no breakpoints, no step / next).
 .IP \[bu] 2
 .B \-c
 .BR \-\-traditional
-is stored on the runtime; effect today is minimal.
+refuses the gawk\-extension builtins and enables the BSD awk %0Ns / %0Nc zero padding;
+other gawk \-\-traditional restrictions are not applied (for example,
+.B BEGINFILE
+and
+.B ENDFILE
+still run).
 .IP \[bu] 2
 Some
 .B PROCINFO[input,...]

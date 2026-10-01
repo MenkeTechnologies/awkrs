@@ -40,7 +40,7 @@ References: special variables and builtins lists in `src/compiler.rs` (`SPECIAL_
 | `var=value` operand (assignment between files) | Yes | Yes | Yes | Yes | **Match** — an operand whose left side is a valid identifier assigns instead of naming a file, takes effect at the position it occupies, is a POSIX *numeric string*, and gets the same escape processing as `-v`. When every operand is an assignment the program still reads standard input. awkrs read them as file names and failed with `cannot open file "v=1"`. |
 | `-e` / `-i` | — | — | **Part** | Yes | **Match** (multiple `-e`/`-i`) |
 | `-b` characters-as-bytes | — | — | — | Yes | **Part** (wired into runtime; verify vs release I/O paths) |
-| `-c` traditional | — | — | — | Yes | **Part** (reserved; stricter rules incremental) |
+| `-c` traditional | — | — | — | Yes | **Part** (gawk-extension builtins refused; BSD `%0Ns`/`%0Nc` zero padding; other gawk `--traditional` restrictions not applied — `BEGINFILE`/`ENDFILE` still run) |
 | `-C` copyright | — | — | — | Yes | **Match** (prints the awkrs copyright line and exits) |
 | `-d` dump-variables | — | — | — | Yes | **Part** (dump after run; format awkrs-specific) |
 | `-D` debug | — | — | — | Yes | **Part** (listing/dump; not gawk’s debugger) |

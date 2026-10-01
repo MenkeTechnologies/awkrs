@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="awkrs — fast AWK in Rust. 98-opcode bytecode VM, Cranelift JIT, rkyv-cached compiled scripts, parallel records, 3,975 tests, 2,133 parity files vs gawk/mawk/BSD awk.">
+  <meta name="description" content="awkrs — fast AWK in Rust. 98-opcode bytecode VM, Cranelift JIT, rkyv-cached compiled scripts, parallel records, 3,994 tests, 2,133 parity files vs gawk/mawk/BSD awk.">
   <title>awkrs — Documentation</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -376,7 +376,7 @@ aw --csv 'BEGIN { OFS="," } { print $1, $3 }' in.csv</pre>
 -o, --pretty-print[FILE]   # awk-like AST listing (awkrs format)
 -O, --optimize             # accepted; JIT is on unless -s is set
 -p, --profile[FILE]        # wall-clock + per-rule summary (awkrs format)
--P, --posix                # POSIX mode (accepted; reserved on Runtime)
+-P, --posix                # POSIX mode: gawk-extension builtins refused, sorted_in ignored
 -r, --re-interval          # accepted no-op ({m,n} intervals always enabled)
 -s, --no-optimize          # disable peephole/JIT optimization
 -S, --sandbox              # sandbox mode (no file/command I/O)

@@ -66,7 +66,7 @@
 | `-b` | Byte length for `length`/`substr`/`index` |
 | `-n` | `strtonum`-style hex/octal coercion |
 | `-s`/`--no-optimize` | Disable peephole/JIT optimization (forces the plain bytecode interpreter) |
-| `-c`/`-P` | Stored on runtime; minimal effect today |
+| `-c`/`-P` | Refuse the gawk-extension builtins (fatal, exit 2); `-c` also enables the BSD awk zero padding for `%0Ns`/`%0Nc`; `-P` ignores `PROCINFO["sorted_in"]` (unsorted `for (k in a)`) |
 | `-r`/`--re-interval` | Parsed; no runtime effect (regex crate already supports `{m,n}`) |
 | `-I`/`--trace` | Parsed; no runtime effect today (accepted so gawk command lines keep working) |
 | `-N`/`--use-lc-numeric` | Locale decimal radix and `%'` grouping in `sprintf`/`printf`/`print`. Does **not** affect string→number parsing |
