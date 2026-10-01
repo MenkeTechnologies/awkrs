@@ -1059,8 +1059,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_expr(&mut self, regex_mode: bool, re_pat: bool) -> Result<Expr> {
-        let e = self.parse_assign(regex_mode, re_pat)?;
-        self.parse_expr_pipe_getline_suffix(e)
+        self.parse_assign(regex_mode, re_pat)
     }
 
     /// After a `/regex/` token in a record rule, the pattern is a plain match unless another rule
@@ -1091,22 +1090,27 @@ impl<'a> Parser<'a> {
     /// Continue parsing from a completed [`Self::parse_concat`]-level subexpression (used when a
     /// record rule pattern starts with `/re/` but continues with `&&` / `||` / comparisons / …).
     fn parse_expr_from_concat_seed(&mut self, seed: Expr) -> Result<Expr> {
-        let e = self.parse_cmp_rest(seed, false)?;
+        let e = self.parse_pipe_getline(seed)?;
+        let e = self.parse_cmp_rest(e, false)?;
         let e = self.parse_and_rest(e, false)?;
         let e = self.parse_or_rest(e, false)?;
         let e = self.parse_cond_rest(e, false)?;
-        let e = self.parse_assign_rest(e, false, false)?;
-        self.parse_expr_pipe_getline_suffix(e)
+        self.parse_assign_rest(e, false, false)
     }
 
-    fn parse_expr_pipe_getline_suffix(&mut self, e: Expr) -> Result<Expr> {
+    /// `expr | getline [var]` / `expr |& getline [var]` after a
+    /// concatenation-level operand, as in gawk's grammar (`common_exp '|'
+    /// simple_get opt_target`): the pipe binds tighter than comparison and
+    /// assignment, so `while ("cmd" | getline line > 0)` is
+    /// `("cmd" | getline line) > 0` and `r = "cmd" | getline x` assigns
+    /// getline's result to `r`. awkrs applied it to a whole expression, so the
+    /// first was a parse error and the second piped the *assignment*.
+    fn parse_pipe_getline(&mut self, e: Expr) -> Result<Expr> {
         // `expr | getline [var]` — pipe must be followed by `getline`.
-        // `expr |& getline [var]` — gawk coprocess-read variant. awkrs's
-        // current runtime treats `|&` as ordinary `|` for this expression form
-        // (the bidirectional pipe with both write-from-print and read-from-
-        // getline on the same coproc isn't implemented yet). At minimum the
-        // parser must accept the syntax — otherwise scripts that use it error
-        // before any work happens.
+        // `expr |& getline [var]` — gawk coprocess read: the same two-way
+        // process `print ... |& expr` writes to. Parsing it as an ordinary `|`
+        // started a *second* command that inherited awk's stdin, so the read
+        // returned awk's own input instead of the coprocess output.
         if !matches!(self.cur, Token::Pipe | Token::PipeCoproc) {
             return Ok(e);
         }
@@ -1114,6 +1118,7 @@ impl<'a> Parser<'a> {
         if peek.next_token(false)? != Token::Getline {
             return Ok(e);
         }
+        let coproc = self.cur == Token::PipeCoproc;
         self.bump(false)?;
         self.bump(false)?;
         let var = if let Token::Ident(name) = &self.cur.clone() {
@@ -1123,11 +1128,20 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
-        Ok(Expr::GetLine {
-            pipe_cmd: Some(Box::new(e)),
-            var,
-            redir: GetlineRedir::Primary,
-        })
+        let getline = if coproc {
+            Expr::GetLine {
+                pipe_cmd: None,
+                var,
+                redir: GetlineRedir::Coproc(Box::new(e)),
+            }
+        } else {
+            Expr::GetLine {
+                pipe_cmd: Some(Box::new(e)),
+                var,
+                redir: GetlineRedir::Primary,
+            }
+        };
+        Ok(getline)
     }
 
     fn parse_assign(&mut self, regex_mode: bool, re_pat: bool) -> Result<Expr> {
@@ -1255,6 +1269,7 @@ impl<'a> Parser<'a> {
 
     fn parse_cmp(&mut self, regex_mode: bool, re_pat: bool) -> Result<Expr> {
         let e = self.parse_concat(regex_mode, re_pat)?;
+        let e = self.parse_pipe_getline(e)?;
         if self.in_print_arg
             && matches!(
                 self.cur,

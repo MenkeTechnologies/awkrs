@@ -52,7 +52,7 @@ use crate::bytecode::CompiledProgram;
 /// Magic header bytes — fail-fast if a wrong-format file is mmap'd.
 pub const SHARD_MAGIC: u32 = 0x41574B52; // "AWKR"
 /// Bumped on incompatible rkyv schema changes.
-pub const SHARD_FORMAT_VERSION: u32 = 3;
+pub const SHARD_FORMAT_VERSION: u32 = 4;
 
 // ── rkyv archived types ──────────────────────────────────────────────────────
 /// `ShardHeader` — see fields for the structure layout.

@@ -443,17 +443,21 @@ pub(crate) fn exec_builtin_dispatch(
             Value::Num(crate::runtime::awk_process_status(st))
         }
         "close" => {
-            // gawk: `close(cmd)` closes the stream; `close(cmd, "to"|"from")`
-            // closes one direction of a coprocess. awkrs doesn't (yet) implement
-            // bidirectional coprocesses with directional close — accept the 2-arg
-            // form and treat it as a plain close so user scripts don't error.
+            // gawk: `close(cmd)` closes the stream; `close(cmd, "to")` closes
+            // only the write side of a coprocess so it sees EOF and its output
+            // can still be read. `"from"` (and either word on a stream that is
+            // not a coprocess) closes the whole stream.
             if argc != 1 && argc != 2 {
                 return Err(Error::Runtime(format!(
                     "{argc} is invalid as number of arguments for close"
                 )));
             }
             let path = args[0].as_str();
-            Value::Num(ctx.rt.close_handle(&path))
+            let half_close = argc == 2 && args[1].as_str().eq_ignore_ascii_case("to");
+            match half_close.then(|| ctx.rt.close_coproc_to(&path)).flatten() {
+                Some(status) => Value::Num(status),
+                None => Value::Num(ctx.rt.close_handle(&path)),
+            }
         }
         "fflush" => {
             if args.is_empty() {
@@ -978,10 +982,55 @@ pub(super) fn sort_keys_with_custom_cmp(
     fname: &str,
     arr_name: &str,
 ) -> Result<()> {
+    let argc = user_cmp_arity(ctx, fname, || {
+        format!("sorted_in: unknown function `{fname}`")
+    })?;
+    let elem = |ctx: &VmCtx<'_>, k: &AwkStr| {
+        if arr_name == "SYMTAB" {
+            ctx.rt.symtab_elem_get(&k.to_str_lossy())
+        } else {
+            ctx.rt.array_get(arr_name, &k.to_str_lossy())
+        }
+    };
+    sort_by_user_cmp(ctx, keys, fname, |ctx, a, b| {
+        if argc == 2 {
+            vec![Value::Str(a.clone()), Value::Str(b.clone())]
+        } else {
+            vec![
+                Value::Str(a.clone()),
+                elem(ctx, a),
+                Value::Str(b.clone()),
+                elem(ctx, b),
+            ]
+        }
+    })
+}
+
+/// gawk `asort(src, dest, "fn")` / `asorti(…, "fn")`: order `(index, value)`
+/// pairs with a user comparison function, which gawk always calls with the
+/// four arguments `(i1, v1, i2, v2)`.
+pub(super) fn sort_pairs_with_custom_cmp(
+    ctx: &mut VmCtx<'_>,
+    pairs: &mut [(AwkStr, Value)],
+    fname: &str,
+) -> Result<()> {
+    user_cmp_arity(ctx, fname, || {
+        format!("sort comparison function `{fname}' is not defined")
+    })?;
+    sort_by_user_cmp(ctx, pairs, fname, |_, (ka, va), (kb, vb)| {
+        vec![
+            Value::Str(ka.clone()),
+            va.clone(),
+            Value::Str(kb.clone()),
+            vb.clone(),
+        ]
+    })
+}
+
+/// Parameter count of the comparison function `fname`, which must take 2 or 4.
+fn user_cmp_arity(ctx: &VmCtx<'_>, fname: &str, missing: impl FnOnce() -> String) -> Result<usize> {
     let Some(func) = ctx.cp.functions.get(fname) else {
-        return Err(Error::Runtime(format!(
-            "sorted_in: unknown function `{fname}`"
-        )));
+        return Err(Error::Runtime(missing()));
     };
     let argc = func.params.len();
     if !(argc == 2 || argc == 4) {
@@ -989,27 +1038,24 @@ pub(super) fn sort_keys_with_custom_cmp(
             "sorted_in: comparison function `{fname}` must have 2 or 4 parameters (has {argc})"
         )));
     }
+    Ok(argc)
+}
 
+/// Sort `items` by calling the awk function `fname` on the arguments
+/// `args_of` builds for each comparison; its result's sign is the ordering.
+/// The first error a call raises stops the comparisons and is returned.
+fn sort_by_user_cmp<T>(
+    ctx: &mut VmCtx<'_>,
+    items: &mut [T],
+    fname: &str,
+    args_of: impl Fn(&VmCtx<'_>, &T, &T) -> Vec<Value>,
+) -> Result<()> {
     let err: RefCell<Option<Error>> = RefCell::new(None);
-    keys.sort_by(|a, b| {
+    items.sort_by(|a, b| {
         if err.borrow().is_some() {
             return Ordering::Equal;
         }
-        let vals = if argc == 2 {
-            vec![Value::Str(a.clone()), Value::Str(b.clone())]
-        } else {
-            let va = if arr_name == "SYMTAB" {
-                ctx.rt.symtab_elem_get(&a.to_str_lossy())
-            } else {
-                ctx.rt.array_get(arr_name, &a.to_str_lossy())
-            };
-            let vb = if arr_name == "SYMTAB" {
-                ctx.rt.symtab_elem_get(&b.to_str_lossy())
-            } else {
-                ctx.rt.array_get(arr_name, &b.to_str_lossy())
-            };
-            vec![Value::Str(a.clone()), va, Value::Str(b.clone()), vb]
-        };
+        let vals = args_of(ctx, a, b);
         match exec_call_user_inner(ctx, fname, vals) {
             Ok(v) => {
                 let n = v.as_number();

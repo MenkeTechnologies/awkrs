@@ -2884,3 +2884,208 @@ fn output_written_before_a_fatal_is_still_flushed() {
     assert_eq!(stdout, "A\n");
     assert_eq!(code, 3);
 }
+
+/// Two fixture files for the plain-`getline` operand tests, in their own dir.
+fn getline_operand_fixture(tag: &str) -> (std::path::PathBuf, String, String) {
+    let dir = std::env::temp_dir().join(format!("awkrs-getline-{tag}-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create fixture dir");
+    let first = dir.join("first.txt");
+    let second = dir.join("second.txt");
+    std::fs::write(&first, b"a1\na2\n").expect("write first");
+    std::fs::write(&second, b"b1\nb2\n").expect("write second");
+    let first = first.to_str().expect("utf-8 path").to_string();
+    let second = second.to_str().expect("utf-8 path").to_string();
+    (dir, first, second)
+}
+
+/// Plain `getline` reads the next record of the *input*, so at the end of one
+/// operand it moves on to the next — applying a `var=value` operand on the way
+/// and resetting `FNR` / setting `FILENAME` for the new file. gawk, mawk and
+/// one-true-awk all read all four records here; awkrs stopped at the end of
+/// the first file and the loop saw one record.
+#[test]
+fn plain_getline_continues_into_the_next_operand() {
+    let (dir, first, second) = getline_operand_fixture("advance");
+    let (code, stdout, stderr) = run_awkrs_operands(
+        r#"NR == 1 { while ((getline) > 0) print (FILENAME == ARGV[1]), FNR, NR, $0, v } END { print NR }"#,
+        [first.as_str(), "v=7", second.as_str()],
+        "",
+    );
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "1 2 2 a2 \n0 1 3 b1 7\n0 2 4 b2 7\n4\n");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A plain `getline` in `BEGIN` opens the first input operand: `FILENAME` is set
+/// (awkrs left it empty), and the record loop resumes that file after the
+/// records `getline` consumed rather than reopening it.
+#[test]
+fn getline_in_begin_sets_filename_and_the_record_loop_resumes_the_file() {
+    let (dir, first, second) = getline_operand_fixture("begin");
+    let (code, stdout, stderr) = run_awkrs_operands(
+        r#"BEGIN { getline; print (FILENAME == ARGV[1]), FNR, $0 } { print FNR, NR, $0 }"#,
+        [first.as_str(), second.as_str()],
+        "",
+    );
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "1 1 a1\n2 2 a2\n1 3 b1\n2 4 b2\n");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An operand that plain `getline` advances to but cannot open is the same
+/// fatal the record loop raises for it (gawk exits 2), not a quiet `-1`.
+#[test]
+fn plain_getline_into_a_missing_operand_is_fatal() {
+    let (dir, first, _) = getline_operand_fixture("missing");
+    let missing = dir.join("no-such-file.txt");
+    let (code, stdout, _) = run_awkrs_operands(
+        r#"{ print; while ((getline) > 0) print "g", $0 }"#,
+        [first.as_str(), missing.to_str().expect("utf-8 path")],
+        "",
+    );
+    assert_eq!(code, 2);
+    assert_eq!(stdout, "a1\ng a2\n");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `srand` returns the seed last set, not the generator state `rand` has since
+/// advanced (gawk / mawk / one-true-awk: `1`, then `5`).
+#[test]
+fn srand_returns_the_previous_seed_after_rand_calls() {
+    let (code, stdout, _) = run_awkrs_stdin(
+        "BEGIN { srand(1); rand(); rand(); print srand(5); x = rand(); print srand(5); print (x == rand()) }",
+        "",
+    );
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "1\n5\n1\n");
+}
+
+/// gawk `compl` narrows the 64-bit complement to a double's mantissa
+/// (`adjust_uint`), on every execution tier: the fusevm JIT lowering returned
+/// `!(a as i64)`, i.e. `-1` for `compl(0)`.
+#[test]
+fn compl_matches_gawk_on_every_tier() {
+    let bin = env!("CARGO_BIN_EXE_awkrs");
+    for flag in ["-s", "-O", "--"] {
+        let out = std::process::Command::new(bin)
+            .args([
+                flag,
+                "BEGIN { x = 0; print compl(x), compl(x + 1), compl(5) + 0 }",
+            ])
+            .output()
+            .expect("run awkrs");
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "9007199254740991 18014398509481982 18014398509481978\n",
+            "tier {flag}"
+        );
+    }
+}
+
+/// gawk `patsplit` puts the text before the first field in `seps[0]` and the
+/// text after the last in `seps[n]`; awkrs only filled the inner separators.
+#[test]
+fn patsplit_seps_hold_leading_and_trailing_text() {
+    let (code, stdout, _) = run_awkrs_stdin(
+        r#"BEGIN { n = patsplit("ab12cd345", a, /[0-9]+/, s); print n, s[0], s[1], "[" s[2] "]", length(s); n = patsplit("xyz", a, /[0-9]+/, s); print n, s[0], length(s) }"#,
+        "",
+    );
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "2 ab cd [] 3\n0 xyz 1\n");
+}
+
+/// gawk coprocess: `cmd |& getline` reads the output of the two-way process
+/// `print |& cmd` feeds, and `close(cmd, "to")` closes only its input so the
+/// child (here `sort`) sees EOF and its output is still readable. awkrs parsed
+/// `|& getline` as a one-way pipe, which started a second `sort` reading awk's
+/// own stdin, and `close(cmd, "to")` closed both directions.
+#[test]
+fn coprocess_getline_reads_the_two_way_pipe_after_a_half_close() {
+    let (code, stdout, stderr) = run_awkrs_stdin(
+        r#"BEGIN { cmd = "sort"; print "z" |& cmd; print "a" |& cmd; print close(cmd, "to"); while ((cmd |& getline line) > 0) print "[" line "]"; print close(cmd) }"#,
+        "stdin must not be read\n",
+    );
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "0\n[a]\n[z]\n0\n");
+}
+
+/// gawk `gensub`: `\0` in the replacement is the whole match, and a `how` that
+/// is not a g/G string is a number — `"2"` is the second match, and a value
+/// below 1 (`"x"`) warns and replaces the first rather than being fatal.
+#[test]
+fn gensub_backslash_zero_is_the_match_and_how_is_numeric() {
+    let (code, stdout, _) = run_awkrs_stdin(
+        r#"BEGIN { print gensub(/(.)(.)/, "\\0-\\2\\1", "g", "abcd"), gensub(/a/, "b", "2", "aaa"), gensub(/a/, "b", "x", "aaa") }"#,
+        "",
+    );
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "ab-bacd-dc aba baa\n");
+}
+
+/// gawk `asort` / `asorti` order by their third argument — an `@val_*` /
+/// `@ind_*` token or a `(i1, v1, i2, v2)` comparison function. awkrs ignored
+/// it and always produced the default order.
+#[test]
+fn asort_and_asorti_honor_the_how_argument() {
+    let (code, stdout, stderr) = run_awkrs_stdin(
+        r#"function byv(i1, v1, i2, v2) { return v2 - v1 }
+BEGIN { a["x"] = 3; a["y"] = 10; a["z"] = 2
+  n = asort(a, b, "@val_num_desc"); printf "%s %s %s|", b[1], b[2], b[3]
+  n = asorti(a, c, "@val_num_asc"); printf "%s %s %s|", c[1], c[2], c[3]
+  n = asort(a, d, "byv"); print d[1], d[2], d[3] }"#,
+        "",
+    );
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "10 3 2|z x y|10 3 2\n");
+}
+
+/// `PROCINFO["sorted_in"] = "@val_type_asc"` orders numbers before strings and
+/// numbers *numerically* — gawk prints `2 3 10 b`, awkrs printed `10 2 3 b`.
+#[test]
+fn sorted_in_val_type_orders_numbers_numerically() {
+    let (code, stdout, _) = run_awkrs_stdin(
+        r#"BEGIN { a["x"] = 3; a["y"] = 10; a["z"] = 2; a["w"] = "b"; PROCINFO["sorted_in"] = "@val_type_asc"; for (k in a) printf "%s ", a[k]; print "" }"#,
+        "",
+    );
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "2 3 10 b \n");
+}
+
+/// gawk `mktime` gives its fields to C `mktime`/`timegm` unchecked, so
+/// out-of-range values roll over instead of failing: February 30 is March 1,
+/// hour 25 is 01:00 the next day. Fewer than six numbers is still -1.
+#[test]
+fn mktime_rolls_out_of_range_fields_over() {
+    let (code, stdout, _) = run_awkrs_stdin(
+        r#"BEGIN { print mktime("2024 02 30 00 00 00", 1) == mktime("2024 03 01 00 00 00", 1), mktime("2024 1 1 25 0 0", 1) - mktime("2024 1 2 1 0 0", 1), mktime("2024 1 1 0 0", 1) }"#,
+        "",
+    );
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "1 0 -1\n");
+}
+
+/// `cmd | getline` binds tighter than comparison and assignment (gawk, mawk
+/// and one-true-awk agree): `while ("cmd" | getline line > 0)` was a parse
+/// error, and `r = "cmd" | getline x` piped the assignment instead of
+/// assigning getline's result.
+#[test]
+fn pipe_getline_is_an_operand_of_comparison_and_assignment() {
+    let (code, stdout, stderr) = run_awkrs_stdin(
+        r#"BEGIN { while ("echo x; echo y" | getline line > 0) n++; print n, line; r = "echo t" | getline w; print r, w }"#,
+        "",
+    );
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "2 y\n1 t\n");
+}
+
+/// gawk `split(s, a, " ", seps)` puts leading whitespace in `seps[0]` and
+/// trailing whitespace in `seps[n]`, only when present.
+#[test]
+fn split_default_separator_records_edge_whitespace_in_seps() {
+    let (code, stdout, _) = run_awkrs_stdin(
+        r#"BEGIN { n = split("\t a  b\n", a, " ", s); printf "%d %d [%s][%s][%s]|", n, length(s), s[0], s[1], s[2]; n = split("a b", a, " ", t); print n, length(t), (0 in t), (2 in t) }"#,
+        "",
+    );
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "2 3 [\t ][  ][\n]|2 1 0 0\n");
+}

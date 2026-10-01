@@ -954,7 +954,8 @@ fn logical_and_empty_string_is_falsy() {
 fn compl_bitwise_not_of_one() {
     let (c, o, _) = run_awkrs_stdin(r#"BEGIN { print compl(1) }"#, "");
     assert_eq!(c, 0);
-    assert_eq!(o, "-2\n");
+    // gawk 5.4.1: ~1 narrowed by `adjust_uint` keeps its trailing zero: 2^54-2.
+    assert_eq!(o, "18014398509481982\n");
 }
 
 #[test]

@@ -414,7 +414,8 @@ pub fn run(bin_name: &str) -> Result<()> {
     let worker_traditional = rt.traditional;
     let worker_jit_enabled = rt.jit_enabled;
 
-    attach_primary_input_before_begin_for_getline(cp.as_ref(), &files, &mut rt)?;
+    // A plain `getline` in `BEGIN` opens the first input operand lazily
+    // (`Runtime::read_line_primary` → [`open_next_primary_operand`]).
     // `PROCINFO` / `FUNCTAB` must exist during `BEGIN` (gawk scripts branch on pid, platform, …).
     rt.refresh_special_arrays(cp.as_ref(), bin_name);
     flush_if_err!(rt, vm_run_begin(cp.as_ref(), &mut rt))?;
@@ -486,7 +487,9 @@ pub fn run(bin_name: &str) -> Result<()> {
             .any(|operand| split_assignment_operand(&operand).is_none());
 
         if !has_input_file {
-            for i in 1..argv_operand_limit(&rt) {
+            // From the cursor: a `getline` in `BEGIN` already applied the ones
+            // it walked past.
+            for i in rt.argv_next..argv_operand_limit(&rt) {
                 let Some(operand) = current_argv_operand(&rt, i) else {
                     continue;
                 };
@@ -494,6 +497,7 @@ pub fn run(bin_name: &str) -> Result<()> {
                     apply_one_assignment(&mut rt, name, value);
                 }
             }
+            rt.argv_next = argv_operand_limit(&rt);
             rt.vars.insert("ARGIND".into(), Value::Num(0.0));
             rt.filename = "-".into();
             flush_if_err!(rt, vm_run_beginfile(cp.as_ref(), &mut rt))?;
@@ -527,10 +531,20 @@ pub fn run(bin_name: &str) -> Result<()> {
             // processed, and all three references honour the edit for operands
             // not yet reached. The cursor advances before the body so the
             // `continue`s below cannot spin.
-            let mut next_idx = 1usize;
-            while next_idx < argv_operand_limit(&rt) {
-                let arg_idx = next_idx;
-                next_idx += 1;
+            // A plain `getline` in `BEGIN` may already have opened an operand
+            // (and moved the cursor past it): finish that file first, without
+            // resetting `FNR` — its first records are already consumed.
+            if rt.input_reader.is_some() {
+                let p = (rt.filename != "-").then(|| PathBuf::from(&rt.filename));
+                nr_global +=
+                    process_file(p.as_deref(), cp.as_ref(), &mut range_state, &mut rt)? as f64;
+                flush_if_err!(rt, vm_run_endfile(cp.as_ref(), &mut rt))?;
+            }
+            // The cursor lives in the runtime because plain `getline` advances
+            // it too ([`open_next_primary_operand`]).
+            while rt.argv_next < argv_operand_limit(&rt) && !rt.exit_pending {
+                let arg_idx = rt.argv_next;
+                rt.argv_next += 1;
                 let Some(operand) = current_argv_operand(&rt, arg_idx) else {
                     continue;
                 };
@@ -847,7 +861,7 @@ fn process_stdin_parallel(
     let shared_globals = Arc::new(rt.vars.clone());
     let shared_slots = Arc::new(rt.slots.clone());
     let fname = rt.filename.clone();
-    let seed_base = rt.rand_seed;
+    let seed_base = rt.rand_state;
     let numeric_dec = rt.numeric_decimal;
     let csv_mode = rt.csv_mode;
     let stdin_nr_offset = rt.nr;
@@ -1045,7 +1059,7 @@ fn process_file_parallel(
     let shared_globals = Arc::new(rt.vars.clone());
     let shared_slots = Arc::new(rt.slots.clone());
     let fname = rt.filename.clone();
-    let seed_base = rt.rand_seed;
+    let seed_base = rt.rand_state;
     let numeric_dec = rt.numeric_decimal;
     let csv_mode = rt.csv_mode;
 
@@ -1117,54 +1131,75 @@ fn uses_primary_getline(cp: &CompiledProgram) -> bool {
     false
 }
 
-/// Open `stdin` (no operands) or the first input file and attach [`Runtime::input_reader`] before
-/// `BEGIN` when the program uses primary `getline`, so `BEGIN { getline x }` reads the same stream as
-/// the record loop (POSIX).
-fn attach_primary_input_before_begin_for_getline(
-    cp: &CompiledProgram,
-    files: &[PathBuf],
-    rt: &mut Runtime,
-) -> Result<()> {
-    if !uses_primary_getline(cp) {
-        return Ok(());
+/// Attach standard input as the primary stream (no input-file operand, or the
+/// operand `-`).
+pub(crate) fn attach_stdin_primary(rt: &mut Runtime) {
+    rt.clear_errno();
+    let reader = Box::new(std::io::stdin()) as Box<dyn Read + Send>;
+    let br = Arc::new(std::sync::Mutex::new(BufReader::new(reader)));
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        rt.attach_input_reader_with_poll_fd(br, Some(std::io::stdin().as_raw_fd()));
     }
-    if files.is_empty() {
-        rt.clear_errno();
-        let reader = Box::new(std::io::stdin()) as Box<dyn Read + Send>;
-        let br = Arc::new(std::sync::Mutex::new(BufReader::new(reader)));
-        #[cfg(unix)]
-        {
-            use std::os::unix::io::AsRawFd;
-            rt.attach_input_reader_with_poll_fd(
-                Arc::clone(&br),
-                Some(std::io::stdin().as_raw_fd()),
-            );
-        }
-        #[cfg(not(unix))]
-        rt.attach_input_reader(Arc::clone(&br));
-        return Ok(());
+    #[cfg(not(unix))]
+    rt.attach_input_reader(br);
+    if rt.filename.is_empty() {
+        rt.filename = "-".into();
     }
-    match File::open(&files[0]) {
-        Ok(f) => {
-            rt.clear_errno();
-            #[cfg(unix)]
-            let poll_fd = {
-                use std::os::unix::io::AsRawFd;
-                Some(f.as_raw_fd())
-            };
-            let reader = Box::new(f) as Box<dyn Read + Send>;
-            let br = Arc::new(std::sync::Mutex::new(BufReader::new(reader)));
-            #[cfg(unix)]
-            rt.attach_input_reader_with_poll_fd(Arc::clone(&br), poll_fd);
-            #[cfg(not(unix))]
-            rt.attach_input_reader(Arc::clone(&br));
-            Ok(())
+}
+
+/// Walk `ARGV` from [`Runtime::argv_next`] to the next input-file operand, apply
+/// the `var=value` operands passed on the way, and attach that file as the
+/// primary stream with `FILENAME` / `ARGIND` / `FNR` set for it. `false` when no
+/// file operand is left.
+///
+/// This is the operand step plain `getline` takes — at end of file and, from
+/// `BEGIN`, for the first record — sharing the cursor with the record loop so a
+/// file `getline` has opened or finished is not read again. (gawk also runs
+/// `ENDFILE` / `BEGINFILE` when `getline` crosses a file; this does not.)
+pub(crate) fn open_next_primary_operand(rt: &mut Runtime) -> Result<bool> {
+    while rt.argv_next < argv_operand_limit(rt) {
+        let arg_idx = rt.argv_next;
+        rt.argv_next += 1;
+        let Some(operand) = current_argv_operand(rt, arg_idx) else {
+            continue;
+        };
+        if let Some((name, value)) = split_assignment_operand(&operand) {
+            apply_one_assignment(rt, name, value);
+            continue;
         }
-        Err(e) => {
-            rt.set_errno_io(&e);
-            Err(Error::InputFile(files[0].clone(), e))
+        rt.vars.insert("ARGIND".into(), Value::Num(arg_idx as f64));
+        rt.fnr = 0.0;
+        if operand == "-" {
+            rt.filename = operand;
+            attach_stdin_primary(rt);
+            return Ok(true);
+        }
+        match File::open(&operand) {
+            Ok(f) => {
+                rt.clear_errno();
+                #[cfg(unix)]
+                let poll_fd = {
+                    use std::os::unix::io::AsRawFd;
+                    Some(f.as_raw_fd())
+                };
+                let reader = Box::new(f) as Box<dyn Read + Send>;
+                let br = Arc::new(std::sync::Mutex::new(BufReader::new(reader)));
+                #[cfg(unix)]
+                rt.attach_input_reader_with_poll_fd(br, poll_fd);
+                #[cfg(not(unix))]
+                rt.attach_input_reader(br);
+                rt.filename = operand;
+                return Ok(true);
+            }
+            Err(e) => {
+                rt.set_errno_io(&e);
+                return Err(Error::InputFile(PathBuf::from(operand), e));
+            }
         }
     }
+    Ok(false)
 }
 
 /// Run one input source's record loop, flushing whatever the program already
@@ -1207,7 +1242,7 @@ fn process_file_records(
     }
 
     // Streaming path: stdin or programs using primary getline.
-    let br = if let Some(existing) = rt.input_reader.clone() {
+    let mut br = if let Some(existing) = rt.input_reader.clone() {
         existing
     } else if let Some(p) = path {
         match File::open(p) {
@@ -1251,6 +1286,13 @@ fn process_file_records(
     let mut count = 0usize;
     let mut rt_sep = Vec::new();
     loop {
+        // A plain `getline` in a rule may have moved the primary stream on to
+        // the next operand; keep reading from wherever it is now.
+        match rt.input_reader.as_ref() {
+            Some(cur) if !Arc::ptr_eq(cur, &br) => br = Arc::clone(cur),
+            Some(_) => {}
+            None => break,
+        }
         #[cfg(unix)]
         rt.poll_primary_read_timeout_if_needed()?;
         let rs = rt.rs_string();

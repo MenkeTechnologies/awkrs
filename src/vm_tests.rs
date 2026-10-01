@@ -1494,11 +1494,13 @@ fn strftime_day_of_year() {
 // ── mktime ───────────────────────────────────────────────────────────────
 
 #[test]
-fn mktime_returns_minus_one_on_invalid_month() {
-    let out = run_begin_capture(r#"BEGIN { print mktime("2024 13 01 00 00 00") }"#);
-    // gawk returns -1 for invalid date components; chrono's strict
-    // construction does the same.
-    assert_eq!(out, "-1\n");
+fn mktime_normalizes_month_thirteen_into_the_next_year() {
+    // gawk 5.4.1 passes the fields to C `timegm` un-validated, so month 13 of
+    // 2024 is January 2025 (1735689600), not -1.
+    let out = run_begin_capture(
+        r#"BEGIN { print mktime("2024 13 01 00 00 00", 1), (mktime("2024 13 01 00 00 00", 1) == mktime("2025 01 01 00 00 00", 1)) }"#,
+    );
+    assert_eq!(out, "1735689600 1\n");
 }
 
 #[test]

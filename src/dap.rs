@@ -897,9 +897,8 @@ fn launch_and_run(
     rt.debugger = Some(dbg);
 
     rt.refresh_special_arrays(&cp, "awkrs");
-    if let Err(e) = crate::attach_primary_input_before_begin_for_getline(&cp, &files, &mut rt) {
-        return finish_with_error(shared, &mut rt, e);
-    }
+    // A plain `getline` in `BEGIN` opens the first operand lazily
+    // (`Runtime::read_line_primary`).
 
     // BEGIN.
     if let Err(e) = crate::vm::vm_run_begin(&cp, &mut rt) {

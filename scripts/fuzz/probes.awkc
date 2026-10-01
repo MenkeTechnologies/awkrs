@@ -1196,3 +1196,148 @@ BEGIN { print "A"; print "B" > "/dev/stdout"; printf "%s\n", "P" > "/dev/stdout"
 #--- only gawk
 #--- prog
 BEGIN { print "A" > "/dev/stdout"; fflush("/dev/stdout"); print "B"; close("/dev/stdout"); print "C" }
+
+#=== plain_getline_advances_to_the_next_operand
+# POSIX `getline` reads the next record of the input, not of the current file:
+# at end of file it moves on to the next operand, applying any `var=value`
+# operand it passes and setting FILENAME / FNR for the new file. awkrs stopped
+# at the first file's end, so this loop read 2 records instead of 5.
+#--- prog
+BEGIN { ARGV[ARGC++] = "input.txt"; ARGV[ARGC++] = "v=7"; ARGV[ARGC++] = "input.txt" }
+NR == 1 { while ((getline) > 0) print FILENAME, FNR, NR, $0, v }
+END { print NR, FNR }
+
+#=== getline_in_begin_opens_the_first_operand
+# A plain `getline` in BEGIN reads from the first input operand (honoring ARGV
+# edits made earlier in BEGIN) and sets FILENAME; the record loop then resumes
+# that file where getline left it. awkrs left FILENAME empty here.
+#--- prog
+BEGIN { ARGV[ARGC++] = "input.txt"; getline; print FILENAME, FNR, NR, $0; getline x; print x, FNR, NR }
+{ print "main", FNR, NR, $0 }
+
+#=== srand_returns_the_previous_seed_not_the_rng_state
+# srand returns the seed last set, however many rand() calls happened since.
+# awkrs kept one variable for both and returned the advanced LCG state.
+#--- prog
+BEGIN { srand(1); rand(); rand(); print srand(5); x = rand(); print srand(5); print (x == rand()) }
+
+#=== compl_is_narrowed_to_a_double_mantissa
+# gawk complements the 64-bit integer and then narrows it with adjust_uint so
+# the low set bits stay exact in a double: compl(0) is 2^53-1, not -1. A gawk
+# extension, so gawk is the only reference.
+#--- only gawk
+#--- prog
+BEGIN { print compl(0), compl(1), compl(5), compl(2^53), compl(0) + 1; print and(compl(0), 255), and(compl(255), 255) }
+
+#=== patsplit_seps_include_leading_and_trailing_text
+# gawk fills seps[0] with the text before the first field and seps[n] with the
+# text after the last; with no field at all a non-empty string is seps[0].
+# awkrs filled only the separators between fields. gawk extension.
+#--- only gawk
+#--- prog
+BEGIN {
+  n = patsplit("ab12cd345", a, /[0-9]+/, s); print n, "[" s[0] "]", "[" s[1] "]", "[" s[2] "]", length(s)
+  n = patsplit("12x", a, /[0-9]+/, s); print n, "[" s[0] "]", "[" s[1] "]", length(s)
+  n = patsplit("xyz", a, /[0-9]+/, s); print n, "[" s[0] "]", length(s)
+  n = patsplit("", a, /[0-9]+/, s); print n, length(s)
+}
+
+#=== coprocess_read_and_half_close
+# `cmd |& getline` reads from the same two-way process `print |& cmd` writes
+# to, and `close(cmd, "to")` sends it EOF while its output stays readable.
+# awkrs parsed `|& getline` as a one-way `|`, starting a second `sort` that
+# read awk's own stdin, and treated the half-close as a full close.
+# `|&` is a gawk extension.
+#--- only gawk
+#--- prog
+BEGIN {
+  cmd = "sort"
+  print "z" |& cmd; print "a" |& cmd
+  print close(cmd, "to")
+  while ((cmd |& getline line) > 0) print "[" line "]"
+  print close(cmd), close("never-opened", "to")
+}
+#--- in
+stdin must not be read
+
+#=== gensub_backslash_zero_and_non_g_how
+# In a gensub replacement `\0` is the whole match, like `&`; awkrs emitted a
+# literal `0`. A `how` that is not a string starting with g/G is a number, and
+# one below 1 (`"x"`, `""`, `0`) warns and replaces the first match — awkrs made
+# a non-g string fatal. gawk extension.
+#--- only gawk
+#--- prog
+BEGIN {
+  print gensub(/(.)(.)/, "\\0-\\2\\1", "g", "abcd")
+  print gensub(/a/, "b", "2", "aaa"), gensub(/a/, "b", 2.7, "aaa"), gensub(/a/, "b", "G", "aaa")
+  print gensub(/a/, "b", "x", "aaa")
+}
+
+#=== asort_and_asorti_honor_the_how_argument
+# The third argument orders the result: an @ind_* / @val_* token or the name
+# of a comparison function taking (i1, v1, i2, v2). awkrs ignored it and always
+# used the default order. gawk extension.
+#--- only gawk
+#--- prog
+function byv(i1, v1, i2, v2) { return v2 - v1 }
+BEGIN {
+  a["x"] = 3; a["y"] = 10; a["z"] = 2; a["w"] = "b"
+  n = asort(a, b, "@val_num_desc"); for (i = 1; i <= n; i++) printf "%s ", b[i]; print ""
+  n = asort(a, b, "@val_str_asc"); for (i = 1; i <= n; i++) printf "%s ", b[i]; print ""
+  n = asorti(a, b, "@val_num_asc"); for (i = 1; i <= n; i++) printf "%s ", b[i]; print ""
+  n = asorti(a, b, "@ind_str_desc"); for (i = 1; i <= n; i++) printf "%s ", b[i]; print ""
+  n = asort(a, b, "byv"); for (i = 1; i <= n; i++) printf "%s ", b[i]; print ""
+  n = asort(a, b, "@val_type_desc"); for (i = 1; i <= n; i++) printf "%s ", b[i]; print ""
+}
+
+#=== sorted_in_val_type_compares_numbers_numerically
+# `@val_type_*` groups values by type, then orders numbers as numbers: `2 3 10`.
+# awkrs compared the numbers as strings and printed `10 2 3`. gawk extension.
+#--- only gawk
+#--- prog
+BEGIN {
+  a["x"] = 3; a["y"] = 10; a["z"] = 2; a["w"] = "b"; a["v"] = "a"
+  PROCINFO["sorted_in"] = "@val_type_asc"; for (k in a) printf "%s ", a[k]; print ""
+  PROCINFO["sorted_in"] = "@val_type_desc"; for (k in a) printf "%s ", a[k]; print ""
+}
+
+#=== mktime_normalizes_fields_like_c_mktime
+# gawk passes the datespec fields to C mktime/timegm without validating them,
+# so out-of-range values roll over (February 30 is March 1, hour 25 the next
+# day) and a seventh field is the DST flag. awkrs returned -1 for any field out
+# of its calendar range. UTC keeps the probe independent of the local zone.
+#--- only gawk
+#--- prog
+BEGIN {
+  print mktime("2024 02 30 00 00 00", 1), mktime("2024 13 1 0 0 0", 1), mktime("2024 1 0 0 0 0", 1)
+  print mktime("2024 1 1 25 -5 70", 1), mktime("  +2024 1 1 0 0 0x", 1), mktime("2024 1 1 0 0", 1)
+}
+
+#=== pipe_getline_binds_tighter_than_comparison_and_assignment
+# `cmd | getline` is an operand at concatenation level, so the common idiom
+# `while ("cmd" | getline line > 0)` compares getline's result with 0, and
+# `r = "cmd" | getline x` assigns that result to r. awkrs attached the pipe to
+# the whole expression: the first was a parse error, the second piped the
+# assignment and printed the command text.
+#--- prog
+BEGIN {
+  while ("echo x; echo y" | getline line > 0) n++
+  print n, line
+  r = "echo t" | getline w
+  print r, w
+  while ("echo a" | getline > 0) m++
+  print m, $0
+}
+
+#=== split_default_whitespace_seps_edges
+# With the default " " separator, split's seps array also records the leading
+# whitespace in seps[0] and the trailing whitespace in seps[n] (each only when
+# present); all-whitespace input yields 0 fields and seps[0]. gawk extension.
+#--- only gawk
+#--- prog
+BEGIN {
+  n = split("\t a  b\n", a, " ", s); printf "%d %d [%s][%s][%s]\n", n, length(s), s[0], s[1], s[2]
+  n = split("a b", a, " ", s); print n, length(s), (0 in s), (2 in s)
+  n = split("   ", a, " ", s); print n, length(s), "[" s[0] "]"
+  n = split("a1b22c", a, /[0-9]+/, s); print n, length(s), (0 in s)
+}

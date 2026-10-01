@@ -3,7 +3,7 @@
 use crate::awkstr::AwkStr;
 use crate::error::{Error, Result};
 use crate::runtime::{Runtime, Value};
-use chrono::{Local, LocalResult, NaiveDate, TimeZone, Utc};
+use chrono::{Local, TimeZone, Utc};
 use regex::bytes::Regex as BytesRegex;
 use std::cmp::Ordering;
 
@@ -353,9 +353,9 @@ fn expand_repl_with_caps(repl: &[u8], caps: &regex::bytes::Captures<'_>) -> AwkS
                     out.push_byte(b'\\');
                     i += 2;
                 }
-                // \1 .. \9 — capture group reference. (\0 is undefined; gawk
-                // treats it as a literal "0".)
-                Some(d) if d.is_ascii_digit() && *d != b'0' => {
+                // \1 .. \9 — capture group reference; \0 is the whole match,
+                // like `&` (gawk manual, "gensub"; gawk 5.4.1 verified).
+                Some(d) if d.is_ascii_digit() => {
                     let n = (d - b'0') as usize;
                     if let Some(g) = caps.get(n) {
                         out.push_bytes(g.as_bytes());
@@ -399,39 +399,26 @@ pub fn awk_gensub(
     rt.ensure_regex_bytes(ere).map_err(Error::Runtime)?;
     let re = rt.regex_ref_bytes(ere).clone();
     let s_ref = s.as_bytes();
-    match how {
-        Value::Str(h) | Value::StrLit(h) => {
-            let h = h.to_str_lossy();
-            let h = h.trim();
-            if h.is_empty() {
-                return Err(Error::Runtime(
-                    "gensub: third argument cannot be empty".into(),
-                ));
-            }
-            if h.starts_with('g') || h.starts_with('G') {
-                // gensub uses gawk's backref-aware replacement (`\1`..`\9` +
-                // `&` for whole match) — distinct from gsub/sub which don't
-                // support backrefs.
-                Ok(replace_all_gensub(&re, s_ref, repl))
-            } else {
-                Err(Error::Runtime(format!(
-                    "gensub: string third argument must begin with `g` or `G`, got `{h}`"
-                )))
-            }
-        }
-        Value::Num(n) => {
-            // Match gawk: 0 (and any value < 1) means "replace the first match".
-            // (gawk also emits a warning here; awkrs deliberately stays silent — gawk's
-            // warning message embeds the source file/line, which complicates parity diffs
-            // and isn't load-bearing for the behavior. Add an explicit emitter later if
-            // a `--lint` flag wants strict parity.)
-            let which = (*n as i64).max(1) as usize;
-            Ok(replace_nth_gensub(&re, s_ref, repl, which))
-        }
-        _ => Err(Error::Runtime(
-            "gensub: third argument must be string or number".into(),
-        )),
+    // gawk `do_sub`: a *string* `how` whose first character is `g`/`G` means
+    // every match (gensub's backref-aware replacement, `\0`..`\9` and `&`).
+    // Anything else is taken as a number — `"2"` is the second match — and a
+    // value below 1 (`0`, `""`, `"x"`, `" g"`) warns and replaces the first.
+    let global = matches!(how, Value::Str(h) | Value::StrLit(h)
+        if matches!(h.as_bytes().first(), Some(b'g' | b'G')));
+    if global {
+        return Ok(replace_all_gensub(&re, s_ref, repl));
     }
+    let n = how.as_number();
+    let which = if n >= 1.0 {
+        n as usize
+    } else {
+        eprintln!(
+            "awkrs: warning: gensub: third argument `{}' treated as 1",
+            rt.value_to_str_convfmt(how)
+        );
+        1
+    };
+    Ok(replace_nth_gensub(&re, s_ref, repl, which))
 }
 
 /// gawk-compatible replacement-string expansion for sub/gsub.
@@ -492,7 +479,8 @@ fn expand_repl(repl: &[u8], matched: &[u8]) -> AwkStr {
 
 /// `patsplit(string, array [, fieldpat [, seps ]])` — split `string` into `array` using successive
 /// matches of `fieldpat`, or `FPAT` when omitted. Empty `FPAT` uses `[^[:space:]]+`.
-/// When `seps` is set, `seps[i]` holds the text between `array[i]` and `array[i+1]` (1-based keys).
+/// When `seps` is set, `seps[i]` holds the text between `array[i]` and `array[i+1]`;
+/// `seps[0]` and `seps[n]` hold the leading and trailing text, as in gawk.
 pub fn patsplit(
     rt: &mut Runtime,
     s: &str,
@@ -531,11 +519,22 @@ pub fn patsplit(
 
     if let Some(sep_arr) = seps_name {
         rt.array_delete(sep_arr, None);
-        for i in 1..n {
-            let prev = &matches[i - 1];
-            let curr = &matches[i];
-            let sep = &s[prev.end()..curr.start()];
+        // gawk: `seps[0]` is the text before the first field and `seps[n]` the
+        // text after the last one (both present, possibly empty); with no
+        // field at all, a non-empty string lands whole in `seps[0]`.
+        let set = |rt: &mut Runtime, i: usize, sep: &str| {
             rt.array_set(sep_arr, format!("{i}"), Value::Str(sep.to_string().into()));
+        };
+        match (matches.first(), matches.last()) {
+            (Some(first), Some(last)) => {
+                set(rt, 0, &s[..first.start()]);
+                for i in 1..n {
+                    set(rt, i, &s[matches[i - 1].end()..matches[i].start()]);
+                }
+                set(rt, n, &s[last.end()..]);
+            }
+            _ if !s.is_empty() => set(rt, 0, s),
+            _ => {}
         }
     }
 
@@ -606,56 +605,72 @@ pub fn awk_mktime(s: &str) -> f64 {
     awk_mktime_with_utc(s, false)
 }
 
-/// gawk-style `mktime(datespec [, utc])` — when `utc` is `true`, interpret the
-/// datespec in UTC; otherwise in the local timezone. Returns `-1` for unparseable
-/// or out-of-range datespecs.
+/// gawk `mktime(datespec [, utc])`, ported from gawk's `do_mktime`: scan
+/// `"YYYY MM DD HH MM SS [DST]"` the way its `sscanf("%ld %d %d %d %d %d %d")`
+/// does, then hand the fields to the C library's `mktime` (or `timegm` for
+/// `utc`) un-validated. That is what normalizes out-of-range fields — February
+/// 30 is March 1, hour 25 is the next day — and what honors the optional DST
+/// flag (default -1, "let the library decide"). Fewer than six numbers is -1.
 pub fn awk_mktime_with_utc(s: &str, utc: bool) -> f64 {
-    let parts: Vec<&str> = s.split_whitespace().collect();
-    if parts.len() < 6 {
+    let fields = scan_mktime_fields(s);
+    if fields.len() < 6 {
         return -1.0;
     }
-    let y: i32 = match parts[0].parse() {
-        Ok(v) => v,
-        Err(_) => return -1.0,
+    let (Ok(year), Ok(month)) = (
+        i32::try_from(fields[0] - 1900),
+        i32::try_from(fields[1] - 1),
+    ) else {
+        return -1.0;
     };
-    let mo: u32 = match parts[1].parse() {
-        Ok(v) => v,
-        Err(_) => return -1.0,
-    };
-    let d: u32 = match parts[2].parse() {
-        Ok(v) => v,
-        Err(_) => return -1.0,
-    };
-    let h: u32 = match parts[3].parse() {
-        Ok(v) => v,
-        Err(_) => return -1.0,
-    };
-    let mi: u32 = match parts[4].parse() {
-        Ok(v) => v,
-        Err(_) => return -1.0,
-    };
-    let se: u32 = match parts[5].parse() {
-        Ok(v) => v,
-        Err(_) => return -1.0,
-    };
-    let naive = match NaiveDate::from_ymd_opt(y, mo, d) {
-        Some(date) => match date.and_hms_opt(h, mi, se) {
-            Some(n) => n,
-            None => return -1.0,
-        },
-        None => return -1.0,
-    };
-    if utc {
-        match Utc.from_local_datetime(&naive) {
-            LocalResult::Single(dt) => dt.timestamp() as f64,
-            LocalResult::Ambiguous(_, _) | LocalResult::None => -1.0,
+    let field = |i: usize| i32::try_from(fields[i]).unwrap_or(i32::MAX);
+    // SAFETY: `tm` is plain old data; the zeroed value is a valid `struct tm`,
+    // and `mktime` / `timegm` only read and normalize the struct passed in.
+    let stamp = unsafe {
+        let mut tm: libc::tm = std::mem::zeroed();
+        tm.tm_year = year;
+        tm.tm_mon = month;
+        tm.tm_mday = field(2);
+        tm.tm_hour = field(3);
+        tm.tm_min = field(4);
+        tm.tm_sec = field(5);
+        tm.tm_isdst = fields.get(6).map_or(-1, |_| field(6));
+        if utc {
+            libc::timegm(&mut tm)
+        } else {
+            libc::mktime(&mut tm)
         }
-    } else {
-        match Local.from_local_datetime(&naive) {
-            LocalResult::Single(dt) => dt.timestamp() as f64,
-            LocalResult::Ambiguous(_, _) | LocalResult::None => -1.0,
+    };
+    stamp as f64
+}
+
+/// The leading integers of a `mktime` datespec, as `sscanf("%ld %d …")` reads
+/// them: whitespace, an optional sign, then digits; the scan stops at the first
+/// field that is not a number, and takes at most seven.
+fn scan_mktime_fields(s: &str) -> Vec<i64> {
+    let b = s.as_bytes();
+    let mut i = 0;
+    let mut out = Vec::with_capacity(7);
+    while out.len() < 7 {
+        while i < b.len() && b[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        let start = i;
+        if i < b.len() && (b[i] == b'+' || b[i] == b'-') {
+            i += 1;
+        }
+        let digits = i;
+        while i < b.len() && b[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i == digits {
+            break;
+        }
+        match s[start..i].parse::<i64>() {
+            Ok(n) => out.push(n),
+            Err(_) => break,
         }
     }
+    out
 }
 
 #[inline]
@@ -687,9 +702,23 @@ pub fn awk_rshift(a: f64, b: f64) -> f64 {
     let n = (num_to_u64(b) & 0x3f) as u32;
     (x >> n) as i64 as f64
 }
-/// `awk_compl` — see implementation for the contract.
+/// gawk `compl(a)`: complement the 64-bit integer, then narrow it with
+/// [`adjust_uint`] so the result is exact in a double — `compl(0)` is
+/// `2^53 - 1`, not `-1`.
 pub fn awk_compl(a: f64) -> f64 {
-    (!num_to_u64(a)) as i64 as f64
+    adjust_uint(!num_to_u64(a)) as f64
+}
+
+/// Port of gawk `adjust_uint` (floatcomp.c): a `uintmax_t` wider than a
+/// double's 53-bit fraction keeps its low-order set bits exact by dropping the
+/// leading bits that cannot be represented. Trailing zero bits (at most 11, the
+/// width difference) are kept as a shift so power-of-two-scaled values survive.
+fn adjust_uint(n: u64) -> u64 {
+    const FRACTION_BITS: u32 = f64::MANTISSA_DIGITS;
+    let sentinel = 1u64 << (u64::BITS - FRACTION_BITS);
+    let shift = (n | sentinel).trailing_zeros();
+    let mask = (1u64 << FRACTION_BITS) - 1;
+    ((n >> shift) & mask) << shift
 }
 
 /// gawk `strtonum` — hex `0x…`, octal `0…`, else decimal float parse.
@@ -1369,17 +1398,19 @@ mod tests {
     }
 
     #[test]
-    fn awk_gensub_empty_how_string_errors() {
+    fn awk_gensub_non_g_how_string_is_treated_as_one() {
+        // gawk 5.4.1: `gensub(/a/, "b", "  ", "xa")` warns "third argument `  '
+        // treated as 1" and replaces the first match — it is not a fatal.
         let mut rt = Runtime::new();
-        let e = awk_gensub(
+        let s = awk_gensub(
             &mut rt,
             b"a",
             b"b",
             &Value::Str("  ".into()),
-            Some("x".into()),
+            Some("xa".into()),
         )
-        .unwrap_err();
-        assert!(e.to_string().contains("gensub"), "{e}");
+        .unwrap();
+        assert_eq!(s, "xb");
     }
 
     // ── Bitwise builtins: pin gawk bitop semantics ───────────────────────────
@@ -1425,10 +1456,12 @@ mod tests {
 
     #[test]
     fn awk_compl_flips_all_bits() {
-        // !0 as u64 = u64::MAX, but as i64 = -1, displayed as f64 = -1.0
-        assert_eq!(super::awk_compl(0.0), -1.0);
-        // !1 = u64::MAX - 1, as i64 = -2
-        assert_eq!(super::awk_compl(1.0), -2.0);
+        // gawk 5.4.1: compl(0) = 2^53-1, compl(1) = 2^54-2, compl(5) = 2^54-6
+        // (`adjust_uint` keeps the low set bits exact in a double).
+        assert_eq!(super::awk_compl(0.0), 9007199254740991.0);
+        assert_eq!(super::awk_compl(1.0), 18014398509481982.0);
+        assert_eq!(super::awk_compl(5.0), 18014398509481978.0);
+        assert_eq!(super::awk_compl(9007199254740992.0), 9007199254740991.0);
     }
 
     #[test]
@@ -1545,9 +1578,14 @@ mod tests {
     }
 
     #[test]
-    fn mktime_invalid_format_returns_minus_one() {
-        assert_eq!(awk_mktime("2023 13 01 00 00 00"), -1.0); // Month 13 is invalid
-        assert_eq!(awk_mktime("2023 01 32 00 00 00"), -1.0); // Day 32 is invalid
+    fn mktime_normalizes_out_of_range_fields_like_c_mktime() {
+        // gawk hands the fields to C `mktime`/`timegm`, which normalizes them:
+        // month 13 of 2023 is January 2024, January 32 is February 1.
+        let utc = |s| super::awk_mktime_with_utc(s, true);
+        assert_eq!(utc("2023 13 01 00 00 00"), utc("2024 01 01 00 00 00"));
+        assert_eq!(utc("2023 01 32 00 00 00"), utc("2023 02 01 00 00 00"));
+        assert_eq!(utc("2024 13 01 00 00 00"), 1735689600.0);
+        assert_eq!(utc("2023 01 01 00 00"), -1.0); // fewer than six numbers
     }
 
     #[test]
@@ -1643,7 +1681,7 @@ mod tests {
         assert_eq!(super::awk_xor(255.0, 15.0), 240.0);
         assert_eq!(super::awk_lshift(1.0, 4.0), 16.0);
         assert_eq!(super::awk_rshift(16.0, 4.0), 1.0);
-        assert_eq!(super::awk_compl(0.0), -1.0);
+        assert_eq!(super::awk_compl(0.0), 9007199254740991.0);
     }
 
     #[test]
@@ -1850,7 +1888,7 @@ mod tests {
     #[test]
     fn gensub_full_match_backref_v10() {
         let mut rt = Runtime::new();
-        // awkrs (\0 is undefined; gawk treats it as a literal "0".)
+        // gawk 5.4.1: `\0` is the whole match (`gensub(/abc/, "x\\0y", "g", "abc")`).
         let s = super::awk_gensub(
             &mut rt,
             b"abc",
@@ -1859,7 +1897,7 @@ mod tests {
             Some("abc".into()),
         )
         .unwrap();
-        assert_eq!(s, "x0y");
+        assert_eq!(s, "xabcy");
     }
 
     #[test]

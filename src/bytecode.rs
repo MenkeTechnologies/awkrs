@@ -303,15 +303,19 @@ pub enum Op {
     Dup,
 
     // ── gawk array sort ───────────────────────────────────────────────────
-    /// `asort(src [, dest])` — sort by value; string pool indices for array names.
+    /// `asort(src [, dest [, how]])` — sort by value; string pool indices for
+    /// array names. With `how`, the ordering (an `@ind_*` / `@val_*` token or
+    /// a comparison function name) is popped from the stack.
     Asort {
         src: u32,
         dest: Option<u32>,
+        how: bool,
     },
-    /// `asorti(src [, dest])` — sort indices lexicographically.
+    /// `asorti(src [, dest [, how]])` — sort indices; `how` as for [`Op::Asort`].
     Asorti {
         src: u32,
         dest: Option<u32>,
+        how: bool,
     },
 
     // ── Pattern helpers ─────────────────────────────────────────────────

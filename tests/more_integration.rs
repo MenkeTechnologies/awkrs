@@ -1228,7 +1228,8 @@ fn mktime_invalid_is_minus_one() {
 fn compl_bitwise_not_zero() {
     let (c, o, _) = run_awkrs_stdin("BEGIN { print compl(0) }", "");
     assert_eq!(c, 0);
-    assert_eq!(o.trim(), "-1");
+    // gawk 5.4.1 narrows the complement to 53 bits (`adjust_uint`): 2^53-1.
+    assert_eq!(o.trim(), "9007199254740991");
 }
 
 #[test]

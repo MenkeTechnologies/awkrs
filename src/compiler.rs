@@ -1315,7 +1315,8 @@ impl Compiler {
         } else {
             None
         };
-        ops.push(Op::Asort { src, dest });
+        let how = self.compile_sort_how(args, ops);
+        ops.push(Op::Asort { src, dest, how });
     }
 
     fn compile_asorti(&mut self, args: &[Expr], ops: &mut Vec<Op>) {
@@ -1331,7 +1332,20 @@ impl Compiler {
         } else {
             None
         };
-        ops.push(Op::Asorti { src, dest });
+        let how = self.compile_sort_how(args, ops);
+        ops.push(Op::Asorti { src, dest, how });
+    }
+
+    /// gawk `asort` / `asorti` third argument: the sort order, evaluated onto
+    /// the stack for the op to pop. `false` when the call has none.
+    fn compile_sort_how(&mut self, args: &[Expr], ops: &mut Vec<Op>) -> bool {
+        match args.get(2) {
+            Some(how) => {
+                self.compile_expr(how, ops);
+                true
+            }
+            None => false,
+        }
     }
 
     fn compile_switch(&mut self, expr: &Expr, arms: &[SwitchArm], ops: &mut Vec<Op>) {

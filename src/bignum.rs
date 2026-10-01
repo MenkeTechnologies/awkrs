@@ -205,9 +205,9 @@ pub fn awk_compl_values(a: &Value, rt: &Runtime) -> Value {
     }
     let prec = rt.mpfr_prec_bits();
     let round = rt.mpfr_round();
-    let ua = float_trunc_u64(&value_to_mpfr(a, prec, round));
-    let r = !ua;
-    Value::Mpfr(Float::with_val_round(prec, Integer::from(r), round).0)
+    // gawk -M complements the arbitrary-precision integer: compl(0) = -1.
+    let r = !float_trunc_integer(&value_to_mpfr(a, prec, round));
+    Value::Mpfr(Float::with_val_round(prec, r, round).0)
 }
 
 /// `%s` conversion for [`Float`]: exact integers as decimal digit strings (no MPFR fixed-point tail);
@@ -471,13 +471,16 @@ mod tests {
         );
     }
 
-    /// `compl(0)` uses the full **u64** bit pattern; `-M` keeps that exact integer for `%d` (unlike `f64`’s signed reinterpretation in scalar contexts).
+    /// Under `-M` gawk 5.4.1 complements the arbitrary-precision integer:
+    /// `printf "%d", compl(0)` is `-1` and `compl(2^70)` is `-(2^70)-1`.
     #[test]
-    fn awk_compl_bignum_percent_d_is_full_u64_mask() {
+    fn awk_compl_bignum_is_integer_complement() {
         let mut rt = Runtime::new();
         rt.bignum = true;
         let v = awk_compl_values(&Value::Num(0.0), &rt);
-        assert_eq!(mpfr_dec(&v, &rt), "18446744073709551615");
+        assert_eq!(mpfr_dec(&v, &rt), "-1");
+        let v = awk_compl_values(&Value::Num(2f64.powi(70)), &rt);
+        assert_eq!(mpfr_dec(&v, &rt), "-1180591620717411303425");
     }
 
     #[test]

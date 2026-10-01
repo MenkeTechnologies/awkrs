@@ -1389,7 +1389,8 @@ fn mkbool_various_values() {
 fn compl_large_unsigned() {
     let (c, o, _e) = run_awkrs_stdin("BEGIN { printf \"%d\\n\", compl(0) }", "");
     assert_eq!(c, 0, "stderr: {}", _e);
-    assert_eq!(o.trim(), "-1");
+    // gawk 5.4.1: `printf "%d", compl(0)` is 9007199254740991 (2^53-1).
+    assert_eq!(o.trim(), "9007199254740991");
 }
 
 #[test]

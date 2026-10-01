@@ -109,7 +109,7 @@ fn is_sorted_in_user_fn_name(s: &str) -> bool {
     chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
-fn parse_sorted_in_at_token(t: &str) -> Option<SortedInMode> {
+pub(crate) fn parse_sorted_in_at_token(t: &str) -> Option<SortedInMode> {
     match t {
         "@unsorted" => Some(SortedInMode::Unsorted),
         "@ind_str_asc" => Some(SortedInMode::IndStrAsc),
@@ -171,6 +171,25 @@ fn val_type_rank(v: &Value) -> u8 {
     }
 }
 
+/// gawk `@val_type_*` order: by type rank (untyped, number, string, array),
+/// then numbers numerically and strings by string comparison — so `2 3 10`,
+/// not the `10 2 3` a string comparison of the numbers gives.
+fn val_type_cmp(va: Option<&Value>, vb: Option<&Value>) -> Ordering {
+    let ra = va.map(val_type_rank).unwrap_or(0);
+    let rb = vb.map(val_type_rank).unwrap_or(0);
+    ra.cmp(&rb).then_with(|| {
+        if ra == 1 {
+            let na = va.map(|v| v.as_number()).unwrap_or(0.0);
+            let nb = vb.map(|v| v.as_number()).unwrap_or(0.0);
+            na.partial_cmp(&nb).unwrap_or(Ordering::Equal)
+        } else {
+            let sa = va.map(|v| v.as_str()).unwrap_or_default();
+            let sb = vb.map(|v| v.as_str()).unwrap_or_default();
+            awk_locale_str_cmp(&sa, &sb)
+        }
+    })
+}
+
 pub(crate) fn sort_for_in_keys(keys: &mut [AwkStr], arr: &AwkArray, mode: SortedInMode) {
     use SortedInMode::*;
     match mode {
@@ -208,28 +227,8 @@ pub(crate) fn sort_for_in_keys(keys: &mut [AwkStr], arr: &AwkArray, mode: Sorted
             let nb = arr.get_bytes(kb).map(|v| v.as_number()).unwrap_or(0.0);
             nb.partial_cmp(&na).unwrap_or(Ordering::Equal)
         }),
-        ValTypeAsc => keys.sort_by(|ka, kb| {
-            let va = arr.get_bytes(ka);
-            let vb = arr.get_bytes(kb);
-            let ra = va.map(val_type_rank).unwrap_or(0);
-            let rb = vb.map(val_type_rank).unwrap_or(0);
-            ra.cmp(&rb).then_with(|| {
-                let sa = va.map(|v| v.as_str()).unwrap_or_default();
-                let sb = vb.map(|v| v.as_str()).unwrap_or_default();
-                awk_locale_str_cmp(&sa, &sb)
-            })
-        }),
-        ValTypeDesc => keys.sort_by(|ka, kb| {
-            let va = arr.get_bytes(ka);
-            let vb = arr.get_bytes(kb);
-            let ra = va.map(val_type_rank).unwrap_or(0);
-            let rb = vb.map(val_type_rank).unwrap_or(0);
-            rb.cmp(&ra).then_with(|| {
-                let sa = va.map(|v| v.as_str()).unwrap_or_default();
-                let sb = vb.map(|v| v.as_str()).unwrap_or_default();
-                awk_locale_str_cmp(&sb, &sa)
-            })
-        }),
+        ValTypeAsc => keys.sort_by(|ka, kb| val_type_cmp(arr.get_bytes(ka), arr.get_bytes(kb))),
+        ValTypeDesc => keys.sort_by(|ka, kb| val_type_cmp(arr.get_bytes(kb), arr.get_bytes(ka))),
     }
 }
 
@@ -438,8 +437,8 @@ fn tcp_connect_with_local_port(host: &str, lport: u16, rport: u16) -> Result<Tcp
 pub struct CoprocHandle {
     /// `child` field.
     pub child: Child,
-    /// `stdin` field.
-    pub stdin: BufWriter<ChildStdin>,
+    /// Write side; `None` once `close(cmd, "to")` has sent the child EOF.
+    pub stdin: Option<BufWriter<ChildStdin>>,
     /// `stdout` field.
     pub stdout: BufReader<ChildStdout>,
 }
@@ -1454,6 +1453,11 @@ pub struct Runtime {
     /// must return `0`, not raise "only valid during normal input" — gawk, mawk and
     /// one-true-awk all return `0` there.
     pub primary_input_done: bool,
+    /// Next `ARGV` index the operand walk will examine. Shared by the main
+    /// record loop and plain `getline`, which in every reference advances to the
+    /// next operand at end of file (POSIX `getline` reads "the next record",
+    /// not "the next record of this file").
+    pub argv_next: usize,
     /// `GAWK_READ_TIMEOUT` once read — see [`Self::read_timeout_env_ms`].
     pub read_timeout_env: Cell<Option<i32>>,
     /// Memoised regex `FS`: `(pattern, IGNORECASE, engine)`, where a `None`
@@ -1495,8 +1499,10 @@ pub struct Runtime {
     pub gettext_dir: String,
     /// `-M` / `--bignum`: use MPFR ([`Value::Mpfr`]) for arithmetic in the VM.
     pub bignum: bool,
-    /// `rand_seed` field.
+    /// Seed last given to `srand` (what the next `srand` returns).
     pub rand_seed: u64,
+    /// LCG state advanced by every `rand()`; reset to the seed by `srand`.
+    pub rand_state: u64,
     /// Radix for `%f` / `%g` / etc. and `print` of numbers when `-N` / `--use-lc-numeric` is set (Unix).
     pub numeric_decimal: char,
     /// Thousands separator for gawk **`%'`** (`printf` / `sprintf` integer grouping), from `localeconv()` when available.
@@ -2175,6 +2181,7 @@ impl Runtime {
             exit_code: 0,
             input_reader: None,
             primary_input_done: false,
+            argv_next: 1,
             inet_tcp_read: HashMap::new(),
             inet_tcp_write: HashMap::new(),
             inet_udp: HashMap::new(),
@@ -2192,6 +2199,7 @@ impl Runtime {
             pipe_input_children: HashMap::new(),
             coproc_handles: HashMap::new(),
             rand_seed: 1,
+            rand_state: 1,
             numeric_decimal: '.',
             // gawk parity: in the C locale, `localeconv` returns an empty
             // `thousands_sep` — `%'d` then prints WITHOUT grouping. Don't fall
@@ -2654,6 +2662,7 @@ impl Runtime {
             exit_code: 0,
             input_reader: None,
             primary_input_done: false,
+            argv_next: 1,
             inet_tcp_read: HashMap::new(),
             inet_tcp_write: HashMap::new(),
             inet_udp: HashMap::new(),
@@ -2671,6 +2680,7 @@ impl Runtime {
             pipe_input_children: HashMap::new(),
             coproc_handles: HashMap::new(),
             rand_seed,
+            rand_state: rand_seed,
             numeric_decimal,
             numeric_thousands_sep,
             slots: Vec::new(),
@@ -2952,7 +2962,7 @@ impl Runtime {
             cmd.to_string(),
             CoprocHandle {
                 child,
-                stdin: BufWriter::new(stdin),
+                stdin: Some(BufWriter::new(stdin)),
                 stdout: BufReader::new(stdout),
             },
         );
@@ -2962,9 +2972,30 @@ impl Runtime {
     /// `print … |& "cmd"` / `printf … |& "cmd"` — append bytes to the two-way pipe stdin.
     pub fn write_coproc_line(&mut self, cmd: &str, data: &[u8]) -> Result<()> {
         self.ensure_coproc(cmd)?;
-        let w = self.coproc_handles.get_mut(cmd).unwrap();
-        w.stdin.write_all(data).map_err(Error::Io)?;
+        let h = self.coproc_handles.get_mut(cmd).unwrap();
+        let Some(w) = h.stdin.as_mut() else {
+            return Err(Error::Runtime(format!(
+                "print: attempt to write to closed write end of two-way pipe `{cmd}`"
+            )));
+        };
+        w.write_all(data).map_err(Error::Io)?;
         Ok(())
+    }
+
+    /// gawk `close(cmd, "to")`: flush and close only the write side of a
+    /// two-way pipe, so the child sees end of input while its output stays
+    /// readable (`sort` and friends emit nothing before that). `None` when
+    /// `cmd` is not an open coprocess.
+    pub fn close_coproc_to(&mut self, cmd: &str) -> Option<f64> {
+        let h = self.coproc_handles.get_mut(cmd)?;
+        let status = match h.stdin.take() {
+            Some(mut w) => match w.flush() {
+                Ok(()) => 0.0,
+                Err(_) => -1.0,
+            },
+            None => -1.0,
+        };
+        Some(status)
     }
 
     /// `getline … <& "cmd"` — one line from the coprocess stdout.
@@ -3110,7 +3141,9 @@ impl Runtime {
             return Ok(());
         }
         if let Some(h) = self.coproc_handles.get_mut(key) {
-            h.stdin.flush().map_err(Error::Io)?;
+            if let Some(w) = h.stdin.as_mut() {
+                w.flush().map_err(Error::Io)?;
+            }
             return Ok(());
         }
         Err(Error::Runtime(format!(
@@ -3422,16 +3455,37 @@ impl Runtime {
 
     /// Next **record** from the primary input stream (respects `RS`), used by `getline` with no redirection.
     pub fn read_line_primary(&mut self) -> Result<Option<String>> {
-        let Some(reader) = self.input_reader.clone() else {
+        if self.input_reader.is_none() {
             if self.primary_input_done {
                 // Main input already ran to completion (we are in `END`, or after
                 // an `exit`). POSIX makes this an ordinary end-of-file: `getline`
                 // yields 0. gawk / mawk / one-true-awk all agree.
                 return Ok(None);
             }
-            return Err(Error::Runtime(
-                "`getline` with no file is only valid during normal input".into(),
-            ));
+            // `getline` before the record loop (in `BEGIN`): open the first input
+            // operand now, so `ARGV` edits made earlier in `BEGIN` count and
+            // `FILENAME` is set, or fall back to stdin when there is none.
+            if !crate::open_next_primary_operand(self)? {
+                crate::attach_stdin_primary(self);
+            }
+        }
+        loop {
+            if let Some(line) = self.read_line_primary_current()? {
+                return Ok(Some(line));
+            }
+            // End of this operand: like the record loop, move on to the next
+            // one (gawk / mawk / one-true-awk all do — `while ((getline) > 0)`
+            // reads every file, not just the current one).
+            if !crate::open_next_primary_operand(self)? {
+                return Ok(None);
+            }
+        }
+    }
+
+    /// One record from the attached primary reader; `None` at its end of file.
+    fn read_line_primary_current(&mut self) -> Result<Option<String>> {
+        let Some(reader) = self.input_reader.clone() else {
+            return Ok(None);
         };
         let to = self.procinfo_read_timeout_ms_for(&self.primary_input_procinfo_key());
         #[cfg(unix)]
@@ -3757,19 +3811,22 @@ impl Runtime {
     }
     /// `rand` — see implementation for the contract.
     pub fn rand(&mut self) -> f64 {
-        self.rand_seed = self.rand_seed.wrapping_mul(1103515245).wrapping_add(12345);
-        f64::from((self.rand_seed >> 16) as u32 & 0x7fff) / 32768.0
+        self.rand_state = self.rand_state.wrapping_mul(1103515245).wrapping_add(12345);
+        f64::from((self.rand_state >> 16) as u32 & 0x7fff) / 32768.0
     }
 
     /// Seed PRNG; **`n`** is the full **`u64`** seed (POSIX/gawk-style **`srand(x)`** truncates **`x`** to an integer first).
+    /// Returns the previous *seed* (not the advanced LCG state), and `srand()` seeds
+    /// with the time of day in whole seconds, as gawk/mawk/BSD awk do.
     pub fn srand(&mut self, n: Option<u64>) -> f64 {
         let prev = self.rand_seed;
         self.rand_seed = n.unwrap_or_else(|| {
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs() ^ (d.subsec_nanos() as u64))
+                .map(|d| d.as_secs())
                 .unwrap_or(1)
         });
+        self.rand_state = self.rand_seed;
         (prev & 0xffff_ffff) as f64
     }
     /// `set_field_sep_split` — see implementation for the contract.
@@ -5094,8 +5151,9 @@ fn split_on_regex_bytes(hay: &[u8], re: &BytesRegex) -> (Vec<AwkStr>, Vec<AwkStr
 }
 
 fn shutdown_coproc(mut h: CoprocHandle) -> Result<()> {
-    h.stdin.flush().map_err(Error::Io)?;
-    drop(h.stdin);
+    if let Some(mut w) = h.stdin.take() {
+        w.flush().map_err(Error::Io)?;
+    }
     let mut buf = String::new();
     loop {
         buf.clear();
@@ -5132,6 +5190,7 @@ impl Clone for Runtime {
             exit_code: self.exit_code,
             input_reader: None,
             primary_input_done: false,
+            argv_next: 1,
             inet_tcp_read: HashMap::new(),
             inet_tcp_write: HashMap::new(),
             inet_udp: HashMap::new(),
@@ -5149,6 +5208,7 @@ impl Clone for Runtime {
             pipe_input_children: HashMap::new(),
             coproc_handles: HashMap::new(),
             rand_seed: self.rand_seed,
+            rand_state: self.rand_state,
             numeric_decimal: self.numeric_decimal,
             numeric_thousands_sep: self.numeric_thousands_sep,
             slots: self.slots.clone(),

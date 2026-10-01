@@ -370,12 +370,12 @@ pub fn translate_op(op: &bytecode::Op, line: u32) -> Vec<(fusevm::Op, u32)> {
             line,
         )],
 
-        A::Asort { src: _, dest } => vec![(
-            F::Extended(AWK_ASORT, if dest.is_some() { 1 } else { 0 }),
+        A::Asort { dest, how, .. } => vec![(
+            F::Extended(AWK_ASORT, u8::from(dest.is_some()) | (u8::from(*how) << 1)),
             line,
         )],
-        A::Asorti { src: _, dest } => vec![(
-            F::Extended(AWK_ASORTI, if dest.is_some() { 1 } else { 0 }),
+        A::Asorti { dest, how, .. } => vec![(
+            F::Extended(AWK_ASORTI, u8::from(dest.is_some()) | (u8::from(*how) << 1)),
             line,
         )],
 
@@ -469,9 +469,10 @@ pub fn is_fusevm_eligible<'s>(
             Op::CallBuiltin(idx, 2) if matches!(resolve_name(*idx), "lshift" | "rshift") => {
                 continue
             }
-            // `compl(a)`: fatal "negative value is not allowed" on negative arg;
-            // non-negative path is `!(a as i64)`. Lower to `Op::AwkComplJit`.
-            Op::CallBuiltin(idx, 1) if resolve_name(*idx) == "compl" => continue,
+            // `compl(a)` is NOT admitted: fusevm `Op::AwkComplJit` returns
+            // `!(a as i64)` (`compl(0)` = -1), while gawk narrows the complement
+            // with `adjust_uint` (`compl(0)` = 2^53-1). It stays on the host
+            // builtin (`builtins::awk_compl`) until fusevm carries that rule.
             // `$N` numeric field read with compile-time N. Lowers to
             // `fusevm::Op::AwkGetFieldNum(N)`, which calls the thread-local
             // host hook installed by [`crate::vm::try_fusevm_dispatch`] right
@@ -566,7 +567,7 @@ fn stack_delta<'s>(op: &bytecode::Op, resolve_name: impl Fn(u32) -> &'s str) -> 
         Op::CallBuiltin(idx, 1)
             if matches!(
                 resolve_name(*idx),
-                "int" | "mkbool" | "sqrt" | "log" | "compl" | "sin" | "cos" | "exp"
+                "int" | "mkbool" | "sqrt" | "log" | "sin" | "cos" | "exp"
             ) =>
         {
             0
@@ -943,9 +944,6 @@ pub fn build_numeric_chunk<'s>(
             Op::CallBuiltin(idx, 2) if resolve_name(*idx) == "rshift" => {
                 builder.emit(fusevm::Op::AwkRshiftJit, 0);
             }
-            Op::CallBuiltin(idx, 1) if resolve_name(*idx) == "compl" => {
-                builder.emit(fusevm::Op::AwkComplJit, 0);
-            }
             // `$N` numeric read with compile-time N: emit `AwkGetFieldNum(N)`.
             // The active Runtime is exposed to the libcall via the thread-local
             // hook installed by `try_fusevm_dispatch`.
@@ -1173,8 +1171,8 @@ mod tests {
 
     // A builtin other than `int` (e.g. `sqrt`, which needs host warning state)
     // must keep the chunk ineligible so it stays on the awkrs interpreter.
-    // (As of fusevm 0.13.6, sqrt/log/lshift/rshift/compl ARE admitted via the
-    //  AwkSqrtJit / AwkLogJit / AwkLshiftJit / AwkRshiftJit / AwkComplJit ops,
+    // (As of fusevm 0.13.6, sqrt/log/lshift/rshift ARE admitted via the
+    //  AwkSqrtJit / AwkLogJit / AwkLshiftJit / AwkRshiftJit ops,
     //  so this regression test now uses `length` — a string-touching builtin
     //  that's never going to be JIT-lowered.)
     #[test]

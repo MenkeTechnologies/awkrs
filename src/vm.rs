@@ -539,6 +539,105 @@ impl<'a> VmCtx<'a> {
     }
 }
 
+/// gawk `split(s, a, " ", seps)`: with the default-whitespace separator the
+/// leading whitespace goes in `seps[0]` and the trailing whitespace in
+/// `seps[n]`, each only when there is some; a string of nothing but
+/// whitespace yields no fields and lands whole in `seps[0]`.
+fn set_default_split_edge_seps(rt: &mut Runtime, seps: &str, s: &[u8], n: usize) {
+    let is_ws = |b: &u8| matches!(b, b' ' | b'\t' | b'\n');
+    let lead = s.iter().take_while(|b| is_ws(b)).count();
+    if lead > 0 {
+        rt.array_set(seps, "0".into(), Value::Str(AwkStr::from(&s[..lead])));
+    }
+    let trail = s.iter().rev().take_while(|b| is_ws(b)).count();
+    if n > 0 && trail > 0 {
+        let tail = AwkStr::from(&s[s.len() - trail..]);
+        rt.array_set(seps, n.to_string(), Value::Str(tail));
+    }
+}
+
+/// gawk `asort(src [, dest [, how]])` (`by_value`) / `asorti(…)`: write the
+/// array's values — or, for `asorti`, its indices — into `dest` (else `src`)
+/// as `1..n` in sorted order, and return `n`.
+fn exec_asort(
+    ctx: &mut VmCtx<'_>,
+    src: u32,
+    dest: Option<u32>,
+    how: Option<Value>,
+    by_value: bool,
+) -> Result<f64> {
+    let fn_name = if by_value { "asort" } else { "asorti" };
+    let src_name = ctx.cp.strings.get(src).to_string();
+    let dest_name = dest.map(|i| ctx.cp.strings.get(i).to_string());
+    if src_name.is_empty() {
+        return Err(Error::Runtime(format!(
+            "0 is invalid as number of arguments for {fn_name}"
+        )));
+    }
+    let mut pairs = ctx.array_pairs_for_sort(&src_name, fn_name)?;
+    order_sort_pairs(ctx, &mut pairs, how, by_value)?;
+    let n = pairs.len() as f64;
+    let reindexed: Vec<(String, Value)> = pairs
+        .into_iter()
+        .enumerate()
+        .map(|(i, (k, v))| {
+            let out = if by_value { v } else { Value::Str(k) };
+            (format!("{}", i + 1), out)
+        })
+        .collect();
+    let target = dest_name.as_deref().unwrap_or(&src_name);
+    ctx.array_replace(target, reindexed);
+    Ok(n)
+}
+
+/// Order `(index, value)` pairs for `asort` / `asorti`. A non-empty gawk `how`
+/// is an `@ind_*` / `@val_*` token (the `PROCINFO["sorted_in"]` orderings) or
+/// the name of a comparison function; without one, `asort` orders by value and
+/// `asorti` by index string, both honoring `IGNORECASE`.
+fn order_sort_pairs(
+    ctx: &mut VmCtx<'_>,
+    pairs: &mut Vec<(AwkStr, Value)>,
+    how: Option<Value>,
+    by_value: bool,
+) -> Result<()> {
+    let how = how.map(|v| v.as_str()).filter(|s| !s.is_empty());
+    let Some(how) = how else {
+        let ic = ctx.rt.ignore_case_flag();
+        if by_value {
+            pairs.sort_by(|(_, va), (_, vb)| builtins::awk_value_sort_cmp_with_case(va, vb, ic));
+        } else {
+            pairs.sort_by(|(ka, _), (kb, _)| {
+                if ic {
+                    builtins::locale_str_cmp_sort(
+                        &ka.to_str_lossy().to_lowercase(),
+                        &kb.to_str_lossy().to_lowercase(),
+                    )
+                } else {
+                    builtins::locale_str_cmp_sort(&ka.to_str_lossy(), &kb.to_str_lossy())
+                }
+            });
+        }
+        return Ok(());
+    };
+    let Some(mode) = crate::runtime::parse_sorted_in_at_token(&how) else {
+        return sort_pairs_with_custom_cmp(ctx, pairs, &how);
+    };
+    let mut arr = AwkArray::new();
+    for (k, v) in pairs.drain(..) {
+        arr.insert_bytes(k.as_bytes(), v);
+    }
+    let mut keys = arr.keys();
+    crate::runtime::sort_for_in_keys(&mut keys, &arr, mode);
+    pairs.extend(keys.into_iter().map(|k| {
+        let v = arr
+            .get_bytes(k.as_bytes())
+            .cloned()
+            .unwrap_or(Value::Uninit);
+        (k, v)
+    }));
+    Ok(())
+}
+
 static EMPTY_STR: Value = Value::Str(AwkStr::new_const());
 
 /// Turn the [`Error::Exit`] a user function raises for `exit` back into the
@@ -2226,6 +2325,9 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 ctx.rt.split_into_array(&arr_name, &parts);
                 if let Some(name) = seps_name {
                     ctx.rt.split_into_array(&name, &seps_vec);
+                    if !fs_is_regex && fs == " " {
+                        set_default_split_edge_seps(ctx.rt, &name, &s, n);
+                    }
                 }
                 ctx.push(Value::Num(n as f64));
             }
@@ -2297,56 +2399,14 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 let v = ctx.peek().clone();
                 ctx.push(v);
             }
-            Op::Asort { src, dest } => {
-                let src_name = ctx.cp.strings.get(src).to_string();
-                let dest_name = dest.map(|i| ctx.cp.strings.get(i).to_string());
-                if src_name.is_empty() {
-                    return Err(Error::Runtime(
-                        "0 is invalid as number of arguments for asort".into(),
-                    ));
-                }
-                let mut pairs = ctx.array_pairs_for_sort(&src_name, "asort")?;
-                let ic = ctx.rt.ignore_case_flag();
-                pairs
-                    .sort_by(|(_, va), (_, vb)| builtins::awk_value_sort_cmp_with_case(va, vb, ic));
-                let n = pairs.len() as f64;
-                let reindexed: Vec<(String, Value)> = pairs
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, (_, v))| (format!("{}", i + 1), v))
-                    .collect();
-                let target = dest_name.as_deref().unwrap_or(&src_name);
-                ctx.array_replace(target, reindexed);
+            Op::Asort { src, dest, how } => {
+                let how = how.then(|| ctx.pop());
+                let n = exec_asort(ctx, src, dest, how, true)?;
                 ctx.push(Value::Num(n));
             }
-            Op::Asorti { src, dest } => {
-                let src_name = ctx.cp.strings.get(src).to_string();
-                let dest_name = dest.map(|i| ctx.cp.strings.get(i).to_string());
-                if src_name.is_empty() {
-                    return Err(Error::Runtime(
-                        "0 is invalid as number of arguments for asorti".into(),
-                    ));
-                }
-                let mut pairs = ctx.array_pairs_for_sort(&src_name, "asorti")?;
-                let ic = ctx.rt.ignore_case_flag();
-                pairs.sort_by(|(ka, _), (kb, _)| {
-                    if ic {
-                        builtins::locale_str_cmp_sort(
-                            &ka.to_str_lossy().to_lowercase(),
-                            &kb.to_str_lossy().to_lowercase(),
-                        )
-                    } else {
-                        builtins::locale_str_cmp_sort(&ka.to_str_lossy(), &kb.to_str_lossy())
-                    }
-                });
-                let n = pairs.len() as f64;
-                let reindexed: Vec<(String, Value)> = pairs
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, (k, _))| (format!("{}", i + 1), Value::Str(k)))
-                    .collect();
-                let target = dest_name.as_deref().unwrap_or(&src_name);
-                ctx.array_replace(target, reindexed);
+            Op::Asorti { src, dest, how } => {
+                let how = how.then(|| ctx.pop());
+                let n = exec_asort(ctx, src, dest, how, false)?;
                 ctx.push(Value::Num(n));
             }
 
@@ -3046,6 +3106,12 @@ fn exec_getline(
             if matches!(&e, Error::Runtime(msg) if msg.starts_with("sandbox:")) {
                 return Err(e);
             }
+            // An input-file operand plain `getline` advanced to but could not
+            // open is the same fatal the record loop raises for it (gawk:
+            // "cannot open file ... for reading", exit 2) — not a `-1`.
+            if matches!(source, GetlineSource::Primary) && matches!(&e, Error::InputFile(..)) {
+                return Err(e);
+            }
             let _code = ctx.rt.getline_error_code_for_key(&e, &input_key);
             if push_result {
                 ctx.push(Value::Num(_code));
@@ -3211,7 +3277,9 @@ fn exec_sub(ctx: &mut VmCtx<'_>, target: SubTarget, is_global: bool) -> Result<(
 // ── Builtin calls (implemented in vm_builtins.rs) ────────────────────────────
 #[path = "vm_builtins.rs"]
 mod vm_builtins;
-use vm_builtins::{exec_call_builtin, exec_call_user_inner, sort_keys_with_custom_cmp};
+use vm_builtins::{
+    exec_call_builtin, exec_call_user_inner, sort_keys_with_custom_cmp, sort_pairs_with_custom_cmp,
+};
 
 /// Pop the AOP call frame and unset the `INTERCEPT_*` / `__intercept_proceed`
 /// context globals. Runs on every exit path of [`run_user_intercepts`].

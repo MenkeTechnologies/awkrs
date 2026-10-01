@@ -98,8 +98,8 @@ References: special variables and builtins lists in `src/compiler.rs` (`SPECIAL_
 | `for (i in a)` order | Unspecified | Unspecified | gawk sorts / `sorted_in` | **Part** (hash order vs `PROCINFO["sorted_in"]`; `-P` skips gawk ordering) |
 | `switch` | No | No | Yes | Yes | **Match** |
 | Indirect function call (`@` / function pointer) | No | No | Yes | Yes | **Part** (see `Expr::IndirectCall`; edge cases vs gawk) |
-| Coprocess (`\|&`) | No | No | Yes | **Part** (runtime has coproc types; parity not guaranteed) |
-| `getline` variants | Yes | Yes | Yes | **Part** (incl. `PROCINFO` timeout/retry — see `runtime.rs`) |
+| Coprocess (`\|&`) | No | No | Yes | **Part** — `print \|& cmd`, `cmd \|& getline [var]` and `getline [var] <& cmd` share one two-way process, and `close(cmd, "to")` closes only its input so a filter such as `sort` sees EOF while its output stays readable. awkrs used to parse `cmd \|& getline` as a one-way `\|`, which started a second process reading awk's own stdin. No pty mode (`PROCINFO[cmd, "pty"]`). |
+| `getline` variants | Yes | Yes | Yes | **Part** (incl. `PROCINFO` timeout/retry — see `runtime.rs`). Plain `getline` continues into the next input operand at end of file (applying `var=value` operands on the way, setting `FILENAME`/`FNR`), and in `BEGIN` opens the first operand; awkrs used to stop at the first file's end and leave `FILENAME` empty in `BEGIN`. gawk also runs `ENDFILE`/`BEGINFILE` when `getline` crosses a file; awkrs does not. `cmd | getline [var]` binds tighter than comparison and assignment, as in all three references: `while ("cmd" | getline line > 0)` compares getline's result, and `r = "cmd" | getline x` assigns it (the first used to be a parse error, the second piped the assignment). |
 
 ---
 
@@ -135,14 +135,14 @@ Columns: **P** = POSIX / universal core, **B** = BSD awk, **M** = mawk, **G** = 
 | `rand` `srand` | * | * | * | * | **Part** (sequence not guaranteed to match any one engine) |
 | `length` / `length()` | * | * | * | * | **Match** (bare `length` → `$0` — `parser.rs`) |
 | `index` `substr` `sprintf` | * | * | * | * | **Match** |
-| `match` `sub` `gsub` `split` | * | * | * | * | **Match** / **Part** (regex engine = Rust `regex`; subtle differences possible). `gsub(//, …)` produces gawk's zero-width matches at every position; `split(s, a, fs, seps)` populates the 4th-arg `seps` array with the actual separator strings between fields. |
+| `match` `sub` `gsub` `split` | * | * | * | * | **Match** / **Part** (regex engine = Rust `regex`; subtle differences possible). `gsub(//, …)` produces gawk's zero-width matches at every position; `split(s, a, fs, seps)` populates the 4th-arg `seps` array with the actual separator strings between fields; with the default `" "` separator it also puts leading whitespace in `seps[0]` and trailing whitespace in `seps[n]` (each only when present), as gawk does. `patsplit`'s `seps[0]` / `seps[n]` likewise hold the text before the first and after the last field. |
 | `tolower` `toupper` | * | * | * | * | **Match** |
 | `system` `close` | * | * | * | * | **Match** — `system()` flushes buffered stdout / pipes / files before invoking the subprocess; `close()` returns -1 for an unopened name and the exit code / 0 for a clean close (gawk parity, `runtime::close_handle`). A child killed by a signal reports `256 + signo` from **both** (`system("kill -TERM $$")` → 271), the encoding all three references use; it lived only in `close_handle` and `system()` answered -1, so both now share `runtime::awk_process_status`. |
 | `strtonum` | *¹ | Part | Part | Yes | **Match** |
-| `asort` `asorti` | — | — | — | Yes | **Match** |
+| `asort` `asorti` | — | — | — | Yes | **Match** — including the third argument: an `@ind_*` / `@val_*` ordering or a `(i1, v1, i2, v2)` comparison function. |
 | `gensub` `patsplit` | — | — | — | Yes | **Part** |
 | `mktime` `strftime` `systime` `gettimeofday` | — | — | Part | Yes | **Part** |
-| `and` `or` `xor` `compl` `lshift` `rshift` | — | — | — | Yes | **Match** |
+| `and` `or` `xor` `compl` `lshift` `rshift` | — | — | — | Yes | **Match** — `compl` narrows the 64-bit complement to a double's 53 bits like gawk's `adjust_uint` (`compl(0)` = 9007199254740991, not -1); under `-M` it is the integer complement (`compl(0)` = -1). |
 | `isarray` `typeof` `mkbool` | — | — | — | Yes | **Match** / **Part** |
 | `intdiv` `intdiv0` | — | — | — | Yes | **Match** |
 | `bindtextdomain` `dcgettext` `dcngettext` | — | — | — | Yes | **Part** (`gettext_util` / stubs) |
@@ -176,7 +176,7 @@ Columns: **P** = POSIX / universal core, **B** = BSD awk, **M** = mawk, **G** = 
 | `lshift` / `rshift` / `compl` negative args | **Match** — fatal "negative values are not allowed". |
 | `typeof($field)` of noisy numeric text (e.g. `"42abc"`) | **Match** — reports `"string"` (numeric prefix alone is not enough); field comparisons against numbers use string-compare. Pure-numeric text (`"42"`) still reports `"strnum"`. |
 | `match(str, re, arr)` start/length subscripts | **Match** — writes `arr[i, "start"]` (1-based char index) and `arr[i, "length"]` for each successful submatch; unmatched optional groups have NO entries. |
-| `mktime(spec [, utc])` | **Match** — optional second argument forces UTC interpretation when truthy; one-arg form remains local-time. |
+| `mktime(spec [, utc])` | **Match** — optional second argument forces UTC interpretation when truthy; one-arg form remains local-time. The fields go to C `mktime`/`timegm` unvalidated, as in gawk, so out-of-range values roll over (`"2024 02 30 0 0 0"` is March 1) and a seventh field is the DST flag. |
 | Assignment in ternary else-branch (`1 ? x=1 : x=2`) | **Match** — the else-branch parses as an assignment-expression (gawk grammar). Previously rejected as "invalid assignment target". |
 | `asort` / `asorti` on unassigned name | **Match** — treats missing slot as an empty array (returns 0). Scalar values still raise the "first argument is not an array" fatal. Compiler tracks these positions for array-slot promotion. |
 | Numeric `==` precision | **Match** — bit-exact (POSIX). Previously used a fuzzy `f64::EPSILON` tolerance, so `0.1 + 0.2 == 0.3` returned true (the difference is ~5.55e-17, below EPSILON). Now matches gawk's 0. |
