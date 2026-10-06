@@ -2485,6 +2485,10 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 let v = ctx.peek().clone();
                 ctx.push(v);
             }
+            Op::Swap => {
+                let n = ctx.stack.len();
+                ctx.stack.swap(n - 1, n - 2);
+            }
             Op::Asort { src, dest, how } => {
                 let how = how.then(|| ctx.pop());
                 let n = exec_asort(ctx, src, dest, how, true)?;

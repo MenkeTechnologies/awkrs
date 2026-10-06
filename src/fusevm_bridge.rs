@@ -245,6 +245,7 @@ pub fn translate_op(op: &bytecode::Op, line: u32) -> Vec<(fusevm::Op, u32)> {
         // ── Direct mappings: stack ──
         A::Pop => vec![(F::Pop, line)],
         A::Dup => vec![(F::Dup, line)],
+        A::Swap => vec![(F::Swap, line)],
 
         // ── Direct mappings: constants ──
         A::PushNum(f) => vec![(F::LoadFloat(*f), line)],

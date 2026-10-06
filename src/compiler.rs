@@ -929,8 +929,18 @@ impl Compiler {
             }
 
             Expr::AssignField { field, op, rhs } => {
-                self.compile_expr(field, ops);
-                self.compile_expr(rhs, ops);
+                // gawk computes the value before the field it is stored in, so
+                // `$(j++) = j` stores the old `j`. Only observable when one side
+                // has a side effect; otherwise keep the order the fused
+                // field-store shapes expect.
+                if is_side_effect_free(field) && is_side_effect_free(rhs) {
+                    self.compile_expr(field, ops);
+                    self.compile_expr(rhs, ops);
+                } else {
+                    self.compile_expr(rhs, ops);
+                    self.compile_expr(field, ops);
+                    ops.push(Op::Swap);
+                }
                 if let Some(bop) = op {
                     ops.push(Op::CompoundAssignField(*bop));
                 } else {
@@ -946,9 +956,24 @@ impl Compiler {
                 rhs,
             } => {
                 let arr_idx = self.strings.intern(name);
-                let depth = self.compile_subarray_path(path, ops);
-                self.compile_array_key(indices, ops);
-                self.compile_expr(rhs, ops);
+                // gawk computes the value before the subscript it is stored
+                // under: `a[i++] = i` stores the old `i`, and `b[k++] += k`
+                // adds it. Only observable when the subscript or the value has
+                // a side effect, so the pure shapes keep the order the fused
+                // array-store opcodes match on.
+                let rhs_first = path.is_empty()
+                    && !(indices.iter().all(is_side_effect_free) && is_side_effect_free(rhs));
+                let depth = if rhs_first {
+                    self.compile_expr(rhs, ops);
+                    self.compile_array_key(indices, ops);
+                    ops.push(Op::Swap);
+                    0
+                } else {
+                    let depth = self.compile_subarray_path(path, ops);
+                    self.compile_array_key(indices, ops);
+                    self.compile_expr(rhs, ops);
+                    depth
+                };
                 ops.push(match (op, depth) {
                     (Some(bop), 0) => Op::CompoundAssignIndex(arr_idx, *bop),
                     (Some(bop), _) => Op::SubCompound(arr_idx, depth, *bop),

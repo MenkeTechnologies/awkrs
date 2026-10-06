@@ -345,6 +345,10 @@ pub enum Op {
     Pop,
     /// Duplicate top of stack (for `switch` / multi-branch compare).
     Dup,
+    /// Exchange the top two stack values (gawk's right-to-left assignment
+    /// order: the value is computed before the subscript or field it is
+    /// stored under).
+    Swap,
 
     // ── gawk array sort ───────────────────────────────────────────────────
     /// `asort(src [, dest [, how]])` — sort by value; string pool indices for

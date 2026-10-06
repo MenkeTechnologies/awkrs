@@ -3105,3 +3105,23 @@ fn characters_as_bytes_covers_match_printf_split_and_regex() {
         assert_eq!(out, want, "{locale}: got {out:x?}");
     }
 }
+
+/// The relational operators do not chain (gawk's and POSIX's `%nonassoc`, and
+/// one-true-awk agrees): `1 < 2 < 3` is a syntax error, exit status 1, not
+/// `(1 < 2) < 3`. A print redirection target is a concatenation, so a
+/// conditional after `>` is a syntax error too — awkrs used to create the file
+/// `2` for `print 1 > 2 ? "a" : "b"`.
+#[test]
+fn comparisons_do_not_chain_and_redirect_targets_are_concatenations() {
+    for program in [
+        "BEGIN { x = 1 < 2 < 3 }",
+        "BEGIN { x = 1 == 1 == 1 }",
+        "BEGIN { if (3 > 2 > 1) print }",
+        "BEGIN { x = 1 < 2 != 0 }",
+        r#"BEGIN { print 1 > 2 ? "a" : "b" }"#,
+    ] {
+        let (code, stdout, _) = run_awkrs_stdin(program, "");
+        assert_eq!(code, 1, "{program}: not rejected");
+        assert_eq!(stdout, "", "{program}");
+    }
+}
