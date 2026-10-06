@@ -362,8 +362,27 @@ pub fn awk_binop_values(
 /// mawk and one-true-awk all print `A B C`. Recognising the name and writing
 /// through the ordinary print buffer makes the ordering fall out for free
 /// instead of depending on flush timing.
-fn is_program_stdout(path: &str) -> bool {
-    path == "/dev/stdout"
+///
+/// gawk's `devopen` resolves `/dev/fd/1` (outside `--traditional`) to fd 1 as
+/// well, and `redirect` then shares the `stdout` stream, so it is the same
+/// stream here.
+fn is_program_stdout(path: &str, traditional: bool) -> bool {
+    path == "/dev/stdout" || (!traditional && path == "/dev/fd/1")
+}
+
+/// Does this redirection target name the program's own standard error?
+///
+/// gawk's `devopen` resolves `/dev/stderr` — and, outside `--traditional`,
+/// `/dev/fd/2` — to fd 2 itself, and `redirect` then writes through the
+/// process's `stderr` stream rather than a stream of its own. `stderr` is
+/// unbuffered, so each `print > "/dev/stderr"` reaches the descriptor at once,
+/// in program order with gawk's own warnings and with flushed stdout. awkrs
+/// opened the name as a file behind a `BufWriter`, so
+/// `printf "x" > "/dev/stderr"; print "o"; fflush()` emitted `o` before `x`,
+/// and a runtime warning jumped ahead of every buffered `/dev/stderr` line.
+/// Writing through the unbuffered `std::io::stderr()` reproduces gawk.
+fn is_program_stderr(path: &str, traditional: bool) -> bool {
+    path == "/dev/stderr" || (!traditional && path == "/dev/fd/2")
 }
 
 /// The file `getline < path` should actually open.
@@ -1515,6 +1534,11 @@ pub struct Runtime {
     pub dir_read: HashMap<String, (Vec<String>, usize)>,
     /// Open files for `print … > path` / `print … >> path` / `fflush` / `close`.
     pub output_handles: HashMap<String, BufWriter<File>>,
+    /// `/dev/stdout`, `/dev/stderr`, `/dev/fd/1` and `/dev/fd/2` names a `print`
+    /// redirection has opened. They write through the process streams rather
+    /// than a handle of their own, but `close` still answers like gawk: 0 for a
+    /// name that was opened, -1 for one that never was.
+    pub std_stream_redirects: Vec<String>,
     /// `print`/`printf` `| "cmd"` — stdin of `sh -c cmd` (key is the command string).
     pub pipe_stdin: HashMap<String, BufWriter<ChildStdin>>,
     /// Output pipes opened while `PROCINFO["BUFFERPIPE"]` or
@@ -2333,6 +2357,7 @@ impl Runtime {
             getline_leftover: HashMap::new(),
             dir_read: HashMap::new(),
             output_handles: HashMap::new(),
+            std_stream_redirects: Vec::new(),
             pipe_stdin: HashMap::new(),
             buffered_pipes: std::collections::HashSet::new(),
             pipe_children: HashMap::new(),
@@ -2829,6 +2854,7 @@ impl Runtime {
             getline_leftover: HashMap::new(),
             dir_read: HashMap::new(),
             output_handles: HashMap::new(),
+            std_stream_redirects: Vec::new(),
             pipe_stdin: HashMap::new(),
             buffered_pipes: std::collections::HashSet::new(),
             pipe_children: HashMap::new(),
@@ -3241,11 +3267,17 @@ impl Runtime {
     /// append (`>>`); later writes reuse the same handle until `close`.
     pub fn write_output_line(&mut self, path: &str, data: &[u8], append: bool) -> Result<()> {
         self.require_unsandboxed_io()?;
-        if is_program_stdout(path) {
+        if is_program_stdout(path, self.traditional) {
             // `>` and `>>` mean the same thing here: there is nothing to
             // truncate on a stream the process already holds open.
             let _ = append;
+            self.note_std_stream_redirect(path);
             self.print_buf.extend_from_slice(data);
+            return Ok(());
+        }
+        if is_program_stderr(path, self.traditional) {
+            self.note_std_stream_redirect(path);
+            std::io::stderr().write_all(data).map_err(Error::Io)?;
             return Ok(());
         }
         if path.starts_with("/inet/udp/") {
@@ -3294,12 +3326,28 @@ impl Runtime {
         Ok(())
     }
 
+    /// Record that a `print` redirection opened one of the process-stream names
+    /// (see [`Self::std_stream_redirects`]).
+    fn note_std_stream_redirect(&mut self, path: &str) {
+        if !self.std_stream_redirects.iter().any(|n| n == path) {
+            self.std_stream_redirects.push(path.to_string());
+        }
+    }
+
     /// Flush buffered output for a file or pipe opened with `print`/`printf` redirection.
     /// `Ok(false)` when `key` names nothing open for output.
     pub fn flush_redirect_target(&mut self, key: &str) -> Result<bool> {
-        if is_program_stdout(key) {
+        // gawk `do_fflush`: an open redirection first, then `stdfile` — the two
+        // names `/dev/stdout` and `/dev/stderr` flush even when no `print`
+        // has opened them. `/dev/fd/N` is only ever the former.
+        let opened = self.std_stream_redirects.iter().any(|n| n == key);
+        if is_program_stdout(key, self.traditional) && (opened || key == "/dev/stdout") {
             crate::vm::flush_print_buf(&mut self.print_buf)?;
             std::io::stdout().flush().map_err(Error::Io)?;
+            return Ok(true);
+        }
+        if is_program_stderr(key, self.traditional) && (opened || key == "/dev/stderr") {
+            std::io::stderr().flush().map_err(Error::Io)?;
             return Ok(true);
         }
         if let Some(w) = self.output_handles.get_mut(key) {
@@ -3924,11 +3972,12 @@ impl Runtime {
     pub fn close_handle(&mut self, path: &str) -> f64 {
         let mut exit_status: f64 = 0.0;
         let mut had_any = false;
-        if is_program_stdout(path) {
-            // The stream stays open — awk keeps printing after it — so this is
-            // a flush that reports success, matching gawk's `close("/dev/stdout")`
-            // answer of 0. Reporting -1 ("no such stream") would be wrong now
-            // that writes to the name are accepted.
+        if let Some(at) = self.std_stream_redirects.iter().position(|n| n == path) {
+            // The process stream stays open — awk keeps printing after it — so
+            // closing the redirection is a flush that reports success, gawk's
+            // answer of 0. A name no `print` opened falls through to the -1 of
+            // any other redirection that was never opened, as in gawk.
+            self.std_stream_redirects.swap_remove(at);
             let _ = crate::vm::flush_print_buf(&mut self.print_buf);
             let _ = std::io::stdout().flush();
             return 0.0;
@@ -5460,6 +5509,7 @@ impl Clone for Runtime {
             getline_leftover: HashMap::new(),
             dir_read: HashMap::new(),
             output_handles: HashMap::new(),
+            std_stream_redirects: Vec::new(),
             pipe_stdin: HashMap::new(),
             buffered_pipes: std::collections::HashSet::new(),
             pipe_children: HashMap::new(),
