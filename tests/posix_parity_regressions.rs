@@ -3125,3 +3125,26 @@ fn comparisons_do_not_chain_and_redirect_targets_are_concatenations() {
         assert_eq!(stdout, "", "{program}");
     }
 }
+
+/// A redirection whose target is the null string is gawk's fatal
+/// "expression for `OP' redirection has null string value" (exit 2) for every
+/// operator, before anything is opened or run. awkrs used to answer
+/// `getline < ""` with -1, ran `sh -c ""` for `print | ""` and `"" | getline`,
+/// and failed `print > ""` with an OS "No such file" error.
+#[test]
+fn null_string_redirection_targets_are_fatal() {
+    for (program, op) in [
+        (r#"BEGIN { r = getline line < ""; print "after" }"#, "<"),
+        (r#"BEGIN { print "x" > ""; print "after" }"#, ">"),
+        (r#"BEGIN { printf "x" >> unset; print "after" }"#, ">>"),
+        (r#"BEGIN { print "x" | ""; print "after" }"#, "|"),
+        (r#"BEGIN { "" | getline; print "after" }"#, "|"),
+        (r#"BEGIN { print "x" |& ""; print "after" }"#, "|&"),
+    ] {
+        let (code, stdout, stderr) = run_awkrs_stdin(program, "");
+        assert_eq!(code, 2, "{program}: stderr {stderr:?}");
+        assert_eq!(stdout, "", "{program}");
+        let want = format!("expression for `{op}' redirection has null string value");
+        assert!(stderr.contains(&want), "{program}: {stderr:?}");
+    }
+}

@@ -3113,12 +3113,32 @@ fn exec_print(ctx: &mut VmCtx<'_>, argc: u16, redir: RedirKind, is_printf: bool)
     Ok(())
 }
 
+/// gawk `redirect_string`'s fatal for a redirection whose target expression is the
+/// null string: `print > ""`, `getline < ""`, `"" | getline` and the rest.
+fn null_redirect_target(op: &str) -> Error {
+    Error::Runtime(format!(
+        "expression for `{op}' redirection has null string value"
+    ))
+}
+
 fn emit_with_redir(
     ctx: &mut VmCtx<'_>,
     data: &[u8],
     redir: RedirKind,
     path: Option<&str>,
 ) -> Result<()> {
+    // gawk `redirect_string`: an empty target is fatal before anything is
+    // opened or written.
+    if path == Some("") {
+        let op = match redir {
+            RedirKind::Overwrite => ">",
+            RedirKind::Append => ">>",
+            RedirKind::Pipe => "|",
+            RedirKind::Coproc => "|&",
+            RedirKind::Stdout => "",
+        };
+        return Err(null_redirect_target(op));
+    }
     match redir {
         RedirKind::Stdout => ctx.emit_print(data),
         RedirKind::Overwrite => ctx.rt.write_output_line(path.unwrap(), data, false)?,
@@ -3246,6 +3266,13 @@ fn exec_getline(
         }
         GetlineSource::Primary => None,
     };
+    if file_path.as_deref() == Some("") {
+        return Err(null_redirect_target(match source {
+            GetlineSource::File => "<",
+            GetlineSource::Pipe => "|",
+            _ => "|&",
+        }));
+    }
 
     let input_key = match source {
         GetlineSource::Primary => ctx.rt.primary_input_procinfo_key(),
