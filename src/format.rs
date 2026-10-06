@@ -858,7 +858,10 @@ fn sprintf_c_char_bytes(v: &Value) -> AwkStr {
         Value::Str(_) if v.is_numeric_str() => numeric_c_char(v),
         Value::Str(s) | Value::StrLit(s) | Value::Regexp(s) => {
             if s.is_empty() {
-                AwkStr::new()
+                // gawk copies one byte from the string's buffer, which for an
+                // empty string is its NUL terminator; mawk does the same, so
+                // `printf "[%3c]", ""` is `[  \0]` in both.
+                AwkStr::from_vec(vec![0])
             } else if AWK_CHARS_AS_BYTES.load(Ordering::Relaxed) {
                 s.substr_bytes(0, 1)
             } else {
@@ -970,7 +973,8 @@ fn sprintf_c_char(v: &Value) -> String {
             .chars()
             .next()
             .map(|c| c.to_string())
-            .unwrap_or_default(),
+            // An empty string yields its NUL terminator, as in gawk and mawk.
+            .unwrap_or_else(|| "\0".to_string()),
         Value::Mpfr(f) => {
             let code = float_trunc_integer(f).to_u32_wrapping();
             char::from_u32(code).unwrap_or('\u{fffd}').to_string()
