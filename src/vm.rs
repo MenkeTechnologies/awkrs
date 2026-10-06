@@ -2375,7 +2375,12 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 // ERE; awkrs used to split on it literally instead.
                 crate::runtime::check_ere_separator(&fs).map_err(Error::Runtime)?;
                 let ic = ctx.rt.ignore_case_flag();
-                let (parts, seps_vec) = if fs_is_regex {
+                let (parts, seps_vec) = if fs.is_empty() && ctx.rt.characters_as_bytes {
+                    // Byte mode: every byte is a character, so each is a field.
+                    let parts: Vec<AwkStr> = s.iter().map(|b| AwkStr::from(&[*b][..])).collect();
+                    let seps = vec![AwkStr::new(); parts.len().saturating_sub(1)];
+                    (parts, seps)
+                } else if fs_is_regex {
                     crate::runtime::split_string_with_seps_regex(&s, &fs, ic)
                 } else {
                     crate::runtime::split_string_with_seps(&s, &fs, ic)
@@ -2431,7 +2436,7 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 };
                 let s = {
                     let v = ctx.pop();
-                    ctx.rt.value_to_str_convfmt(&v).into_owned()
+                    ctx.rt.value_to_bytes_convfmt(&v).into_owned()
                 };
                 let arr_name = arr.map(|i| ctx.str_ref(i).to_string());
                 let bound = match &arr_name {

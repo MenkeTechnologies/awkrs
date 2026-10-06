@@ -104,6 +104,12 @@ pub fn ctype_is_utf8() -> bool {
     }
     false
 }
+
+/// Whether awk characters are multibyte (UTF-8): a UTF-8 ctype locale and no
+/// `-b`. gawk's `MB_CUR_MAX > 1` test — `-b` makes it 1 whatever the locale.
+pub fn chars_are_multibyte() -> bool {
+    ctype_is_utf8() && !crate::format::AWK_CHARS_AS_BYTES.load(std::sync::atomic::Ordering::Relaxed)
+}
 /// `set_locale_numeric_from_env` — see implementation for the contract.
 #[cfg(not(unix))]
 pub fn set_locale_numeric_from_env() {}

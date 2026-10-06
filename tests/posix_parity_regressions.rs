@@ -3089,3 +3089,19 @@ fn split_default_separator_records_edge_whitespace_in_seps() {
     assert_eq!(code, 0);
     assert_eq!(stdout, "2 3 [\t ][  ][\n]|2 1 0 0\n");
 }
+
+/// `-b` is gawk's byte character model everywhere, not only in `length`,
+/// `substr` and `index`: `match` reports RSTART/RLENGTH in bytes, `%.Ns` cuts
+/// and `%Ns` pads by bytes, `%c` of a string is its first byte and of a number
+/// its low byte, `split(s, a, "")` makes one element per byte, and `.` matches
+/// one byte. Expected bytes are `gawk -b`'s, identical under `C` and UTF-8.
+#[test]
+fn characters_as_bytes_covers_match_printf_split_and_regex() {
+    let program = r#"BEGIN { s = "a\303\251b"; match(s, /b/); printf "%d %d|", RSTART, RLENGTH; match(s, /\303\251/); printf "%d %d|", RSTART, RLENGTH; printf "%.2s|%4s|%-2c|", s, "\303\251", "\303\251"; n = split(s, p, ""); printf "%d %s|", n, (s ~ /^a.b$/); printf "%c\n", 300 }"#;
+    let want: &[u8] = b"4 1|2 2|a\xc3|  \xc3\xa9|\xc3 |4 0|,\n";
+    for locale in ["C", "en_US.UTF-8"] {
+        let (code, out) = run_awkrs_bytes_locale(locale, &["-b"], program, b"");
+        assert_eq!(code, 0, "{locale}");
+        assert_eq!(out, want, "{locale}: got {out:x?}");
+    }
+}

@@ -207,11 +207,27 @@ pub fn sub_fn(
     Ok(n)
 }
 
+/// Length of `b` in awk characters: bytes in byte mode, else UTF-8
+/// characters (a byte that begins no valid character counts as one).
+fn char_count(b: &[u8], characters_as_bytes: bool) -> usize {
+    if characters_as_bytes {
+        b.len()
+    } else {
+        String::from_utf8_lossy(b).chars().count()
+    }
+}
+
 /// `match(s, ere [, arr])` — returns 0-based start index in awk as **1-based RSTART**, sets RSTART, RLENGTH.
-pub fn match_fn(rt: &mut Runtime, s: &str, re_pat: &str, arr_name: Option<&str>) -> Result<f64> {
+pub fn match_fn(
+    rt: &mut Runtime,
+    s: impl AsRef<[u8]>,
+    re_pat: &str,
+    arr_name: Option<&str>,
+) -> Result<f64> {
+    let s = s.as_ref();
     rt.ensure_regex(re_pat).map_err(Error::Runtime)?;
     let re = rt.regex_ref(re_pat).clone();
-    if let Some(m) = re.find(s.as_bytes()) {
+    if let Some(m) = re.find(s) {
         // `Match::start`/`len` are byte offsets, but awk reports RSTART and
         // RLENGTH as 1-based *character* positions — the same unit `substr`,
         // `index` and `length` use, and the same unit the `arr[i, "start"]`
@@ -219,13 +235,15 @@ pub fn match_fn(rt: &mut Runtime, s: &str, re_pat: &str, arr_name: Option<&str>)
         // single `match(s, re, arr)` call disagree with itself on multibyte
         // input: `match("ééx", /x/, A)` set RSTART to 5 while `A[0,"start"]`
         // was 3, and gawk answers 3 for both.
-        let rstart = (s[..m.start()].chars().count() + 1) as f64;
-        let rlength = String::from_utf8_lossy(m.as_bytes()).chars().count() as f64;
+        // In byte mode (`-b`) both are bytes.
+        let cab = rt.characters_as_bytes;
+        let rstart = (char_count(&s[..m.start()], cab) + 1) as f64;
+        let rlength = char_count(m.as_bytes(), cab) as f64;
         rt.vars.insert("RSTART".into(), Value::Num(rstart));
         rt.vars.insert("RLENGTH".into(), Value::Num(rlength));
         if let Some(a) = arr_name {
             rt.array_delete(a, None);
-            if let Some(caps) = re.captures(s.as_bytes()) {
+            if let Some(caps) = re.captures(s) {
                 // gawk parity: a[0] is the whole match, a[1]..a[n] are
                 // parenthesized subexpressions. Previously awkrs skipped
                 // group 0, so `match(s, /(a)|(b)/, arr)` left arr[0] empty.
@@ -245,8 +263,8 @@ pub fn match_fn(rt: &mut Runtime, s: &str, re_pat: &str, arr_name: Option<&str>)
                     if let Some(g) = caps.get(i) {
                         let key = format!("{i}");
                         rt.array_set(a, key, Value::Str(AwkStr::from(g.as_bytes())));
-                        let char_start = s[..g.start()].chars().count() + 1;
-                        let char_len = String::from_utf8_lossy(g.as_bytes()).chars().count();
+                        let char_start = char_count(&s[..g.start()], cab) + 1;
+                        let char_len = char_count(g.as_bytes(), cab);
                         rt.array_set(
                             a,
                             format!("{i}{subsep}start"),

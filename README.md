@@ -63,7 +63,7 @@
 | `-L`/`-t`/`LINT` | Static lint (extension rules, uninit-var hints, `printf` format checks); when **`LINT`** is truthy at runtime, also emit **`awkrs: warning:`** on stderr for `sqrt`/`log` domain issues (negative / zero args) |
 | `-S`/`--sandbox` | Block `system()`, file redirects, pipes, coprocesses, inet I/O |
 | `-l name` | Load `name.awk` from `AWKPATH` (default `.`) |
-| `-b` | Byte length for `length`/`substr`/`index` |
+| `-b` | Bytes as characters: `length`/`substr`/`index`, `match` RSTART/RLENGTH, `printf` `%s`/`%c` width and precision, `split(s, a, "")`, and regex `.` |
 | `-n` | `strtonum`-style hex/octal coercion |
 | `-s`/`--no-optimize` | Disable peephole/JIT optimization (forces the plain bytecode interpreter) |
 | `-c`/`-P` | Refuse the gawk-extension builtins (fatal, exit 2); `-c` also enables the BSD awk zero padding for `%0Ns`/`%0Nc`; `-P` ignores `PROCINFO["sorted_in"]` (unsorted `for (k in a)`) |
@@ -97,7 +97,7 @@
 - **`SYMTAB`** — assignment, `for-in`, `length(SYMTAB)` like gawk's global introspection (not GNU's variable-object references).
 - **`@load`** — non-`.awk` paths only accepted for **gawk's bundled extension names** (`filefuncs`, `readdir`, `time`, …) as no-ops; the builtins are native. Arbitrary `.so`/gawkapi modules error at parse time.
 - **`-M`/`--bignum`** — MPFR via `rug` (default 256 bits, `PROCINFO["prec"]`/`["roundmode"]` apply). Arithmetic, `sprintf`/`printf` integer formats (no f64/i64 clamp), `int`/`intdiv`/`strtonum`/`++`/`--`, bit ops, transcendentals, `srand` (low 32 bits of previous seed), `CONVFMT`/`OFMT`/`%s`/concat/regex coercion all use MPFR. Default `CONVFMT`-style number→string for scalars uses each `Float`'s own precision for the MPFR `sprintf` path (so raising `PROCINFO["prec"]` is not undermined by a hardcoded bit count at display time). JIT is disabled in `-M` mode.
-- **Unicode vs bytes:** `-b` honored for `length`/`substr`/`index`. Full multibyte field-splitting parity is not audited.
+- **Unicode vs bytes:** `-b` is gawk's byte model for `length`/`substr`/`index`, `match`, `printf` `%s`/`%c`, `split(s, a, "")` and regex `.`; without it the string builtins count UTF-8 characters whatever the locale. Full multibyte field-splitting parity is not audited.
 - **`getline < <directory>`** reads the directory's entries, sorted, one file name per record — an awkrs extension. gawk and mawk return `-1` for a directory and one-true-awk reports an I/O error.
 
 #### HELP // SYSTEM INTERFACE

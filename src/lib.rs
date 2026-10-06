@@ -380,6 +380,8 @@ pub fn run(bin_name: &str) -> Result<()> {
     // call to BSD-style behavior for those two specifiers.
     crate::format::AWK_TRADITIONAL_MODE
         .store(args.traditional, std::sync::atomic::Ordering::Relaxed);
+    crate::format::AWK_CHARS_AS_BYTES
+        .store(rt.characters_as_bytes, std::sync::atomic::Ordering::Relaxed);
     rt.jit_enabled =
         !args.no_optimize && std::env::var("AWKRS_JIT").map(|v| v != "0").unwrap_or(true);
     if args.use_lc_numeric {

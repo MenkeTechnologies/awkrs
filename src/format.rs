@@ -14,6 +14,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// stays intact for every caller that doesn't explicitly flip the switch.
 pub static AWK_TRADITIONAL_MODE: AtomicBool = AtomicBool::new(false);
 
+/// Process-wide byte character model for `%s` / `%c`: precision, field width
+/// and a string's first character count bytes, and `%c` of a number is its low
+/// byte. Set once at startup from `-b` (the runtime's `characters_as_bytes`),
+/// gawk's `MB_CUR_MAX == 1` model.
+pub static AWK_CHARS_AS_BYTES: AtomicBool = AtomicBool::new(false);
+
 #[inline]
 fn fmt_peek(fmt: &str, i: usize) -> Option<char> {
     fmt.get(i..)?.chars().next()
@@ -791,11 +797,16 @@ fn format_str_or_char_bytes(
     } else {
         b' '
     };
+    let bytes = AWK_CHARS_AS_BYTES.load(Ordering::Relaxed);
     let body = match conv {
         's' => {
             let mut b = AwkStr::from_vec(v.as_bytes_cow().into_owned());
             if let Some(p) = prec {
-                b = b.substr_chars(0, p);
+                b = if bytes {
+                    b.substr_bytes(0, p)
+                } else {
+                    b.substr_chars(0, p)
+                };
             }
             b
         }
@@ -805,9 +816,14 @@ fn format_str_or_char_bytes(
 }
 
 /// [`pad_string`] over bytes, counting the field width in characters the same
-/// way — a byte that does not begin a valid UTF-8 character counts as one.
+/// way — a byte that does not begin a valid UTF-8 character counts as one — or
+/// in bytes under [`AWK_CHARS_AS_BYTES`].
 fn pad_bytes(body: AwkStr, width: usize, left: bool, pad: u8) -> AwkStr {
-    let len = body.chars_lossy().count();
+    let len = if AWK_CHARS_AS_BYTES.load(Ordering::Relaxed) {
+        body.len()
+    } else {
+        body.chars_lossy().count()
+    };
     if width <= len {
         return body;
     }
@@ -843,6 +859,8 @@ fn sprintf_c_char_bytes(v: &Value) -> AwkStr {
         Value::Str(s) | Value::StrLit(s) | Value::Regexp(s) => {
             if s.is_empty() {
                 AwkStr::new()
+            } else if AWK_CHARS_AS_BYTES.load(Ordering::Relaxed) {
+                s.substr_bytes(0, 1)
             } else {
                 s.substr_chars(0, 1)
             }
@@ -860,7 +878,10 @@ fn numeric_c_char(v: &Value) -> AwkStr {
     // A code point no character can name falls back to the low byte in either
     // model: mawk and one-true-awk emit it in both locales, so it is the
     // majority answer where gawk clamps to NUL instead.
-    match (crate::locale_numeric::ctype_is_utf8(), char::from_u32(code)) {
+    match (
+        crate::locale_numeric::chars_are_multibyte(),
+        char::from_u32(code),
+    ) {
         (true, Some(c)) => AwkStr::from(c),
         _ => {
             let mut out = AwkStr::new();

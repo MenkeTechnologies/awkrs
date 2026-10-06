@@ -1111,7 +1111,7 @@ fn build_fs_regex(fs: &str, ignore_case: bool) -> Option<BytesRegex> {
     let translated = translate_awk_re_to_rust(fs);
     let mut b = regex::bytes::RegexBuilder::new(&translated);
     // Same locale rule as the `~` engine — see `Runtime::ensure_regex`.
-    b.unicode(crate::locale_numeric::ctype_is_utf8());
+    b.unicode(crate::locale_numeric::chars_are_multibyte());
     b.case_insensitive(ignore_case);
     b.dot_matches_new_line(true);
     b.build().ok()
@@ -1784,7 +1784,17 @@ fn translate_awk_re_to_rust(pat: &str) -> String {
             }
             // `\x{…}` is the one spelling Rust's regex parser accepts in both
             // positions, so the same rewrite serves inside and outside brackets.
-            out.push_str(&format!("\\x{{{code:x}}}"));
+            //
+            // A code above 0x7F is a *byte* in gawk (`/\303\251/` matches the
+            // two bytes of `é`), but `\x{c3}` names the character U+00C3, and
+            // with Unicode mode off it is a parse error. `\xHH` is the byte when
+            // Unicode is off; outside a bracket `(?-u:…)` makes it the byte in
+            // either mode (a bracket cannot switch modes mid-class).
+            match code {
+                0x80..=0xff if in_bracket => out.push_str(&format!("\\x{code:02x}")),
+                0x80..=0xff => out.push_str(&format!("(?-u:\\x{code:02x})")),
+                _ => out.push_str(&format!("\\x{{{code:x}}}")),
+            }
             i += 1 + digits;
             continue;
         }
@@ -2917,7 +2927,7 @@ impl Runtime {
         }
         let translated = translate_awk_re_bytes_to_rust(pat);
         let mut b = regex::bytes::RegexBuilder::new(&translated);
-        b.unicode(crate::locale_numeric::ctype_is_utf8());
+        b.unicode(crate::locale_numeric::chars_are_multibyte());
         b.case_insensitive(ic);
         b.dot_matches_new_line(true);
         let re = b.build().map_err(|e| e.to_string())?;
