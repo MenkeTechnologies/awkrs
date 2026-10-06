@@ -1042,6 +1042,11 @@ fn split_fields_fieldwidths(
     }
     let b = record;
     let n = b.len();
+    // gawk `fw_parse_field`: an empty record has no fields at all, and the
+    // loop below only starts a field while bytes remain.
+    if n == 0 {
+        return;
+    }
     let mut pos = 0usize;
     for spec in specs {
         // Skip leading bytes (gawk `skip:width`); cannot read past end.
@@ -3981,6 +3986,25 @@ impl Runtime {
             let _ = crate::vm::flush_print_buf(&mut self.print_buf);
             let _ = std::io::stdout().flush();
             return 0.0;
+        }
+        // gawk `do_close`: once the name is found among the open redirections,
+        // `fflush(stdout)` "to synchronize regular output" before closing it, so
+        // what the program printed earlier lands ahead of what the closing
+        // command still has to write.
+        let is_open = self.coproc_handles.contains_key(path)
+            || self.output_handles.contains_key(path)
+            || self.pipe_stdin.contains_key(path)
+            || self.pipe_children.contains_key(path)
+            || self.pipe_stdout.contains_key(path)
+            || self.pipe_input_children.contains_key(path)
+            || self.file_handles.contains_key(path)
+            || self.dir_read.contains_key(path)
+            || self.inet_tcp_read.contains_key(path)
+            || self.inet_tcp_write.contains_key(path)
+            || self.inet_udp.contains_key(path);
+        if is_open {
+            let _ = crate::vm::flush_print_buf(&mut self.print_buf);
+            let _ = std::io::stdout().flush();
         }
         // Any carry-over bytes belong to the stream being torn down; a reopen
         // under the same name must start clean.
