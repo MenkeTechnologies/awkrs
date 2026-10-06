@@ -460,17 +460,19 @@ pub(crate) fn exec_builtin_dispatch(
             }
         }
         "fflush" => {
-            if args.is_empty() {
+            let path = args.first().map(|a| a.as_str()).unwrap_or_default();
+            if path.is_empty() {
                 ctx.emit_flush()?;
+                Value::Num(0.0)
+            } else if ctx.rt.flush_redirect_target(&path)? {
+                Value::Num(0.0)
             } else {
-                let path = args[0].as_str();
-                if path.is_empty() {
-                    ctx.emit_flush()?;
-                } else {
-                    ctx.rt.flush_redirect_target(&path)?;
-                }
+                // gawk: a warning and -1, and the program goes on.
+                eprintln!(
+                    "awkrs: warning: fflush: `{path}' is not an open file, pipe or co-process"
+                );
+                Value::Num(-1.0)
             }
-            Value::Num(0.0)
         }
         "sprintf" => {
             if args.is_empty() {

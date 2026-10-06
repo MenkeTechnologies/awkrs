@@ -581,6 +581,7 @@ impl<'a> VmCtx<'a> {
         match name {
             "OFS" => self.rt.ofs_bytes = val.as_str().into_bytes(),
             "ORS" => self.rt.ors_bytes = val.as_str().into_bytes(),
+            "FS" | "FIELDWIDTHS" | "FPAT" => self.rt.note_split_var_assigned(name),
             // RS / CONVFMT: no cached bytes; next read uses [`Runtime::rs_string`] / CONVFMT lookup.
             _ => {}
         }

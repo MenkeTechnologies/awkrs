@@ -40,6 +40,14 @@ pub(crate) fn field_split_mode(rt: &Runtime) -> &'static str {
     if rt.csv_mode {
         return "API";
     }
+    // Once FS, FIELDWIDTHS or FPAT has been assigned, the last one assigned is
+    // the rule (gawk's `set_parser`); before that, the non-empty one.
+    match rt.field_split_by {
+        Some(crate::runtime::FieldSplitBy::Fs) => return "FS",
+        Some(crate::runtime::FieldSplitBy::FieldWidths) => return "FIELDWIDTHS",
+        Some(crate::runtime::FieldSplitBy::Fpat) => return "FPAT",
+        None => {}
+    }
     let fw = rt
         .get_global_var("FIELDWIDTHS")
         .map(|v| v.as_str().to_string())

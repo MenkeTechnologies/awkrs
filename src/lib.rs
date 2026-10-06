@@ -744,6 +744,7 @@ fn process_lines_parallel_chunk(
     numeric_dec: char,
     numeric_thousands_sep: Option<char>,
     csv_mode: bool,
+    field_split_by: Option<crate::runtime::FieldSplitBy>,
     bignum: bool,
     non_decimal_data: bool,
     sandbox: bool,
@@ -769,6 +770,7 @@ fn process_lines_parallel_chunk(
                     numeric_dec,
                     numeric_thousands_sep,
                     csv_mode,
+                    field_split_by,
                     bignum,
                     sandbox,
                     characters_as_bytes,
@@ -876,6 +878,7 @@ fn process_stdin_parallel(
     let seed_base = rt.rand_seed;
     let numeric_dec = rt.numeric_decimal;
     let csv_mode = rt.csv_mode;
+    let field_split_by = rt.field_split_by;
     let stdin_nr_offset = rt.nr;
 
     let mut stdin = BufReader::new(std::io::stdin());
@@ -909,6 +912,7 @@ fn process_stdin_parallel(
             numeric_dec,
             rt.numeric_thousands_sep,
             csv_mode,
+            field_split_by,
             rt.bignum,
             non_decimal_data,
             sandbox,
@@ -1074,6 +1078,7 @@ fn process_file_parallel(
     let seed_base = rt.rand_seed;
     let numeric_dec = rt.numeric_decimal;
     let csv_mode = rt.csv_mode;
+    let field_split_by = rt.field_split_by;
 
     let pool = parallel_pool(threads)?;
 
@@ -1090,6 +1095,7 @@ fn process_file_parallel(
         numeric_dec,
         rt.numeric_thousands_sep,
         csv_mode,
+        field_split_by,
         rt.bignum,
         non_decimal_data,
         sandbox,

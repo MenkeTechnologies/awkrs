@@ -1409,6 +1409,17 @@ fn split_fields_into(
 /// `None` (HashMap miss) = never checked.
 pub type FuseChunkSlot = Option<Arc<(fusevm::Chunk, Vec<u16>)>>;
 
+/// The record-splitting rule in force, gawk's `current_field_sep()`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldSplitBy {
+    /// `FS` (the default, and after any assignment to `FS`).
+    Fs,
+    /// `FIELDWIDTHS`, after an assignment to it — even an empty one.
+    FieldWidths,
+    /// `FPAT`, after an assignment to it.
+    Fpat,
+}
+
 /// `Runtime` — see fields for the structure layout.
 pub struct Runtime {
     /// `vars` field.
@@ -1565,6 +1576,9 @@ pub struct Runtime {
     pub vm_stack: Vec<Value>,
     /// `-k` / `--csv` (gawk-style): use [`split_csv_gawk_fields`] instead of `FPAT` / `FS` for `$n`.
     pub csv_mode: bool,
+    /// Which of `FS`, `FIELDWIDTHS` and `FPAT` splits records: the one assigned
+    /// last, as gawk's `set_parser` does (see [`Runtime::note_split_var_assigned`]).
+    pub field_split_by: Option<FieldSplitBy>,
     /// gawk: `RS` longer than one character is a regex delimiter (cached here).
     pub rs_pattern_for_regex: String,
     /// `rs_regex_bytes` field.
@@ -2343,6 +2357,7 @@ impl Runtime {
             ors_bytes: b"\n".to_vec(),
             vm_stack: Vec::with_capacity(64),
             csv_mode: false,
+            field_split_by: None,
             rs_pattern_for_regex: String::new(),
             rs_regex_bytes: None,
             sandbox: false,
@@ -2770,6 +2785,7 @@ impl Runtime {
         numeric_decimal: char,
         numeric_thousands_sep: Option<char>,
         csv_mode: bool,
+        field_split_by: Option<FieldSplitBy>,
         bignum: bool,
         sandbox: bool,
         characters_as_bytes: bool,
@@ -2837,6 +2853,7 @@ impl Runtime {
             ors_bytes: b"\n".to_vec(),
             vm_stack: Vec::with_capacity(64),
             csv_mode,
+            field_split_by,
             rs_pattern_for_regex: String::new(),
             rs_regex_bytes: None,
             sandbox,
@@ -3278,36 +3295,36 @@ impl Runtime {
     }
 
     /// Flush buffered output for a file or pipe opened with `print`/`printf` redirection.
-    pub fn flush_redirect_target(&mut self, key: &str) -> Result<()> {
+    /// `Ok(false)` when `key` names nothing open for output: gawk's `fflush`
+    /// then warns and returns -1 rather than stopping the program.
+    pub fn flush_redirect_target(&mut self, key: &str) -> Result<bool> {
         if is_program_stdout(key) {
             crate::vm::flush_print_buf(&mut self.print_buf)?;
             std::io::stdout().flush().map_err(Error::Io)?;
-            return Ok(());
+            return Ok(true);
         }
         if let Some(w) = self.output_handles.get_mut(key) {
             w.flush().map_err(Error::Io)?;
-            return Ok(());
+            return Ok(true);
         }
         if let Some(w) = self.inet_tcp_write.get_mut(key) {
             w.flush().map_err(Error::Io)?;
-            return Ok(());
+            return Ok(true);
         }
         if self.inet_udp.contains_key(key) {
-            return Ok(());
+            return Ok(true);
         }
         if let Some(w) = self.pipe_stdin.get_mut(key) {
             w.flush().map_err(Error::Io)?;
-            return Ok(());
+            return Ok(true);
         }
         if let Some(h) = self.coproc_handles.get_mut(key) {
             if let Some(w) = h.stdin.as_mut() {
                 w.flush().map_err(Error::Io)?;
             }
-            return Ok(());
+            return Ok(true);
         }
-        Err(Error::Runtime(format!(
-            "fflush: {key} is not an open output file, pipe, or coprocess"
-        )))
+        Ok(false)
     }
     /// `attach_input_reader` — see implementation for the contract.
     #[cfg_attr(unix, allow(dead_code))]
@@ -4116,29 +4133,38 @@ impl Runtime {
             return;
         }
         let ic = self.ignore_case_flag();
-        if let Some(fw) = self.fieldwidths_vec() {
-            if !fw.is_empty() {
+        // Until one of FS, FIELDWIDTHS and FPAT is assigned, a non-empty
+        // FIELDWIDTHS, then a non-empty FPAT, decides; afterwards the last one
+        // assigned does (`note_split_var_assigned`).
+        let by = self.field_split_by;
+        if matches!(by, None | Some(FieldSplitBy::FieldWidths)) {
+            // An empty FIELDWIDTHS falls back to FS. (gawk 5.4 instead splits
+            // every record into no fields; awkrs's suite pins the fallback.)
+            if let Some(fw) = self.fieldwidths_vec().filter(|fw| !fw.is_empty()) {
                 split_fields_fieldwidths(record, &fw, &mut self.field_ranges);
                 self.fields.clear();
                 self.fields_dirty = false;
                 return;
             }
         }
-        let fpat_trimmed: Option<String> = self.get_global_var("FPAT").and_then(|fv| {
-            if !matches!(
-                fv,
-                Value::Str(ref s) | Value::StrLit(ref s) if !s.to_str_lossy().trim().is_empty()
-            ) {
-                return None;
-            }
-            let t = fv.as_str_cow();
-            let tr = t.as_ref().trim();
-            if tr.is_empty() {
-                None
-            } else {
-                Some(tr.to_string())
-            }
-        });
+        let fpat_trimmed: Option<String> = matches!(by, None | Some(FieldSplitBy::Fpat))
+            .then(|| self.get_global_var("FPAT"))
+            .flatten()
+            .and_then(|fv| {
+                if !matches!(
+                    fv,
+                    Value::Str(ref s) | Value::StrLit(ref s) if !s.to_str_lossy().trim().is_empty()
+                ) {
+                    return None;
+                }
+                let t = fv.as_str_cow();
+                let tr = t.as_ref().trim();
+                if tr.is_empty() {
+                    None
+                } else {
+                    Some(tr.to_string())
+                }
+            });
         if let Some(ref fp_trimmed) = fpat_trimmed {
             if split_fields_fpat(record, fp_trimmed, &mut self.field_ranges) {
                 return;
@@ -4729,7 +4755,35 @@ impl Runtime {
         self.symtab_elem_set(key, Value::Str(s.into()));
     }
 
+    /// An assignment to `FS`, `FIELDWIDTHS` or `FPAT` makes that variable the
+    /// record-splitting rule, whatever the other two hold — gawk's `set_FS`,
+    /// `set_FIELDWIDTHS` and `set_FPAT` each install their own parser. Under
+    /// `--csv` the assignment has no effect on splitting (gawk warns).
+    pub fn note_split_var_assigned(&mut self, name: &str) {
+        if self.csv_mode {
+            return;
+        }
+        let by = match name {
+            "FS" => FieldSplitBy::Fs,
+            "FIELDWIDTHS" => FieldSplitBy::FieldWidths,
+            "FPAT" => FieldSplitBy::Fpat,
+            _ => return,
+        };
+        // gawk splits the current record completely under the old rule first,
+        // so changing the rule mid-record leaves this record's fields alone.
+        self.ensure_fields_split();
+        if self.field_split_by == Some(by) {
+            return;
+        }
+        self.field_split_by = Some(by);
+        // gawk's `set_parser` republishes `PROCINFO["FS"]` whenever the rule changes.
+        if let Some(Value::Array(p)) = self.vars.get_mut("PROCINFO") {
+            p.insert("FS".into(), Value::Str(name.into()));
+        }
+    }
+
     pub fn symtab_elem_set(&mut self, key: &str, val: Value) {
+        self.note_split_var_assigned(key);
         if let Some(&slot) = self.symtab_slot_map.get(key) {
             let i = slot as usize;
             if i < self.slots.len() {
@@ -5427,6 +5481,7 @@ impl Clone for Runtime {
             ors_bytes: self.ors_bytes.clone(),
             vm_stack: Vec::with_capacity(64),
             csv_mode: self.csv_mode,
+            field_split_by: self.field_split_by,
             rs_pattern_for_regex: self.rs_pattern_for_regex.clone(),
             rs_regex_bytes: self.rs_regex_bytes.clone(),
             sandbox: self.sandbox,
