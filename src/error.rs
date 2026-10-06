@@ -35,6 +35,14 @@ pub enum Error {
     /// `exit` was evaluated (propagated from functions / expressions).
     #[error("exit {0}")]
     Exit(i32),
+    /// `next` ran inside a user function: carried out of the call and turned
+    /// back into the calling rule's `next` at the call site. Escaping further
+    /// (a sort comparator, a `BEGIN`/`END` call) it is gawk's fatal.
+    #[error("`next` cannot be called from this context")]
+    Next,
+    /// `nextfile` ran inside a user function; see [`Error::Next`].
+    #[error("`nextfile` cannot be called from this context")]
+    NextFile,
 }
 impl Error {
     /// Re-tag a `validate_program` rejection as the parse-time diagnostic it
@@ -66,7 +74,12 @@ impl Error {
         match self {
             Error::Parse { .. } | Error::Validate(_) => 1,
             Error::Exit(code) => *code,
-            Error::Io(_) | Error::Runtime(_) | Error::ProgramFile(..) | Error::InputFile(..) => 2,
+            Error::Io(_)
+            | Error::Runtime(_)
+            | Error::ProgramFile(..)
+            | Error::InputFile(..)
+            | Error::Next
+            | Error::NextFile => 2,
         }
     }
 }

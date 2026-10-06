@@ -1059,15 +1059,13 @@ pub(crate) fn exec_call_user_inner(
             ctx.locals.pop();
             ctx.in_function = was_fn;
             crate::vm::debugger_leave_sub(ctx);
-            return Err(Error::Runtime("invalid jump out of function (next)".into()));
+            return Err(Error::Next);
         }
         Ok(VmSignal::NextFile) => {
             ctx.locals.pop();
             ctx.in_function = was_fn;
             crate::vm::debugger_leave_sub(ctx);
-            return Err(Error::Runtime(
-                "invalid jump out of function (nextfile)".into(),
-            ));
+            return Err(Error::NextFile);
         }
         Ok(VmSignal::ExitPending) => {
             ctx.locals.pop();
