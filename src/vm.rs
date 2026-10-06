@@ -323,7 +323,11 @@ impl<'a> VmCtx<'a> {
     /// update the caller's array. A local array (`function f(  loc)`) leaked
     /// the same way and accumulated across calls.
     fn array_field_add_delta(&mut self, name: &str, field: i32, delta: f64) -> Result<()> {
-        if !self.locals.last().is_some_and(|frame| frame.contains_key(name)) {
+        if !self
+            .locals
+            .last()
+            .is_some_and(|frame| frame.contains_key(name))
+        {
             self.rt.array_field_add_delta(name, field, delta);
             return Ok(());
         }
@@ -2405,8 +2409,13 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 let seps_name = seps.map(|i| ctx.str_ref(i).to_string());
                 let (arr_bound, seps_bound) =
                     ctx.bind_split_arrays("patsplit", &arr_name, seps_name.as_deref())?;
-                let n =
-                    builtins::patsplit(ctx.rt, &s, &arr_bound, fp.as_deref(), seps_bound.as_deref())?;
+                let n = builtins::patsplit(
+                    ctx.rt,
+                    &s,
+                    &arr_bound,
+                    fp.as_deref(),
+                    seps_bound.as_deref(),
+                )?;
                 ctx.unbind_array_arg(&arr_name, &arr_bound);
                 if let (Some(name), Some(bound)) = (seps_name, seps_bound) {
                     ctx.unbind_array_arg(&name, &bound);
