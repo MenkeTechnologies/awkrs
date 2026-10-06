@@ -68,16 +68,15 @@ impl VmCtx<'_> {
     }
 
     /// The array `name` itself: a function's array parameter or local when the
-    /// innermost frame binding the name has one, else the global — created
+    /// innermost function frame binds the name, else the global — created
     /// when unassigned.
-    fn root_array_mut(&mut self, name: &str) -> Result<&mut AwkArray> {
+    pub(super) fn root_array_mut(&mut self, name: &str) -> Result<&mut AwkArray> {
         if name == "SYMTAB" {
             return Err(Error::Runtime(
                 "SYMTAB elements cannot be used as subarrays".into(),
             ));
         }
-        if let Some(i) = self.locals.iter().rposition(|f| f.contains_key(name)) {
-            let slot = self.locals[i].get_mut(name).expect("frame binds name");
+        if let Some(slot) = self.locals.last_mut().and_then(|f| f.get_mut(name)) {
             return as_array_mut(slot, name);
         }
         if !self.rt.vars.contains_key(name) {

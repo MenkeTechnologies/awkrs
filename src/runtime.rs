@@ -5145,13 +5145,6 @@ impl Runtime {
     /// `key in arr` — true iff `arr` is an array that has `key` (POSIX: subscript was used).
     #[inline]
     /// [`Self::array_has`] with a byte subscript.
-    pub fn array_has_bytes(&self, name: &str, key: &[u8]) -> bool {
-        match self.get_global_var(name) {
-            Some(Value::Array(a)) => a.contains_key_bytes(key),
-            _ => false,
-        }
-    }
-
     pub fn array_has(&self, name: &str, key: &str) -> bool {
         if name == "SYMTAB" {
             return self.symtab_has_key(key);

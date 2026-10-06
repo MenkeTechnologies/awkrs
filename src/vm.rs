@@ -21,6 +21,11 @@ use std::mem;
 /// Max interned identifier length resolved via stack buffer (`with_short_pool_name_mut`).
 const POOL_NAME_STACK_MAX: usize = 128;
 
+/// Prefix of the hidden global that holds a function frame's array while a
+/// builtin that fills an array by name works on it (see
+/// [`VmCtx::bind_array_arg`]). The NUL keeps it out of any awk program's reach.
+const FRAME_ARRAY_PREFIX: &str = "\0frame-array:";
+
 // ── VM context ──────────────────────────────────────────────────────────────
 
 struct ForInState {
@@ -105,7 +110,7 @@ impl<'a> VmCtx<'a> {
     /// Scalar read for locals/slots/globals: [`Cow::Borrowed`] when stored (no clone);
     /// [`Cow::Owned`] for synthesized scalars (`NR`, `NF`, …) or missing globals.
     pub(crate) fn var_value_cow(&mut self, name: &str) -> Cow<'_, Value> {
-        for frame in self.locals.iter().rev() {
+        if let Some(frame) = self.locals.last() {
             if let Some(v) = frame.get(name) {
                 return Cow::Borrowed(v);
             }
@@ -143,16 +148,19 @@ impl<'a> VmCtx<'a> {
         if name == "SYMTAB" {
             return self.rt.symtab_elem_get(key);
         }
-        // Check the current (innermost) frame for an array param with this
-        // name — POSIX array call-by-reference for user functions.
-        for frame in self.locals.iter().rev() {
-            if let Some(Value::Array(a)) = frame.get(name) {
-                return match a.get(key) {
+        // The current (innermost) frame's array param or local with this
+        // name — POSIX array call-by-reference for user functions. A local
+        // that is not (yet) an array holds no elements; the global of the same
+        // name is out of scope.
+        if let Some(local) = self.locals.last().and_then(|f| f.get(name)) {
+            return match local {
+                Value::Array(a) => match a.get(key) {
                     Some(Value::Num(n)) => Value::Num(*n),
                     Some(v) => v.clone(),
                     None => Value::Str(String::new().into()),
-                };
-            }
+                },
+                _ => Value::Uninit,
+            };
         }
         self.rt.array_get(name, key)
     }
@@ -171,8 +179,13 @@ impl<'a> VmCtx<'a> {
         if name == "SYMTAB" {
             return self.rt.symtab_elem_get(&String::from_utf8_lossy(key));
         }
-        for frame in self.locals.iter_mut().rev() {
-            if let Some(Value::Array(a)) = frame.get_mut(name) {
+        if let Some(slot) = self.locals.last_mut().and_then(|f| f.get_mut(name)) {
+            // An unassigned local becomes an array by the read, as a global
+            // does; a scalar one was already refused by the caller.
+            if matches!(slot, Value::Uninit) {
+                *slot = Value::Array(AwkArray::new());
+            }
+            if let Value::Array(a) = slot {
                 if let Some(v) = a.get_bytes(key) {
                     return match v {
                         Value::Num(n) => Value::Num(*n),
@@ -180,26 +193,27 @@ impl<'a> VmCtx<'a> {
                     };
                 }
                 a.insert_bytes(key, Value::Uninit);
-                return Value::Uninit;
             }
+            return Value::Uninit;
         }
         self.rt.array_get_vivify_bytes(name, key)
     }
 
     /// Frame-aware snapshot of an array's `(key, value)` pairs for the
-    /// sort builtins (`asort` / `asorti`). Walks the locals stack innermost-out
-    /// so an array passed by reference into a user function is found in the
+    /// sort builtins (`asort` / `asorti`). Consults the innermost function frame
+    /// first so an array passed by reference into a user function is found in the
     /// frame rather than falling through to the (empty) global by that name.
     ///
     /// Returns `Ok(Vec::new())` for unassigned names (gawk parity); a scalar
     /// at the same name is a fatal "`{name}` is not an array".
     fn array_pairs_for_sort(&self, name: &str, fn_name: &str) -> Result<Vec<(AwkStr, Value)>> {
-        for frame in self.locals.iter().rev() {
+        if let Some(frame) = self.locals.last() {
             match frame.get(name) {
                 Some(Value::Array(a)) => {
                     return Ok(a.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
                 }
-                Some(Value::Uninit) | None => {}
+                Some(Value::Uninit) => return Ok(Vec::new()),
+                None => {}
                 Some(_) => {
                     return Err(Error::Runtime(format!(
                         "{fn_name}: `{name}` is not an array"
@@ -227,7 +241,7 @@ impl<'a> VmCtx<'a> {
         for (k, v) in pairs {
             new_map.insert(k, v);
         }
-        for frame in self.locals.iter_mut().rev() {
+        if let Some(frame) = self.locals.last_mut() {
             if let Some(slot) = frame.get_mut(name) {
                 *slot = Value::Array(new_map);
                 return;
@@ -248,7 +262,7 @@ impl<'a> VmCtx<'a> {
         }
         // POSIX array call-by-reference: writes through a function array
         // param go to the current frame, not global vars.
-        for frame in self.locals.iter_mut().rev() {
+        if let Some(frame) = self.locals.last_mut() {
             if let Some(slot) = frame.get_mut(name) {
                 if let Value::Array(a) = slot {
                     return a.insert_bytes(key, val);
@@ -266,10 +280,11 @@ impl<'a> VmCtx<'a> {
 
     /// [`Self::array_elem_get`] with a byte subscript.
     fn array_elem_get_bytes(&mut self, name: &str, key: &[u8]) -> Value {
-        for frame in self.locals.iter().rev() {
-            if let Some(Value::Array(a)) = frame.get(name) {
-                return a.get_bytes(key).cloned().unwrap_or(Value::Uninit);
-            }
+        if let Some(local) = self.locals.last().and_then(|f| f.get(name)) {
+            return match local {
+                Value::Array(a) => a.get_bytes(key).cloned().unwrap_or(Value::Uninit),
+                _ => Value::Uninit,
+            };
         }
         self.rt.array_get_bytes(name, key)
     }
@@ -281,7 +296,7 @@ impl<'a> VmCtx<'a> {
         }
         // POSIX array call-by-reference: writes through a function array
         // param go to the current frame, not global vars.
-        for frame in self.locals.iter_mut().rev() {
+        if let Some(frame) = self.locals.last_mut() {
             if let Some(slot) = frame.get_mut(name) {
                 if let Value::Array(a) = slot {
                     a.insert_str(key, val);
@@ -308,7 +323,7 @@ impl<'a> VmCtx<'a> {
     /// update the caller's array. A local array (`function f(  loc)`) leaked
     /// the same way and accumulated across calls.
     fn array_field_add_delta(&mut self, name: &str, field: i32, delta: f64) -> Result<()> {
-        if !self.locals.iter().any(|frame| frame.contains_key(name)) {
+        if !self.locals.last().is_some_and(|frame| frame.contains_key(name)) {
             self.rt.array_field_add_delta(name, field, delta);
             return Ok(());
         }
@@ -331,7 +346,7 @@ impl<'a> VmCtx<'a> {
         }
         // POSIX array call-by-reference: writes through a function array
         // param go to the current frame, not global vars.
-        for frame in self.locals.iter_mut().rev() {
+        if let Some(frame) = self.locals.last_mut() {
             if let Some(slot) = frame.get_mut(name) {
                 if let Value::Array(a) = slot {
                     a.insert(key, val);
@@ -350,6 +365,89 @@ impl<'a> VmCtx<'a> {
         self.rt.array_set(name, key, val);
     }
 
+    /// Prepare the array argument `name` of a builtin that fills an array by
+    /// name through the runtime (`split`, `patsplit`, `match`).
+    ///
+    /// Those builtins write the runtime's global map. When `name` is a
+    /// parameter or local of the innermost function frame, its value is moved
+    /// into the globals under a hidden name for the duration of the call and
+    /// that name is returned (pass it to the builtin, then hand it to
+    /// [`Self::unbind_array_arg`]); a global name is returned unchanged. Either
+    /// way the target is an array afterwards, even when the builtin stores
+    /// nothing into it.
+    ///
+    /// A scalar target is gawk's fatal "`func`: `nth` argument is not an
+    /// array" (`split: second argument is not an array`).
+    fn bind_array_arg(&mut self, name: &str, func: &str, nth: &str) -> Result<String> {
+        let not_array = || Error::Runtime(format!("{func}: {nth} argument is not an array"));
+        if let Some(slot) = self.locals.last_mut().and_then(|f| f.get_mut(name)) {
+            let v = match mem::replace(slot, Value::Uninit) {
+                Value::Uninit => Value::Array(AwkArray::new()),
+                a @ Value::Array(_) => a,
+                scalar => {
+                    *slot = scalar;
+                    return Err(not_array());
+                }
+            };
+            let hidden = format!("{FRAME_ARRAY_PREFIX}{name}");
+            self.rt.vars.insert(hidden.clone(), v);
+            return Ok(hidden);
+        }
+        let global_scalar = match self.cp.slot_map.get(name) {
+            Some(&slot) => !matches!(self.rt.slots[slot as usize], Value::Uninit),
+            None => !matches!(
+                self.rt.get_global_var(name),
+                None | Some(Value::Uninit | Value::Array(_))
+            ),
+        };
+        if global_scalar {
+            return Err(not_array());
+        }
+        if !matches!(self.rt.vars.get(name), Some(Value::Array(_))) {
+            // Copies an array a parallel worker inherited, else creates one.
+            self.root_array_mut(name)?;
+        }
+        Ok(name.to_string())
+    }
+
+    /// Undo [`Self::bind_array_arg`]: move a frame array back from its hidden
+    /// global into the innermost frame. A no-op for a global target.
+    fn unbind_array_arg(&mut self, name: &str, bound: &str) {
+        if bound == name {
+            return;
+        }
+        let v = self
+            .rt
+            .vars
+            .remove(bound)
+            .unwrap_or_else(|| Value::Array(AwkArray::new()));
+        if let Some(frame) = self.locals.last_mut() {
+            frame.insert(name.to_string(), v);
+        }
+    }
+
+    /// [`Self::bind_array_arg`] for the target and optional separators array of
+    /// `split` / `patsplit`, checked in gawk's order: the fourth argument
+    /// first, then the second, then that they are not the same array.
+    fn bind_split_arrays(
+        &mut self,
+        func: &str,
+        arr: &str,
+        seps: Option<&str>,
+    ) -> Result<(String, Option<String>)> {
+        let Some(seps) = seps else {
+            return Ok((self.bind_array_arg(arr, func, "second")?, None));
+        };
+        let seps_bound = self.bind_array_arg(seps, func, "fourth")?;
+        if seps == arr {
+            return Err(Error::Runtime(format!(
+                "{func}: cannot use the same array for second and fourth args"
+            )));
+        }
+        let arr_bound = self.bind_array_arg(arr, func, "second")?;
+        Ok((arr_bound, Some(seps_bound)))
+    }
+
     fn symtab_has(&self, key: &str) -> bool {
         self.rt.array_has("SYMTAB", key)
     }
@@ -366,7 +464,7 @@ impl<'a> VmCtx<'a> {
         // A parameter array honors `PROCINFO["sorted_in"]` exactly as a global
         // one does; its keys used to come back in hash order.
         let rt = &*self.rt;
-        let frame_keys: Option<Vec<AwkStr>> = self.locals.iter().rev().find_map(|frame| {
+        let frame_keys: Option<Vec<AwkStr>> = self.locals.last().and_then(|frame| {
             if let Some(Value::Array(a)) = frame.get(name) {
                 Some(rt.for_in_keys_of(a))
             } else {
@@ -443,7 +541,7 @@ impl<'a> VmCtx<'a> {
         // compound (`+=`), increment and `for (k in …)` loop-variable paths,
         // which all funnel through this one function, are covered too.
         val.reject_if_array_scalar()?;
-        for frame in self.locals.iter_mut().rev() {
+        if let Some(frame) = self.locals.last_mut() {
             if let Some(v) = frame.get_mut(name) {
                 if matches!(v, Value::Array(_)) {
                     return Err(array_in_scalar_context(name));
@@ -528,7 +626,7 @@ impl<'a> VmCtx<'a> {
             "FILENAME" => return Value::Str("string".into()),
             _ => {}
         }
-        for frame in self.locals.iter().rev() {
+        if let Some(frame) = self.locals.last() {
             if let Some(v) = frame.get(name) {
                 return Value::StrLit(builtins::awk_typeof_value(v).into());
             }
@@ -2168,80 +2266,29 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 let mut kbuf = crate::runtime::KeyBuf::new();
                 let k = ctx.rt.array_key_bytes_in(&key_val, &mut kbuf);
                 let name = ctx.str_ref(arr).to_string();
-                // gawk parity: `key in x` on a scalar `x` raises "attempt to
-                // use scalar `x' as an array". Earlier awkrs returned 0.
-                check_array_target(ctx, &name)?;
                 let b = if name == "SYMTAB" {
                     ctx.symtab_has(&String::from_utf8_lossy(k.as_ref()))
                 } else {
-                    // Frame-aware: a function array parameter lives in
-                    // `ctx.locals`, not the global var map. Walk frames first
-                    // so `(key in arr)` inside a user function sees the
-                    // caller's data; fall through to the global lookup
-                    // otherwise.
-                    let mut found = None;
-                    for frame in ctx.locals.iter().rev() {
-                        match frame.get(name.as_str()) {
-                            Some(Value::Array(a)) => {
-                                found = Some(a.contains_key_bytes(k.as_ref()));
-                                break;
-                            }
-                            Some(Value::Uninit) | None => {}
-                            Some(_) => break,
-                        }
-                    }
-                    found.unwrap_or_else(|| ctx.rt.array_has_bytes(&name, k.as_ref()))
+                    // The innermost function frame's parameter or local of
+                    // that name, else the global. The test types the name as
+                    // an array, as in gawk: after `if (1 in a)`, `typeof(a)`
+                    // is "array". On a scalar it is gawk's "attempt to use
+                    // scalar `x' as an array".
+                    let k = k.into_owned();
+                    ctx.root_array_mut(&name)?.contains_key_bytes(&k)
                 };
                 ctx.push(Value::Num(if b { 1.0 } else { 0.0 }));
             }
             Op::DeleteArray(arr) => {
                 let name = ctx.str_ref(arr).to_string();
-                // gawk parity: `delete x` on a scalar variable is a fatal
-                // "attempt to use scalar `x' as an array". Unassigned names
-                // silently no-op (POSIX). Check frames and globals for a
-                // non-array, non-uninit value before falling through.
-                let mut handled = false;
-                let mut scalar_err = false;
-                for frame in ctx.locals.iter_mut().rev() {
-                    match frame.get_mut(name.as_str()) {
-                        Some(Value::Array(a)) => {
-                            a.clear();
-                            handled = true;
-                            break;
-                        }
-                        // A declared-but-unassigned local is typed as an array
-                        // by the delete itself: gawk answers `array` for
-                        // `function f(loc) { delete loc; print typeof(loc) }`
-                        // and then rejects `loc = 1`. `None` means the name is
-                        // not local to this frame at all, so keep walking out.
-                        Some(slot @ Value::Uninit) => {
-                            *slot = Value::Array(AwkArray::new());
-                            handled = true;
-                            break;
-                        }
-                        None => {}
-                        Some(_) => {
-                            scalar_err = true;
-                            break;
-                        }
-                    }
-                }
-                if scalar_err {
-                    return Err(Error::Runtime(format!(
-                        "attempt to use scalar `{name}' as an array"
-                    )));
-                }
-                if !handled {
-                    match ctx.rt.get_global_var(&name) {
-                        Some(Value::Array(_)) | None | Some(Value::Uninit) => {
-                            ctx.rt.array_delete(&name, None);
-                        }
-                        Some(_) => {
-                            return Err(Error::Runtime(format!(
-                                "attempt to use scalar `{name}' as an array"
-                            )));
-                        }
-                    }
+                // `delete x` empties the array and types an unassigned name as
+                // one: gawk answers `array` for `delete x; print typeof(x)` and
+                // then rejects `x = 1`. On a scalar it is gawk's "attempt to
+                // use scalar `x' as an array".
+                if name == "SYMTAB" {
+                    ctx.rt.array_delete(&name, None);
+                } else {
+                    ctx.root_array_mut(&name)?.clear();
                 }
             }
             Op::DeleteElem(arr) => {
@@ -2254,44 +2301,10 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 if name == "SYMTAB" {
                     ctx.symtab_delete(k.as_ref());
                 } else {
-                    // Frame-aware delete: `delete a[k]` inside a function with
-                    // `a` as a by-reference array param routes through the
-                    // frame, not global vars. Like DeleteArray above, a scalar
-                    // value at that name is a fatal "attempt to use scalar as
-                    // an array" (gawk parity).
-                    let mut handled = false;
-                    let mut scalar_err = false;
-                    for frame in ctx.locals.iter_mut().rev() {
-                        match frame.get_mut(name) {
-                            Some(Value::Array(map)) => {
-                                map.remove(k.as_str());
-                                handled = true;
-                                break;
-                            }
-                            Some(Value::Uninit) | None => {}
-                            Some(_) => {
-                                scalar_err = true;
-                                break;
-                            }
-                        }
-                    }
-                    if scalar_err {
-                        return Err(Error::Runtime(format!(
-                            "attempt to use scalar `{name}' as an array"
-                        )));
-                    }
-                    if !handled {
-                        match ctx.rt.get_global_var(name) {
-                            Some(Value::Array(_)) | None | Some(Value::Uninit) => {
-                                ctx.rt.array_delete(name, Some(k.as_ref()));
-                            }
-                            Some(_) => {
-                                return Err(Error::Runtime(format!(
-                                    "attempt to use scalar `{name}' as an array"
-                                )));
-                            }
-                        }
-                    }
+                    // The innermost function frame's parameter or local of
+                    // that name, else the global; like `delete x` it types an
+                    // unassigned name as an array.
+                    ctx.root_array_mut(name)?.remove(k.as_str());
                 }
             }
 
@@ -2352,6 +2365,8 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 };
                 let arr_name = ctx.str_ref(arr).to_string();
                 let seps_name = seps.map(|i| ctx.str_ref(i).to_string());
+                let (arr_bound, seps_bound) =
+                    ctx.bind_split_arrays("split", &arr_name, seps_name.as_deref())?;
                 // All three references abort on a separator that is not a valid
                 // ERE; awkrs used to split on it literally instead.
                 crate::runtime::check_ere_separator(&fs).map_err(Error::Runtime)?;
@@ -2362,12 +2377,14 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                     crate::runtime::split_string_with_seps(&s, &fs, ic)
                 };
                 let n = parts.len();
-                ctx.rt.split_into_array(&arr_name, &parts);
-                if let Some(name) = seps_name {
-                    ctx.rt.split_into_array(&name, &seps_vec);
+                ctx.rt.split_into_array(&arr_bound, &parts);
+                ctx.unbind_array_arg(&arr_name, &arr_bound);
+                if let (Some(name), Some(bound)) = (seps_name, seps_bound) {
+                    ctx.rt.split_into_array(&bound, &seps_vec);
                     if !fs_is_regex && fs == " " {
-                        set_default_split_edge_seps(ctx.rt, &name, &s, n);
+                        set_default_split_edge_seps(ctx.rt, &bound, &s, n);
                     }
+                    ctx.unbind_array_arg(&name, &bound);
                 }
                 ctx.push(Value::Num(n as f64));
             }
@@ -2386,8 +2403,14 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 };
                 let arr_name = ctx.str_ref(arr).to_string();
                 let seps_name = seps.map(|i| ctx.str_ref(i).to_string());
+                let (arr_bound, seps_bound) =
+                    ctx.bind_split_arrays("patsplit", &arr_name, seps_name.as_deref())?;
                 let n =
-                    builtins::patsplit(ctx.rt, &s, &arr_name, fp.as_deref(), seps_name.as_deref())?;
+                    builtins::patsplit(ctx.rt, &s, &arr_bound, fp.as_deref(), seps_bound.as_deref())?;
+                ctx.unbind_array_arg(&arr_name, &arr_bound);
+                if let (Some(name), Some(bound)) = (seps_name, seps_bound) {
+                    ctx.unbind_array_arg(&name, &bound);
+                }
                 ctx.push(Value::Num(n));
             }
 
@@ -2402,17 +2425,26 @@ fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                     ctx.rt.value_to_str_convfmt(&v).into_owned()
                 };
                 let arr_name = arr.map(|i| ctx.str_ref(i).to_string());
-                let r = builtins::match_fn(ctx.rt, &s, &re, arr_name.as_deref())?;
+                let bound = match &arr_name {
+                    Some(name) => Some(ctx.bind_array_arg(name, "match", "third")?),
+                    None => None,
+                };
+                let r = builtins::match_fn(ctx.rt, &s, &re, bound.as_deref())?;
+                if let (Some(name), Some(bound)) = (arr_name, bound) {
+                    ctx.unbind_array_arg(&name, &bound);
+                }
                 ctx.push(Value::Num(r));
             }
 
             // ── ForIn ───────────────────────────────────────────────────
             Op::ForInStart(arr) => {
                 let name = ctx.str_ref(arr).to_string();
-                // gawk parity: `for (k in x)` where `x` is a scalar raises
-                // "attempt to use scalar `x' as an array". Earlier awkrs
-                // ran zero iterations and continued silently.
-                check_array_target(ctx, &name)?;
+                // gawk parity: `for (k in x)` types an unassigned `x` as an
+                // array (`typeof(x)` is then "array"), and on a scalar `x`
+                // raises "attempt to use scalar `x' as an array".
+                if name != "SYMTAB" {
+                    ctx.root_array_mut(&name)?;
+                }
                 let keys = ctx.for_in_keys(name.as_str())?;
                 ctx.for_in_iters.push(ForInState { keys, index: 0 });
             }
@@ -2775,10 +2807,10 @@ fn array_in_scalar_context(name: &str) -> Error {
 /// `x' as an array". Checks local frames first (function array-by-reference),
 /// then globals.
 fn check_array_target(ctx: &VmCtx<'_>, name: &str) -> Result<()> {
-    for frame in ctx.locals.iter().rev() {
+    if let Some(frame) = ctx.locals.last() {
         match frame.get(name) {
-            Some(Value::Array(_)) => return Ok(()),
-            Some(Value::Uninit) | None => continue,
+            Some(Value::Array(_) | Value::Uninit) => return Ok(()),
+            None => {}
             Some(_) => {
                 return Err(Error::Runtime(format!(
                     "attempt to use scalar `{name}' as an array"
@@ -3707,19 +3739,16 @@ fn exec_call_user_bind_arrays(ctx: &mut VmCtx<'_>, name: &str, argc: u16) -> Res
         }
         if let Some(v) = frame_after.get(param_name) {
             if matches!(v, Value::Array(_)) {
-                // Frame-aware write-back: if the caller name lives in an
-                // outer function frame (nested call), update that frame.
-                // Otherwise fall through to global vars.
-                let mut wrote = false;
-                for frame in ctx.locals.iter_mut().rev() {
-                    if frame.contains_key(caller_name.as_str()) {
+                // Frame-aware write-back: a caller that is itself a function
+                // and binds the name as a parameter or local gets it in its
+                // own frame; otherwise the name is the global.
+                match ctx.locals.last_mut() {
+                    Some(frame) if frame.contains_key(caller_name.as_str()) => {
                         frame.insert(caller_name.clone(), v.clone());
-                        wrote = true;
-                        break;
                     }
-                }
-                if !wrote {
-                    ctx.rt.vars.insert(caller_name.clone(), v.clone());
+                    _ => {
+                        ctx.rt.vars.insert(caller_name.clone(), v.clone());
+                    }
                 }
             }
         }
