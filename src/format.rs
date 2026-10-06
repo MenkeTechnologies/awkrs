@@ -20,168 +20,13 @@ pub static AWK_TRADITIONAL_MODE: AtomicBool = AtomicBool::new(false);
 /// gawk's `MB_CUR_MAX == 1` model.
 pub static AWK_CHARS_AS_BYTES: AtomicBool = AtomicBool::new(false);
 
-#[inline]
-fn fmt_peek(fmt: &str, i: usize) -> Option<char> {
-    fmt.get(i..)?.chars().next()
-}
-
 /// Default C-locale radix (`.`). Use [`awk_sprintf_with_decimal`] when `-N` applies.
 pub fn awk_sprintf(fmt: &str, vals: &[Value]) -> Result<String, String> {
     awk_sprintf_with_decimal(fmt, vals, '.', Some(','), None)
 }
 
-/// Pre-process the values so that any `Value::Num` (or `Value::Mpfr`) gets
-/// converted to a `Value::StrLit` formatted via `convfmt` — but only when the
-/// format string contains a `%s` that consumes that arg. For other
-/// conversions the original numeric value is preserved.
-///
-/// This is gawk parity for `printf "%s", 3.14159` under `CONVFMT="%.3f"`:
-/// the `%s` arm sees the CONVFMT-formatted string instead of the f64 Display.
-fn convfmt_preprocess_for_percent_s<'a>(
-    fmt: &str,
-    vals: &'a [Value],
-    convfmt: &str,
-) -> std::borrow::Cow<'a, [Value]> {
-    // Quick reject: no `%s` → nothing to do.
-    if !fmt.contains("%s") && !fmt.contains("s$") {
-        return std::borrow::Cow::Borrowed(vals);
-    }
-    // Locate each conversion specifier (%X) and identify which input index it
-    // consumes. The format syntax supports `%2$s` (positional) and `*` width/prec
-    // which also consume args. To stay simple, walk the format string mirroring
-    // `parse_conversion_rest`'s behavior just enough to know which arg goes
-    // to `%s`.
-    let bytes = fmt.as_bytes();
-    let mut percent_s_indices: Vec<usize> = Vec::new();
-    let mut i = 0;
-    let mut vi: usize = 0;
-    while i < bytes.len() {
-        if bytes[i] != b'%' {
-            i += 1;
-            continue;
-        }
-        i += 1;
-        if i >= bytes.len() {
-            break;
-        }
-        if bytes[i] == b'%' {
-            i += 1;
-            continue;
-        }
-        // Optional positional `m$`.
-        let mut pos: Option<usize> = None;
-        let mut j = i;
-        let mut m = 0usize;
-        let mut has_digits = false;
-        while j < bytes.len() && bytes[j].is_ascii_digit() {
-            m = m * 10 + (bytes[j] - b'0') as usize;
-            has_digits = true;
-            j += 1;
-        }
-        if has_digits && j < bytes.len() && bytes[j] == b'$' {
-            pos = Some(m);
-            i = j + 1;
-        }
-        // Skip flags.
-        while i < bytes.len() && matches!(bytes[i], b'-' | b'+' | b' ' | b'#' | b'\'' | b'0') {
-            i += 1;
-        }
-        // Width: digits or `*` (which may also be positional).
-        if i < bytes.len() && bytes[i] == b'*' {
-            i += 1;
-            let mut star_pos: Option<usize> = None;
-            let mut sm = 0usize;
-            let mut sj = i;
-            let mut s_has = false;
-            while sj < bytes.len() && bytes[sj].is_ascii_digit() {
-                sm = sm * 10 + (bytes[sj] - b'0') as usize;
-                s_has = true;
-                sj += 1;
-            }
-            if s_has && sj < bytes.len() && bytes[sj] == b'$' {
-                star_pos = Some(sm);
-                i = sj + 1;
-            }
-            match star_pos {
-                Some(p) => vi = vi.max(p),
-                None => vi += 1,
-            }
-        } else {
-            while i < bytes.len() && bytes[i].is_ascii_digit() {
-                i += 1;
-            }
-        }
-        // Precision.
-        if i < bytes.len() && bytes[i] == b'.' {
-            i += 1;
-            if i < bytes.len() && bytes[i] == b'*' {
-                i += 1;
-                let mut star_pos: Option<usize> = None;
-                let mut sm = 0usize;
-                let mut sj = i;
-                let mut s_has = false;
-                while sj < bytes.len() && bytes[sj].is_ascii_digit() {
-                    sm = sm * 10 + (bytes[sj] - b'0') as usize;
-                    s_has = true;
-                    sj += 1;
-                }
-                if s_has && sj < bytes.len() && bytes[sj] == b'$' {
-                    star_pos = Some(sm);
-                    i = sj + 1;
-                }
-                match star_pos {
-                    Some(p) => vi = vi.max(p),
-                    None => vi += 1,
-                }
-            } else {
-                while i < bytes.len() && bytes[i].is_ascii_digit() {
-                    i += 1;
-                }
-            }
-        }
-        // h/l/L modifiers (ignored).
-        while i < bytes.len() && matches!(bytes[i], b'h' | b'l' | b'L') {
-            i += 1;
-        }
-        // Conversion letter.
-        if i >= bytes.len() {
-            break;
-        }
-        let conv = bytes[i];
-        i += 1;
-        // Which arg does this conversion consume?
-        let arg_idx = if let Some(p) = pos {
-            if p == 0 {
-                continue;
-            }
-            p - 1
-        } else {
-            let idx = vi;
-            vi += 1;
-            idx
-        };
-        if conv == b's' {
-            percent_s_indices.push(arg_idx);
-        }
-    }
-    if percent_s_indices.is_empty() {
-        return std::borrow::Cow::Borrowed(vals);
-    }
-    // Build the rewritten vals: only `%s` positions get the CONVFMT-formatted
-    // string; everything else stays numeric so conversions like `%d` still
-    // round-trip cleanly.
-    let mut out = vals.to_vec();
-    for &idx in &percent_s_indices {
-        if let Some(v) = out.get_mut(idx) {
-            if let Value::Num(n) = v {
-                let s = format_num_via_convfmt(*n, convfmt);
-                *v = Value::StrLit(s.into());
-            }
-        }
-    }
-    std::borrow::Cow::Owned(out)
-}
-
+/// `%s` of a plain number under `printf` / `sprintf` renders through `CONVFMT`
+/// (integers bypass it), as gawk's `format_tree` does with `force_string`.
 fn format_num_via_convfmt(n: f64, convfmt: &str) -> String {
     // Integer-valued numbers bypass CONVFMT (gawk parity).
     if n.is_finite() && n.fract() == 0.0 {
@@ -210,8 +55,7 @@ pub fn awk_sprintf_with_convfmt(
     mpfr_mode: Option<(u32, Round)>,
     convfmt: &str,
 ) -> Result<AwkStr, String> {
-    let vals = convfmt_preprocess_for_percent_s(fmt, vals, convfmt);
-    awk_sprintf_bytes(fmt, &vals, decimal, thousands_sep, mpfr_mode)
+    format_tree(fmt, vals, decimal, thousands_sep, mpfr_mode, Some(convfmt))
 }
 /// `awk_sprintf_with_decimal` — see implementation for the contract.
 pub fn awk_sprintf_with_decimal(
@@ -236,64 +80,312 @@ pub fn awk_sprintf_bytes(
     thousands_sep: Option<char>,
     mpfr_mode: Option<(u32, Round)>,
 ) -> Result<AwkStr, String> {
+    format_tree(fmt, vals, decimal, thousands_sep, mpfr_mode, None)
+}
+
+/// Which number a digit run or `*` in a conversion spec sets: gawk's `cur`,
+/// pointing at `fw`, at `prec`, or at nothing once the precision is complete.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SpecTarget {
+    Width,
+    Precision,
+    Closed,
+}
+
+/// The upper bound awkrs puts on a field width. Real format widths never
+/// approach it; past it is user error or fuzz input, and honoring it would
+/// only exhaust memory (`%99999999999999d`).
+const MAX_FMT_WIDTH: i64 = 100_000;
+
+/// Read a run of decimal digits starting at `*i` (the first digit already
+/// known to be there), saturating rather than overflowing.
+fn spec_digits(b: &[u8], i: &mut usize, mut acc: i64) -> i64 {
+    while *i < b.len() && b[*i].is_ascii_digit() {
+        acc = acc.saturating_mul(10).saturating_add((b[*i] - b'0') as i64);
+        *i += 1;
+    }
+    acc
+}
+
+/// gawk `get_number_si`: a `*` operand's value truncated to a C `long`.
+fn star_operand(v: &Value) -> i64 {
+    let n = v.as_number();
+    if n.is_nan() {
+        0
+    } else {
+        n as i64
+    }
+}
+
+/// Port of gawk's `format_tree` (builtin.c) scanning loop.
+///
+/// After a `%`, the flag, width, precision and length-modifier characters are
+/// taken in **any order** through gawk's `retry` state machine: `%l5d`,
+/// `%5-d` and `%h-5d` are all valid conversions. A character the state
+/// machine rejects — a repeated `h` / `l` / `L` / `P`, a flag after the
+/// precision, an unknown conversion letter, a second `.` — abandons the
+/// conversion: the text from the `%` up to and including that character is
+/// copied to the output literally, no argument is converted, and scanning
+/// resumes right after it (so `%lld` prints `%lld`, and in `%ll%d` the `%d`
+/// still converts). A format that ends inside a spec is copied literally too
+/// (`%5` prints `%5`). `%%` emits one `%` whatever flags precede it.
+///
+/// Positional `n$` values and `*n$` operands keep awkrs's own rules for mixing
+/// with sequential arguments, which the unit tests pin.
+fn format_tree(
+    fmt: &str,
+    vals: &[Value],
+    decimal: char,
+    thousands_sep: Option<char>,
+    mpfr_mode: Option<(u32, Round)>,
+    convfmt: Option<&str>,
+) -> Result<AwkStr, String> {
+    let b = fmt.as_bytes();
+    let n = b.len();
     let mut out = AwkStr::new();
     let mut vi = 0usize;
-    let mut i = 0usize;
-    while i < fmt.len() {
-        let c = fmt_peek(fmt, i).ok_or_else(|| "truncated format".to_string())?;
-        if c != '%' {
-            out.push_char(c);
-            i += c.len_utf8();
+    // `s0`: start of the text not yet copied out; `s1`: the scan position.
+    let mut s0 = 0usize;
+    let mut s1 = 0usize;
+    'scan: while s1 < n {
+        if b[s1] != b'%' {
+            s1 += 1;
             continue;
         }
-        i += c.len_utf8();
-        if i >= fmt.len() {
-            // gawk parity: a trailing `%` with nothing after it is emitted as a
-            // literal `%` rather than raising an error.
-            out.push_char('%');
-            break;
-        }
-        // Optional `%m$` — digits must be followed by `$` or we rewind and treat as flags/width.
-        let start_after_pct = i;
-        let mut m = 0usize;
-        let mut has_digits = false;
-        while let Some(ch) = fmt_peek(fmt, i) {
-            if !ch.is_ascii_digit() {
-                break;
+        out.push_bytes(&b[s0..s1]);
+        s0 = s1;
+        s1 += 1;
+
+        let mut cur = SpecTarget::Width;
+        let mut fw: i64 = 0;
+        let mut prec: i64 = 0;
+        let mut have_prec = false;
+        let mut argnum: Option<usize> = None;
+        let mut signchar: Option<u8> = None;
+        let mut zero_flag = false;
+        let mut quote_flag = false;
+        let mut lj = false;
+        let mut alt = false;
+        let mut big_flag = false;
+        let mut bigbig_flag = false;
+        let mut small_flag = false;
+        let mut magic_posix_flag = false;
+
+        loop {
+            // gawk `retry:` — a format that ends inside a spec is literal text.
+            if s1 >= n {
+                break 'scan;
             }
-            has_digits = true;
-            // Saturating arithmetic: pre-fix `m * 10 + digit` overflowed in debug
-            // builds for absurd-width literals like `%99999999999999999999d` and
-            // panicked. Saturate at usize::MAX so the downstream width handling
-            // can either cap or refuse without taking down the process.
-            m = m
-                .saturating_mul(10)
-                .saturating_add((ch as u8 - b'0') as usize);
-            i += ch.len_utf8();
-        }
-        let val_pos = if has_digits && fmt_peek(fmt, i) == Some('$') {
-            i += '$'.len_utf8();
-            if m == 0 {
-                return Err("sprintf: positional argument was 0".into());
+            let cs1 = b[s1];
+            s1 += 1;
+            // `check_pos`: a flag is accepted only before the precision.
+            let check_pos = |cur: SpecTarget| cur == SpecTarget::Width;
+            match cs1 {
+                b'%' => {
+                    out.push_byte(b'%');
+                    s0 = s1;
+                    break;
+                }
+                b'0'..=b'9' => {
+                    if cs1 == b'0' {
+                        // Only a `0` before the width and precision is the flag.
+                        if cur == SpecTarget::Width {
+                            zero_flag = true;
+                        }
+                        if lj {
+                            continue;
+                        }
+                    }
+                    if cur == SpecTarget::Closed {
+                        break;
+                    }
+                    let v = if prec >= 0 {
+                        spec_digits(b, &mut s1, (cs1 - b'0') as i64)
+                    } else {
+                        // A negative precision (`%.-3d`) eats its digits and is discarded.
+                        spec_digits(b, &mut s1, 0);
+                        prec
+                    };
+                    match cur {
+                        SpecTarget::Width => fw = v,
+                        _ => prec = v,
+                    }
+                    if prec < 0 {
+                        have_prec = false;
+                    }
+                    if cur == SpecTarget::Precision {
+                        cur = SpecTarget::Closed;
+                    }
+                }
+                b'$' => {
+                    if cur != SpecTarget::Width {
+                        return Err("sprintf: `$' not permitted after period in format".into());
+                    }
+                    if fw <= 0 {
+                        return Err("sprintf: positional argument was 0".into());
+                    }
+                    let k = fw as usize;
+                    if k > vals.len() {
+                        return Err("sprintf: invalid positional argument".into());
+                    }
+                    argnum = Some(k);
+                    fw = 0;
+                }
+                b'*' => {
+                    if cur == SpecTarget::Closed {
+                        break;
+                    }
+                    let v = if s1 < n && b[s1].is_ascii_digit() {
+                        let k = spec_digits(b, &mut s1, 0);
+                        if s1 >= n || b[s1] != b'$' {
+                            return Err(
+                                "sprintf: no `$' supplied for positional field width or precision"
+                                    .into(),
+                            );
+                        }
+                        s1 += 1;
+                        if k <= 0 {
+                            return Err("sprintf: positional argument was 0".into());
+                        }
+                        let k = k as usize;
+                        let v = val_at(vals, k)?;
+                        vi = vi.max(k);
+                        star_operand(v)
+                    } else {
+                        star_operand(take_val(vals, &mut vi)?)
+                    };
+                    match cur {
+                        SpecTarget::Width => {
+                            fw = v;
+                            if fw < 0 {
+                                fw = fw.saturating_neg();
+                                lj = true;
+                            }
+                        }
+                        _ => {
+                            prec = v;
+                            have_prec = prec >= 0;
+                            cur = SpecTarget::Closed;
+                        }
+                    }
+                }
+                b' ' | b'+' => {
+                    // A space never overrides a sign flag already given.
+                    if cs1 == b'+' || signchar.is_none() {
+                        signchar = Some(cs1);
+                    }
+                    if !check_pos(cur) {
+                        break;
+                    }
+                }
+                b'-' => {
+                    if prec < 0 {
+                        break;
+                    }
+                    if cur == SpecTarget::Precision {
+                        prec = -1;
+                        continue;
+                    }
+                    lj = true;
+                    if !check_pos(cur) {
+                        break;
+                    }
+                }
+                b'.' => {
+                    if cur != SpecTarget::Width {
+                        break;
+                    }
+                    cur = SpecTarget::Precision;
+                    have_prec = true;
+                }
+                b'#' => {
+                    alt = true;
+                    if !check_pos(cur) {
+                        break;
+                    }
+                }
+                b'\'' => {
+                    quote_flag = true;
+                    if !check_pos(cur) {
+                        break;
+                    }
+                }
+                // Length modifiers are meaningless in awk and ignored — but each
+                // may appear only once.
+                b'l' => {
+                    if big_flag {
+                        break;
+                    }
+                    big_flag = true;
+                }
+                b'L' => {
+                    if bigbig_flag {
+                        break;
+                    }
+                    bigbig_flag = true;
+                }
+                b'h' => {
+                    if small_flag {
+                        break;
+                    }
+                    small_flag = true;
+                }
+                b'P' => {
+                    if magic_posix_flag {
+                        break;
+                    }
+                    magic_posix_flag = true;
+                }
+                c if is_known_conv(c as char) => {
+                    let conv = c as char;
+                    let v = match argnum {
+                        Some(k) => val_at(vals, k)?,
+                        None => take_val(vals, &mut vi)?,
+                    };
+                    let width = (fw != 0).then(|| fw.clamp(0, MAX_FMT_WIDTH) as usize);
+                    let prec = (have_prec && prec >= 0).then_some(prec as usize);
+                    let piece = if conv == 's' || conv == 'c' {
+                        // `%s` and `%c` are the two conversions whose output is the
+                        // caller's own bytes rather than digits awkrs generated, so
+                        // they are answered before `format_one`, which works in
+                        // `String` and cannot carry one.
+                        let conv_s;
+                        let v = match (conv, convfmt, v) {
+                            ('s', Some(cf), Value::Num(x)) => {
+                                conv_s = Value::StrLit(format_num_via_convfmt(*x, cf).into());
+                                &conv_s
+                            }
+                            _ => v,
+                        };
+                        format_str_or_char_bytes(conv, v, lj, zero_flag, width, prec)?
+                    } else {
+                        format_one(
+                            conv,
+                            v,
+                            lj,
+                            signchar == Some(b'+'),
+                            signchar == Some(b' '),
+                            alt,
+                            zero_flag,
+                            quote_flag,
+                            width,
+                            prec,
+                            decimal,
+                            thousands_sep,
+                            mpfr_mode,
+                        )?
+                        .into()
+                    };
+                    out.push_awkstr(&piece);
+                    s0 = s1;
+                    break;
+                }
+                // An unknown conversion character: nothing is converted.
+                _ => break,
             }
-            Some(m)
-        } else {
-            i = start_after_pct;
-            None
-        };
-        let (piece, new_i) = parse_conversion_rest(
-            fmt,
-            i,
-            vals,
-            &mut vi,
-            val_pos,
-            decimal,
-            thousands_sep,
-            mpfr_mode,
-        )?;
-        i = new_i;
-        out.push_awkstr(&piece);
+        }
     }
+    out.push_bytes(&b[s0..]);
     Ok(out)
 }
 
@@ -308,179 +400,6 @@ fn take_val<'a>(vals: &'a [Value], vi: &mut usize) -> Result<&'a Value, String> 
 fn val_at(vals: &[Value], one_based: usize) -> Result<&Value, String> {
     vals.get(one_based - 1)
         .ok_or_else(|| "sprintf: invalid positional argument".to_string())
-}
-
-/// After a `*` in width or precision: either `n$` (positional) or sequential `take_val`.
-/// Updates `vi` to at least `n` when `n$` is used so following sequential args align with POSIX.
-fn parse_star_value(
-    fmt: &str,
-    mut i: usize,
-    vals: &[Value],
-    vi: &mut usize,
-) -> Result<(f64, usize), String> {
-    let start = i;
-    let mut n = 0usize;
-    let mut has_digits = false;
-    while let Some(ch) = fmt_peek(fmt, i) {
-        if !ch.is_ascii_digit() {
-            break;
-        }
-        has_digits = true;
-        // Saturating arithmetic — same fix as `parse_star_value` parent: an
-        // input like `%*99999999999999999999$d` walked through this loop and
-        // panicked on the unchecked `* 10`.
-        n = n
-            .saturating_mul(10)
-            .saturating_add((ch as u8 - b'0') as usize);
-        i += ch.len_utf8();
-    }
-    if has_digits && fmt_peek(fmt, i) == Some('$') {
-        i += '$'.len_utf8();
-        let v = val_at(vals, n)?;
-        *vi = (*vi).max(n);
-        return Ok((v.as_number(), i));
-    }
-    i = start;
-    let v = take_val(vals, vi)?;
-    Ok((v.as_number(), i))
-}
-
-#[allow(clippy::too_many_arguments)] // sprintf flag bundle + mpfr mode
-fn parse_conversion_rest(
-    fmt: &str,
-    mut i: usize,
-    vals: &[Value],
-    vi: &mut usize,
-    val_pos: Option<usize>,
-    decimal: char,
-    thousands_sep: Option<char>,
-    mpfr_mode: Option<(u32, Round)>,
-) -> Result<(AwkStr, usize), String> {
-    let mut left = false;
-    let mut sign = false;
-    let mut space = false;
-    let mut alt = false;
-    let mut pad_zero = false;
-    let mut group = false;
-    while let Some(flag) = fmt_peek(fmt, i) {
-        match flag {
-            '-' => {
-                left = true;
-                i += flag.len_utf8();
-            }
-            '+' => {
-                sign = true;
-                i += flag.len_utf8();
-            }
-            ' ' => {
-                space = true;
-                i += flag.len_utf8();
-            }
-            '#' => {
-                alt = true;
-                i += flag.len_utf8();
-            }
-            '\'' => {
-                group = true;
-                i += flag.len_utf8();
-            }
-            '0' => {
-                pad_zero = true;
-                i += flag.len_utf8();
-            }
-            _ => break,
-        }
-    }
-
-    let (width, star_left, i2) = parse_width_or_star(fmt, i, vals, vi)?;
-    i = i2;
-    if star_left {
-        left = true;
-    }
-    // Cap the consumed width at 100KB. Real format widths never approach this;
-    // anything past it is user error or fuzz input. Pre-fix the downstream
-    // allocator panicked with raw_vec capacity overflow on
-    // `%99999999999999d`-class inputs.
-    const MAX_FMT_WIDTH: usize = 100_000;
-    let width = width.map(|w| w.min(MAX_FMT_WIDTH));
-
-    let mut prec: Option<usize> = None;
-    if fmt_peek(fmt, i) == Some('.') {
-        i += '.'.len_utf8();
-        if fmt_peek(fmt, i) == Some('*') {
-            i += '*'.len_utf8();
-            let (p, i2) = parse_star_value(fmt, i, vals, vi)?;
-            i = i2;
-            // ISO C 7.21.6.1: "A negative precision argument is taken as if the
-            // precision were omitted." gawk, mawk and one-true-awk all follow
-            // that, so `printf "%.*f", -2, 3.14159` prints `3.141590` (the
-            // default six places). awkrs used to clamp to 0 and print `3`.
-            prec = if p < 0.0 { None } else { Some(p as usize) };
-        } else {
-            let mut p = 0usize;
-            let mut any = false;
-            while let Some(d) = fmt_peek(fmt, i) {
-                if !d.is_ascii_digit() {
-                    break;
-                }
-                p = p * 10 + (d as u8 - b'0') as usize;
-                any = true;
-                i += d.len_utf8();
-            }
-            prec = if any { Some(p) } else { Some(0) };
-        }
-    }
-
-    while matches!(fmt_peek(fmt, i), Some('h' | 'l' | 'L')) {
-        let m = fmt_peek(fmt, i).unwrap();
-        i += m.len_utf8();
-    }
-
-    let conv = fmt_peek(fmt, i).ok_or_else(|| "truncated format".to_string())?;
-    i += conv.len_utf8();
-
-    if conv == '%' {
-        return Ok((AwkStr::from("%"), i));
-    }
-
-    // gawk parity: unknown conversion characters are emitted **literally** as `%X`
-    // and DO NOT consume an argument (so the next `%s` etc. still sees the args
-    // the user intended for it). gawk also emits a warning under `--lint`; awkrs
-    // stays silent for now.
-    if !is_known_conv(conv) {
-        return Ok((format!("%{conv}").into(), i));
-    }
-
-    let v = if let Some(p) = val_pos {
-        val_at(vals, p)?
-    } else {
-        take_val(vals, vi)?
-    };
-    // `%s` and `%c` are the two conversions whose output is the caller's own
-    // bytes rather than digits awkrs generated, so they are answered before
-    // `format_one`, which works in `String` and cannot carry one.
-    if conv == 's' || conv == 'c' {
-        return Ok((
-            format_str_or_char_bytes(conv, v, left, pad_zero, width, prec)?,
-            i,
-        ));
-    }
-    let piece = format_one(
-        conv,
-        v,
-        left,
-        sign,
-        space,
-        alt,
-        pad_zero,
-        group,
-        width,
-        prec,
-        decimal,
-        thousands_sep,
-        mpfr_mode,
-    )?;
-    Ok((piece.into(), i))
 }
 
 /// Conversion letters that `format_one` understands. Anything outside this set is
@@ -984,41 +903,6 @@ fn sprintf_c_char(v: &Value) -> String {
             char::from_u32(code).unwrap_or('\u{fffd}').to_string()
         }
     }
-}
-
-fn parse_width_or_star(
-    fmt: &str,
-    mut i: usize,
-    vals: &[Value],
-    vi: &mut usize,
-) -> Result<(Option<usize>, bool, usize), String> {
-    if fmt_peek(fmt, i) == Some('*') {
-        i += '*'.len_utf8();
-        let (n, i2) = parse_star_value(fmt, i, vals, vi)?;
-        i = i2;
-        if n < 0.0 {
-            let w = (-n) as usize;
-            return Ok((Some(w), true, i));
-        }
-        return Ok((Some(n as usize), false, i));
-    }
-    if fmt_peek(fmt, i).is_some_and(|c| c.is_ascii_digit()) {
-        let mut w = 0usize;
-        while let Some(d) = fmt_peek(fmt, i) {
-            if !d.is_ascii_digit() {
-                break;
-            }
-            // Saturating — `%99999999999999999999d` would otherwise overflow
-            // and panic in debug builds. The downstream width handling caps
-            // at a reasonable budget.
-            w = w
-                .saturating_mul(10)
-                .saturating_add((d as u8 - b'0') as usize);
-            i += d.len_utf8();
-        }
-        return Ok((Some(w), false, i));
-    }
-    Ok((None, false, i))
 }
 
 /// `-M` operand of `%o %x %X`: gawk prints the whole truncated integer in the

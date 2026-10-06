@@ -1412,7 +1412,7 @@
         <h3><a class="doc-anchor" href="#doc-unknown-conversions">#</a> <code>unknown conversions</code></h3>
         <pre><code class="lang-awk">printf &quot;[%q][%s]\n&quot;, &quot;x&quot;
 </code></pre>
-        <p>A conversion character outside the set above is emitted literally as <code>%q</code> and consumes no argument, so the following <code>%s</code> still receives the argument it was written for. The example prints <code>[%q][x]</code>.</p>
+        <p>A conversion character outside the set above abandons the conversion: the text from <code>%</code> through that character (<code>%q</code>, <code>%5q</code>) is emitted literally and consumes no argument, so the following <code>%s</code> still receives the argument it was written for. The example prints <code>[%q][x]</code>.</p>
       </article>
     </section>
     <section class="tutorial-section" id="ch-printf-flags-width-and-precision">
@@ -1488,7 +1488,7 @@
         <h3><a class="doc-anchor" href="#doc-h-l-l-length-modifiers">#</a> <code>h, l, L (length modifiers)</code></h3>
         <pre><code class="lang-awk">printf &quot;%ld\n&quot;, n
 </code></pre>
-        <p>Accepted and skipped. awk has one numeric type, so the C length modifiers carry no information; they are consumed so that formats copied from C source still work.</p>
+        <p>Accepted and skipped. awk has one numeric type, so the C length modifiers carry no information; they are consumed so that formats copied from C source still work. Each may appear once per conversion, anywhere among the flags, width and precision; a repeat abandons the conversion, so <code>%lld</code> prints itself literally and converts nothing, as in gawk.</p>
       </article>
     </section>
     <section class="tutorial-section" id="ch-string-escape-sequences">

@@ -963,14 +963,15 @@ const PRINTF_CONVERSIONS: &[Entry] = &[
         name: "unknown conversions",
         sig: r#"printf "[%q][%s]\n", "x""#,
         lang: "awk",
-        desc: "A conversion character outside the set above is emitted literally as `%q` and \
+        desc: "A conversion character outside the set above abandons the conversion: the \
+               text from `%` through that character (`%q`, `%5q`) is emitted literally and \
                consumes no argument, so the following `%s` still receives the argument it was \
                written for. The example prints `[%q][x]`.",
     },
 ];
 
 /// `printf` flags, width, precision, and argument selection. Source:
-/// `parse_conversion_rest` in `src/format.rs`.
+/// `format_tree` in `src/format.rs`.
 const PRINTF_MODIFIERS: &[Entry] = &[
     Entry {
         name: "- (left justify)",
@@ -1054,7 +1055,10 @@ const PRINTF_MODIFIERS: &[Entry] = &[
         sig: r#"printf "%ld\n", n"#,
         lang: "awk",
         desc: "Accepted and skipped. awk has one numeric type, so the C length modifiers carry no \
-               information; they are consumed so that formats copied from C source still work.",
+               information; they are consumed so that formats copied from C source still work. \
+               Each may appear once per conversion, anywhere among the flags, width and \
+               precision; a repeat abandons the conversion, so `%lld` prints itself literally \
+               and converts nothing, as in gawk.",
     },
 ];
 
