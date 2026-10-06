@@ -1011,31 +1011,33 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
-    /// Inside `print`, space-separated items concatenate.
+    /// `print … > target` (and `>>`, `|`, `|&`): the target is a concatenation,
+    /// gawk's `IO_OUT common_exp`, so `print 1 > 2 ? "a" : "b"` is a syntax
+    /// error rather than a redirect to whichever file the conditional picks.
     fn parse_print_redir(&mut self) -> Result<Option<PrintRedir>> {
         match self.cur {
             Token::Gt => {
                 self.bump(false)?;
                 Ok(Some(PrintRedir::Overwrite(Box::new(
-                    self.parse_expr(false, false)?,
+                    self.parse_concat(false, false)?,
                 ))))
             }
             Token::GtGt => {
                 self.bump(false)?;
                 Ok(Some(PrintRedir::Append(Box::new(
-                    self.parse_expr(false, false)?,
+                    self.parse_concat(false, false)?,
                 ))))
             }
             Token::Pipe => {
                 self.bump(false)?;
                 Ok(Some(PrintRedir::Pipe(Box::new(
-                    self.parse_expr(false, false)?,
+                    self.parse_concat(false, false)?,
                 ))))
             }
             Token::PipeCoproc => {
                 self.bump(false)?;
                 Ok(Some(PrintRedir::Coproc(Box::new(
-                    self.parse_expr(false, false)?,
+                    self.parse_concat(false, false)?,
                 ))))
             }
             _ => Ok(None),
@@ -1318,24 +1320,23 @@ impl<'a> Parser<'a> {
                 };
                 continue;
             }
+            if self.relop().is_some() {
+                e = self.parse_relop_rest(e)?;
+                continue;
+            }
             let op = match &self.cur {
-                Token::Eq => Some(BinOp::Eq),
-                Token::Ne => Some(BinOp::Ne),
-                Token::Lt => Some(BinOp::Lt),
-                Token::Le => Some(BinOp::Le),
-                Token::Gt => Some(BinOp::Gt),
-                Token::Ge => Some(BinOp::Ge),
-                Token::Tilde => Some(BinOp::Match),
-                Token::NotTilde => Some(BinOp::NotMatch),
-                _ => None,
+                Token::Tilde => BinOp::Match,
+                Token::NotTilde => BinOp::NotMatch,
+                _ => break,
             };
-            let Some(op) = op else { break };
             Self::reject_tuple_expr(&e, self.line)?;
             // RHS of `~` / `!~` may be `/regex/`; lexer must use regex mode for the next token.
-            let regex_rhs = matches!(op, BinOp::Match | BinOp::NotMatch);
-            self.bump(regex_rhs)?;
+            self.bump(true)?;
             // Bare `/re/` here is the pattern operand only (not `$0 ~ /re/`).
+            // gawk's `~` binds looser than the relational operators, so its
+            // right operand takes one: `x ~ y == z` is `x ~ (y == z)`.
             let r = self.parse_concat(false, true)?;
+            let r = self.parse_relop_rest(r)?;
             Self::reject_tuple_expr(&r, self.line)?;
             e = Expr::Binary {
                 op,
@@ -1344,6 +1345,45 @@ impl<'a> Parser<'a> {
             };
         }
         Ok(e)
+    }
+
+    /// The relational operator at the cursor, if any. In a print argument
+    /// list an unparenthesized `>` is output redirection, not a comparison.
+    fn relop(&self) -> Option<BinOp> {
+        match &self.cur {
+            Token::Eq => Some(BinOp::Eq),
+            Token::Ne => Some(BinOp::Ne),
+            Token::Lt => Some(BinOp::Lt),
+            Token::Le => Some(BinOp::Le),
+            Token::Gt if !self.in_print_arg => Some(BinOp::Gt),
+            Token::Ge => Some(BinOp::Ge),
+            _ => None,
+        }
+    }
+
+    /// `e relop concat`, at most once: the relational operators are
+    /// non-associative in gawk's grammar (`%nonassoc RELOP '<' '>'`) and in
+    /// POSIX's, so `1 < 2 < 3` and `a == b == c` are syntax errors there (and in
+    /// one-true-awk) rather than a left-to-right chain.
+    fn parse_relop_rest(&mut self, e: Expr) -> Result<Expr> {
+        let Some(op) = self.relop() else {
+            return Ok(e);
+        };
+        Self::reject_tuple_expr(&e, self.line)?;
+        self.bump(false)?;
+        let r = self.parse_concat(false, true)?;
+        Self::reject_tuple_expr(&r, self.line)?;
+        if self.relop().is_some() {
+            return Err(Error::Parse {
+                line: self.line,
+                msg: "syntax error: comparison operators do not chain".into(),
+            });
+        }
+        Ok(Expr::Binary {
+            op,
+            left: Box::new(e),
+            right: Box::new(r),
+        })
     }
 
     fn parse_concat(&mut self, regex_mode: bool, re_pat: bool) -> Result<Expr> {
