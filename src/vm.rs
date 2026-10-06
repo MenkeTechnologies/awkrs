@@ -759,10 +759,14 @@ static EMPTY_STR: Value = Value::Str(AwkStr::new_const());
 /// driver skips `END`: `function f() { exit 4 } BEGIN { f() } END { print "end" }`
 /// printed nothing where gawk, mawk and one-true-awk all print `end` and still
 /// exit 4. Converting it back at the call boundary puts `exit` on the same path
-/// whatever depth it was raised at. Every other error keeps propagating.
+/// whatever depth it was raised at. `next` and `nextfile` ride the same way
+/// ([`Error::Next`], [`Error::NextFile`]): POSIX lets a function called from a
+/// record rule end that rule. Every other error keeps propagating.
 fn exit_signal_or(e: Error) -> Result<VmSignal> {
     match e {
         Error::Exit(_) => Ok(VmSignal::ExitPending),
+        Error::Next => Ok(VmSignal::Next),
+        Error::NextFile => Ok(VmSignal::NextFile),
         other => Err(other),
     }
 }
@@ -1347,7 +1351,21 @@ fn fusevm_dispatch_enabled() -> bool {
     })
 }
 
+/// Run `chunk` (a rule action or a function body).
+///
+/// A `for (k in a)` loop left by `return`, `next`, `exit` or an error never
+/// reaches its `ForInEnd`, so its iterator is dropped here. Left on the stack it
+/// became the innermost iterator of the *caller*: a function that returned from
+/// inside a `for (k in …)` made the caller's own `for (k in …)` step through
+/// the function's keys from then on.
 fn execute(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
+    let iter_base = ctx.for_in_iters.len();
+    let r = execute_chunk(chunk, ctx);
+    ctx.for_in_iters.truncate(iter_base);
+    r
+}
+
+fn execute_chunk(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
     let ops = &chunk.ops;
     let mut pc: usize = 0;
     // Tier 1: optionally offload eligible numeric chunks to fusevm's shared VM.
@@ -3848,15 +3866,13 @@ fn exec_call_user_inner_with_frame(
             ctx.locals.pop();
             ctx.in_function = was_fn;
             debugger_leave_sub(ctx);
-            return Err(Error::Runtime("invalid jump out of function (next)".into()));
+            return Err(Error::Next);
         }
         Ok(VmSignal::NextFile) => {
             ctx.locals.pop();
             ctx.in_function = was_fn;
             debugger_leave_sub(ctx);
-            return Err(Error::Runtime(
-                "invalid jump out of function (nextfile)".into(),
-            ));
+            return Err(Error::NextFile);
         }
         Ok(VmSignal::ExitPending) => {
             ctx.locals.pop();
