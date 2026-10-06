@@ -3125,16 +3125,3 @@ fn comparisons_do_not_chain_and_redirect_targets_are_concatenations() {
         assert_eq!(stdout, "", "{program}");
     }
 }
-
-/// `fflush` of a name with nothing open behind it is gawk's warning and a -1
-/// return, not a fatal: the program goes on (awkrs used to exit 2 here).
-#[test]
-fn fflush_of_an_unopened_name_returns_minus_one_and_continues() {
-    let (code, stdout, stderr) = run_awkrs_stdin(
-        r#"BEGIN { print fflush(), fflush("no-such-stream"), fflush("/dev/stdout"); print "after" }"#,
-        "",
-    );
-    assert_eq!(code, 0, "stderr {stderr:?}");
-    assert_eq!(stdout, "0 -1 0\nafter\n");
-    assert!(stderr.contains("no-such-stream"), "no warning: {stderr:?}");
-}

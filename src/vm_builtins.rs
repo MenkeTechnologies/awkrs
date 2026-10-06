@@ -467,11 +467,11 @@ pub(crate) fn exec_builtin_dispatch(
             } else if ctx.rt.flush_redirect_target(&path)? {
                 Value::Num(0.0)
             } else {
-                // gawk: a warning and -1, and the program goes on.
-                eprintln!(
-                    "awkrs: warning: fflush: `{path}' is not an open file, pipe or co-process"
-                );
-                Value::Num(-1.0)
+                // gawk warns and returns -1 here; awkrs keeps it fatal (pinned by
+                // the `fflush_unknown_target_errors` integration test).
+                return Err(Error::Runtime(format!(
+                    "fflush: {path} is not an open output file, pipe, or coprocess"
+                )));
             }
         }
         "sprintf" => {

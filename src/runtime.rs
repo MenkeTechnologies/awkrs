@@ -3295,8 +3295,7 @@ impl Runtime {
     }
 
     /// Flush buffered output for a file or pipe opened with `print`/`printf` redirection.
-    /// `Ok(false)` when `key` names nothing open for output: gawk's `fflush`
-    /// then warns and returns -1 rather than stopping the program.
+    /// `Ok(false)` when `key` names nothing open for output.
     pub fn flush_redirect_target(&mut self, key: &str) -> Result<bool> {
         if is_program_stdout(key) {
             crate::vm::flush_print_buf(&mut self.print_buf)?;
