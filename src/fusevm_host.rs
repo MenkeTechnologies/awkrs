@@ -504,7 +504,15 @@ impl fusevm::AwkHost for AwkRuntimeHost {
 
     /// `strtonum(s)` — numeric value honoring 0x/0 prefixes (gawk).
     fn strtonum(&mut self, s: &fusevm::Value) -> fusevm::Value {
-        with_runtime(|rt| awk_to_fuse(crate::bignum::awk_strtonum_value(&s.to_str(), rt)))
+        with_runtime(|rt| {
+            // A fusevm string carries no strnum flag, so only a numeric operand
+            // takes `awk_strtonum_of`'s number pass-through on this tier.
+            let v = match s {
+                fusevm::Value::Str(_) => crate::runtime::Value::StrLit(s.to_str().into()),
+                other => fuse_to_awk(other.clone()),
+            };
+            awk_to_fuse(crate::bignum::awk_strtonum_of(&v, rt))
+        })
     }
 
     /// `intdiv(a, b)` — integer division; div-by-zero is fatal.

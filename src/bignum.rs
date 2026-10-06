@@ -125,6 +125,25 @@ pub fn awk_intdiv_values(a: &Value, b: &Value, rt: &Runtime) -> Result<Value> {
     let q = ia / ib;
     Ok(Value::Mpfr(Float::with_val_round(prec, q, round).0))
 }
+/// gawk `do_strtonum` (builtin.c): an operand that is already a number —
+/// a numeric value, or a numeric string from input (a strnum: `fixtype` makes
+/// it a number) — is returned as that number, so `strtonum($1)` of the field
+/// `017` is 17 and only a genuine string goes through the `0x` / leading-`0`
+/// base detection of [`awk_strtonum_value`].
+pub fn awk_strtonum_of(v: &Value, rt: &Runtime) -> Value {
+    match v {
+        Value::Num(_) | Value::Mpfr(_) => v.clone(),
+        Value::Str(_) if v.is_numeric_str() => {
+            if rt.bignum {
+                awk_strtonum_value(&v.as_str(), rt)
+            } else {
+                Value::Num(v.as_number())
+            }
+        }
+        _ => awk_strtonum_value(&v.as_str(), rt),
+    }
+}
+
 /// `awk_strtonum_value` — see implementation for the contract.
 pub fn awk_strtonum_value(s: &str, rt: &Runtime) -> Value {
     if !rt.bignum {
