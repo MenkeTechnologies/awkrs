@@ -2423,19 +2423,28 @@ impl Runtime {
             .unwrap_or(false)
     }
 
+    /// A runtime warning on stderr. gawk's `err()` (msg.c) flushes standard
+    /// output before it writes a message, so a warning lands after everything
+    /// the program printed first rather than ahead of output still buffered.
+    pub fn warn(&mut self, msg: &str) {
+        let _ = crate::vm::flush_print_buf(&mut self.print_buf);
+        let _ = std::io::stdout().flush();
+        eprintln!("awkrs: warning: {msg}");
+    }
+
     /// Emit a **`LINT`**-controlled warning to stderr (no-op when `LINT` is unset/false).
-    pub fn lint_warn(&self, msg: &str) {
+    pub fn lint_warn(&mut self, msg: &str) {
         if self.lint_runtime_active() {
-            eprintln!("awkrs: warning: {msg}");
+            self.warn(msg);
         }
     }
 
     /// gawk warns for **`log(x)`** / **`sqrt(x)`** when **`x < 0`**, even when **`LINT`** is off.
-    pub fn warn_builtin_negative_arg(&self, name: &str, x: f64) {
+    pub fn warn_builtin_negative_arg(&mut self, name: &str, x: f64) {
         if x.is_nan() {
             return;
         }
-        eprintln!("awkrs: warning: {name}: received negative argument {x}");
+        self.warn(&format!("{name}: received negative argument {x}"));
     }
 
     /// gawk **`PROCINFO["prec"]`**: MPFR precision in bits when **`-M`** / **`--bignum`** is active.
@@ -4053,6 +4062,10 @@ impl Runtime {
         // returns -1 (POSIX awk allows the return value to be implementation-defined,
         // but gawk's contract is "-1 for unknown name, 0 for a clean close of a file/pipe").
         if !had_any {
+            // gawk `do_close` also sets ERRNO, outside `--traditional`.
+            if !self.traditional {
+                self.set_errno_str("close of redirection that was never opened");
+            }
             return -1.0;
         }
         exit_status

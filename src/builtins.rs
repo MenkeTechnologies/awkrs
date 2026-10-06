@@ -432,10 +432,8 @@ pub fn awk_gensub(
     let which = if n >= 1.0 {
         n as usize
     } else {
-        eprintln!(
-            "awkrs: warning: gensub: third argument `{}' treated as 1",
-            rt.value_to_str_convfmt(how)
-        );
+        let shown = rt.value_to_str_convfmt(how).into_owned();
+        rt.warn(&format!("gensub: third argument `{shown}' treated as 1"));
         1
     };
     Ok(replace_nth_gensub(&re, s_ref, repl, which))

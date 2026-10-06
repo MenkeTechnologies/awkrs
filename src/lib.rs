@@ -576,7 +576,34 @@ pub fn run(bin_name: &str) -> Result<()> {
                 rt.vars.insert("ARGIND".into(), Value::Num(arg_idx as f64));
                 rt.filename = operand;
                 rt.fnr = 0.0;
+                // gawk opens the operand before `BEGINFILE`, so ERRNO already
+                // describes a failure there (and is empty after a good open); `after_beginfile` then skips a
+                // directory with a warning (outside `--traditional`) instead of
+                // the "cannot open file" fatal, and no ENDFILE runs for it.
+                let is_dir = match p.as_deref().map(std::fs::metadata) {
+                    Some(Err(e)) => {
+                        rt.set_errno_io(&e);
+                        false
+                    }
+                    Some(Ok(m)) if m.is_dir() => {
+                        rt.set_errno_io(&std::io::Error::from_raw_os_error(libc::EISDIR));
+                        true
+                    }
+                    Some(Ok(_)) => {
+                        rt.clear_errno();
+                        false
+                    }
+                    _ => false,
+                };
                 flush_if_err!(rt, vm_run_beginfile(cp.as_ref(), &mut rt))?;
+                if is_dir && !rt.traditional && !rt.exit_pending {
+                    let msg = format!(
+                        "command line argument `{}' is a directory: skipped",
+                        rt.filename
+                    );
+                    rt.warn(&msg);
+                    continue;
+                }
                 if rt.exit_pending {
                     rt.detach_input_reader();
                     flush_if_err!(rt, run_endfile_once(cp.as_ref(), &mut rt))?;

@@ -3148,3 +3148,75 @@ fn null_string_redirection_targets_are_fatal() {
         assert!(stderr.contains(&want), "{program}: {stderr:?}");
     }
 }
+
+/// Run awkrs with stdout and stderr on one pipe, as `2>&1` would, so the test
+/// sees the order the two streams reach a shared destination.
+fn run_awkrs_merged(args: &[&str], stdin: &str) -> (i32, String) {
+    let mut cmd = String::from("exec \"$0\"");
+    for i in 0..args.len() {
+        cmd.push_str(&format!(" \"${}\"", i + 1));
+    }
+    cmd.push_str(" 2>&1");
+    let mut child = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(cmd)
+        .arg(env!("CARGO_BIN_EXE_awkrs"))
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn sh");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(stdin.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().expect("wait");
+    (
+        out.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+    )
+}
+
+/// gawk's `err()` flushes standard output before writing a warning, so a
+/// warning lands after the lines the program printed first; awkrs wrote it
+/// ahead of everything still buffered.
+#[test]
+fn warnings_follow_output_printed_before_them() {
+    let (code, out) = run_awkrs_merged(&["{ print; x = sqrt(-1) }"], "1\n2\n");
+    assert_eq!(code, 0);
+    assert_eq!(
+        out,
+        "1\nawkrs: warning: sqrt: received negative argument -1\n\
+         2\nawkrs: warning: sqrt: received negative argument -1\n"
+    );
+}
+
+/// A directory operand is skipped with a warning (gawk `after_beginfile`,
+/// outside `--traditional`), after `BEGINFILE` has seen ERRNO describe it,
+/// and no `ENDFILE` runs for it; `--traditional` keeps the fatal.
+#[test]
+fn directory_operand_is_skipped_with_a_warning() {
+    let dir = std::env::temp_dir().join(format!("awkrs-dir-operand-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
+    let f = dir.join("f");
+    std::fs::write(&f, "a\n").unwrap();
+    let sub = dir.join("sub");
+    let (f, sub) = (f.to_str().unwrap(), sub.to_str().unwrap());
+    let prog = r#"BEGINFILE { print "bf", (FILENAME ~ /sub$/), "[" ERRNO "]" }
+        ENDFILE { print "ef" } { print }"#;
+    let (code, out) = run_awkrs_merged(&[prog, f, sub, f], "");
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(
+        out,
+        format!(
+            "bf 0 []\na\nef\nbf 1 [Is a directory]\n\
+             awkrs: warning: command line argument `{sub}' is a directory: skipped\n\
+             bf 0 []\na\nef\n"
+        )
+    );
+    let (code, _) = run_awkrs_merged(&["--traditional", "{ print }", f, sub], "");
+    assert_eq!(code, 2);
+    let _ = std::fs::remove_dir_all(&dir);
+}
