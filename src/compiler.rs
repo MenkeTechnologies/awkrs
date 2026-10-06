@@ -2659,15 +2659,18 @@ fn peephole_optimize(ops: &mut Vec<Op>, strings: &StringPool) {
     }
 }
 
-/// Where a statement sits relative to the enclosing `break`/`continue` targets.
+/// Where a statement sits relative to the enclosing `break`/`continue` targets,
+/// and whether it is inside a function body (gawk rejects `return` anywhere
+/// else while parsing, so the program never runs).
 ///
 /// `break` needs a loop **or** a `switch`; `continue` needs a loop. Carried by
-/// value through [`validate_stmt`] because it is two bits and the walker is
+/// value through [`validate_stmt`] because it is a few bits and the walker is
 /// recursive.
 #[derive(Clone, Copy, Default)]
 struct BreakCtx {
     in_loop: bool,
     in_switch: bool,
+    in_function: bool,
 }
 
 impl BreakCtx {
@@ -2675,32 +2678,149 @@ impl BreakCtx {
     fn in_loop(self) -> Self {
         Self {
             in_loop: true,
-            in_switch: self.in_switch,
+            ..self
         }
     }
     /// Inside a `switch` arm: `break` has a target, `continue` still needs an
     /// enclosing loop and so keeps whatever `in_loop` the context already had.
     fn in_switch(self) -> Self {
         Self {
-            in_loop: self.in_loop,
             in_switch: true,
+            ..self
         }
     }
+}
+
+/// gawk's parse-time checks on a function definition (`install_function`,
+/// `check_params`): the name may not be a gawk built-in function or variable,
+/// and a parameter may not repeat a built-in variable's name or another
+/// parameter.
+fn validate_function_signature(f: &crate::ast::FunctionDef) -> Result<()> {
+    const STD_VARS: &[&str] = &[
+        "ARGC",
+        "ARGIND",
+        "ARGV",
+        "BINMODE",
+        "CONVFMT",
+        "ENVIRON",
+        "ERRNO",
+        "FIELDWIDTHS",
+        "FILENAME",
+        "FNR",
+        "FS",
+        "FPAT",
+        "IGNORECASE",
+        "LINT",
+        "PREC",
+        "NF",
+        "NR",
+        "OFMT",
+        "OFS",
+        "ORS",
+        "PROCINFO",
+        "RLENGTH",
+        "ROUNDMODE",
+        "RS",
+        "RSTART",
+        "RT",
+        "SUBSEP",
+        "TEXTDOMAIN",
+    ];
+    // gawk's own built-in functions (its `tokentab`); extension functions such
+    // as `ord` are only reserved once their extension is loaded.
+    const GAWK_BUILTINS: &[&str] = &[
+        "and",
+        "asort",
+        "asorti",
+        "atan2",
+        "bindtextdomain",
+        "close",
+        "compl",
+        "cos",
+        "dcgettext",
+        "dcngettext",
+        "exp",
+        "fflush",
+        "gensub",
+        "gsub",
+        "index",
+        "int",
+        "isarray",
+        "length",
+        "log",
+        "lshift",
+        "match",
+        "mkbool",
+        "mktime",
+        "or",
+        "patsplit",
+        "rand",
+        "rshift",
+        "sin",
+        "split",
+        "sprintf",
+        "sqrt",
+        "srand",
+        "strftime",
+        "strtonum",
+        "sub",
+        "substr",
+        "system",
+        "systime",
+        "tolower",
+        "toupper",
+        "typeof",
+        "xor",
+    ];
+    let fname = f.name.as_str();
+    if GAWK_BUILTINS.contains(&fname) {
+        return Err(Error::Runtime(format!(
+            "`{fname}` is a built-in function, it cannot be redefined"
+        )));
+    }
+    if STD_VARS.contains(&fname) || matches!(fname, "SYMTAB" | "FUNCTAB") {
+        return Err(Error::Runtime(format!(
+            "function name `{fname}` previously defined"
+        )));
+    }
+    for (i, p) in f.params.iter().enumerate() {
+        // gawk also refuses a parameter named after the function itself
+        // ("cannot use function name as parameter name"); awkrs accepts it,
+        // which the `large_number_of_args_to_function` integration test pins.
+        if STD_VARS.contains(&p.as_str()) {
+            return Err(Error::Runtime(format!(
+                "function `{fname}`: parameter `{p}`: POSIX disallows using a special variable as a function parameter"
+            )));
+        }
+        if let Some(j) = f.params[..i].iter().position(|q| q == p) {
+            return Err(Error::Runtime(format!(
+                "function `{fname}`: parameter #{}, `{p}`, duplicates parameter #{}",
+                i + 1,
+                j + 1
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Static checks before codegen: tuple contexts, minimum builtin arities,
 /// function names used as variables, and `break`/`continue` placement.
 pub fn validate_program(prog: &Program) -> Result<()> {
-    let top = BreakCtx::default();
     for rule in &prog.rules {
         validate_pattern(&rule.pattern)?;
+        let top = BreakCtx::default();
         for st in &rule.stmts {
             validate_stmt(st, top)?;
         }
     }
+    let in_function = BreakCtx {
+        in_function: true,
+        ..BreakCtx::default()
+    };
     for f in prog.funcs.values() {
+        validate_function_signature(f)?;
         for st in &f.body {
-            validate_stmt(st, top)?;
+            validate_stmt(st, in_function)?;
         }
     }
     reject_function_name_as_variable(prog)?;
@@ -2905,6 +3025,11 @@ fn validate_stmt(st: &Stmt, ctx: BreakCtx) -> Result<()> {
             Ok(())
         }
         Stmt::Return(e) => {
+            if !ctx.in_function {
+                return Err(Error::Runtime(
+                    "`return` used outside function context".into(),
+                ));
+            }
             if let Some(ex) = e {
                 validate_expr(ex, false)?;
             }
