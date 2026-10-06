@@ -1390,14 +1390,7 @@ fn split_fields_into(
             }
         };
         match re {
-            Some(re) => {
-                let mut last = 0;
-                for m in re.find_iter(record) {
-                    field_ranges.push((last as u32, m.start() as u32));
-                    last = m.end();
-                }
-                field_ranges.push((last as u32, record.len() as u32));
-            }
+            Some(re) => re_parse_field(record, re, characters_as_bytes, field_ranges, None),
             None => {
                 // Fall back to literal split if the FS is not a valid regex.
                 let mut pos = 0;
@@ -5297,25 +5290,67 @@ fn split_string_impl(
 /// The pieces are cut from the subject's own bytes, so an element of the target
 /// array holds exactly what the record held there.
 fn split_on_regex_bytes(hay: &[u8], re: &BytesRegex) -> (Vec<AwkStr>, Vec<AwkStr>) {
-    let mut parts: Vec<AwkStr> = Vec::new();
-    let mut seps: Vec<AwkStr> = Vec::new();
-    let mut last = 0usize;
-    for m in re.find_iter(hay) {
-        // gawk parity: zero-width matches are ignored during split. Without
-        // this, `split("abc", a, /x*/)` would emit one split between every
-        // character because `/x*/` matches the empty string everywhere; gawk
-        // returns 1 field ("abc"). (Regexes that match `""` AND a real
-        // substring — e.g. `/a*/` on "aaab" — still emit splits at the
-        // non-empty matches because those have `m.start() < m.end()`.)
+    let cab = crate::format::AWK_CHARS_AS_BYTES.load(std::sync::atomic::Ordering::Relaxed);
+    let mut fields = Vec::new();
+    let mut seps = Vec::new();
+    re_parse_field(hay, re, cab, &mut fields, Some(&mut seps));
+    let cut = |&(s, e): &(u32, u32)| AwkStr::from(&hay[s as usize..e as usize]);
+    (
+        fields.iter().map(cut).collect(),
+        seps.iter().map(cut).collect(),
+    )
+}
+
+/// Port of gawk's `re_parse_field`: the byte ranges of the fields of `hay`
+/// split on the regex `re`, and of the separators between them when `seps` is
+/// given. Shared by record splitting under a regex `FS` and by `split()`.
+///
+/// A match of the empty string separates nothing: the scan steps one
+/// character past where it started searching and searches again, so `a*`
+/// splits "baaac" into "b" and "c" rather than at every gap, and `x*` leaves
+/// "abc" whole. A separator that ends the subject leaves a trailing empty
+/// field. When the last search fails, the remaining field starts at the scan
+/// point rather than at the field start — gawk's `FS = "^x*"` makes `` of
+/// "abc" "bc" — and `^` only ever matches at the start of the subject.
+pub(crate) fn re_parse_field(
+    hay: &[u8],
+    re: &BytesRegex,
+    characters_as_bytes: bool,
+    fields: &mut Vec<(u32, u32)>,
+    mut seps: Option<&mut Vec<(u32, u32)>>,
+) {
+    let end = hay.len();
+    let mut scan = 0usize;
+    let mut field = 0usize;
+    while scan < end {
+        let Some(m) = re.find_at(hay, scan) else {
+            break;
+        };
         if m.start() == m.end() {
+            scan += if characters_as_bytes {
+                1
+            } else {
+                utf8_char_len(&hay[scan..])
+            };
+            if scan >= end {
+                fields.push((field as u32, end as u32));
+                return;
+            }
             continue;
         }
-        parts.push(AwkStr::from(&hay[last..m.start()]));
-        seps.push(AwkStr::from(m.as_bytes()));
-        last = m.end();
+        fields.push((field as u32, m.start() as u32));
+        if let Some(s) = seps.as_deref_mut() {
+            s.push((m.start() as u32, m.end() as u32));
+        }
+        scan = m.end();
+        field = scan;
+        if scan == end {
+            fields.push((scan as u32, scan as u32));
+        }
     }
-    parts.push(AwkStr::from(&hay[last..]));
-    (parts, seps)
+    if scan < end {
+        fields.push((scan as u32, end as u32));
+    }
 }
 
 fn shutdown_coproc(mut h: CoprocHandle) -> Result<()> {
