@@ -85,6 +85,7 @@ pub fn gsub(
     repl: &[u8],
     target: Option<&mut AwkStr>,
 ) -> Result<f64> {
+    let posix = rt.posix;
     let repl_has_special = repl.contains(&b'&') || repl.contains(&b'\\');
     // Fast path: literal pattern + literal replacement → pure string replacement, no regex.
     // But IGNORECASE only takes effect via the regex engine, so when it's on we
@@ -107,7 +108,7 @@ pub fn gsub(
             if !re.is_match(t.as_bytes()) {
                 0
             } else {
-                let (new_s, c) = replace_all_awk(re, t.as_bytes(), repl, repl_has_special);
+                let (new_s, c) = replace_all_awk(re, t.as_bytes(), repl, repl_has_special, posix);
                 *t = new_s;
                 c
             }
@@ -128,7 +129,7 @@ pub fn gsub(
                 rt.record = cur;
                 return Ok(0.0);
             }
-            replace_all_awk(re, cur.as_bytes(), repl, repl_has_special)
+            replace_all_awk(re, cur.as_bytes(), repl, repl_has_special, posix)
         };
         drop(cur);
         let fs = rt
@@ -160,7 +161,7 @@ pub fn sub_fn(
             .map(|m| (m.start(), m.end(), AwkStr::from(m.as_bytes())));
         if let Some((start, end, matched)) = found {
             let piece = if repl_has_special {
-                expand_repl(repl, matched.as_bytes())
+                expand_repl(repl, matched.as_bytes(), rt.posix)
             } else {
                 AwkStr::from(repl)
             };
@@ -181,7 +182,7 @@ pub fn sub_fn(
             .map(|m| (m.start(), m.end(), AwkStr::from(m.as_bytes())));
         if let Some((start, end, matched)) = found {
             let piece = if repl_has_special {
-                expand_repl(repl, matched.as_bytes())
+                expand_repl(repl, matched.as_bytes(), rt.posix)
             } else {
                 AwkStr::from(repl)
             };
@@ -291,6 +292,7 @@ fn replace_all_awk(
     hay: &[u8],
     repl: &[u8],
     repl_has_special: bool,
+    posix: bool,
 ) -> (AwkStr, usize) {
     let mut count = 0usize;
     let mut out = AwkStr::with_capacity(hay.len());
@@ -299,7 +301,7 @@ fn replace_all_awk(
         count += 1;
         out.push_bytes(&hay[last..m.start()]);
         if repl_has_special {
-            out.push_awkstr(&expand_repl(repl, m.as_bytes()));
+            out.push_awkstr(&expand_repl(repl, m.as_bytes(), posix));
         } else {
             out.push_bytes(repl);
         }
@@ -439,19 +441,18 @@ pub fn awk_gensub(
     Ok(replace_nth_gensub(&re, s_ref, repl, which))
 }
 
-/// gawk-compatible replacement-string expansion for sub/gsub.
+/// Replacement-string expansion for `sub` / `gsub`: a port of the copy loop in
+/// gawk's `do_sub` (builtin.c), which scans left to right.
 ///
-/// Rules (matching gawk 5.x behavior, which differs from POSIX in the details
-/// of how backslashes near `&` are processed):
-///
-/// * A bare `&` is replaced by the matched text.
-/// * A run of `k` backslashes immediately preceding a `&` collapses pairs:
-///   `k/2` literal backslashes are emitted, then the `&` becomes the matched
-///   text if `k` is even, or a literal `&` if `k` is odd.
-/// * A backslash run that is NOT followed by `&` is emitted verbatim — so
-///   `\\` stays `\\`, and `\1` stays `\1` (sub/gsub never expand backrefs;
-///   that's gensub's job).
-fn expand_repl(repl: &[u8], matched: &[u8]) -> AwkStr {
+/// * `&` is the matched text.
+/// * Default (gawk) rules: `\\\&` is a literal `\&` and `\\\\` a literal `\\`
+///   (four characters in, two out); `\\&` is a literal `\` followed by the
+///   matched text; `\&` is a literal `&`; any other backslash is copied as is
+///   — so `\\` alone stays `\\` and `\1` stays `\1` (sub/gsub never expand
+///   backrefs; that is gensub's job).
+/// * `--posix` rules: `\&` is a literal `&`, `\\` a single `\`, and any other
+///   backslash is copied as is.
+fn expand_repl(repl: &[u8], matched: &[u8], posix: bool) -> AwkStr {
     let mut out = AwkStr::with_capacity(repl.len() + matched.len());
     let mut i = 0;
     while i < repl.len() {
@@ -461,36 +462,33 @@ fn expand_repl(repl: &[u8], matched: &[u8]) -> AwkStr {
             i += 1;
             continue;
         }
-        if c == b'\\' {
-            // Count the run of consecutive backslashes starting here.
-            let start = i;
-            while i < repl.len() && repl[i] == b'\\' {
-                i += 1;
-            }
-            let run = i - start;
-            if i < repl.len() && repl[i] == b'&' {
-                let pairs = run / 2;
-                for _ in 0..pairs {
-                    out.push_byte(b'\\');
-                }
-                if run % 2 == 0 {
-                    out.push_bytes(matched);
-                } else {
-                    out.push_byte(b'&');
-                }
-                i += 1; // consume the `&`
-            } else {
-                for _ in 0..run {
-                    out.push_byte(b'\\');
-                }
-            }
+        if c != b'\\' {
+            out.push_byte(c);
+            i += 1;
             continue;
         }
-        // Copied byte for byte. The old spelling decoded a `char` here to keep
-        // UTF-8 intact, which is exactly what a byte outside it could not
-        // survive.
-        out.push_byte(c);
-        i += 1;
+        let rest = &repl[i..];
+        if posix {
+            if matches!(rest.get(1), Some(b'&' | b'\\')) {
+                i += 1;
+            }
+            out.push_byte(repl[i]);
+            i += 1;
+        } else if rest.starts_with(b"\\\\\\&") || rest.starts_with(b"\\\\\\\\") {
+            out.push_byte(b'\\');
+            out.push_byte(rest[3]);
+            i += 4;
+        } else if rest.starts_with(b"\\\\&") {
+            out.push_byte(b'\\');
+            out.push_bytes(matched);
+            i += 3;
+        } else if rest.get(1) == Some(&b'&') {
+            out.push_byte(b'&');
+            i += 2;
+        } else {
+            out.push_byte(b'\\');
+            i += 1;
+        }
     }
     out
 }
