@@ -1228,6 +1228,17 @@ impl Compiler {
                 }
                 // An element argument may be a subarray (gawk arrays of arrays).
                 for a in args {
+                    // gawk passes isarray's operand with `Op_push_arg_untyped`,
+                    // which leaves an untyped variable untyped. A slotted
+                    // global is scalar-only, so its answer is always 0 —
+                    // reading the slot would only mark it used, and a later
+                    // `typeof` would say "unassigned" instead of "untyped".
+                    if let (true, Expr::Var(v)) = (name == "isarray", a) {
+                        if self.var_slot(v).is_some() {
+                            ops.push(Op::PushNum(0.0));
+                            continue;
+                        }
+                    }
                     self.compile_elem_any(a, ops);
                 }
                 let name_idx = self.strings.intern(name);

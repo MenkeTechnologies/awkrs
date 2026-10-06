@@ -1024,12 +1024,17 @@ pub fn awk_typeof_value(v: &Value) -> &'static str {
 /// for a key that was never created — `typeof` itself does not create it.
 pub fn awk_typeof_array_elem(rt: &Runtime, name: &str, key: &str) -> &'static str {
     match rt.get_global_var(name) {
-        Some(Value::Array(a)) => match a.get(key) {
-            Some(Value::Uninit) => "unassigned",
-            Some(v) => awk_typeof_value(v),
-            None => "untyped",
-        },
+        Some(Value::Array(a)) => awk_typeof_elem(a.get(key)),
         _ => "untyped",
+    }
+}
+
+/// `typeof` of an element looked up in an array: see [`awk_typeof_array_elem`].
+pub fn awk_typeof_elem(v: Option<&Value>) -> &'static str {
+    match v {
+        Some(Value::Uninit) => "unassigned",
+        Some(v) => awk_typeof_value(v),
+        None => "untyped",
     }
 }
 

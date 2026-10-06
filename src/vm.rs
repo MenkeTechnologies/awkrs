@@ -624,6 +624,31 @@ impl<'a> VmCtx<'a> {
         self.cp.strings.get(idx)
     }
 
+    /// `typeof(arr[key])`, frame-aware like every other element access: an
+    /// array parameter or local array is looked up in the current frame, not
+    /// among the globals. The subscript makes `arr` an array, as gawk's
+    /// `Op_subscript` does — an untyped name is an (empty) array afterwards.
+    /// gawk also creates the element itself in a state `typeof` still reports
+    /// as `"untyped"`; awkrs has no value for that state and leaves the element
+    /// absent, so `length(arr)` does not count it.
+    fn typeof_array_elem(&mut self, name: &str, key: &str) -> &'static str {
+        if let Some(slot) = self.locals.last_mut().and_then(|f| f.get_mut(name)) {
+            if matches!(slot, Value::Uninit) {
+                *slot = Value::Array(AwkArray::new());
+            }
+            return match slot {
+                Value::Array(a) => builtins::awk_typeof_elem(a.get(key)),
+                _ => "untyped",
+            };
+        }
+        if matches!(self.rt.get_global_var(name), None | Some(Value::Uninit)) {
+            self.rt
+                .vars
+                .insert(name.to_string(), Value::Array(AwkArray::new()));
+        }
+        builtins::awk_typeof_array_elem(self.rt, name, key)
+    }
+
     /// `typeof(name)` for a simple identifier (mirrors lvalue resolution order).
     fn typeof_scalar_name(&self, name: &str) -> Value {
         match name {
@@ -1565,7 +1590,9 @@ fn execute_chunk(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 let t = if name == "SYMTAB" {
                     ctx.typeof_scalar_name(&k)
                 } else {
-                    Value::StrLit(builtins::awk_typeof_array_elem(ctx.rt, name, &k).into())
+                    let name = name.to_string();
+                    check_array_target(ctx, &name)?;
+                    Value::StrLit(ctx.typeof_array_elem(&name, &k).into())
                 };
                 ctx.push(t);
             }
