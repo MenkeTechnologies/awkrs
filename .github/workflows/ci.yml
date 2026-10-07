@@ -72,15 +72,20 @@ jobs:
       # 5.2.1 predates behaviour the gawk cases are frozen against (e.g.
       # typeof of a bare-referenced array element is "unassigned" in 5.4.1).
       # The sha256 is of the tarball whose GNU signature (Arnold Robbins,
-      # key D1967C63788713177D861ED7DF597815937EC0D2) verified good.
+      # key D1967C63788713177D861ED7DF597815937EC0D2) verified good. It is built
+      # with MPFR, like the distribution builds: the same 5.4.1 configured
+      # without it reads a vivified element as 0 rather than "" (case 2093)
+      # and disagrees on examples/aho_corasick.awk.
       - uses: actions/cache@v5
         id: gawk-cache
         with:
           path: ~/gawk
-          key: ${{ runner.os }}-gawk-5.4.1-07f6f7342b7febe4313fc2c2542ad93d64fe20ad8717200109f105a826f5fd37
+          key: ${{ runner.os }}-gawk-5.4.1-mpfr-07f6f7342b7febe4313fc2c2542ad93d64fe20ad8717200109f105a826f5fd37
       - name: Build gawk 5.4.1
         if: steps.gawk-cache.outputs.cache-hit != 'true'
         run: |
+          sudo apt-get update
+          sudo apt-get install -y libmpfr-dev libgmp-dev
           curl --proto '=https' --tlsv1.2 --retry 5 -sSfLO https://ftp.gnu.org/gnu/gawk/gawk-5.4.1.tar.xz
           echo "07f6f7342b7febe4313fc2c2542ad93d64fe20ad8717200109f105a826f5fd37  gawk-5.4.1.tar.xz" | sha256sum -c -
           tar -xJf gawk-5.4.1.tar.xz
@@ -88,6 +93,7 @@ jobs:
           ./configure --prefix="$HOME/gawk"
           make -j"$(nproc)"
           make install
+          "$HOME/gawk/bin/gawk" --version | head -n1 | grep -F "GNU MPFR"
       - run: echo "$HOME/gawk/bin" >> "$GITHUB_PATH"
       - name: Install reference awks
         run: |
