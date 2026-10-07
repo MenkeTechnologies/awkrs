@@ -68,11 +68,32 @@ jobs:
           # alone misses source-only changes; we shipped fixes whose stale
           # cached binary then failed parity.
           key: ${{ runner.os }}-cargo-parity-${{ hashFiles('**/Cargo.lock', 'src/**/*.rs') }}
+      # gawk is built from the official GNU tarball rather than apt: Ubuntu's
+      # 5.2.1 predates behaviour the gawk cases are frozen against (e.g.
+      # typeof of a bare-referenced array element is "unassigned" in 5.4.1).
+      # The sha256 is of the tarball whose GNU signature (Arnold Robbins,
+      # key D1967C63788713177D861ED7DF597815937EC0D2) verified good.
+      - uses: actions/cache@v5
+        id: gawk-cache
+        with:
+          path: ~/gawk
+          key: ${{ runner.os }}-gawk-5.4.1-07f6f7342b7febe4313fc2c2542ad93d64fe20ad8717200109f105a826f5fd37
+      - name: Build gawk 5.4.1
+        if: steps.gawk-cache.outputs.cache-hit != 'true'
+        run: |
+          curl --proto '=https' --tlsv1.2 --retry 5 -sSfLO https://ftp.gnu.org/gnu/gawk/gawk-5.4.1.tar.xz
+          echo "07f6f7342b7febe4313fc2c2542ad93d64fe20ad8717200109f105a826f5fd37  gawk-5.4.1.tar.xz" | sha256sum -c -
+          tar -xJf gawk-5.4.1.tar.xz
+          cd gawk-5.4.1
+          ./configure --prefix="$HOME/gawk"
+          make -j"$(nproc)"
+          make install
+      - run: echo "$HOME/gawk/bin" >> "$GITHUB_PATH"
       - name: Install reference awks
         run: |
           sudo apt-get update
           # Noble dropped the transitional `nawk` metapackage; use `original-awk` (One True awk).
-          sudo apt-get install -y gawk mawk original-awk
+          sudo apt-get install -y mawk original-awk
           command -v gawk && gawk --version | head -n1
           command -v mawk && mawk -W version 2>&1 | head -n1
           command -v original-awk && original-awk -W version 2>&1 | head -n1 || true
