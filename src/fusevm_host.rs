@@ -586,7 +586,7 @@ impl fusevm::AwkHost for AwkRuntimeHost {
     /// the 1-based position (0 if no match). Port of `Op::MatchBuiltin`.
     fn match_re(&mut self, s: &fusevm::Value, re: &fusevm::Value) -> i64 {
         with_runtime(
-            |rt| match crate::builtins::match_fn(rt, &s.to_str(), &re.to_str(), None) {
+            |rt| match crate::builtins::match_fn(rt, s.to_str(), &re.to_str(), None) {
                 Ok(r) => r as i64,
                 Err(e) => {
                     set_host_error(e);
