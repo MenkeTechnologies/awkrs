@@ -135,8 +135,6 @@ struct ParserCheckpoint<'a> {
     line: usize,
 }
 
-const DOLLAR_FIELD_POSTFIX: &str = "__dollar_field_postfix__";
-
 impl<'a> Parser<'a> {
     fn new(src: &'a str) -> Self {
         Self::new_bytes(src.as_bytes())
@@ -1601,21 +1599,12 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// After `$` (not `$(`…`)`), parse the field index: `$i++` binds `++` to `i` before `$`;
-    /// `$1++` binds `++` to the field as a whole.
+    /// After `$` (not `$(`…`)`), parse the field index: gawk's `'$' non_post_simp_exp
+    /// opt_incdec` — a prefix operand (`$++i`, `$-1`, `$!x`, `$a[k]`) with no postfix
+    /// operator, so a trailing `++`/`--` applies to the *field*: `$i++` is `($i)++` in
+    /// gawk, mawk and one-true-awk alike, not `$(i++)`.
     fn parse_inner_for_dollar_field(&mut self) -> Result<Expr> {
-        // Prefix (including unary `-` for `$-1`) then postfix; bare `$1++` uses the error path in
-        // `Token::Dollar` to attach `++` to the field, not to the integer.
-        let e = self.parse_prefix_unary(false, false)?;
-        if matches!(e, Expr::Number(_) | Expr::IntegerLiteral(_) | Expr::Str(_))
-            && matches!(self.cur, Token::PlusPlus | Token::MinusMinus)
-        {
-            return Err(Error::Parse {
-                line: self.line,
-                msg: DOLLAR_FIELD_POSTFIX.into(),
-            });
-        }
-        self.parse_postfix_on_expr(e)
+        self.parse_prefix_unary(false, false)
     }
 
     fn parse_postfix_on_expr(&mut self, mut e: Expr) -> Result<Expr> {
@@ -1924,17 +1913,8 @@ impl<'a> Parser<'a> {
                     self.bump(false)?;
                     Ok(Expr::Field(Box::new(e)))
                 } else {
-                    let cp = self.checkpoint();
-                    match self.parse_inner_for_dollar_field() {
-                        Ok(inner) => Ok(Expr::Field(Box::new(inner))),
-                        Err(Error::Parse { msg, .. }) if msg == DOLLAR_FIELD_POSTFIX => {
-                            self.restore(cp);
-                            let inner = self.parse_prefix_unary(false, false)?;
-                            let e = Expr::Field(Box::new(inner));
-                            self.parse_postfix_on_expr(e)
-                        }
-                        Err(e) => Err(e),
-                    }
+                    let inner = self.parse_inner_for_dollar_field()?;
+                    Ok(Expr::Field(Box::new(inner)))
                 }
             }
             Token::LParen => {
@@ -2282,6 +2262,23 @@ mod tests {
             }
             _ => panic!("expected GetLine"),
         }
+    }
+
+    #[test]
+    fn dollar_binds_tighter_than_postfix_incdec() {
+        let p = parse_program("BEGIN { $i++; $++j }").unwrap();
+        let stmts = &p.rules[0].stmts;
+        assert!(matches!(
+            &stmts[0],
+            Stmt::Expr(Expr::IncDec {
+                op: IncDecOp::PostInc,
+                target: IncDecTarget::Field(inner),
+            }) if matches!(**inner, Expr::Var(ref v) if v == "i")
+        ));
+        assert!(matches!(
+            &stmts[1],
+            Stmt::Expr(Expr::Field(inner)) if matches!(**inner, Expr::IncDec { op: IncDecOp::PreInc, .. })
+        ));
     }
 
     #[test]
