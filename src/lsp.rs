@@ -920,8 +920,8 @@ pub fn builtin_signature(name: &str) -> Option<(&'static str, &'static str)> {
             "Code point of the first character of `s`, or 0 when `s` is empty (gawk `ordchr`).",
         ),
         "intdiv" => (
-            "intdiv(a, b)",
-            "Truncating integer quotient of `a / b`; a zero divisor is a fatal error. Diverges from gawk, whose `intdiv(num, den, arr)` takes a result array instead of returning the quotient.",
+            "intdiv(num, den, arr) / intdiv(a, b)",
+            "gawk `intdiv`: with a result array, clear `arr`, truncate both operands toward zero and set `arr[\"quotient\"]` and `arr[\"remainder\"]` (the remainder has the sign of `num`); returns 0, or -1 with a warning for a zero divisor. The two-argument form is an awkrs extension that returns the truncating quotient; a zero divisor is a fatal error there.",
         ),
         "intdiv0" => (
             "intdiv0(a, b)",
@@ -980,8 +980,8 @@ pub fn builtin_signature(name: &str) -> Option<(&'static str, &'static str)> {
             "Return `s` reversed by Unicode scalar — identical to `revoutput`. awkrs exposes gawk's `revtwoway` demo as a plain function rather than a two-way coprocess (gawk `revtwoway`).",
         ),
         "gettimeofday" => (
-            "gettimeofday(arr)",
-            "Clear `arr` and set `arr[\"sec\"]` to the fractional epoch seconds and `arr[\"usec\"]` to the microsecond remainder; returns 0 (gawk `time`).",
+            "gettimeofday() / gettimeofday(arr)",
+            "gawk `time`: with no argument, return the time as fractional seconds since the epoch. With an array (awkrs extension), clear `arr` and set `arr[\"sec\"]` to the fractional epoch seconds and `arr[\"usec\"]` to the microsecond remainder; returns 0 (gawk `time`).",
         ),
         "getlocaltime" => (
             "getlocaltime(arr [, ts])",
@@ -989,7 +989,7 @@ pub fn builtin_signature(name: &str) -> Option<(&'static str, &'static str)> {
         ),
         "sleep" => (
             "sleep(sec)",
-            "Sleep for `sec` seconds, fractions included; a negative duration is a fatal error. Returns 0 (gawk `time`).",
+            "Sleep for `sec` seconds, fractions included, and return 0; a negative argument returns -1 and sets `ERRNO` (gawk `time`).",
         ),
         "bindtextdomain" => (
             "bindtextdomain(domain, dirname)",

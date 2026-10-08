@@ -3297,3 +3297,18 @@ fn rwarray_reads_gawk_files_and_reports_success_as_one() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// gawk's `intdiv` extension: a zero divisor warns and returns -1 after the
+/// result array has been cleared (intdiv.c clears it before dividing). Parity
+/// case gawk/2129 covers the successful calls; this one has a warning on
+/// stderr, whose wording the parity harness would compare byte for byte.
+#[test]
+fn intdiv_extension_zero_divisor_returns_minus_one() {
+    let (code, stdout, stderr) = run_awkrs_stdin(
+        "@load \"intdiv\"\nBEGIN { r[1]; print intdiv(1, 0, r), length(r) }",
+        "",
+    );
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(stdout, "-1 0\n");
+    assert!(stderr.contains("intdiv: division by zero attempted"), "{stderr}");
+}

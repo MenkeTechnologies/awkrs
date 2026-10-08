@@ -329,9 +329,9 @@
       </article>
       <article class="doc-entry" id="doc-intdiv">
         <h3><a class="doc-anchor" href="#doc-intdiv">#</a> <code>intdiv</code></h3>
-        <pre><code class="lang-awk">intdiv(a, b)
+        <pre><code class="lang-awk">intdiv(num, den, arr) / intdiv(a, b)
 </code></pre>
-        <p>Truncating integer quotient of <code>a / b</code>; a zero divisor is a fatal error. Diverges from gawk, whose <code>intdiv(num, den, arr)</code> takes a result array instead of returning the quotient.</p>
+        <p>gawk <code>intdiv</code>: with a result array, clear <code>arr</code>, truncate both operands toward zero and set <code>arr[&quot;quotient&quot;]</code> and <code>arr[&quot;remainder&quot;]</code> (the remainder has the sign of <code>num</code>); returns 0, or -1 with a warning for a zero divisor. The two-argument form is an awkrs extension that returns the truncating quotient; a zero divisor is a fatal error there.</p>
         <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Neither fusevm route lowers it: the numeric-chunk offload treats the chunk as ineligible, and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend refuses to compile a program that calls it rather than lowering it to something approximate.</p>
         <p><strong>Restrictions.</strong> Rejected as a non-POSIX extension under <code>-P</code>/<code>--posix</code> and <code>-c</code>/<code>--traditional</code>.</p>
       </article>
@@ -438,9 +438,9 @@
       </article>
       <article class="doc-entry" id="doc-gettimeofday">
         <h3><a class="doc-anchor" href="#doc-gettimeofday">#</a> <code>gettimeofday</code></h3>
-        <pre><code class="lang-awk">gettimeofday(arr)
+        <pre><code class="lang-awk">gettimeofday() / gettimeofday(arr)
 </code></pre>
-        <p>Clear <code>arr</code> and set <code>arr[&quot;sec&quot;]</code> to the fractional epoch seconds and <code>arr[&quot;usec&quot;]</code> to the microsecond remainder; returns 0 (gawk <code>time</code>).</p>
+        <p>gawk <code>time</code>: with no argument, return the time as fractional seconds since the epoch. With an array (awkrs extension), clear <code>arr</code> and set <code>arr[&quot;sec&quot;]</code> to the fractional epoch seconds and <code>arr[&quot;usec&quot;]</code> to the microsecond remainder; returns 0 (gawk <code>time</code>).</p>
         <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Neither fusevm route lowers it: the numeric-chunk offload treats the chunk as ineligible, and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend refuses to compile a program that calls it rather than lowering it to something approximate.</p>
         <p><strong>Restrictions.</strong> Rejected as a non-POSIX extension under <code>-P</code>/<code>--posix</code> and <code>-c</code>/<code>--traditional</code>.</p>
       </article>
@@ -456,7 +456,7 @@
         <h3><a class="doc-anchor" href="#doc-sleep">#</a> <code>sleep</code></h3>
         <pre><code class="lang-awk">sleep(sec)
 </code></pre>
-        <p>Sleep for <code>sec</code> seconds, fractions included; a negative duration is a fatal error. Returns 0 (gawk <code>time</code>).</p>
+        <p>Sleep for <code>sec</code> seconds, fractions included, and return 0; a negative argument returns -1 and sets <code>ERRNO</code> (gawk <code>time</code>).</p>
         <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Neither fusevm route lowers it: the numeric-chunk offload treats the chunk as ineligible, and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend refuses to compile a program that calls it rather than lowering it to something approximate.</p>
         <p><strong>Restrictions.</strong> Rejected as a non-POSIX extension under <code>-P</code>/<code>--posix</code> and <code>-c</code>/<code>--traditional</code>.</p>
       </article>

@@ -1206,6 +1206,19 @@ impl Compiler {
                     args.len() as u16,
                 ));
             }
+            // gawk's intdiv extension: the third argument is the result array.
+            "intdiv" if args.len() == 3 => {
+                self.compile_expr(&args[0], ops);
+                self.compile_expr(&args[1], ops);
+                match &args[2] {
+                    Expr::Var(arr) => {
+                        let idx = self.strings.intern(arr);
+                        ops.push(Op::PushStr(idx));
+                    }
+                    other => self.compile_expr(other, ops),
+                }
+                ops.push(Op::CallBuiltin(self.strings.intern(name), 3));
+            }
             "gettimeofday" | "getlocaltime" => {
                 // Array is the first arg; optional extra args follow
                 if let Some(Expr::Var(arr)) = args.first() {

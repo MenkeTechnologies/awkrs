@@ -228,12 +228,21 @@ pub(crate) fn exec_builtin_dispatch(
             }
             bignum::awk_int_value(&args[0], ctx.rt)
         }
-        "intdiv" => {
-            if argc != 2 {
-                return Err(Error::Runtime("`intdiv` expects two arguments".into()));
+        "intdiv" => match argc {
+            2 => bignum::awk_intdiv_values(&args[0], &args[1], ctx.rt)?,
+            // gawk's `intdiv` extension: `intdiv(num, denom, result)`.
+            3 => crate::gawk_extensions::intdiv_into(
+                ctx.rt,
+                &args[0],
+                &args[1],
+                &args[2].as_str(),
+            )?,
+            _ => {
+                return Err(Error::Runtime(
+                    "`intdiv` expects two arguments, or three for gawk's intdiv extension".into(),
+                ));
             }
-            bignum::awk_intdiv_values(&args[0], &args[1], ctx.rt)?
-        }
+        },
         "mkbool" => {
             if argc != 1 {
                 return Err(Error::Runtime("`mkbool` expects one argument".into()));
@@ -649,12 +658,16 @@ pub(crate) fn exec_builtin_dispatch(
             }
             crate::gawk_extensions::fts(ctx.rt, &args[0].as_str(), &args[1].as_str())?
         }
-        "gettimeofday" => {
-            if argc != 1 {
-                return Err(Error::Runtime("`gettimeofday` expects one argument".into()));
+        "gettimeofday" => match argc {
+            // gawk's `time` extension: seconds since the epoch as a fraction.
+            0 => crate::gawk_extensions::gettimeofday_secs(),
+            1 => crate::gawk_extensions::gettimeofday(ctx.rt, &args[0].as_str())?,
+            _ => {
+                return Err(Error::Runtime(
+                    "`gettimeofday` expects no arguments (or an array)".into(),
+                ));
             }
-            crate::gawk_extensions::gettimeofday(ctx.rt, &args[0].as_str())?
-        }
+        },
         "sleep" => {
             if argc != 1 {
                 return Err(Error::Runtime("`sleep` expects one argument".into()));

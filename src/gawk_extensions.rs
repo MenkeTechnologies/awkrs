@@ -161,6 +161,15 @@ pub(crate) fn fts(rt: &mut Runtime, root: &str, arr_name: &str) -> Result<Value>
     Ok(Value::Num(paths.len() as f64))
 }
 
+/// `gettimeofday()` — gawk's `time` extension: the current time as seconds
+/// since the epoch, with the sub-second part as a fraction.
+pub(crate) fn gettimeofday_secs() -> Value {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::ZERO);
+    Value::Num(now.as_secs() as f64 + f64::from(now.subsec_nanos()) / 1e9)
+}
+
 /// `gettimeofday(arr)` — sets **`sec`** and **`usec`** (fractional epoch).
 pub(crate) fn gettimeofday(rt: &mut Runtime, arr_name: &str) -> Result<Value> {
     rt.clear_errno();
@@ -177,12 +186,26 @@ pub(crate) fn gettimeofday(rt: &mut Runtime, arr_name: &str) -> Result<Value> {
     Ok(Value::Num(0.0))
 }
 
-/// `sleep(sec)` — sleep for a fractional number of seconds.
-pub(crate) fn sleep_secs(_rt: &mut Runtime, sec: f64) -> Result<Value> {
+/// `sleep(sec)` — sleep for a fractional number of seconds; gawk's `time`
+/// extension answers -1 with `ERRNO` set for a negative argument.
+pub(crate) fn sleep_secs(rt: &mut Runtime, sec: f64) -> Result<Value> {
     if sec < 0.0 {
-        return Err(Error::Runtime("sleep: negative duration".into()));
+        rt.set_errno_str("sleep: argument is negative");
+        return Ok(Value::Num(-1.0));
     }
-    std::thread::sleep(Duration::from_secs_f64(sec));
+    // NaN cannot be a duration; an infinite one sleeps for good, as in C.
+    let d = if sec.is_infinite() {
+        Duration::MAX
+    } else {
+        match Duration::try_from_secs_f64(sec) {
+            Ok(d) => d,
+            Err(_) => {
+                rt.set_errno_io(&std::io::Error::from_raw_os_error(libc::EINVAL));
+                return Ok(Value::Num(-1.0));
+            }
+        }
+    };
+    std::thread::sleep(d);
     Ok(Value::Num(0.0))
 }
 
@@ -583,6 +606,56 @@ pub(crate) fn reada(rt: &mut Runtime, path: &str, arr_name: &str) -> Result<Valu
     Ok(Value::Num(1.0))
 }
 
+/// `intdiv(num, denom, result)` — gawk's `intdiv` extension (extension/intdiv.c).
+///
+/// Clears `result`, truncates both operands toward zero and stores the
+/// truncated quotient and remainder (`fmod`, so the remainder takes the sign of
+/// `num`) as `result["quotient"]` and `result["remainder"]`; returns 0. A zero
+/// divisor, or under `-M` a non-finite operand, warns and returns -1. Under
+/// `-M` the division is `mpz_tdiv_qr` on the truncated integers.
+pub(crate) fn intdiv_into(
+    rt: &mut Runtime,
+    num: &Value,
+    denom: &Value,
+    arr_name: &str,
+) -> Result<Value> {
+    rt.array_delete(arr_name, None);
+    let (quotient, remainder) = if rt.bignum {
+        let prec = rt.mpfr_prec_bits();
+        let round = rt.mpfr_round();
+        let n = crate::bignum::value_to_mpfr(num, prec, round);
+        let d = crate::bignum::value_to_mpfr(denom, prec, round);
+        if !n.is_finite() {
+            rt.warn("intdiv: numerator is not finite");
+            return Ok(Value::Num(-1.0));
+        }
+        if !d.is_finite() {
+            rt.warn("intdiv: denominator is not finite");
+            return Ok(Value::Num(-1.0));
+        }
+        let n = crate::bignum::float_trunc_integer(&n);
+        let d = crate::bignum::float_trunc_integer(&d);
+        if d == 0 {
+            rt.warn("intdiv: division by zero attempted");
+            return Ok(Value::Num(-1.0));
+        }
+        let (q, r) = n.div_rem(d);
+        let to_value = |i: rug::Integer| Value::Mpfr(rug::Float::with_val(prec.max(i.significant_bits()), i));
+        (to_value(q), to_value(r))
+    } else {
+        let n = num.as_number().trunc();
+        let d = denom.as_number().trunc();
+        if d == 0.0 {
+            rt.warn("intdiv: division by zero attempted");
+            return Ok(Value::Num(-1.0));
+        }
+        (Value::Num((n / d).trunc()), Value::Num((n % d).trunc()))
+    };
+    rt.array_set(arr_name, "quotient".into(), quotient);
+    rt.array_set(arr_name, "remainder".into(), remainder);
+    Ok(Value::Num(0.0))
+}
+
 /// `intdiv0(a,b)` — like **`intdiv`** but returns 0 when **`b == 0`** (no error).
 pub(crate) fn intdiv0(rt: &mut Runtime, a: &Value, b: &Value) -> Result<Value> {
     match crate::bignum::awk_intdiv_values(a, b, rt) {
@@ -750,10 +823,12 @@ mod tests {
     }
 
     #[test]
-    fn sleep_negative_errors() {
+    fn sleep_negative_returns_minus_one_with_errno() {
+        // gawk's time extension: -1 and ERRNO, not a fatal error (this test
+        // used to pin the fatal).
         let mut rt = Runtime::new();
-        let e = sleep_secs(&mut rt, -1.0).unwrap_err();
-        assert!(e.to_string().contains("sleep"), "unexpected error: {e}");
+        assert_eq!(sleep_secs(&mut rt, -1.0).unwrap().as_number(), -1.0);
+        assert_eq!(sleep_secs(&mut rt, f64::NAN).unwrap().as_number(), -1.0);
     }
 
     #[test]
