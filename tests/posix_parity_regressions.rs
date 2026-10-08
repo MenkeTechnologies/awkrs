@@ -3336,3 +3336,22 @@ fn csv_mode_records_span_quoted_newlines_and_fields_follow_gawk() {
          5 1 RT=0 [open]\n"
     );
 }
+
+/// Under `--csv`, gawk 5.4 leaves `FS` at its default, reports `PROCINFO["FS"]`
+/// as `FS`, ignores an assignment to `FS`/`FIELDWIDTHS`/`FPAT` with one warning,
+/// and has `split(s, a)` with the default separator parse `s` as CSV. awkrs set
+/// `FS` to `","`, reported `API`, accepted the assignment silently and split on
+/// the comma, breaking the quoted field. Expected output from gawk 5.4.1.
+#[test]
+fn csv_mode_fs_procinfo_and_default_split_follow_gawk() {
+    let prog = r#"BEGIN { printf "[%s][%s]\n", FS, PROCINFO["FS"] }
+        { n = split($0, a); print n, a[2]; n = split($0, b, ","); print n, b[2]; FS = ":"; FPAT = "x"; $0 = $0; print NF }"#;
+    let (code, stdout, stderr) = run_awkrs_stdin_args(["--csv"], prog, "a,\"b,c\",d\n");
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(stdout, "[ ][FS]\n3 b,c\n4 \"b\n3\n");
+    assert_eq!(
+        stderr.matches("assignment to FS/FIELDWIDTHS/FPAT has no effect when using --csv").count(),
+        1,
+        "{stderr}"
+    );
+}

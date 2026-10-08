@@ -37,8 +37,10 @@ pub(crate) fn gawk_read_timeout_env() -> i32 {
 
 /// Reflects active field-splitting mode (gawk **`PROCINFO["FS"]`**).
 pub(crate) fn field_split_mode(rt: &Runtime) -> &'static str {
+    // gawk 5.4 splits `--csv` records with `comma_parse_field`, an ordinary
+    // field parser (not an extension's API parser), so it reports "FS".
     if rt.csv_mode {
-        return "API";
+        return "FS";
     }
     // Once FS, FIELDWIDTHS or FPAT has been assigned, the last one assigned is
     // the rule (gawk's `set_parser`); before that, the non-empty one.
@@ -168,10 +170,12 @@ mod tests {
     }
 
     #[test]
-    fn field_split_mode_csv_reports_api() {
+    fn field_split_mode_csv_reports_fs() {
+        // gawk 5.4.1: `gawk --csv 'BEGIN { print PROCINFO["FS"] }'` prints FS
+        // (this test used to pin "API").
         let mut rt = Runtime::new();
         rt.csv_mode = true;
-        assert_eq!(field_split_mode(&rt), "API");
+        assert_eq!(field_split_mode(&rt), "FS");
     }
 
     #[test]
@@ -337,7 +341,8 @@ mod tests {
             .insert("FIELDWIDTHS".into(), Value::Str("1 2".into()));
         assert_eq!(field_split_mode(&rt), "FIELDWIDTHS");
         rt.csv_mode = true;
-        assert_eq!(field_split_mode(&rt), "API");
+        // `--csv` overrides FIELDWIDTHS and reports gawk 5.4's "FS".
+        assert_eq!(field_split_mode(&rt), "FS");
     }
 
     #[test]

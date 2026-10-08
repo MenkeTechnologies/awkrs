@@ -1108,7 +1108,7 @@ fn split_fields_fieldwidths(
 ///
 /// Returns the field values; `field_ranges` gets each field's raw span in
 /// `record`, quotes included.
-fn split_csv_gawk_fields(record: &[u8], field_ranges: &mut Vec<(u32, u32)>) -> Vec<AwkStr> {
+pub(crate) fn split_csv_gawk_fields(record: &[u8], field_ranges: &mut Vec<(u32, u32)>) -> Vec<AwkStr> {
     field_ranges.clear();
     let mut fields = Vec::new();
     let end = record.len();
@@ -1637,6 +1637,9 @@ pub struct Runtime {
     pub vm_stack: Vec<Value>,
     /// `-k` / `--csv` (gawk-style): use [`split_csv_gawk_fields`] instead of `FPAT` / `FS` for `$n`.
     pub csv_mode: bool,
+    /// gawk warns once that assigning `FS`, `FIELDWIDTHS` or `FPAT` does nothing
+    /// under `--csv`.
+    pub csv_split_var_warned: bool,
     /// Which of `FS`, `FIELDWIDTHS` and `FPAT` splits records: the one assigned
     /// last, as gawk's `set_parser` does (see [`Runtime::note_split_var_assigned`]).
     pub field_split_by: Option<FieldSplitBy>,
@@ -2419,6 +2422,7 @@ impl Runtime {
             ors_bytes: b"\n".to_vec(),
             vm_stack: Vec::with_capacity(64),
             csv_mode: false,
+            csv_split_var_warned: false,
             field_split_by: None,
             rs_pattern_for_regex: String::new(),
             rs_regex_bytes: None,
@@ -2925,6 +2929,7 @@ impl Runtime {
             ors_bytes: b"\n".to_vec(),
             vm_stack: Vec::with_capacity(64),
             csv_mode,
+            csv_split_var_warned: false,
             field_split_by,
             rs_pattern_for_regex: String::new(),
             rs_regex_bytes: None,
@@ -4877,8 +4882,19 @@ impl Runtime {
     /// record-splitting rule, whatever the other two hold — gawk's `set_FS`,
     /// `set_FIELDWIDTHS` and `set_FPAT` each install their own parser. Under
     /// `--csv` the assignment has no effect on splitting (gawk warns).
+    /// gawk `set_parser`: under `--csv`, once per run.
+    pub fn warn_csv_split_var_assignment(&mut self) {
+        if !self.csv_split_var_warned {
+            self.csv_split_var_warned = true;
+            self.warn("assignment to FS/FIELDWIDTHS/FPAT has no effect when using --csv");
+        }
+    }
+
     pub fn note_split_var_assigned(&mut self, name: &str) {
         if self.csv_mode {
+            if matches!(name, "FS" | "FIELDWIDTHS" | "FPAT") {
+                self.warn_csv_split_var_assignment();
+            }
             return;
         }
         let by = match name {
@@ -5600,6 +5616,7 @@ impl Clone for Runtime {
             ors_bytes: self.ors_bytes.clone(),
             vm_stack: Vec::with_capacity(64),
             csv_mode: self.csv_mode,
+            csv_split_var_warned: self.csv_split_var_warned,
             field_split_by: self.field_split_by,
             rs_pattern_for_regex: self.rs_pattern_for_regex.clone(),
             rs_regex_bytes: self.rs_regex_bytes.clone(),

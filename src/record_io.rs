@@ -505,6 +505,18 @@ fn split_by_delimiter_mmap<'a>(data: &'a [u8], delim: &[u8]) -> Vec<&'a [u8]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn split_csv_records_follows_csvscan() {
+        // gawk io.c `csvscan`: a newline inside quotes continues the record,
+        // CR-LF folds to LF, and the last record may lack its newline.
+        let recs = split_csv_records(b"a,\"x\r\ny\"\r\nb\n\"open\r");
+        let got: Vec<(&[u8], bool)> = recs.iter().map(|(r, t)| (r.as_ref(), *t)).collect();
+        assert_eq!(
+            got,
+            [(&b"a,\"x\ny\""[..], true), (&b"b"[..], true), (&b"\"open"[..], false)]
+        );
+    }
     use crate::runtime::SharedInputReader;
     use std::io::{BufReader, Cursor, Read};
     use std::sync::{Arc, Mutex};

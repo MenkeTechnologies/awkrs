@@ -400,7 +400,15 @@ pub fn run(bin_name: &str) -> Result<()> {
     }
     if args.csv {
         rt.csv_mode = true;
-        rt.vars.insert("FS".into(), Value::Str(",".into()));
+        // gawk leaves `FS` at its default under `--csv`; a `-F` or `-v` assignment
+        // to a field-splitting variable is ignored with its one warning.
+        if args.field_separator().is_some()
+            || args.assigns.iter().any(|a| {
+                matches!(a.to_string_lossy().split('=').next(), Some("FS" | "FIELDWIDTHS" | "FPAT"))
+            })
+        {
+            rt.warn_csv_split_var_assignment();
+        }
         // gawk reports this FPAT in CSV mode even though splitting is handled internally.
         rt.vars
             .insert("FPAT".into(), Value::Str("[^[:space:]]+".into()));

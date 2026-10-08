@@ -1291,8 +1291,9 @@ const PROCINFO_KEYS: &[Entry] = &[
         name: r#"PROCINFO["FS"]"#,
         sig: r#"PROCINFO["FS"]"#,
         lang: "awk",
-        desc: "Which field-splitting rule is currently active: `FS`, `FPAT`, `FIELDWIDTHS`, or \
-               `API` in CSV mode. Computed on each refresh from the live variables, not stored.",
+        desc: "Which field-splitting rule is currently active: `FS`, `FPAT` or `FIELDWIDTHS` \
+               (`FS` in CSV mode, as in gawk 5.4). Computed on each refresh from the live \
+               variables, not stored.",
     },
     Entry {
         name: r#"PROCINFO["strftime"]"#,
