@@ -1453,3 +1453,24 @@ BEGIN { print "never"; if (0) next }
 #--- prog
 END { print "never"; if (0) nextfile }
 #--- only gawk
+
+#=== getline_skips_a_directory_operand
+# Plain getline walking the operands skips a directory with gawk's warning and
+# reads on, from BEGIN and from a rule alike; BEGINFILE sees it first with
+# ERRNO set. awkrs returned end of input at the directory (BEGIN) or failed
+# with "Is a directory" (rule).
+#--- prog
+BEGIN {
+  ARGV[1] = "input.txt"; ARGV[2] = "/"; ARGV[3] = "input.txt"; ARGC = 4
+  while ((getline l) > 0) print "begin", l
+  print "done"
+}
+#--- only gawk
+
+#=== getline_from_rule_skips_a_directory_operand
+#--- prog
+BEGIN { ARGV[1] = "input.txt"; ARGV[2] = "/"; ARGV[3] = "input.txt"; ARGC = 4 }
+BEGINFILE { print "BEGINFILE", (ERRNO != "") }
+NR == 1 { while ((getline l) > 0) print "rule", l; print "done" }
+ENDFILE { print "ENDFILE", FNR }
+#--- only gawk

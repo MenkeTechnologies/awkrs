@@ -3270,16 +3270,18 @@ fn read_primary_with_file_rules(ctx: &mut VmCtx<'_>) -> Result<Option<String>> {
         if ctx.rt.primary_input_done {
             return Ok(None);
         }
-        if !crate::open_next_primary_operand(ctx.rt)? {
-            // No file operand: standard input, whose `BEGINFILE` the record
-            // loop would otherwise run.
-            crate::attach_stdin_primary(ctx.rt);
-            ctx.rt.beginfile_ran = true;
-        }
-        if vm_run_beginfile(ctx.cp, ctx.rt)? {
-            // `nextfile` in `BEGINFILE`: the file is closed unread and the
-            // loop below runs its `ENDFILE` and moves on.
-            ctx.rt.detach_input_reader();
+        match crate::open_next_primary_operand(ctx.rt)? {
+            crate::OperandOpen::Exhausted => {
+                // No file operand: standard input, whose `BEGINFILE` the record
+                // loop would otherwise run.
+                crate::attach_stdin_primary(ctx.rt);
+                ctx.rt.beginfile_ran = true;
+                start_primary_operand(ctx, None)?;
+            }
+            crate::OperandOpen::Opened => start_primary_operand(ctx, None)?,
+            crate::OperandOpen::Failed(path, err) => {
+                start_primary_operand(ctx, Some((path, err)))?;
+            }
         }
     }
     loop {
@@ -3290,14 +3292,41 @@ fn read_primary_with_file_rules(ctx: &mut VmCtx<'_>) -> Result<Option<String>> {
             ctx.rt.endfile_ran = true;
             vm_run_endfile(ctx.cp, ctx.rt)?;
         }
-        if !crate::has_remaining_input_file(ctx.rt) || !crate::open_next_primary_operand(ctx.rt)? {
+        if !crate::has_remaining_input_file(ctx.rt) {
             return Ok(None);
         }
+        let failed = match crate::open_next_primary_operand(ctx.rt)? {
+            crate::OperandOpen::Exhausted => return Ok(None),
+            crate::OperandOpen::Opened => None,
+            crate::OperandOpen::Failed(path, err) => Some((path, err)),
+        };
         ctx.rt.endfile_ran = false;
-        if vm_run_beginfile(ctx.cp, ctx.rt)? {
+        start_primary_operand(ctx, failed)?;
+    }
+}
+
+/// Run `BEGINFILE` for the operand plain `getline` just reached. `nextfile`
+/// there closes it unread, and the caller's loop then runs its `ENDFILE`. An
+/// operand that did not open (`failed`) runs no `ENDFILE`; unless `BEGINFILE`
+/// skipped it with `nextfile`, it is then skipped with a warning (a directory)
+/// or fatal — gawk's `after_beginfile`.
+fn start_primary_operand(
+    ctx: &mut VmCtx<'_>,
+    failed: Option<(std::path::PathBuf, std::io::Error)>,
+) -> Result<()> {
+    let skip = vm_run_beginfile(ctx.cp, ctx.rt)?;
+    match failed {
+        None if skip => ctx.rt.detach_input_reader(),
+        None => {}
+        Some((path, err)) => {
+            ctx.rt.endfile_ran = true;
             ctx.rt.detach_input_reader();
+            if !skip {
+                crate::skip_unopened_operand(ctx.rt, path, err)?;
+            }
         }
     }
+    Ok(())
 }
 
 fn exec_getline(

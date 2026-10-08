@@ -3701,9 +3701,14 @@ impl Runtime {
             }
             // `getline` before the record loop (in `BEGIN`): open the first input
             // operand now, so `ARGV` edits made earlier in `BEGIN` count and
-            // `FILENAME` is set, or fall back to stdin when there is none.
-            if !crate::open_next_primary_operand(self)? {
+            // `FILENAME` is set, or fall back to stdin when there is none. When
+            // every operand is a skipped directory there is nothing to read —
+            // not standard input, which only stands in for *no* operands.
+            if !crate::has_remaining_input_file(self) {
                 crate::attach_stdin_primary(self);
+            } else if !crate::open_next_readable_operand(self)? {
+                self.detach_input_reader();
+                return Ok(None);
             }
         }
         loop {
@@ -3713,7 +3718,7 @@ impl Runtime {
             // End of this operand: like the record loop, move on to the next
             // one (gawk / mawk / one-true-awk all do — `while ((getline) > 0)`
             // reads every file, not just the current one).
-            if !crate::open_next_primary_operand(self)? {
+            if !crate::open_next_readable_operand(self)? {
                 return Ok(None);
             }
         }

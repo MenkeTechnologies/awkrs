@@ -612,11 +612,7 @@ pub fn run(bin_name: &str) -> Result<()> {
                     continue;
                 }
                 if is_dir && !rt.traditional && !rt.exit_pending {
-                    let msg = format!(
-                        "command line argument `{}' is a directory: skipped",
-                        rt.filename
-                    );
-                    rt.warn(&msg);
+                    warn_directory_operand_skipped(&mut rt);
                     continue;
                 }
                 if rt.exit_pending {
@@ -1243,7 +1239,12 @@ pub(crate) fn has_remaining_input_file(rt: &Runtime) -> bool {
 /// `BEGIN`, for the first record — sharing the cursor with the record loop so a
 /// file `getline` has opened or finished is not read again. The `BEGINFILE` /
 /// `ENDFILE` rules a crossing runs are the VM's (`read_primary_with_file_rules`).
-pub(crate) fn open_next_primary_operand(rt: &mut Runtime) -> Result<bool> {
+///
+/// An operand that names a directory or cannot be opened is reported as
+/// [`OperandOpen::Failed`] with `FILENAME`, `ARGIND`, `FNR` and `ERRNO` set for
+/// it, as gawk sets them before `BEGINFILE`; [`skip_unopened_operand`] then
+/// decides between gawk's directory warning and the "cannot open" fatal.
+pub(crate) fn open_next_primary_operand(rt: &mut Runtime) -> Result<OperandOpen> {
     while rt.argv_next < argv_operand_limit(rt) {
         let arg_idx = rt.argv_next;
         rt.argv_next += 1;
@@ -1259,9 +1260,15 @@ pub(crate) fn open_next_primary_operand(rt: &mut Runtime) -> Result<bool> {
         if operand == "-" {
             rt.filename = operand;
             attach_stdin_primary(rt);
-            return Ok(true);
+            return Ok(OperandOpen::Opened);
         }
-        match File::open(&operand) {
+        // `File::open` succeeds on a directory on Unix; gawk's open reports
+        // `EISDIR` for one, like the record loop below.
+        let opened = match std::fs::metadata(&operand) {
+            Ok(m) if m.is_dir() => Err(std::io::Error::from_raw_os_error(libc::EISDIR)),
+            _ => File::open(&operand),
+        };
+        match opened {
             Ok(f) => {
                 rt.clear_errno();
                 #[cfg(unix)]
@@ -1276,15 +1283,62 @@ pub(crate) fn open_next_primary_operand(rt: &mut Runtime) -> Result<bool> {
                 #[cfg(not(unix))]
                 rt.attach_input_reader(br);
                 rt.filename = operand;
-                return Ok(true);
+                return Ok(OperandOpen::Opened);
             }
             Err(e) => {
                 rt.set_errno_io(&e);
-                return Err(Error::InputFile(PathBuf::from(operand), e));
+                rt.filename = operand.clone();
+                return Ok(OperandOpen::Failed(PathBuf::from(operand), e));
             }
         }
     }
-    Ok(false)
+    Ok(OperandOpen::Exhausted)
+}
+
+/// Outcome of [`open_next_primary_operand`].
+pub(crate) enum OperandOpen {
+    /// A file (or `-`, standard input) is attached as the primary input.
+    Opened,
+    /// The operand is a directory or could not be opened; nothing is attached.
+    Failed(PathBuf, std::io::Error),
+    /// No input-file operand is left.
+    Exhausted,
+}
+
+/// gawk `after_beginfile` for an operand that did not open: a directory is
+/// skipped with a warning (outside `--traditional`), anything else is the
+/// "cannot open file" fatal.
+pub(crate) fn skip_unopened_operand(
+    rt: &mut Runtime,
+    path: PathBuf,
+    err: std::io::Error,
+) -> Result<()> {
+    if err.raw_os_error() == Some(libc::EISDIR) && !rt.traditional {
+        warn_directory_operand_skipped(rt);
+        return Ok(());
+    }
+    Err(Error::InputFile(path, err))
+}
+
+fn warn_directory_operand_skipped(rt: &mut Runtime) {
+    let msg = format!(
+        "command line argument `{}' is a directory: skipped",
+        rt.filename
+    );
+    rt.warn(&msg);
+}
+
+/// [`open_next_primary_operand`] for a reader with no `BEGINFILE` rules to run
+/// in between: operands that do not open are skipped or fatal per
+/// [`skip_unopened_operand`]. `false` once no operand is left.
+pub(crate) fn open_next_readable_operand(rt: &mut Runtime) -> Result<bool> {
+    loop {
+        match open_next_primary_operand(rt)? {
+            OperandOpen::Opened => return Ok(true),
+            OperandOpen::Exhausted => return Ok(false),
+            OperandOpen::Failed(path, err) => skip_unopened_operand(rt, path, err)?,
+        }
+    }
 }
 
 /// Run one input source's record loop, flushing whatever the program already
