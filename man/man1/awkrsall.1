@@ -846,11 +846,20 @@ Associative array build|awkrs / gawk
 .TP
 .B AWKPATH
 Search path for
-.B \-l
+.BR \-f ", " \-i ", " \-l
 and
 .BR @include .
 Default
 .BR . .
+A name containing
+.B /
+is used as given; any other name is tried in each directory, then again with
+.B .awk
+appended. A library named by several
+.B \-i
+or
+.B @include
+directives loads once.
 .TP
 .B AWKLIBPATH
 Search path for

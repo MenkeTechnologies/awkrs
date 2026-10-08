@@ -3571,3 +3571,48 @@ fn missing_input_file_error_message_distinguishes_from_program_file() {
         "should NOT call positional input a 'program file'; stderr={stderr:?}"
     );
 }
+
+/// gawk's source search (io.c `find_source`): a name without `/` is looked up
+/// in each `AWKPATH` directory, then again with `.awk` appended, so `-f lib`,
+/// `-i lib` and `@include "lib"` all load `lib.awk`. A library named twice, or
+/// two libraries that include each other, load once each (`add_srcfile` drops
+/// duplicates) instead of failing on a duplicate function. awkrs used to open
+/// only the literal path relative to the working directory and to report the
+/// repeat as an error.
+#[test]
+fn source_search_uses_awkpath_awk_suffix_and_includes_once() {
+    let dir = std::env::temp_dir().join(format!("awkrs_awkpath_{}", std::process::id()));
+    let libdir = dir.join("lib");
+    fs::create_dir_all(&libdir).expect("mkdir");
+    fs::write(libdir.join("one.awk"), "@include \"two\"\nfunction one() { return 1 }\n")
+        .expect("write one");
+    fs::write(libdir.join("two.awk"), "@include \"one\"\nfunction two() { return 2 }\n")
+        .expect("write two");
+    fs::write(dir.join("main.awk"), "BEGIN { print one() + two() }\n").expect("write main");
+    let bin = env!("CARGO_BIN_EXE_awkrs");
+    let run = |args: &[&str]| {
+        let out = Command::new(bin)
+            .args(args)
+            .current_dir(&dir)
+            .env("AWKPATH", ".:lib")
+            .output()
+            .expect("spawn");
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    let cases: [&[&str]; 3] = [
+        &["-i", "one", "-f", "main"],
+        &["-i", "one", "-i", "one.awk", "BEGIN { print one() + two() }"],
+        &["@include \"one\"\n@include \"two\"\n@include \"lib/one.awk\"\nBEGIN { print one() + two() }"],
+    ];
+    for args in cases {
+        let (code, stdout, stderr) = run(args);
+        assert_eq!((code, stdout.as_str()), (Some(0), "3\n"), "{args:?}: {stderr}");
+    }
+    let (code, _, stderr) = run(&["@include \"missing\"\nBEGIN { print 1 }"]);
+    assert_eq!(code, Some(1), "missing @include is a parse-time error: {stderr}");
+    let _ = fs::remove_dir_all(&dir);
+}

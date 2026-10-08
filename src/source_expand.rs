@@ -55,7 +55,7 @@ const NATIVE_GAWK_EXTENSIONS: &[&str] = &[
 ];
 
 /// True when `path_str` refers to one of those modules (with or without `.so`, any directory prefix).
-fn is_native_gawk_extension_path(path_str: &str) -> bool {
+pub(crate) fn is_native_gawk_extension_path(path_str: &str) -> bool {
     let stem = Path::new(path_str)
         .file_stem()
         .and_then(|s| s.to_str())
@@ -122,22 +122,7 @@ fn expand_inner(
                     msg: "malformed `@include` (expected `@include \"file\"`)".into(),
                 });
             };
-            let resolved = resolve_include_path(base_dir, &path_str)?;
-            let canon = fs::canonicalize(&resolved).unwrap_or_else(|_| resolved.clone());
-            if !visited.insert(canon.clone()) {
-                return Err(Error::Parse {
-                    line: line_no,
-                    msg: format!("@include cycle: {}", canon.display()),
-                });
-            }
-            let inner = fs::read_to_string(&resolved)
-                .map_err(|e| Error::ProgramFile(resolved.clone(), e))?;
-            let expanded = expand_inner(&inner, resolved.parent(), visited, default_ns)?;
-            visited.remove(&canon);
-            out.push_str(&expanded);
-            if !expanded.is_empty() && !expanded.ends_with('\n') {
-                out.push('\n');
-            }
+            include_once(&path_str, base_dir, line_no, visited, default_ns, &mut out)?;
             push_directive_tail(&mut out, after);
             continue;
         }
@@ -151,22 +136,7 @@ fn expand_inner(
             };
             let pl = path_str.to_ascii_lowercase();
             if pl.ends_with(".awk") {
-                let resolved = resolve_include_path(base_dir, &path_str)?;
-                let canon = fs::canonicalize(&resolved).unwrap_or_else(|_| resolved.clone());
-                if !visited.insert(canon.clone()) {
-                    return Err(Error::Parse {
-                        line: line_no,
-                        msg: format!("@load cycle: {}", canon.display()),
-                    });
-                }
-                let inner = fs::read_to_string(&resolved)
-                    .map_err(|e| Error::ProgramFile(resolved.clone(), e))?;
-                let expanded = expand_inner(&inner, resolved.parent(), visited, default_ns)?;
-                visited.remove(&canon);
-                out.push_str(&expanded);
-                if !expanded.is_empty() && !expanded.ends_with('\n') {
-                    out.push('\n');
-                }
+                include_once(&path_str, base_dir, line_no, visited, default_ns, &mut out)?;
                 push_directive_tail(&mut out, after);
                 continue;
             }
@@ -227,17 +197,83 @@ fn push_directive_tail(out: &mut String, after: &str) {
     }
 }
 
-fn resolve_include_path(base_dir: Option<&Path>, path_str: &str) -> Result<PathBuf> {
-    let p = Path::new(path_str);
-    if p.is_absolute() {
-        Ok(p.to_path_buf())
-    } else if let Some(dir) = base_dir {
-        Ok(dir.join(p))
-    } else {
-        std::env::current_dir()
-            .map(|cwd| cwd.join(p))
-            .map_err(Error::Io)
+/// Inline one `@include` (or `@load "x.awk"`) source, at most once per run.
+///
+/// gawk's `add_srcfile` drops a file that was already included (only a lint
+/// warning), so including a library twice, or two libraries that include each
+/// other, loads each one once instead of failing on a duplicate function or a
+/// cycle. A file that cannot be found is a parse-time error (exit 1), as in
+/// gawk's `include_source`.
+fn include_once(
+    name: &str,
+    base_dir: Option<&Path>,
+    line_no: usize,
+    visited: &mut HashSet<PathBuf>,
+    default_ns: &mut Option<String>,
+    out: &mut String,
+) -> Result<()> {
+    let not_found = |e: std::io::Error| Error::Parse {
+        line: line_no,
+        msg: format!("cannot open source file `{name}' for reading: {e}"),
+    };
+    let resolved = match find_source(name) {
+        Ok(p) => p,
+        // awkrs extension: a name gawk cannot find relative to the working
+        // directory or AWKPATH is also tried next to the including file.
+        Err(e) => match base_dir.map(|d| d.join(name)).filter(|p| p.is_file()) {
+            Some(p) => p,
+            None => return Err(not_found(e)),
+        },
+    };
+    let canon = fs::canonicalize(&resolved).unwrap_or_else(|_| resolved.clone());
+    if !visited.insert(canon) {
+        return Ok(());
     }
+    let inner = fs::read_to_string(&resolved).map_err(not_found)?;
+    let expanded = expand_inner(&inner, resolved.parent(), visited, default_ns)?;
+    out.push_str(&expanded);
+    if !expanded.is_empty() && !expanded.ends_with('\n') {
+        out.push('\n');
+    }
+    Ok(())
+}
+
+/// Locate an awk source file the way gawk's `find_source` does (io.c).
+///
+/// A name containing `/` is used as given. Any other name is searched for in
+/// each `AWKPATH` directory (`.` when the variable is unset or empty; an empty
+/// component also means `.`). If that fails, the whole search is repeated with
+/// `.awk` appended, so `-f lib`, `-i lib` and `@include "lib"` all find
+/// `lib.awk`. `-f -` (standard input) is returned unchanged.
+pub(crate) fn find_source(name: &str) -> std::io::Result<PathBuf> {
+    if name == "-" {
+        return Ok(PathBuf::from(name));
+    }
+    search_awkpath(name).or_else(|e| search_awkpath(&format!("{name}.awk")).map_err(|_| e))
+}
+
+fn search_awkpath(name: &str) -> std::io::Result<PathBuf> {
+    if name.contains('/') {
+        let p = PathBuf::from(name);
+        return fs::metadata(&p).map(|_| p);
+    }
+    let awkpath = std::env::var("AWKPATH")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| ".".to_string());
+    let mut last_err = std::io::Error::from(std::io::ErrorKind::NotFound);
+    for dir in awkpath.split(':') {
+        let p = if dir.is_empty() || dir == "." || dir == "./" {
+            PathBuf::from(name)
+        } else {
+            Path::new(dir).join(name)
+        };
+        match fs::metadata(&p) {
+            Ok(_) => return Ok(p),
+            Err(e) => last_err = e,
+        }
+    }
+    Err(last_err)
 }
 
 #[cfg(test)]
@@ -336,7 +372,10 @@ mod tests {
     }
 
     #[test]
-    fn include_cycle_errors() {
+    fn include_cycle_loads_each_file_once() {
+        // gawk's add_srcfile skips a file that is already included, so two
+        // libraries that include each other load once each instead of failing.
+        // (This test used to pin a "cycle" error that gawk never reports.)
         let dir = std::env::temp_dir();
         let id = std::process::id();
         let a = dir.join(format!("awkrs_inc_a_{id}.awk"));
@@ -358,8 +397,8 @@ mod tests {
         )
         .unwrap();
         let main = format!("@include \"{}\"\n", a.display());
-        let r = expand_source_directives(&main);
-        assert!(r.is_err(), "expected cycle error, got {r:?}");
+        let e = expand_source_directives(&main).expect("a cycle is not an error");
+        assert_eq!(e.text.matches("@include").count(), 0, "{}", e.text);
         let _ = std::fs::remove_file(&a);
         let _ = std::fs::remove_file(&b);
     }
@@ -452,15 +491,15 @@ mod tests {
     }
 
     #[test]
-    fn resolve_include_path_absolute() {
-        let p = if cfg!(windows) {
-            "C:\\foo.awk"
-        } else {
-            "/tmp/foo.awk"
-        };
-        let res = resolve_include_path(None, p).unwrap();
-        assert!(res.is_absolute());
-        assert_eq!(res.to_str().unwrap(), p);
+    fn find_source_absolute_path_is_used_as_given() {
+        let p = std::env::temp_dir().join(format!("awkrs_fs_abs_{}.awk", std::process::id()));
+        std::fs::write(&p, "").unwrap();
+        let res = find_source(p.to_str().unwrap()).unwrap();
+        assert_eq!(res, p);
+        // gawk retries with `.awk` appended when the name itself is missing.
+        let stem = p.with_extension("");
+        assert_eq!(find_source(stem.to_str().unwrap()).unwrap(), p);
+        let _ = std::fs::remove_file(&p);
     }
 
     #[test]

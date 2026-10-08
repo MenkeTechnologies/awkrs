@@ -2311,14 +2311,28 @@ fn try_native_run(args: &Args, program_text: &str, files: &[PathBuf]) -> Result<
 /// before the program ran.
 fn resolve_program_and_files(args: &Args) -> Result<(Vec<u8>, Vec<PathBuf>)> {
     let mut prog: Vec<u8> = Vec::new();
+    // `-i lib` becomes `@include "<resolved path>"`, so a library loads once
+    // across every `-i` and `@include` naming it (gawk's `add_srcfile` drops
+    // duplicate SRC_INC entries); a repeated `-f` file runs once per mention.
     for p in &args.include {
-        push_source_file(&mut prog, &std::fs::read(p).map_err(|e| Error::ProgramFile(p.clone(), e))?);
+        let path = find_source_path(p)?;
+        let path = std::fs::canonicalize(&path).unwrap_or(path);
+        match path.to_str() {
+            Some(s) => {
+                let quoted = s.replace('\\', "\\\\").replace('"', "\\\"");
+                push_source_file(&mut prog, format!("@include \"{quoted}\"").as_bytes());
+            }
+            None => push_source_file(&mut prog, &read_source_file(&path)?),
+        }
     }
     for lib in &args.load {
-        push_source_file(&mut prog, load_awk_library_source(lib)?.as_bytes());
+        // `-l` names a gawk extension; the bundled ones are built in.
+        if !crate::source_expand::is_native_gawk_extension_path(lib) {
+            push_source_file(&mut prog, load_awk_library_source(lib)?.as_bytes());
+        }
     }
     for p in &args.progfiles {
-        push_source_file(&mut prog, &std::fs::read(p).map_err(|e| Error::ProgramFile(p.clone(), e))?);
+        push_source_file(&mut prog, &read_source_file(&find_source_path(p)?)?);
     }
     for e in &args.source {
         prog.extend_from_slice(e.as_bytes());
@@ -2358,6 +2372,20 @@ fn resolve_program_and_files(args: &Args) -> Result<(Vec<u8>, Vec<PathBuf>)> {
     }
     let files: Vec<PathBuf> = args.rest.iter().map(PathBuf::from).collect();
     Ok((prog, files))
+}
+
+/// Resolve a `-f` / `-i` operand with gawk's source search (AWKPATH, then the
+/// same with `.awk` appended), so `-f lib` runs `./lib.awk` as gawk does.
+fn find_source_path(p: &Path) -> Result<PathBuf> {
+    match p.to_str() {
+        Some(name) => crate::source_expand::find_source(name)
+            .map_err(|e| Error::ProgramFile(p.to_path_buf(), e)),
+        None => Ok(p.to_path_buf()),
+    }
+}
+
+fn read_source_file(p: &Path) -> Result<Vec<u8>> {
+    std::fs::read(p).map_err(|e| Error::ProgramFile(p.to_path_buf(), e))
 }
 
 /// Append one source file to the assembled program, ending it with a newline.

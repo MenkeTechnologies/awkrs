@@ -62,7 +62,7 @@
 | `-g`/`--gen-pot` | Print and exit before execution |
 | `-L`/`-t`/`LINT` | Static lint (extension rules, uninit-var hints, `printf` format checks); when **`LINT`** is truthy at runtime, also emit **`awkrs: warning:`** on stderr for `sqrt`/`log` domain issues (negative / zero args) |
 | `-S`/`--sandbox` | Block `system()`, file redirects, pipes, coprocesses, inet I/O |
-| `-l name` | Load `name.awk` from `AWKPATH` (default `.`) |
+| `-l name` | Load a bundled gawk extension (built in; a no-op) or `name.awk` from `AWKPATH` (default `.`). `-f`, `-i` and `@include` search `AWKPATH` too, retrying with `.awk` appended, and load a library once |
 | `-b` | Bytes as characters: `length`/`substr`/`index`, `match` RSTART/RLENGTH, `printf` `%s`/`%c` width and precision, `split(s, a, "")`, and regex `.` |
 | `-n` | `strtonum`-style hex/octal coercion |
 | `-s`/`--no-optimize` | Disable peephole/JIT optimization (forces the plain bytecode interpreter) |
