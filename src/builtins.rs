@@ -514,45 +514,29 @@ pub fn patsplit(
     } else {
         fp_owned.as_str()
     };
-    // gawk parity: `patsplit` honors `IGNORECASE` like the other regex builtins.
-    let mut re_b = regex::RegexBuilder::new(fp);
-    re_b.case_insensitive(rt.ignore_case_flag());
-    re_b.dot_matches_new_line(true);
-    let re = re_b.build().map_err(|e| Error::Runtime(e.to_string()))?;
-    let matches: Vec<regex::Match> = re.find_iter(s).collect();
-    let n = matches.len();
-
-    rt.array_delete(arr_name, None);
-    for (i, m) in matches.iter().enumerate() {
-        rt.array_set(
-            arr_name,
-            format!("{}", i + 1),
-            Value::Str(m.as_str().to_string().into()),
-        );
+    // The scan is gawk's `fpat_parse_field`, the one FPAT field splitting uses
+    // (leftmost-longest matches, gawk's null-field rule, its separators).
+    // `patsplit` honors `IGNORECASE` like the other regex builtins.
+    let mut fields = Vec::new();
+    let mut seps = Vec::new();
+    let ok = crate::runtime::with_fpat_regexes(fp, rt.ignore_case_flag(), |alts| {
+        alts.map(|alts| crate::runtime::fpat_parse_fields(s.as_bytes(), alts, &mut fields, Some(&mut seps)))
+    });
+    if ok.is_none() {
+        return Err(Error::Runtime(format!("patsplit: invalid regexp `{fp}'")));
     }
-
+    let text = |(a, b): (u32, u32)| Value::Str(AwkStr::from(s.as_bytes()[a as usize..b as usize].to_vec()));
+    rt.array_delete(arr_name, None);
+    for (i, &f) in fields.iter().enumerate() {
+        rt.array_set(arr_name, format!("{}", i + 1), text(f));
+    }
     if let Some(sep_arr) = seps_name {
         rt.array_delete(sep_arr, None);
-        // gawk: `seps[0]` is the text before the first field and `seps[n]` the
-        // text after the last one (both present, possibly empty); with no
-        // field at all, a non-empty string lands whole in `seps[0]`.
-        let set = |rt: &mut Runtime, i: usize, sep: &str| {
-            rt.array_set(sep_arr, format!("{i}"), Value::Str(sep.to_string().into()));
-        };
-        match (matches.first(), matches.last()) {
-            (Some(first), Some(last)) => {
-                set(rt, 0, &s[..first.start()]);
-                for i in 1..n {
-                    set(rt, i, &s[matches[i - 1].end()..matches[i].start()]);
-                }
-                set(rt, n, &s[last.end()..]);
-            }
-            _ if !s.is_empty() => set(rt, 0, s),
-            _ => {}
+        for (i, &sep) in seps.iter().enumerate() {
+            rt.array_set(sep_arr, format!("{i}"), text(sep));
         }
     }
-
-    Ok(n as f64)
+    Ok(fields.len() as f64)
 }
 
 /// Seconds since the Unix epoch (same idea as POSIX `awk` / gawk `systime()`).

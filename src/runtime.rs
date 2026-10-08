@@ -895,8 +895,6 @@ fn parse_ascii_integer(s: &str) -> Option<i64> {
     Some(if neg { -acc } else { acc })
 }
 
-/// Split `record` using gawk-style **FPAT** (each regex match is one field).
-/// Returns `false` if `fpat` is not a valid regex (caller may fall back to FS).
 /// Split a top-level alternation regex into its alternatives (split on `|`
 /// outside of `[]` and `()`). Backslash-escaped chars are passed through
 /// without splitting. Returns the original pattern as a single element when
@@ -942,63 +940,98 @@ fn split_toplevel_alternatives(pat: &str) -> Vec<String> {
     alts
 }
 
-/// FPAT splitting follows gawk's **leftmost-longest** semantic (POSIX-style),
-/// NOT Rust's regex crate default of leftmost-first. With a pattern like
-/// `[^,]*|"[^"]*"` against `abc,"def, ghi",xyz`, leftmost-first would pick the
-/// first alternative at every position (splitting on commas inside quoted
-/// regions); leftmost-longest correctly preserves quoted fields.
+/// Split `record` into fields with gawk's **FPAT** (each match is a field).
+/// Returns `false` if `fpat` is not a valid regex (caller may fall back to FS).
 ///
-/// We approximate POSIX semantics by:
-///   1. Splitting the FPAT into top-level alternatives on `|`.
-///   2. At each position, trying every alternative anchored at that position
-///      and picking the longest non-empty match.
-///   3. Skipping positions with no non-empty match.
-///
-/// For a single-alternative pattern this collapses to the original behavior
-/// (with empty-match skipping for safety).
+/// Matching is leftmost-longest, as gawk's POSIX matcher is, not the regex
+/// crate's leftmost-first: with `[^,]*|"[^"]*"` on `abc,"def, ghi",xyz`,
+/// leftmost-first takes the first alternative everywhere and splits inside the
+/// quotes. The pattern is split into its top-level alternatives, each anchored
+/// at the candidate position, and the longest match there wins.
 fn split_fields_fpat(record: &[u8], fpat: &str, field_ranges: &mut Vec<(u32, u32)>) -> bool {
-    field_ranges.clear();
-    if record.is_empty() {
-        return true;
-    }
     // "We compile them once" used to mean once per *call*, and this runs once
     // per record — `FPAT="[0-9]+"` over 300 000 records cost 3.04 s of CPU
     // against gawk's 1.39 s. Memoised like the `FS` and `split()` engines.
-    with_fpat_regexes(fpat, |compiled| {
+    with_fpat_regexes(fpat, false, |compiled| {
         let Some(compiled) = compiled else {
             return false;
         };
-        fpat_scan(record, compiled, field_ranges)
+        fpat_parse_fields(record, compiled, field_ranges, None);
+        true
     })
 }
 
-/// The leftmost-longest scan, once the alternatives are compiled.
-fn fpat_scan(record: &[u8], compiled: &[BytesRegex], field_ranges: &mut Vec<(u32, u32)>) -> bool {
-    let n = record.len();
-    let bytes = record;
-    let mut pos = 0usize;
-    while pos < n {
-        let tail = &record[pos..];
-        let mut best_end: Option<usize> = None;
-        for re in compiled {
-            if let Some(m) = re.find(tail) {
-                // `^(?:…)` ensures m.start() == 0.
-                let end = m.end();
-                if end > 0 && best_end.is_none_or(|b| end > b) {
-                    best_end = Some(end);
+/// The leftmost match starting at or after `from`, and the longest of the
+/// alternatives at that position. An empty match counts, and `from` may be
+/// `record.len()`, where only an empty match can be found.
+fn fpat_search(record: &[u8], from: usize, alts: &[BytesRegex]) -> Option<(usize, usize)> {
+    let mut pos = from;
+    loop {
+        let longest = alts
+            .iter()
+            .filter_map(|re| re.find(&record[pos..]).map(|m| m.end()))
+            .max();
+        if let Some(len) = longest {
+            return Some((pos, pos + len));
+        }
+        if pos >= record.len() {
+            return None;
+        }
+        pos += utf8_char_len_at(record, pos);
+    }
+}
+
+/// Port of gawk's `fpat_parse_field` (field.c), shared by FPAT field splitting
+/// and `patsplit()`.
+///
+/// Fields are successive matches. A null match is a field too, except where it
+/// sits right at the scan position after an earlier field — gawk's "invalid
+/// null field" — in which case the scan moves one character on and searches
+/// again, so `a,,b,` under `[^,]*` is the four fields `a`, ``, `b`, ``.
+/// `seps`, when given, receives the text before each field (index 0 is the text
+/// before the first) and then the trailing text: the rest of the record when
+/// the last search failed, or a null separator when a field reached the end.
+pub(crate) fn fpat_parse_fields(
+    record: &[u8],
+    alts: &[BytesRegex],
+    fields: &mut Vec<(u32, u32)>,
+    mut seps: Option<&mut Vec<(u32, u32)>>,
+) {
+    fields.clear();
+    if let Some(s) = seps.as_deref_mut() {
+        s.clear();
+    }
+    let end = record.len();
+    let mut scan = 0usize;
+    let mut found = None;
+    while scan < end {
+        let start = scan;
+        found = fpat_search(record, scan, alts);
+        if !fields.is_empty() && found.is_some_and(|(s, e)| s == scan && e == scan) {
+            scan += utf8_char_len_at(record, scan);
+            found = fpat_search(record, scan, alts);
+        }
+        match found {
+            Some((s, e)) => {
+                if let Some(seps) = seps.as_deref_mut() {
+                    seps.push((start as u32, s as u32));
                 }
+                fields.push((s as u32, e as u32));
+                scan = e;
+            }
+            None => {
+                if let Some(seps) = seps.as_deref_mut() {
+                    seps.push((start as u32, end as u32));
+                }
+                scan = end;
             }
         }
-        if let Some(end) = best_end {
-            let abs_end = pos + end;
-            field_ranges.push((pos as u32, abs_end as u32));
-            pos = abs_end;
-        } else {
-            // Advance one char (UTF-8 safe).
-            pos += utf8_char_len_at(bytes, pos);
+    }
+    if let Some(seps) = seps {
+        if found.is_some() {
+            seps.push((end as u32, end as u32));
         }
     }
-    true
 }
 
 #[inline]
@@ -1213,14 +1246,19 @@ fn with_split_regex<R>(fs: &str, ignore_case: bool, f: impl FnOnce(Option<&Bytes
 //   1 cd          # awkrs answered `3 AB` — the alternatives were compiled
 //                 # case-insensitively, so `AB` and `EF` became fields too.
 thread_local! {
-    static FPAT_REGEX_MEMO: std::cell::RefCell<AwkMap<String, Option<Vec<BytesRegex>>>> =
+    static FPAT_REGEX_MEMO: std::cell::RefCell<AwkMap<(String, bool), Option<Vec<BytesRegex>>>> =
         std::cell::RefCell::new(AwkMap::default());
 }
 
-fn with_fpat_regexes<R>(fpat: &str, f: impl FnOnce(Option<&[BytesRegex]>) -> R) -> R {
+pub(crate) fn with_fpat_regexes<R>(
+    fpat: &str,
+    ignore_case: bool,
+    f: impl FnOnce(Option<&[BytesRegex]>) -> R,
+) -> R {
     FPAT_REGEX_MEMO.with(|memo| {
         let mut memo = memo.borrow_mut();
-        if !memo.contains_key(fpat) {
+        let key = (fpat.to_string(), ignore_case);
+        if !memo.contains_key(&key) {
             if memo.len() >= SPLIT_REGEX_MEMO_MAX {
                 memo.clear();
             }
@@ -1228,11 +1266,11 @@ fn with_fpat_regexes<R>(fpat: &str, f: impl FnOnce(Option<&[BytesRegex]>) -> R) 
             // single failure makes the whole `FPAT` unusable.
             let compiled = split_toplevel_alternatives(fpat)
                 .iter()
-                .map(|alt| build_fs_regex(&format!("^(?:{alt})"), false))
+                .map(|alt| build_fs_regex(&format!("^(?:{alt})"), ignore_case))
                 .collect::<Option<Vec<BytesRegex>>>();
-            memo.insert(fpat.to_string(), compiled);
+            memo.insert(key.clone(), compiled);
         }
-        let entry = memo.get(fpat).expect("just inserted");
+        let entry = memo.get(&key).expect("just inserted");
         f(entry.as_deref())
     })
 }
