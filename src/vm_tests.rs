@@ -343,7 +343,10 @@ fn vm_begin_multidim_array_assign_and_read() {
 
 #[test]
 fn vm_begin_next_is_invalid() {
-    let cp = compile("BEGIN { next }");
+    // Written directly in `BEGIN` it is a compile-time error (see
+    // `special_rule_next_is_a_compile_error`); reached through a function it
+    // is the VM that rejects it.
+    let cp = compile("function f() { next } BEGIN { f() }");
     let mut rt = runtime_with_slots(&cp);
     let e = vm_run_begin(&cp, &mut rt).unwrap_err();
     match e {
@@ -354,7 +357,7 @@ fn vm_begin_next_is_invalid() {
 
 #[test]
 fn vm_begin_nextfile_is_invalid() {
-    let cp = compile("BEGIN { nextfile }");
+    let cp = compile("function f() { nextfile } BEGIN { f() }");
     let mut rt = runtime_with_slots(&cp);
     let e = vm_run_begin(&cp, &mut rt).unwrap_err();
     assert!(e.to_string().contains("nextfile"), "{e:?}");
@@ -362,11 +365,37 @@ fn vm_begin_nextfile_is_invalid() {
 
 #[test]
 fn vm_end_nextfile_is_invalid() {
-    let cp = compile("END { nextfile }");
+    let cp = compile("function f() { nextfile } END { f() }");
     let mut rt = runtime_with_slots(&cp);
     vm_run_begin(&cp, &mut rt).unwrap();
     let e = vm_run_end(&cp, &mut rt).unwrap_err();
     assert!(e.to_string().contains("nextfile"), "{e:?}");
+}
+
+#[test]
+fn special_rule_next_is_a_compile_error() {
+    // gawk rejects these while parsing (exit 1), even in dead code.
+    for (src, want) in [
+        ("BEGIN { if (0) next }", "`next` used in BEGIN action"),
+        ("END { next }", "`next` used in END action"),
+        ("BEGINFILE { next }", "`next` used in BEGINFILE action"),
+        ("ENDFILE { next }", "`next` used in ENDFILE action"),
+        ("BEGIN { nextfile }", "`nextfile` used in BEGIN action"),
+        ("END { nextfile }", "`nextfile` used in END action"),
+        ("ENDFILE { nextfile }", "`nextfile` used in ENDFILE action"),
+    ] {
+        let prog = parse_program(src).expect("parse");
+        let e = Compiler::compile_program(&prog).unwrap_err();
+        assert!(e.to_string().contains(want), "{src}: {e}");
+    }
+    // `nextfile` is legal in BEGINFILE, and `next`/`nextfile` in a function.
+    for src in [
+        "BEGINFILE { nextfile }",
+        "function f() { next; nextfile } BEGIN { }",
+    ] {
+        let prog = parse_program(src).expect("parse");
+        assert!(Compiler::compile_program(&prog).is_ok(), "{src}");
+    }
 }
 
 #[test]

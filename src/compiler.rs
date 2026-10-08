@@ -2709,8 +2709,9 @@ fn peephole_optimize(ops: &mut Vec<Op>, strings: &StringPool) {
 }
 
 /// Where a statement sits relative to the enclosing `break`/`continue` targets,
-/// and whether it is inside a function body (gawk rejects `return` anywhere
-/// else while parsing, so the program never runs).
+/// whether it is inside a function body (gawk rejects `return` anywhere
+/// else while parsing, so the program never runs), and which special rule
+/// (`BEGIN`, `END`, `BEGINFILE`, `ENDFILE`) holds it, if any.
 ///
 /// `break` needs a loop **or** a `switch`; `continue` needs a loop. Carried by
 /// value through [`validate_stmt`] because it is a few bits and the walker is
@@ -2720,6 +2721,7 @@ struct BreakCtx {
     in_loop: bool,
     in_switch: bool,
     in_function: bool,
+    special_rule: Option<&'static str>,
 }
 
 impl BreakCtx {
@@ -2857,7 +2859,16 @@ fn validate_function_signature(f: &crate::ast::FunctionDef) -> Result<()> {
 pub fn validate_program(prog: &Program) -> Result<()> {
     for rule in &prog.rules {
         validate_pattern(&rule.pattern)?;
-        let top = BreakCtx::default();
+        let top = BreakCtx {
+            special_rule: match rule.pattern {
+                Pattern::Begin => Some("BEGIN"),
+                Pattern::End => Some("END"),
+                Pattern::BeginFile => Some("BEGINFILE"),
+                Pattern::EndFile => Some("ENDFILE"),
+                _ => None,
+            },
+            ..BreakCtx::default()
+        };
         for st in &rule.stmts {
             validate_stmt(st, top)?;
         }
@@ -3058,7 +3069,20 @@ fn validate_stmt(st: &Stmt, ctx: BreakCtx) -> Result<()> {
                 Err(Error::Runtime("`continue` outside a loop".into()))
             }
         }
-        Stmt::Next | Stmt::NextFile => Ok(()),
+        // gawk's grammar (awkgram.y `LEX_NEXT` / `LEX_NEXTFILE`) rejects these
+        // while parsing, so the program never runs and gawk exits 1: `next` in
+        // any special rule, `nextfile` in all but `BEGINFILE` (where it skips
+        // the file). Inside a function the check is left to run time.
+        Stmt::Next => match ctx.special_rule {
+            Some(rule) => Err(Error::Runtime(format!("`next` used in {rule} action"))),
+            None => Ok(()),
+        },
+        Stmt::NextFile => match ctx.special_rule {
+            Some(rule) if rule != "BEGINFILE" => {
+                Err(Error::Runtime(format!("`nextfile` used in {rule} action")))
+            }
+            _ => Ok(()),
+        },
         Stmt::Exit(e) => {
             if let Some(ex) = e {
                 validate_expr(ex, false)?;

@@ -1440,3 +1440,16 @@ BEGIN { v = "foo bar"; print gsub(/\y/, "|", v), v; w = "abc"; print gsub(/\`a/,
 #--- only gawk
 #--- prog
 BEGIN { printf "%.6f %.6f ", rand(), rand(); srand(42); printf "%.10f %.10f\n", rand(), rand() }
+
+#=== next_in_special_rule_is_a_parse_error
+# gawk rejects `next` in BEGIN/END/BEGINFILE/ENDFILE and `nextfile` outside
+# BEGINFILE while parsing — exit 1, nothing printed, even when the statement is
+# dead code. mawk exits 2 and one-true-awk runs the program, hence `only`.
+#--- prog
+BEGIN { print "never"; if (0) next }
+#--- only gawk
+
+#=== nextfile_in_end_is_a_parse_error
+#--- prog
+END { print "never"; if (0) nextfile }
+#--- only gawk
