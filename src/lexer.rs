@@ -2150,6 +2150,15 @@ mod tests {
     }
 
     #[test]
+    fn lex_backslash_crlf_continues_string_and_regexp() {
+        // gawk yylex drops the CR of a backslash-CR-LF continuation too.
+        let mut l = Lexer::new(b"\"a\\\r\nb\" /c\\\r\nd/");
+        assert_eq!(l.next_token(false).unwrap(), Token::String("ab".into()));
+        assert_eq!(l.next_token(true).unwrap(), Token::Regexp("cd".into()));
+        assert_eq!(l.line, 3);
+    }
+
+    #[test]
     fn lex_string_with_escaped_newline_v2() {
         // POSIX: backslash-newline in string literal is ignored
         let mut l = Lexer::new(b"\"a\\\nb\"");
