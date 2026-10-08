@@ -2312,13 +2312,13 @@ fn try_native_run(args: &Args, program_text: &str, files: &[PathBuf]) -> Result<
 fn resolve_program_and_files(args: &Args) -> Result<(Vec<u8>, Vec<PathBuf>)> {
     let mut prog: Vec<u8> = Vec::new();
     for p in &args.include {
-        prog.extend_from_slice(&std::fs::read(p).map_err(|e| Error::ProgramFile(p.clone(), e))?);
+        push_source_file(&mut prog, &std::fs::read(p).map_err(|e| Error::ProgramFile(p.clone(), e))?);
     }
     for lib in &args.load {
-        prog.extend_from_slice(load_awk_library_source(lib)?.as_bytes());
+        push_source_file(&mut prog, load_awk_library_source(lib)?.as_bytes());
     }
     for p in &args.progfiles {
-        prog.extend_from_slice(&std::fs::read(p).map_err(|e| Error::ProgramFile(p.clone(), e))?);
+        push_source_file(&mut prog, &std::fs::read(p).map_err(|e| Error::ProgramFile(p.clone(), e))?);
     }
     for e in &args.source {
         prog.extend_from_slice(e.as_bytes());
@@ -2335,9 +2335,13 @@ fn resolve_program_and_files(args: &Args) -> Result<(Vec<u8>, Vec<PathBuf>)> {
     // `awk -f empty.awk data.txt` consume `data.txt` as the program text and
     // fail to parse it, while `awk -f empty.awk` alone reported "no program
     // given" — an empty program on `argv` (`awk '' data.txt`) already worked.
-    let named_a_source = !args.include.is_empty()
-        || !args.load.is_empty()
-        || !args.progfiles.is_empty()
+    //
+    // `-i` and `-l` name libraries, not the program: gawk counts only `-f`,
+    // `-e` and `-E` as program sources (main.c `have_srcfile` skips
+    // SRC_INC and SRC_EXTLIB), so `gawk -i lib.awk 'prog' file` still takes
+    // `prog` from the operands. awkrs used to run `-i lib.awk` as the whole
+    // program and read `prog` as an input file.
+    let named_a_source = !args.progfiles.is_empty()
         || !args.source.is_empty()
         || args.exec_file.is_some();
     if !named_a_source {
@@ -2347,12 +2351,25 @@ fn resolve_program_and_files(args: &Args) -> Result<(Vec<u8>, Vec<PathBuf>)> {
                 msg: "no program given".into(),
             });
         }
-        let inline = os_arg_bytes(args.rest[0].as_os_str()).to_vec();
+        let inline = os_arg_bytes(args.rest[0].as_os_str());
+        prog.extend_from_slice(inline);
         let files: Vec<PathBuf> = args.rest[1..].iter().map(PathBuf::from).collect();
-        return Ok((inline, files));
+        return Ok((prog, files));
     }
     let files: Vec<PathBuf> = args.rest.iter().map(PathBuf::from).collect();
     Ok((prog, files))
+}
+
+/// Append one source file to the assembled program, ending it with a newline.
+///
+/// gawk parses each source file as its own unit (a file boundary is a
+/// terminator), so a library whose last line is a comment or a rule without a
+/// trailing newline must not swallow the start of the next source.
+fn push_source_file(prog: &mut Vec<u8>, bytes: &[u8]) {
+    prog.extend_from_slice(bytes);
+    if !bytes.is_empty() && !bytes.ends_with(b"\n") {
+        prog.push(b'\n');
+    }
 }
 
 /// Resolve gawk-style `-l` / `--load` names against `AWKPATH` (default `.`).

@@ -286,6 +286,32 @@ fn include_prepends_script() {
     assert_eq!(String::from_utf8_lossy(&out.stdout), "hi\n");
 }
 
+/// `-i` names a library, not the program: gawk still takes the program text
+/// from the first operand (`gawk -i lib.awk 'prog' file`). awkrs used to run
+/// the library as the whole program, read `prog` as an input file, print
+/// nothing and exit 0. The library here also ends in a comment with no
+/// trailing newline, which must not swallow the program that follows it.
+#[test]
+fn include_leaves_program_text_on_the_command_line() {
+    let dir = std::env::temp_dir();
+    let id = std::process::id();
+    let inc = dir.join(format!("awkrs_inc_inline_{id}.awk"));
+    fs::write(&inc, "function inc(x) { return x + 1 } # no newline").expect("write include");
+    let bin = env!("CARGO_BIN_EXE_awkrs");
+    let out = Command::new(bin)
+        .args(["-i", inc.to_str().expect("utf8"), "BEGIN { print inc(41) }"])
+        .output()
+        .expect("spawn");
+    let _ = fs::remove_file(&inc);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "42\n");
+}
+
 #[test]
 fn for_loop_sum_indices() {
     let (c, o, _) = run_awkrs_stdin("BEGIN { s=0; for (i=1;i<=5;i=i+1) s+=i; print s }", "");
