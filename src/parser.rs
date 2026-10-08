@@ -265,6 +265,8 @@ impl<'a> Parser<'a> {
                 self.bump(false)?;
                 if self.cur == Token::Comma {
                     self.bump(false)?;
+                    // gawk `comma: ',' opt_nls`: a parameter list may break after a comma.
+                    self.skip_newlines()?;
                     continue;
                 }
                 break;
@@ -277,6 +279,9 @@ impl<'a> Parser<'a> {
             });
         }
         self.bump(false)?;
+        // gawk `function_prologue: ... r_paren opt_nls`: the body's `{` may start
+        // on the next line (one-true-awk agrees).
+        self.skip_newlines()?;
         if self.cur != Token::LBrace {
             return Err(Error::Parse {
                 line: self.line,
@@ -370,6 +375,7 @@ impl<'a> Parser<'a> {
                 if self.cur == Token::Comma {
                     // After `,`, the next pattern may start with `/…/` — needs regex lexer mode.
                     self.bump(true)?;
+                    self.skip_newlines()?;
                     let p2 = self.parse_pattern()?;
                     return Ok(Pattern::Range(Box::new(Pattern::Regexp(s)), Box::new(p2)));
                 }
@@ -381,6 +387,8 @@ impl<'a> Parser<'a> {
                 ))?;
                 if self.cur == Token::Comma {
                     self.bump(true)?;
+// `p1,` <NL> `p2`: gawk `comma: ',' opt_nls`; one-true-awk agrees.
+self.skip_newlines()?;
                     let e2 = self.parse_expr(false, false)?;
                     if matches!(e2, Expr::Tuple(_)) {
                         return Err(Error::Parse {
@@ -412,6 +420,8 @@ impl<'a> Parser<'a> {
                 }
                 if self.cur == Token::Comma {
                     self.bump(true)?;
+// `p1,` <NL> `p2`: gawk `comma: ',' opt_nls`; one-true-awk agrees.
+self.skip_newlines()?;
                     let e2 = self.parse_expr(false, false)?;
                     if matches!(e2, Expr::Tuple(_)) {
                         return Err(Error::Parse {
