@@ -957,11 +957,11 @@ pub fn builtin_signature(name: &str) -> Option<(&'static str, &'static str)> {
         ),
         "writea" => (
             "writea(file, arr)",
-            "Write `arr` to `file` in awkrs's own `awkrs-rwarray-v1` text format (a magic line, then tab-separated escaped key/value lines); returns 0 or -1. Not binary-compatible with gawk's `rwarray` (gawk `rwarray`).",
+            "Write `arr` (subarrays included) to `file` in gawk's `rwarray` binary format, so gawk's `reada` can read it; returns 1, or 0 with `ERRNO` set (gawk `rwarray`).",
         ),
         "reada" => (
             "reada(file, arr)",
-            "Clear `arr` and reload it from an `awkrs-rwarray-v1` file written by `writea`; returns 0, or -1 when the file is missing or carries the wrong magic line (gawk `rwarray`).",
+            "Clear `arr` and reload it from a file in gawk's `rwarray` format (written by awkrs or gawk `writea`), keeping each value's type; returns 1, or 0 with `ERRNO` set when the file is missing, has the wrong magic or version, or is truncated (gawk `rwarray`).",
         ),
         "inplace_tmpfile" => (
             "inplace_tmpfile(path)",

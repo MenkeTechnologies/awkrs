@@ -3249,3 +3249,51 @@ fn traditional_and_posix_read_no_hex_or_octal_constants() {
     let (_, stdout, _) = run_awkrs_stdin(prog, "");
     assert_eq!(stdout, "9 31 8 100\n", "gawk mode keeps hex and octal");
 }
+
+/// gawk's rwarray format (extension/rwarray.c, major 4 minor 1): `reada` reads
+/// a file `gawk -l rwarray` wrote and returns 1, keeping each value's type
+/// (strnum, string, number, regexp, unassigned, subarray), and `writea`
+/// returns 1. awkrs wrote and read a private text format, so neither side could
+/// read the other's files, and both functions returned 0 on success — which a
+/// script reads as failure. The bytes below are what gawk 5.4 writes for
+/// `a["sn"]=$2; a["f"]=$1` (input `x 12`), `a["n"]=-0.5`, `a["r"]=@/re+/`,
+/// `a["u"]` and `a["s"]["k"]="v"`.
+#[test]
+fn rwarray_reads_gawk_files_and_reports_success_as_one() {
+    let gawk_bytes: &[u8] = b"awkrulz\n\0\0\0\x04\0\0\0\x01\0\0\0\x06\
+        \0\0\0\x01u\0\0\0\x14\0\0\0\0\
+        \0\0\0\x02sn\0\0\0\x07\0\0\0\x0212\
+        \0\0\0\x01n\0\0\0\x02\0\0\0\x05-0.5\0\
+        \0\0\0\x01r\0\0\0\x06\0\0\0\x03re+\
+        \0\0\0\x01s\0\0\0\x05\0\0\0\x01\0\0\0\x01k\0\0\0\x01\0\0\0\x01v\
+        \0\0\0\x01f\0\0\0\x01\0\0\0\x01x";
+    let dir = unique_tmp_path("awkrs_rwarray");
+    std::fs::create_dir_all(&dir).unwrap();
+    let from_gawk = dir.join("gawk.bin");
+    std::fs::write(&from_gawk, gawk_bytes).unwrap();
+    let ours = dir.join("ours.bin");
+    let prog = format!(
+        r#"@load "rwarray"
+        BEGIN {{
+            print reada("{g}", a)
+            PROCINFO["sorted_in"] = "@ind_str_asc"
+            for (k in a)
+                if (isarray(a[k])) print k, "->", a[k]["k"]
+                else print k, a[k], typeof(a[k])
+            print writea("{o}", a)
+            delete a
+            print reada("{o}", b), b["sn"], typeof(b["sn"]), b["s"]["k"], typeof(b["r"])
+            print reada("{g}.missing", c), (ERRNO != "")
+        }}"#,
+        g = from_gawk.display(),
+        o = ours.display()
+    );
+    let (code, stdout, stderr) = run_awkrs_stdin(&prog, "");
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(
+        stdout,
+        "1\nf x string\nn -0.5 number\nr re+ regexp\ns -> v\nsn 12 strnum\nu  unassigned\n\
+         1\n1 12 strnum v regexp\n0 1\n"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -678,7 +678,7 @@
         <h3><a class="doc-anchor" href="#doc-writea">#</a> <code>writea</code></h3>
         <pre><code class="lang-awk">writea(file, arr)
 </code></pre>
-        <p>Write <code>arr</code> to <code>file</code> in awkrs&#39;s own <code>awkrs-rwarray-v1</code> text format (a magic line, then tab-separated escaped key/value lines); returns 0 or -1. Not binary-compatible with gawk&#39;s <code>rwarray</code> (gawk <code>rwarray</code>).</p>
+        <p>Write <code>arr</code> (subarrays included) to <code>file</code> in gawk&#39;s <code>rwarray</code> binary format, so gawk&#39;s <code>reada</code> can read it; returns 1, or 0 with <code>ERRNO</code> set (gawk <code>rwarray</code>).</p>
         <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Neither fusevm route lowers it: the numeric-chunk offload treats the chunk as ineligible, and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend refuses to compile a program that calls it rather than lowering it to something approximate.</p>
         <p><strong>Restrictions.</strong> Rejected as a non-POSIX extension under <code>-P</code>/<code>--posix</code> and <code>-c</code>/<code>--traditional</code>, and blocked under <code>-S</code>/<code>--sandbox</code>.</p>
       </article>
@@ -686,7 +686,7 @@
         <h3><a class="doc-anchor" href="#doc-reada">#</a> <code>reada</code></h3>
         <pre><code class="lang-awk">reada(file, arr)
 </code></pre>
-        <p>Clear <code>arr</code> and reload it from an <code>awkrs-rwarray-v1</code> file written by <code>writea</code>; returns 0, or -1 when the file is missing or carries the wrong magic line (gawk <code>rwarray</code>).</p>
+        <p>Clear <code>arr</code> and reload it from a file in gawk&#39;s <code>rwarray</code> format (written by awkrs or gawk <code>writea</code>), keeping each value&#39;s type; returns 1, or 0 with <code>ERRNO</code> set when the file is missing, has the wrong magic or version, or is truncated (gawk <code>rwarray</code>).</p>
         <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Neither fusevm route lowers it: the numeric-chunk offload treats the chunk as ineligible, and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend refuses to compile a program that calls it rather than lowering it to something approximate.</p>
         <p><strong>Restrictions.</strong> Rejected as a non-POSIX extension under <code>-P</code>/<code>--posix</code> and <code>-c</code>/<code>--traditional</code>, and blocked under <code>-S</code>/<code>--sandbox</code>.</p>
       </article>

@@ -4,9 +4,8 @@
 
 use crate::awkstr::AwkStr;
 use crate::error::{Error, Result};
-use crate::runtime::{Runtime, Value};
+use crate::runtime::{AwkArray, Runtime, Value};
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -269,102 +268,319 @@ pub(crate) fn inplace_commit(rt: &mut Runtime, tmp: &str, dest: &str) -> Result<
     rename(rt, tmp, dest)
 }
 
-fn escape_rw(s: &str) -> String {
-    let mut o = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '\\' => o.push_str("\\\\"),
-            '\n' => o.push_str("\\n"),
-            '\r' => o.push_str("\\r"),
-            '\t' => o.push_str("\\t"),
-            _ => o.push(c),
-        }
-    }
-    o
+// ── rwarray: port of gawk's extension/rwarray.c file format (major 4, minor 1) ──
+//
+// File: the magic `awkrulz\n`, the major and minor version as big-endian u32s,
+// then one array. An array is a u32 element count followed by its elements; an
+// element is a u32 index length, the index bytes, then a value: a u32 type code
+// and its payload. Strings, strnums, regexps and undefined values carry a u32
+// length and their bytes, a boolean carries "TRUE" / "FALSE" the same way, a
+// double carries a NUL-terminated `%.17g` rendering, a GMP integer is
+// `mpz_out_raw` (signed big-endian byte count, then the magnitude), an MPFR
+// float is `mpfr_out_str` in base 62 plus a space, and a subarray is an array.
+
+const RW_MAGIC: &[u8] = b"awkrulz\n";
+const RW_MAJOR: u32 = 4;
+const RW_MINOR: u32 = 1;
+const VT_STRING: u32 = 1;
+const VT_NUMBER: u32 = 2;
+const VT_GMP: u32 = 3;
+const VT_MPFR: u32 = 4;
+const VT_ARRAY: u32 = 5;
+const VT_REGEX: u32 = 6;
+const VT_STRNUM: u32 = 7;
+const VT_BOOL: u32 = 8;
+const VT_UNDEFINED: u32 = 20;
+
+fn rw_put_u32(out: &mut Vec<u8>, n: u32) {
+    out.extend_from_slice(&n.to_be_bytes());
 }
 
-fn unescape_rw(s: &str) -> String {
-    let mut o = String::with_capacity(s.len());
-    let mut it = s.chars();
-    while let Some(c) = it.next() {
-        if c == '\\' {
-            match it.next() {
-                Some('n') => o.push('\n'),
-                Some('r') => o.push('\r'),
-                Some('t') => o.push('\t'),
-                Some('\\') => o.push('\\'),
-                Some(x) => {
-                    o.push('\\');
-                    o.push(x);
-                }
-                None => o.push('\\'),
+fn rw_put_bytes(out: &mut Vec<u8>, code: u32, bytes: &[u8]) {
+    rw_put_u32(out, code);
+    rw_put_u32(out, bytes.len() as u32);
+    out.extend_from_slice(bytes);
+}
+
+fn rw_write_array(out: &mut Vec<u8>, a: &AwkArray) {
+    rw_put_u32(out, a.len() as u32);
+    for (k, v) in a.iter() {
+        rw_put_u32(out, k.as_bytes().len() as u32);
+        out.extend_from_slice(k.as_bytes());
+        rw_write_value(out, v);
+    }
+}
+
+fn rw_write_value(out: &mut Vec<u8>, v: &Value) {
+    match v {
+        Value::Array(a) => {
+            rw_put_u32(out, VT_ARRAY);
+            rw_write_array(out, a);
+        }
+        Value::Num(n) => {
+            let mut text = crate::format::awk_sprintf("%.17g", &[Value::Num(*n)])
+                .unwrap_or_else(|_| n.to_string())
+                .into_bytes();
+            text.push(0);
+            rw_put_bytes(out, VT_NUMBER, &text);
+        }
+        Value::Mpfr(f) => match f.to_integer().filter(|_| f.is_integer()) {
+            Some(i) => {
+                rw_put_u32(out, VT_GMP);
+                let mag = i.to_digits::<u8>(rug::integer::Order::MsfBe);
+                let len = mag.len() as i32;
+                let signed = if i < 0 { -len } else { len };
+                out.extend_from_slice(&signed.to_be_bytes());
+                out.extend_from_slice(&mag);
             }
-        } else {
-            o.push(c);
-        }
+            None => {
+                rw_put_u32(out, VT_MPFR);
+                out.extend_from_slice(mpfr_out_str_base62(f).as_bytes());
+                out.push(b' ');
+            }
+        },
+        Value::Str(s) if v.is_numeric_str() => rw_put_bytes(out, VT_STRNUM, s.as_bytes()),
+        Value::Str(s) | Value::StrLit(s) => rw_put_bytes(out, VT_STRING, s.as_bytes()),
+        Value::Regexp(s) => rw_put_bytes(out, VT_REGEX, s.as_bytes()),
+        Value::Uninit => rw_put_bytes(out, VT_UNDEFINED, b""),
     }
-    o
 }
 
-/// `writea(filename, arr)` — text format (awkrs **`rwarray`** v1); returns 0 or -1.
+/// `writea(file, arr)` — gawk's rwarray `writea`: 1 on success, 0 on failure
+/// with `ERRNO` set (a partly written file is removed).
 pub(crate) fn writea(rt: &mut Runtime, path: &str, arr_name: &str) -> Result<Value> {
     rt.require_unsandboxed_io()?;
-    rt.clear_errno();
-    let keys = rt.array_keys(arr_name);
-    let mut f = match File::create(path) {
-        Ok(f) => f,
-        Err(e) => {
-            rt.set_errno_io(&e);
-            return Ok(Value::Num(-1.0));
-        }
-    };
-    writeln!(f, "awkrs-rwarray-v1").map_err(Error::Io)?;
-    for k in keys {
-        let ks = k.to_str_lossy();
-        let v = rt.array_get(arr_name, &ks);
-        let line = format!("{}\t{}\n", escape_rw(&ks), escape_rw(&v.as_str()));
-        f.write_all(line.as_bytes()).map_err(Error::Io)?;
+    let mut out = RW_MAGIC.to_vec();
+    rw_put_u32(&mut out, RW_MAJOR);
+    rw_put_u32(&mut out, RW_MINOR);
+    match rt.get_global_var(arr_name) {
+        Some(Value::Array(a)) => rw_write_array(&mut out, a),
+        _ => rw_put_u32(&mut out, 0),
     }
-    Ok(Value::Num(0.0))
+    if let Err(e) = fs::write(path, &out) {
+        rt.set_errno_io(&e);
+        let _ = fs::remove_file(path);
+        return Ok(Value::Num(0.0));
+    }
+    Ok(Value::Num(1.0))
 }
 
-/// `reada(filename, arr)` — replaces **`arr`** contents from **`writea`** format.
-pub(crate) fn reada(rt: &mut Runtime, path: &str, arr_name: &str) -> Result<Value> {
-    rt.require_unsandboxed_io()?;
-    rt.clear_errno();
-    let f = match File::open(path) {
-        Ok(f) => f,
-        Err(e) => {
-            rt.set_errno_io(&e);
-            return Ok(Value::Num(-1.0));
-        }
-    };
-    let mut reader = BufReader::new(f);
-    let mut magic = String::new();
-    reader.read_line(&mut magic).map_err(Error::Io)?;
-    if magic.trim() != "awkrs-rwarray-v1" {
-        rt.set_errno_str("reada: not an awkrs rwarray file");
-        return Ok(Value::Num(-1.0));
+struct RwReader<'a> {
+    buf: &'a [u8],
+    pos: usize,
+}
+
+impl RwReader<'_> {
+    fn take(&mut self, n: usize) -> Option<&[u8]> {
+        let s = self.buf.get(self.pos..self.pos.checked_add(n)?)?;
+        self.pos += n;
+        Some(s)
     }
-    rt.array_delete(arr_name, None);
-    let mut line = String::new();
-    while reader.read_line(&mut line).map_err(Error::Io)? > 0 {
-        let s = line.trim_end_matches(['\r', '\n']);
-        if s.is_empty() {
-            line.clear();
+
+    fn u32(&mut self) -> Option<u32> {
+        Some(u32::from_be_bytes(self.take(4)?.try_into().ok()?))
+    }
+
+    fn array(&mut self, rt: &Runtime) -> Option<AwkArray> {
+        let count = self.u32()?;
+        let mut a = AwkArray::new();
+        for _ in 0..count {
+            let len = self.u32()? as usize;
+            let key = self.take(len)?.to_vec();
+            let val = self.value(rt)?;
+            a.insert_bytes(&key, val);
+        }
+        Some(a)
+    }
+
+    fn value(&mut self, rt: &Runtime) -> Option<Value> {
+        let code = self.u32()?;
+        match code {
+            VT_ARRAY => Some(Value::Array(self.array(rt)?)),
+            VT_NUMBER => {
+                let len = self.u32()? as usize;
+                let text = self.take(len)?;
+                let text = text.split(|&b| b == 0).next().unwrap_or_default();
+                let n = std::str::from_utf8(text).ok()?.trim().parse::<f64>().unwrap_or(0.0);
+                Some(Value::Num(n))
+            }
+            VT_GMP => {
+                let size = i32::from_be_bytes(self.take(4)?.try_into().ok()?);
+                let mag = self.take(size.unsigned_abs() as usize)?;
+                let mut i = rug::Integer::from_digits(mag, rug::integer::Order::MsfBe);
+                if size < 0 {
+                    i = -i;
+                }
+                Some(rw_number(rt, rug::Float::with_val(rt.mpfr_prec_bits().max(i.significant_bits()), i)))
+            }
+            VT_MPFR => {
+                let end = self.buf[self.pos..].iter().position(|&b| b == b' ')?;
+                let text = std::str::from_utf8(self.take(end)?).ok()?.to_string();
+                self.take(1)?;
+                Some(rw_number(rt, mpfr_parse_base62(&text, rt.mpfr_prec_bits())?))
+            }
+            _ => {
+                let len = self.u32()? as usize;
+                let bytes = self.take(len)?;
+                let s = AwkStr::from(bytes.to_vec());
+                Some(match code {
+                    VT_STRNUM => Value::Str(s),
+                    VT_REGEX => Value::Regexp(s),
+                    VT_UNDEFINED => Value::Uninit,
+                    VT_BOOL => Value::Num(if bytes == b"TRUE" { 1.0 } else { 0.0 }),
+                    // gawk: "treating recovered value with unknown type code
+                    // as a string" — VT_STRING lands here too.
+                    _ => Value::StrLit(s),
+                })
+            }
+        }
+    }
+}
+
+/// A GMP or MPFR number read back: kept arbitrary-precision under `-M`, a
+/// double otherwise.
+fn rw_number(rt: &Runtime, f: rug::Float) -> Value {
+    if rt.bignum {
+        Value::Mpfr(f)
+    } else {
+        Value::Num(f.to_f64())
+    }
+}
+
+/// mpfr's digit alphabet for bases above 36: `0-9`, `A-Z`, `a-z`.
+const B62_DIGITS: &[u8; 62] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+
+/// `mpfr_out_str(fp, 62, 0, f, MPFR_RNDN)`: `[-]d.ddd@e` with the digit count
+/// `mpfr_get_str` picks for `n = 0` (`1 + ceil(prec * log 2 / log 62)`), the
+/// significand rounded to nearest-even, and a decimal exponent of 62; the
+/// singular values are `@NaN@`, `@Inf@`, `-@Inf@`, `0`, `-0`.
+fn mpfr_out_str_base62(f: &rug::Float) -> String {
+    use rug::ops::Pow;
+    if f.is_nan() {
+        return "@NaN@".into();
+    }
+    if f.is_infinite() {
+        return if f.is_sign_negative() { "-@Inf@" } else { "@Inf@" }.into();
+    }
+    if f.is_zero() {
+        return if f.is_sign_negative() { "-0" } else { "0" }.into();
+    }
+    let m = 1 + (f64::from(f.prec()) * std::f64::consts::LN_2 / 62f64.ln()).ceil() as u32;
+    let x = rug::Rational::try_from(f).expect("finite").abs();
+    let pow = |e: i64| -> rug::Rational {
+        let p = rug::Integer::from(62).pow(e.unsigned_abs() as u32);
+        if e >= 0 { rug::Rational::from(p) } else { rug::Rational::from((1, p)) }
+    };
+    // Exponent e with 62^(e-1) <= x < 62^e, from an estimate corrected exactly.
+    let mut e = (x.to_f64().log(62.0)).floor() as i64 + 1;
+    while x >= pow(e) {
+        e += 1;
+    }
+    while x < pow(e - 1) {
+        e -= 1;
+    }
+    let scaled = |e: i64| -> rug::Integer {
+        let r = rug::Rational::from(&x * &pow(i64::from(m) - e));
+        let (frac, fl) = r.fract_floor(rug::Integer::new());
+        let half = rug::Rational::from((1, 2));
+        if frac > half || (frac == half && fl.is_odd()) { fl + 1 } else { fl }
+    };
+    let mut n = scaled(e);
+    if n >= rug::Integer::from(62).pow(m) {
+        e += 1;
+        n = scaled(e);
+    }
+    let mut ds = Vec::new();
+    let mut v = n;
+    while v > 0 {
+        let (q, r) = v.div_rem_euc(rug::Integer::from(62));
+        ds.push(B62_DIGITS[r.to_usize().expect("digit")]);
+        v = q;
+    }
+    ds.reverse();
+    let mut s = String::new();
+    if f.is_sign_negative() {
+        s.push('-');
+    }
+    s.push(ds[0] as char);
+    s.push('.');
+    s.extend(ds[1..].iter().map(|&b| b as char));
+    s.push_str(&format!("@{}", e - 1));
+    s
+}
+
+/// `mpfr_inp_str(op, fp, 62, MPFR_RNDN)` for what [`mpfr_out_str_base62`]
+/// writes: base-62 digits with an optional `.`, then an optional `@` and a
+/// decimal power of 62.
+fn mpfr_parse_base62(text: &str, prec: u32) -> Option<rug::Float> {
+    use rug::ops::Pow;
+    let (neg, body) = match text.strip_prefix('-') {
+        Some(b) => (true, b),
+        None => (false, text.strip_prefix('+').unwrap_or(text)),
+    };
+    let special = match body {
+        "@NaN@" => Some(rug::Float::with_val(prec, rug::float::Special::Nan)),
+        "@Inf@" => Some(rug::Float::with_val(prec, rug::float::Special::Infinity)),
+        _ => None,
+    };
+    if let Some(s) = special {
+        return Some(if neg { -s } else { s });
+    }
+    let (mant, exp) = match body.split_once('@') {
+        Some((m, e)) => (m, e.parse::<i64>().ok()?),
+        None => (body, 0),
+    };
+    let mut n = rug::Integer::new();
+    let mut frac_digits = 0i64;
+    let mut seen_point = false;
+    for c in mant.bytes() {
+        if c == b'.' && !seen_point {
+            seen_point = true;
             continue;
         }
-        let mut parts = s.splitn(2, '\t');
-        let key = parts.next().unwrap_or("");
-        let val = parts.next().unwrap_or("");
-        rt.array_set(
-            arr_name,
-            unescape_rw(key),
-            Value::Str(unescape_rw(val).into()),
-        );
-        line.clear();
+        let d = B62_DIGITS.iter().position(|&b| b == c)?;
+        n = n * 62 + d as u32;
+        if seen_point {
+            frac_digits += 1;
+        }
     }
-    Ok(Value::Num(0.0))
+    let shift = exp - frac_digits;
+    let p = rug::Integer::from(62).pow(shift.unsigned_abs() as u32);
+    let r = if shift >= 0 { rug::Rational::from(n * p) } else { rug::Rational::from((n, p)) };
+    let f = rug::Float::with_val(prec, r);
+    Some(if neg { -f } else { f })
+}
+
+/// `reada(file, arr)` — gawk's rwarray `reada`: replaces `arr` with the array
+/// stored by `writea` and returns 1; on a missing file, a bad magic or version,
+/// or a truncated file it returns 0 with `ERRNO` set. The array is cleared
+/// only once the header has been accepted, as in `read_backend`.
+pub(crate) fn reada(rt: &mut Runtime, path: &str, arr_name: &str) -> Result<Value> {
+    rt.require_unsandboxed_io()?;
+    let buf = match fs::read(path) {
+        Ok(b) => b,
+        Err(e) => {
+            rt.set_errno_io(&e);
+            return Ok(Value::Num(0.0));
+        }
+    };
+    let mut r = RwReader { buf: &buf, pos: 0 };
+    let header_ok = r.take(RW_MAGIC.len()) == Some(RW_MAGIC)
+        && r.u32() == Some(RW_MAJOR)
+        && r.u32() == Some(RW_MINOR);
+    if !header_ok {
+        rt.set_errno_io(&std::io::Error::from_raw_os_error(libc::EBADF));
+        return Ok(Value::Num(0.0));
+    }
+    rt.array_delete(arr_name, None);
+    let Some(arr) = r.array(rt) else {
+        rt.set_errno_io(&std::io::Error::from_raw_os_error(libc::EBADF));
+        return Ok(Value::Num(0.0));
+    };
+    for (k, v) in arr.iter() {
+        rt.array_set_bytes(arr_name, k.as_bytes(), v.clone());
+    }
+    Ok(Value::Num(1.0))
 }
 
 /// `intdiv0(a,b)` — like **`intdiv`** but returns 0 when **`b == 0`** (no error).
@@ -564,13 +780,32 @@ mod tests {
     }
 
     #[test]
+    fn mpfr_base62_matches_gawk_rwarray_bytes() {
+        // Renderings copied from files `gawk -M -l rwarray` wrote (PREC 53).
+        for (x, text) in [
+            (1.5, "1.V00000000@0"),
+            (0.1, "6.COnbCOnbH@-1"),
+            (1e100, "Q.CyvrY2MJt@55"),
+            (-2.75e-30, "-8.7waQ3SLvA@-17"),
+        ] {
+            let f = rug::Float::with_val(53, x);
+            assert_eq!(mpfr_out_str_base62(&f), text, "{x}");
+            assert_eq!(mpfr_parse_base62(text, 53).unwrap().to_f64(), x, "{text}");
+        }
+        let inf = rug::Float::with_val(53, f64::NEG_INFINITY);
+        assert_eq!(mpfr_out_str_base62(&inf), "-@Inf@");
+        assert!(mpfr_parse_base62("@NaN@", 53).unwrap().is_nan());
+    }
+
+    #[test]
     fn reada_rejects_bad_magic() {
         let mut rt = Runtime::new();
         let dir = std::env::temp_dir();
         let p = dir.join(format!("awkrs_reada_bad_{}", std::process::id()));
+        // gawk's read_backend answers 0 (not -1) and sets ERRNO.
         std::fs::write(&p, "not-magic\n").unwrap();
         let n = reada(&mut rt, p.to_str().unwrap(), "z").unwrap();
-        assert_eq!(n.as_number(), -1.0);
+        assert_eq!(n.as_number(), 0.0);
         let _ = std::fs::remove_file(&p);
     }
 
