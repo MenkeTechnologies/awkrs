@@ -1449,24 +1449,14 @@ fn pad_numeric(s: &str, width: usize, left: bool, pad: char) -> Result<String, S
     // POSIX: when zero-padding a signed integer, zeros go BETWEEN the sign
     // and the magnitude — "%05d" of -42 should be "-0042" not "00-42".
     // Same applies to `+` / leading-space sign prefixes.
+    // The `0x`/`0X` that `#` puts on a hex value is a prefix too: `%#05x` of 1
+    // is `0x001`, not `000x1`.
     if pad == '0' && !left {
-        if let Some(stripped) = s.strip_prefix('-') {
-            return Ok(format!(
-                "-{}",
-                pad_string(stripped, width.saturating_sub(1), false, '0')?
-            ));
-        }
-        if let Some(stripped) = s.strip_prefix('+') {
-            return Ok(format!(
-                "+{}",
-                pad_string(stripped, width.saturating_sub(1), false, '0')?
-            ));
-        }
-        if let Some(stripped) = s.strip_prefix(' ') {
-            return Ok(format!(
-                " {}",
-                pad_string(stripped, width.saturating_sub(1), false, '0')?
-            ));
+        for prefix in ["-", "+", " ", "0x", "0X"] {
+            if let Some(stripped) = s.strip_prefix(prefix) {
+                let rest = pad_numeric(stripped, width.saturating_sub(prefix.len()), false, '0')?;
+                return Ok(format!("{prefix}{rest}"));
+            }
         }
     }
     pad_string(s, width, left, pad)
