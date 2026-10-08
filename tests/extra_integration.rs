@@ -3640,3 +3640,20 @@ fn f_dash_reads_the_program_from_stdin() {
     assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
     assert_eq!(String::from_utf8_lossy(&out.stdout), "from stdin\n0\n");
 }
+
+/// gawk's `-d[file]`, `-L[value]`, `-p[file]`, `-o[file]` and `-D[file]` take an
+/// argument only when it is attached, so the next word is still the program:
+/// `gawk -L 'BEGIN { print "ran" }'` runs it. awkrs read the program text as
+/// the option's value and stopped with "no program given".
+#[test]
+fn optional_value_options_leave_the_program_text_alone() {
+    let bin = env!("CARGO_BIN_EXE_awkrs");
+    for opt in ["-L", "-p", "-d-"] {
+        let out = Command::new(bin)
+            .args([opt, "BEGIN { print \"ran\" }"])
+            .output()
+            .expect("spawn");
+        assert_eq!(out.status.code(), Some(0), "{opt}: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(String::from_utf8_lossy(&out.stdout).starts_with("ran\n"), "{opt}");
+    }
+}

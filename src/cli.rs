@@ -15,6 +15,88 @@
 use clap::{ArgAction, Parser, ValueHint};
 use std::path::PathBuf;
 
+/// Long names of gawk's options whose argument is optional: `-d[file]`,
+/// `-D[file]`, `-L[value]`, `-o[file]`, `-p[file]`, each paired with its short
+/// letter.
+const OPTIONAL_VALUE_OPTIONS: &[(char, &str)] = &[
+    ('d', "dump-variables"),
+    ('D', "debug"),
+    ('L', "lint"),
+    ('o', "pretty-print"),
+    ('p', "profile"),
+];
+
+/// Short letters of the options that take a required argument, which may be
+/// the next word (`-f prog`).
+const SHORT_VALUE_OPTIONS: &str = "fFveiElWj";
+
+/// Long options that take a required argument as the next word when no `=`
+/// is given.
+const LONG_VALUE_OPTIONS: &[&str] = &[
+    "file",
+    "field-separator",
+    "assign",
+    "source",
+    "include",
+    "aot",
+    "exec",
+    "load",
+    "threads",
+    "read-ahead",
+];
+
+/// Give gawk's optional-argument options getopt's meaning before clap sees
+/// the command line.
+///
+/// getopt only takes an optional argument when it is attached — `-dfile`,
+/// `--dump-variables=file` — and never consumes the next word, so
+/// `gawk -d 'BEGIN { … }'` runs that program. clap would read the program text
+/// as the option's value, leaving no program. Up to the first operand (or
+/// `--`), each such option is rewritten to its `--long=value` form, with an
+/// empty value when none was attached; the words that other options take as
+/// their argument are stepped over.
+pub fn attach_optional_option_values(argv: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsString> {
+    let mut out = Vec::with_capacity(argv.len());
+    let mut args = argv.into_iter();
+    if let Some(bin) = args.next() {
+        out.push(bin);
+    }
+    while let Some(arg) = args.next() {
+        let Some(s) = arg.to_str().map(str::to_owned) else {
+            out.push(arg);
+            continue;
+        };
+        if s == "--" || s == "-" || !s.starts_with('-') {
+            out.push(arg);
+            out.extend(args);
+            break;
+        }
+        if let Some(long) = s.strip_prefix("--") {
+            let name = long.split('=').next().unwrap_or(long);
+            if !long.contains('=') && OPTIONAL_VALUE_OPTIONS.iter().any(|&(_, l)| l == name) {
+                out.push(format!("--{name}=").into());
+                continue;
+            }
+            out.push(arg);
+            if !long.contains('=') && LONG_VALUE_OPTIONS.contains(&name) {
+                out.extend(args.next());
+            }
+            continue;
+        }
+        let mut chars = s[1..].chars();
+        let first = chars.next().expect("starts with `-` and is not `-`");
+        if let Some(&(_, long)) = OPTIONAL_VALUE_OPTIONS.iter().find(|&&(c, _)| c == first) {
+            out.push(format!("--{long}={}", chars.as_str()).into());
+            continue;
+        }
+        out.push(arg);
+        if SHORT_VALUE_OPTIONS.contains(first) && chars.as_str().is_empty() {
+            out.extend(args.next());
+        }
+    }
+    out
+}
+
 /// Union of common awk implementations' CLI flags (POSIX `awk`, GNU `gawk`, `mawk` `-W`, BusyBox).
 #[derive(Debug, Clone, Parser)]
 #[command(
@@ -137,6 +219,8 @@ pub struct Args {
         short = 'L',
         long = "lint",
         value_name = "fatal|invalid|no-ext",
+        num_args = 0..=1,
+        default_missing_value = "",
         help = "\x1b[32m//\x1b[0m Enable lint warnings (fatal|invalid|no-ext)"
     )]
     pub lint: Option<String>,

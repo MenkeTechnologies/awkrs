@@ -190,7 +190,9 @@ macro_rules! flush_if_err {
 
 /// Run the interpreter. `bin_name` is used for diagnostics and help (e.g. `"awkrs"` or `"ars"`).
 pub fn run(bin_name: &str) -> Result<()> {
-    let mut args = Args::parse();
+    let mut args = Args::parse_from(crate::cli::attach_optional_option_values(
+        std::env::args_os().collect(),
+    ));
     if args.show_help {
         cyber_help::print_cyberpunk_help(bin_name);
         return Ok(());
