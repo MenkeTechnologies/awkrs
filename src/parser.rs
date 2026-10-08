@@ -293,7 +293,10 @@ impl<'a> Parser<'a> {
 
     fn parse_rule(&mut self) -> Result<Rule> {
         let pattern = self.parse_pattern()?;
-        self.skip_newlines()?;
+        // No newline skip here: POSIX ends a pattern-only rule at a newline, so
+        // `NR==1` <NL> `{ … }` is two rules (gawk and one-true-awk both
+        // print the matching record, then run the action on every record), and
+        // `BEGIN` <NL> `{ … }` is a syntax error.
         let stmts = if self.cur == Token::LBrace {
             self.bump(false)?;
             let stmts = self.parse_stmt_list()?;
@@ -366,7 +369,6 @@ impl<'a> Parser<'a> {
                     let p2 = self.parse_pattern()?;
                     return Ok(Pattern::Range(Box::new(Pattern::Regexp(s)), Box::new(p2)));
                 }
-                self.skip_newlines()?;
                 if self.pattern_regex_stands_alone() {
                     return Ok(Pattern::Regexp(s));
                 }
@@ -1080,6 +1082,7 @@ impl<'a> Parser<'a> {
             self.cur,
             Token::LBrace
                 | Token::Semi
+                | Token::Newline
                 | Token::Eof
                 | Token::Begin
                 | Token::End

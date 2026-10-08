@@ -3220,3 +3220,14 @@ fn directory_operand_is_skipped_with_a_warning() {
     assert_eq!(code, 2);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A newline between `BEGIN` and its `{` ends the rule, so the `BEGIN` has no
+/// action: gawk ("BEGIN blocks must have an action part") and one-true-awk
+/// (syntax error) both reject it. awkrs used to skip the newline and run the
+/// block. Parity case portable/3015 covers the record-pattern half.
+#[test]
+fn begin_then_newline_then_brace_is_a_syntax_error() {
+    let (code, stdout, stderr) = run_awkrs_stdin("BEGIN\n{ print \"x\" }", "");
+    assert_eq!(code, 1, "stderr: {stderr}");
+    assert_eq!(stdout, "");
+}
