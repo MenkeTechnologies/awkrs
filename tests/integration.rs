@@ -790,14 +790,16 @@ fn nextfile_in_end_rule_is_runtime_error_nonzero_exit() {
 }
 
 #[test]
-fn nextfile_in_beginfile_rule_is_runtime_error_nonzero_exit() {
-    let (code, stdout, stderr) = run_awkrs_stdin(r#"BEGINFILE { nextfile }"#, "x\n");
-    assert_ne!(code, 0);
-    assert!(stdout.is_empty(), "stdout={stdout:?}");
-    assert!(
-        stderr.contains("nextfile") && stderr.contains("BEGINFILE"),
-        "stderr={stderr:?}"
+fn nextfile_in_beginfile_rule_skips_the_input() {
+    // gawk 5.4.1: `nextfile` is allowed in BEGINFILE and skips the file unread
+    // (`NR=0`, exit 0) — it is not an error there.
+    let (code, stdout, stderr) = run_awkrs_stdin(
+        r#"BEGINFILE { nextfile } { print "record", $0 } END { print "NR=" NR }"#,
+        "x\n",
     );
+    assert_eq!(code, 0, "stderr={stderr:?}");
+    assert_eq!(stdout, "NR=0\n");
+    assert!(stderr.is_empty(), "stderr={stderr:?}");
 }
 
 #[test]

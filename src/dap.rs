@@ -953,8 +953,8 @@ fn run_one_input(
     path: Option<&std::path::Path>,
     range_state: &mut [bool],
 ) -> crate::Result<()> {
-    crate::vm::vm_run_beginfile(cp, rt)?;
-    if rt.exit_pending {
+    let skip_file = crate::vm::vm_run_beginfile(cp, rt)?;
+    if rt.exit_pending || skip_file {
         crate::vm::vm_run_endfile(cp, rt)?;
         return Ok(());
     }

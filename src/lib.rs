@@ -507,9 +507,11 @@ pub fn run(bin_name: &str) -> Result<()> {
             rt.filename = "-".into();
             // Unless a `getline` in `BEGIN` already attached standard input
             // and ran it.
-            if !std::mem::take(&mut rt.beginfile_ran) {
-                flush_if_err!(rt, vm_run_beginfile(cp.as_ref(), &mut rt))?;
-            }
+            let skip_stdin = if std::mem::take(&mut rt.beginfile_ran) {
+                false
+            } else {
+                flush_if_err!(rt, vm_run_beginfile(cp.as_ref(), &mut rt))?
+            };
             if rt.exit_pending {
                 rt.detach_input_reader();
                 flush_if_err!(rt, run_endfile_once(cp.as_ref(), &mut rt))?;
@@ -518,7 +520,9 @@ pub fn run(bin_name: &str) -> Result<()> {
                 finalize_cli_outputs(&args, bin_name, &rt, cp.as_ref(), profile_start, threads)?;
                 std::process::exit(rt.exit_code);
             }
-            if stdin_parallel {
+            if skip_stdin {
+                // `nextfile` in `BEGINFILE`: no records are read.
+            } else if stdin_parallel {
                 process_stdin_parallel(
                     &cp,
                     &mut rt,
@@ -580,22 +584,33 @@ pub fn run(bin_name: &str) -> Result<()> {
                 // describes a failure there (and is empty after a good open); `after_beginfile` then skips a
                 // directory with a warning (outside `--traditional`) instead of
                 // the "cannot open file" fatal, and no ENDFILE runs for it.
-                let is_dir = match p.as_deref().map(std::fs::metadata) {
+                let (is_dir, open_failed) = match p.as_deref().map(std::fs::metadata) {
                     Some(Err(e)) => {
                         rt.set_errno_io(&e);
-                        false
+                        (false, true)
                     }
                     Some(Ok(m)) if m.is_dir() => {
                         rt.set_errno_io(&std::io::Error::from_raw_os_error(libc::EISDIR));
-                        true
+                        (true, true)
                     }
                     Some(Ok(_)) => {
                         rt.clear_errno();
-                        false
+                        (false, false)
                     }
-                    _ => false,
+                    _ => (false, false),
                 };
-                flush_if_err!(rt, vm_run_beginfile(cp.as_ref(), &mut rt))?;
+                let skip_file = flush_if_err!(rt, vm_run_beginfile(cp.as_ref(), &mut rt))?;
+                // `nextfile` in `BEGINFILE` skips the operand unread — the
+                // `BEGINFILE { if (ERRNO != "") nextfile }` idiom for files that
+                // cannot be opened. gawk runs `ENDFILE` for it only when the
+                // open succeeded (io.c `nextfile(.., skipping)` returns the
+                // open's error code).
+                if skip_file && !rt.exit_pending {
+                    if !open_failed {
+                        flush_if_err!(rt, run_endfile_once(cp.as_ref(), &mut rt))?;
+                    }
+                    continue;
+                }
                 if is_dir && !rt.traditional && !rt.exit_pending {
                     let msg = format!(
                         "command line argument `{}' is a directory: skipped",

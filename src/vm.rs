@@ -853,30 +853,32 @@ pub fn vm_run_end(cp: &CompiledProgram, rt: &mut Runtime) -> Result<()> {
     ctx.recycle();
     Ok(())
 }
-/// `vm_run_beginfile` — see implementation for the contract.
-pub fn vm_run_beginfile(cp: &CompiledProgram, rt: &mut Runtime) -> Result<()> {
+/// Run the `BEGINFILE` rules for the input source about to be read. `true`
+/// when one of them executed `nextfile`: as in gawk (`Op_K_nextfile` with
+/// `currule == BEGINFILE`), the remaining `BEGINFILE` rules are skipped and the
+/// caller skips the file — running `ENDFILE` for it only if it opened cleanly.
+pub fn vm_run_beginfile(cp: &CompiledProgram, rt: &mut Runtime) -> Result<bool> {
     // gawk starts every input file with an empty record: in `BEGINFILE`, `$0`
     // is `""` and `NF` is 0, not the previous file's last record.
     if !cp.beginfile_chunks.is_empty() {
         rt.set_record_with_current_fs(b"");
     }
     let mut ctx = VmCtx::new(cp, rt);
+    let mut skip_file = false;
     for chunk in &cp.beginfile_chunks {
         match execute(chunk, &mut ctx)? {
             VmSignal::Next => return Err(Error::Runtime("`next` is invalid in BEGINFILE".into())),
             VmSignal::NextFile => {
-                return Err(Error::Runtime("`nextfile` is invalid in BEGINFILE".into()));
+                skip_file = true;
+                break;
             }
             VmSignal::Return(_) => return Err(Error::Runtime("`return` outside function".into())),
-            VmSignal::ExitPending => {
-                ctx.recycle();
-                return Ok(());
-            }
+            VmSignal::ExitPending => break,
             VmSignal::Normal => {}
         }
     }
     ctx.recycle();
-    Ok(())
+    Ok(skip_file)
 }
 /// `vm_run_endfile` — see implementation for the contract.
 pub fn vm_run_endfile(cp: &CompiledProgram, rt: &mut Runtime) -> Result<()> {
@@ -3274,7 +3276,11 @@ fn read_primary_with_file_rules(ctx: &mut VmCtx<'_>) -> Result<Option<String>> {
             crate::attach_stdin_primary(ctx.rt);
             ctx.rt.beginfile_ran = true;
         }
-        vm_run_beginfile(ctx.cp, ctx.rt)?;
+        if vm_run_beginfile(ctx.cp, ctx.rt)? {
+            // `nextfile` in `BEGINFILE`: the file is closed unread and the
+            // loop below runs its `ENDFILE` and moves on.
+            ctx.rt.detach_input_reader();
+        }
     }
     loop {
         if let Some(line) = ctx.rt.read_line_primary_current()? {
@@ -3288,7 +3294,9 @@ fn read_primary_with_file_rules(ctx: &mut VmCtx<'_>) -> Result<Option<String>> {
             return Ok(None);
         }
         ctx.rt.endfile_ran = false;
-        vm_run_beginfile(ctx.cp, ctx.rt)?;
+        if vm_run_beginfile(ctx.cp, ctx.rt)? {
+            ctx.rt.detach_input_reader();
+        }
     }
 }
 
