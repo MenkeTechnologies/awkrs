@@ -116,7 +116,7 @@ fn expand_inner(
         let trimmed = line.trim_start();
         if let Some(rest) = trimmed.strip_prefix("@include") {
             let rest = rest.trim_start();
-            let Some((path_str, _after)) = take_double_quoted(rest) else {
+            let Some((path_str, after)) = take_double_quoted(rest) else {
                 return Err(Error::Parse {
                     line: line_no,
                     msg: "malformed `@include` (expected `@include \"file\"`)".into(),
@@ -138,11 +138,12 @@ fn expand_inner(
             if !expanded.is_empty() && !expanded.ends_with('\n') {
                 out.push('\n');
             }
+            push_directive_tail(&mut out, after);
             continue;
         }
         if let Some(rest) = trimmed.strip_prefix("@load") {
             let rest = rest.trim_start();
-            let Some((path_str, _after)) = take_double_quoted(rest) else {
+            let Some((path_str, after)) = take_double_quoted(rest) else {
                 return Err(Error::Parse {
                     line: line_no,
                     msg: "malformed `@load` (expected `@load \"file\"`)".into(),
@@ -166,10 +167,12 @@ fn expand_inner(
                 if !expanded.is_empty() && !expanded.ends_with('\n') {
                     out.push('\n');
                 }
+                push_directive_tail(&mut out, after);
                 continue;
             }
             if is_native_gawk_extension_path(&path_str) {
                 // Builtins already present for the whole run; gawkapi / dlopen not used.
+                push_directive_tail(&mut out, after);
                 continue;
             }
             return Err(Error::Parse {
@@ -198,21 +201,30 @@ fn expand_inner(
                         .into(),
                 });
             };
-            // gawk parity: `@namespace "name"; rest_of_program` is legal; emit
-            // the remainder so the parser sees it as if the directive line had
-            // ended where the directive ended.
-            let after_ns = after_ns.trim_start();
-            let rest_after_semi = after_ns.strip_prefix(';').unwrap_or(after_ns);
-            if !rest_after_semi.trim().is_empty() {
-                out.push_str(rest_after_semi);
-                out.push('\n');
-            }
+            push_directive_tail(&mut out, after_ns);
             continue;
         }
         out.push_str(line);
         out.push('\n');
     }
     Ok(out)
+}
+
+/// Emit the source that follows a directive on its line.
+///
+/// gawk's grammar ends `@include`, `@load` and `@namespace` with a
+/// `statement_term` (a newline, or `;` plus optional newlines), so
+/// `@load "ordchr"; BEGIN { … }` is one valid line. The remainder is emitted on
+/// a line of its own, as if the directive line had ended where the directive
+/// did; dropping it used to discard the rest of the program without a
+/// diagnostic.
+fn push_directive_tail(out: &mut String, after: &str) {
+    let after = after.trim_start();
+    let rest = after.strip_prefix(';').unwrap_or(after);
+    if !rest.trim().is_empty() {
+        out.push_str(rest);
+        out.push('\n');
+    }
 }
 
 fn resolve_include_path(base_dir: Option<&Path>, path_str: &str) -> Result<PathBuf> {
