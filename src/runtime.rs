@@ -4703,15 +4703,20 @@ impl Runtime {
         // and is the outlier here.
         self.record_strnum = false;
     }
-    /// `set_record_from_line` — see implementation for the contract.
+    /// Make `line` the current record and split it with `FS`.
+    ///
+    /// `line` is the record text without its separator, as the record splitters
+    /// produce it. A trailing `\r` or `\n` is data: a CR-LF line keeps its CR
+    /// (gawk, one-true-awk), and under a non-newline `RS` a record can end in a
+    /// newline. Trimming both here made `-j` runs report `length($0)` one short
+    /// on CR-LF input.
     pub fn set_record_from_line(&mut self, line: &str) {
-        let trimmed = line.trim_end_matches(['\n', '\r']);
         let fs = self
             .vars
             .get("FS")
             .map(|v| v.as_str())
             .unwrap_or_else(|| " ".into());
-        self.set_field_sep_split(&fs, trimmed.as_bytes());
+        self.set_field_sep_split(&fs, line.as_bytes());
     }
 
     /// Parse the current `line_buf` as a record. Avoids the borrow-checker conflict

@@ -943,6 +943,10 @@ fn process_stdin_parallel(
             if n == 0 {
                 break;
             }
+            // The worker takes each record without its terminator.
+            if s.ends_with('\n') {
+                s.pop();
+            }
             chunk.push(s);
         }
         if chunk.is_empty() {
@@ -1121,7 +1125,16 @@ fn process_file_parallel(
         let data = read_input_file(p, rt)?;
         mmap_split_into_owned_records(rt, data.as_slice())?
     } else {
+        // The worker takes each record without its terminator.
         read_all_lines(std::io::stdin())?
+            .into_iter()
+            .map(|mut l| {
+                if l.ends_with('\n') {
+                    l.pop();
+                }
+                l
+            })
+            .collect()
     };
     let nlines = lines.len();
     if nlines == 0 {

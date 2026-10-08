@@ -3355,3 +3355,34 @@ fn csv_mode_fs_procinfo_and_default_split_follow_gawk() {
         "{stderr}"
     );
 }
+
+/// With `-j`, records reach the parallel workers without their terminator and
+/// keep every other byte: a CR-LF line keeps its CR (gawk and one-true-awk
+/// report `length` 2 for `a\r`), and under `RS = ";"` a record may end in a
+/// newline. The worker used to strip trailing CR and LF from every record, so
+/// `-j 4` printed 1 where a sequential run printed 2.
+#[test]
+fn parallel_records_keep_trailing_cr_and_newline() {
+    let dir = unique_tmp_path("awkrs_par_cr");
+    std::fs::create_dir_all(&dir).unwrap();
+    let crlf = dir.join("crlf");
+    std::fs::write(&crlf, "a\r\nb\r\n").unwrap();
+    let semi = dir.join("semi");
+    std::fs::write(&semi, "a\n;b\n;").unwrap();
+    let run_j4 = |prog: &str, file: &std::path::Path| {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_awkrs"))
+            .args(["-j", "4", prog])
+            .arg(file)
+            .output()
+            .expect("spawn");
+        (out.status.code(), String::from_utf8_lossy(&out.stdout).into_owned())
+    };
+    assert_eq!(run_j4("{ print length($0) }", &crlf), (Some(0), "2\n2\n".into()));
+    let (c, stdin_out, e) = run_awkrs_stdin_args(["-j", "4"], "{ print length($0) }", "a\r\nb\r\n");
+    assert_eq!((c, stdin_out.as_str()), (0, "2\n2\n"), "{e}");
+    assert_eq!(
+        run_j4("BEGIN { RS = \";\" } { print length($0) }", &semi),
+        (Some(0), "2\n2\n".into())
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
