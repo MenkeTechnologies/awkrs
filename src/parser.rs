@@ -213,7 +213,7 @@ impl<'a> Parser<'a> {
     fn parse_program(&mut self) -> Result<Program> {
         let mut rules = Vec::new();
         let mut funcs = HashMap::new();
-        self.skip_newlines()?;
+        self.skip_stmt_separators()?;
         while !matches!(self.cur, Token::Eof) {
             if matches!(self.cur, Token::Function) {
                 let f = self.parse_function_def()?;
@@ -226,7 +226,11 @@ impl<'a> Parser<'a> {
             } else {
                 rules.push(self.parse_rule()?);
             }
-            self.skip_newlines()?;
+            // POSIX `item_list: item_list item terminator` takes `;` as well as a
+            // newline after a rule or function (`NR==1; NR==2`,
+            // `BEGIN { } ; END { }`). gawk allows one `;` per rule and one-true-awk
+            // any number; awkrs follows the more permissive one.
+            self.skip_stmt_separators()?;
         }
         Ok(Program { rules, funcs })
     }
