@@ -349,9 +349,19 @@ impl<'a> Lexer<'a> {
                     });
                 }
                 if d == b'\\' {
+                    self.bump_byte();
+                    // As in a string (gawk `yylex`): a carriage return after
+                    // the backslash is dropped and backslash-newline continues
+                    // the regexp on the next line, contributing nothing.
+                    if self.peek_byte() == Some(b'\r') {
+                        self.bump_byte();
+                    }
+                    if self.peek_byte() == Some(b'\n') {
+                        self.bump_byte();
+                        continue;
+                    }
                     // An escape is two bytes; the second is never a delimiter.
                     s.push_byte(d);
-                    self.bump_byte();
                     match self.peek_byte() {
                         Some(e) if e != b'\n' => {
                             s.push_byte(e);
@@ -415,6 +425,16 @@ impl<'a> Lexer<'a> {
                 let d = db as char;
                 if d == '\\' {
                     self.bump();
+                    // gawk `yylex`: a carriage return after the backslash is
+                    // dropped (MS-DOS files), and backslash-newline continues
+                    // the string on the next line without adding anything.
+                    if self.peek() == Some('\r') {
+                        self.bump();
+                    }
+                    if self.peek() == Some('\n') {
+                        self.bump();
+                        continue;
+                    }
                     match self.peek() {
                         Some('n') => {
                             self.bump();
@@ -2135,7 +2155,7 @@ mod tests {
         let mut l = Lexer::new(b"\"a\\\nb\"");
         let t = l.next_token(false).unwrap();
         if let Token::String(s) = t {
-            assert!(s == "ab" || s == "a\nb");
+            assert!(s == "ab");
         }
     }
 
