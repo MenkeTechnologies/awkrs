@@ -2243,7 +2243,14 @@ fn cacheable_script_path(args: &Args) -> Option<PathBuf> {
     if args.pretty_print.is_some() || args.gen_pot {
         return None;
     }
-    Some(args.progfiles[0].clone())
+    // `-f -` is the program on stdin: no file to key the cache by. Any other
+    // name is keyed by the file the source search actually reads (the literal
+    // name when the search finds nothing, which then fails to load anyway).
+    let p = &args.progfiles[0];
+    if p.as_os_str() == "-" {
+        return None;
+    }
+    Some(find_source_path(p).unwrap_or_else(|_| p.clone()))
 }
 
 /// Try to run the program on the fusevm-native backend (`AWKRS_FUSEVM_NATIVE=1`).
@@ -2384,7 +2391,13 @@ fn find_source_path(p: &Path) -> Result<PathBuf> {
     }
 }
 
+/// `-f -` reads the program from standard input (gawk `SRC_STDIN`).
 fn read_source_file(p: &Path) -> Result<Vec<u8>> {
+    if p.as_os_str() == "-" {
+        let mut buf = Vec::new();
+        std::io::Read::read_to_end(&mut std::io::stdin(), &mut buf).map_err(Error::Io)?;
+        return Ok(buf);
+    }
     std::fs::read(p).map_err(|e| Error::ProgramFile(p.to_path_buf(), e))
 }
 

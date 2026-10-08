@@ -5,6 +5,7 @@ mod common;
 use common::{run_awkrs_file, run_awkrs_stdin, run_awkrs_stdin_args, run_awkrs_stdin_args_env};
 use std::ffi::OsString;
 use std::fs;
+use std::io::Write;
 use std::process::Command;
 
 #[test]
@@ -3615,4 +3616,27 @@ fn source_search_uses_awkpath_awk_suffix_and_includes_once() {
     let (code, _, stderr) = run(&["@include \"missing\"\nBEGIN { print 1 }"]);
     assert_eq!(code, Some(1), "missing @include is a parse-time error: {stderr}");
     let _ = fs::remove_dir_all(&dir);
+}
+
+/// `-f -` reads the program text from standard input (gawk `SRC_STDIN`,
+/// one-true-awk agrees); awkrs looked for a file named `-` and exited 2.
+#[test]
+fn f_dash_reads_the_program_from_stdin() {
+    let bin = env!("CARGO_BIN_EXE_awkrs");
+    let mut child = Command::new(bin)
+        .args(["-f", "-"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(b"BEGIN { print \"from stdin\" } END { print NR }\n")
+        .expect("write");
+    let out = child.wait_with_output().expect("wait");
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "from stdin\n0\n");
 }
