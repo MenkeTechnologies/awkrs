@@ -1,6 +1,6 @@
 //! Static checks for whether record processing can run in parallel (rayon).
 
-use super::{Expr, GetlineRedir, Pattern, Program, Stmt, SwitchArm, SwitchLabel};
+use super::{Expr, GetlineRedir, IncDecTarget, Pattern, Program, Stmt, SwitchArm, SwitchLabel};
 
 /// True when record rules can run in parallel: no range patterns, no `exit`, no primary `getline`,
 /// no `getline <&` coprocess, no cross-record mutations (assignments / `delete`), and no constructs
@@ -48,7 +48,8 @@ fn stmt_blocks_parallel(s: &Stmt) -> bool {
             redir: GetlineRedir::Coproc(_),
             ..
         } => true,
-        Stmt::GetLine { .. } => false,
+        // Reading into a field or an array element writes it, as an assignment does.
+        Stmt::GetLine { var, .. } => getline_target_blocks_parallel(var.as_ref()),
         Stmt::If { then_, else_, .. } => {
             then_.iter().any(stmt_blocks_parallel) || else_.iter().any(stmt_blocks_parallel)
         }
@@ -78,6 +79,10 @@ fn stmt_blocks_parallel(s: &Stmt) -> bool {
                 })
         }
     }
+}
+
+fn getline_target_blocks_parallel(var: Option<&IncDecTarget>) -> bool {
+    !matches!(var, None | Some(IncDecTarget::Var(_)))
 }
 
 fn expr_blocks_parallel(e: &Expr) -> bool {
@@ -120,7 +125,8 @@ fn expr_blocks_parallel(e: &Expr) -> bool {
             redir: GetlineRedir::Coproc(_),
             ..
         } => true,
-        Expr::GetLine { .. } => false,
+        // Reading into a field or an array element writes it, as an assignment does.
+        Expr::GetLine { var, .. } => getline_target_blocks_parallel(var.as_ref()),
         Expr::Number(_)
         | Expr::IntegerLiteral(_)
         | Expr::Str(_)
@@ -132,7 +138,7 @@ fn expr_blocks_parallel(e: &Expr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::record_rules_parallel_safe;
-    use crate::ast::{Expr, FunctionDef, GetlineRedir, Pattern, Program, Rule, Stmt};
+    use crate::ast::{Expr, FunctionDef, GetlineRedir, IncDecTarget, Pattern, Program, Rule, Stmt};
     use crate::parser::parse_program;
     use std::collections::HashMap;
 
@@ -245,7 +251,7 @@ mod tests {
                 pattern: Pattern::Empty,
                 stmts: vec![Stmt::Expr(Expr::GetLine {
                     pipe_cmd: None,
-                    var: Some("x".into()),
+                    var: Some(IncDecTarget::Var("x".into())),
                     redir: GetlineRedir::Primary,
                 })],
             }],

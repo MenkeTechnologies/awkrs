@@ -127,6 +127,25 @@ fn qualify_name(name: &str, ns: &str, locals: &FxHashSet<String>) -> String {
     format!("{ns}::{name}")
 }
 
+/// An lvalue (`++`/`--` operand, `getline` target): its name and every
+/// expression inside it.
+fn qualify_lvalue(t: &mut IncDecTarget, ns: &str, locals: &FxHashSet<String>) {
+    match t {
+        IncDecTarget::Var(name) => *name = qualify_name(name, ns, locals),
+        IncDecTarget::Field(inner) => qualify_expr(inner, ns, locals),
+        IncDecTarget::Index {
+            name,
+            path,
+            indices,
+        } => {
+            *name = qualify_name(name, ns, locals);
+            for x in path.iter_mut().flatten().chain(indices) {
+                qualify_expr(x, ns, locals);
+            }
+        }
+    }
+}
+
 fn qualify_expr(e: &mut Expr, ns: &str, locals: &FxHashSet<String>) {
     match e {
         Expr::Var(name) => *name = qualify_name(name, ns, locals),
@@ -194,20 +213,7 @@ fn qualify_expr(e: &mut Expr, ns: &str, locals: &FxHashSet<String>) {
             qualify_expr(then_, ns, locals);
             qualify_expr(else_, ns, locals);
         }
-        Expr::IncDec { target, .. } => match target {
-            IncDecTarget::Var(name) => *name = qualify_name(name, ns, locals),
-            IncDecTarget::Field(inner) => qualify_expr(inner, ns, locals),
-            IncDecTarget::Index {
-                name,
-                path,
-                indices,
-            } => {
-                *name = qualify_name(name, ns, locals);
-                for x in path.iter_mut().flatten().chain(indices) {
-                    qualify_expr(x, ns, locals);
-                }
-            }
-        },
+        Expr::IncDec { target, .. } => qualify_lvalue(target, ns, locals),
         Expr::AssignField { field, rhs, .. } => {
             qualify_expr(field.as_mut(), ns, locals);
             qualify_expr(rhs.as_mut(), ns, locals);
@@ -218,7 +224,7 @@ fn qualify_expr(e: &mut Expr, ns: &str, locals: &FxHashSet<String>) {
             redir,
         } => {
             if let Some(v) = var {
-                *v = qualify_name(v, ns, locals);
+                qualify_lvalue(v, ns, locals);
             }
             if let Some(cmd) = pipe_cmd {
                 qualify_expr(cmd.as_mut(), ns, locals);
@@ -368,7 +374,7 @@ fn qualify_stmt(s: &mut Stmt, ns: &str, locals: &FxHashSet<String>) {
             redir,
         } => {
             if let Some(v) = var {
-                *v = qualify_name(v, ns, locals);
+                qualify_lvalue(v, ns, locals);
             }
             if let Some(cmd) = pipe_cmd {
                 qualify_expr(cmd.as_mut(), ns, locals);
@@ -772,14 +778,14 @@ mod tests {
             pattern: Pattern::Begin,
             stmts: vec![Stmt::GetLine {
                 pipe_cmd: None,
-                var: Some("line".into()),
+                var: Some(IncDecTarget::Var("line".into())),
                 redir: GetlineRedir::File(Box::new(Expr::Var("path".into()))),
             }],
         });
         apply_default_namespace(&mut prog, Some("ns"));
         match &prog.rules[0].stmts[0] {
             Stmt::GetLine {
-                var: Some(v),
+                var: Some(IncDecTarget::Var(v)),
                 redir: GetlineRedir::File(e),
                 ..
             } => {
@@ -828,7 +834,7 @@ mod tests {
             pattern: Pattern::Begin,
             stmts: vec![Stmt::GetLine {
                 pipe_cmd: Some(Box::new(Expr::Var("producer".into()))),
-                var: Some("rec".into()),
+                var: Some(IncDecTarget::Var("rec".into())),
                 redir: GetlineRedir::Coproc(Box::new(Expr::Var("coprocfd".into()))),
             }],
         });
@@ -836,7 +842,7 @@ mod tests {
         match &prog.rules[0].stmts[0] {
             Stmt::GetLine {
                 pipe_cmd: Some(cmd),
-                var: Some(v),
+                var: Some(IncDecTarget::Var(v)),
                 redir: GetlineRedir::Coproc(e),
             } => {
                 assert_eq!(v, "ns::rec");
@@ -853,7 +859,7 @@ mod tests {
             pattern: Pattern::Begin,
             stmts: vec![Stmt::Expr(Expr::GetLine {
                 pipe_cmd: Some(Box::new(Expr::Var("cmdstr".into()))),
-                var: Some("data".into()),
+                var: Some(IncDecTarget::Var("data".into())),
                 redir: GetlineRedir::File(Box::new(Expr::Var("infile".into()))),
             })],
         });
@@ -861,7 +867,7 @@ mod tests {
         match &prog.rules[0].stmts[0] {
             Stmt::Expr(Expr::GetLine {
                 pipe_cmd: Some(cmd),
-                var: Some(v),
+                var: Some(IncDecTarget::Var(v)),
                 redir: GetlineRedir::File(e),
             }) => {
                 assert_eq!(v, "ns::data");

@@ -786,13 +786,7 @@ impl<'a> Parser<'a> {
             }
             Token::Getline => {
                 self.bump(false)?;
-                let var = if let Token::Ident(name) = &self.cur.clone() {
-                    let n = name.clone();
-                    self.bump(false)?;
-                    Some(n)
-                } else {
-                    None
-                };
+                let var = self.parse_getline_target()?;
                 if self.cur == Token::LtAmp {
                     self.bump(false)?;
                     let fe = self.parse_expr(false, false)?;
@@ -1117,6 +1111,48 @@ impl<'a> Parser<'a> {
         self.parse_assign_rest(e, false, false)
     }
 
+    /// The optional target after `getline`: gawk's `opt_variable`, i.e. a
+    /// name, an array element (`a[k]`, `a[i][j]`) or a field (`$expr`). Any
+    /// other token leaves the line to be read into `$0`.
+    fn parse_getline_target(&mut self) -> Result<Option<IncDecTarget>> {
+        let target = match &self.cur.clone() {
+            Token::Ident(name) => {
+                let name = name.clone();
+                self.bump(false)?;
+                if self.cur == Token::LBracket {
+                    let (path, indices) = self.parse_element_ref()?;
+                    IncDecTarget::Index {
+                        name,
+                        path,
+                        indices,
+                    }
+                } else {
+                    IncDecTarget::Var(name)
+                }
+            }
+            Token::Dollar => {
+                self.bump(false)?;
+                let inner = if self.cur == Token::LParen {
+                    self.bump(true)?;
+                    let e = self.parse_expr_allow_gt(false, false)?;
+                    if self.cur != Token::RParen {
+                        return Err(Error::Parse {
+                            line: self.line,
+                            msg: "expected `)` after `$(`".into(),
+                        });
+                    }
+                    self.bump(false)?;
+                    e
+                } else {
+                    self.parse_inner_for_dollar_field()?
+                };
+                IncDecTarget::Field(Box::new(inner))
+            }
+            _ => return Ok(None),
+        };
+        Ok(Some(target))
+    }
+
     /// `expr | getline [var]` / `expr |& getline [var]` after a
     /// concatenation-level operand, as in gawk's grammar (`common_exp '|'
     /// simple_get opt_target`): the pipe binds tighter than comparison and
@@ -1140,13 +1176,7 @@ impl<'a> Parser<'a> {
         let coproc = self.cur == Token::PipeCoproc;
         self.bump(false)?;
         self.bump(false)?;
-        let var = if let Token::Ident(name) = &self.cur.clone() {
-            let n = name.clone();
-            self.bump(false)?;
-            Some(n)
-        } else {
-            None
-        };
+        let var = self.parse_getline_target()?;
         let getline = if coproc {
             Expr::GetLine {
                 pipe_cmd: None,
@@ -1950,13 +1980,7 @@ impl<'a> Parser<'a> {
             }
             Token::Getline => {
                 self.bump(false)?;
-                let var = if let Token::Ident(name) = &self.cur.clone() {
-                    let n = name.clone();
-                    self.bump(false)?;
-                    Some(n)
-                } else {
-                    None
-                };
+                let var = self.parse_getline_target()?;
                 if self.cur == Token::LtAmp {
                     self.bump(false)?;
                     let fe = self.parse_expr(false, false)?;
@@ -2253,10 +2277,35 @@ mod tests {
                 redir,
             } => {
                 assert!(pipe_cmd.is_none());
-                assert_eq!(var.as_deref(), Some("x"));
+                assert_eq!(var.as_ref().and_then(IncDecTarget::name), Some("x"));
                 assert!(matches!(redir, GetlineRedir::Coproc(_)));
             }
             _ => panic!("expected GetLine"),
+        }
+    }
+
+    #[test]
+    fn parses_getline_into_element_and_field() {
+        let p = parse_program("BEGIN { getline a[i, 2] < \"f\" }").unwrap();
+        match first_begin_stmt(&p) {
+            Stmt::GetLine {
+                var: Some(IncDecTarget::Index { name, indices, .. }),
+                redir: GetlineRedir::File(_),
+                ..
+            } => {
+                assert_eq!(name, "a");
+                assert_eq!(indices.len(), 2);
+            }
+            other => panic!("expected getline into a[i, 2], got {other:?}"),
+        }
+        let p = parse_program("BEGIN { \"cmd\" | getline $(NF + 1) }").unwrap();
+        match first_begin_stmt(&p) {
+            Stmt::Expr(Expr::GetLine {
+                pipe_cmd: Some(_),
+                var: Some(IncDecTarget::Field(_)),
+                ..
+            }) => {}
+            other => panic!("expected cmd | getline $(NF + 1), got {other:?}"),
         }
     }
 
@@ -2460,7 +2509,7 @@ mod tests {
                 redir,
             }) => {
                 assert!(pipe_cmd.is_some());
-                assert_eq!(var.as_deref(), Some("x"));
+                assert_eq!(var.as_ref().and_then(IncDecTarget::name), Some("x"));
                 assert!(matches!(redir, GetlineRedir::Primary));
             }
             _ => panic!("expected getline"),

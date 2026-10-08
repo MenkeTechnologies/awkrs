@@ -687,42 +687,7 @@ impl Compiler {
                 pipe_cmd,
                 var,
                 redir,
-            } => {
-                let var_idx = var.as_ref().map(|v| self.strings.intern(v));
-                if let Some(cmd) = pipe_cmd {
-                    self.compile_expr(cmd, ops);
-                }
-                match redir {
-                    GetlineRedir::Primary => {
-                        let src = if pipe_cmd.is_some() {
-                            GetlineSource::Pipe
-                        } else {
-                            GetlineSource::Primary
-                        };
-                        ops.push(Op::GetLine {
-                            var: var_idx,
-                            source: src,
-                            push_result: false,
-                        });
-                    }
-                    GetlineRedir::File(e) => {
-                        self.compile_expr(e, ops);
-                        ops.push(Op::GetLine {
-                            var: var_idx,
-                            source: GetlineSource::File,
-                            push_result: false,
-                        });
-                    }
-                    GetlineRedir::Coproc(e) => {
-                        self.compile_expr(e, ops);
-                        ops.push(Op::GetLine {
-                            var: var_idx,
-                            source: GetlineSource::Coproc,
-                            push_result: false,
-                        });
-                    }
-                }
-            }
+            } => self.compile_getline(pipe_cmd.as_deref(), var.as_ref(), redir, false, ops),
         }
     }
 
@@ -1059,42 +1024,7 @@ impl Compiler {
                 pipe_cmd,
                 var,
                 redir,
-            } => {
-                let var_idx = var.as_ref().map(|v| self.strings.intern(v));
-                if let Some(cmd) = pipe_cmd {
-                    self.compile_expr(cmd, ops);
-                }
-                match redir {
-                    GetlineRedir::Primary => {
-                        let src = if pipe_cmd.is_some() {
-                            GetlineSource::Pipe
-                        } else {
-                            GetlineSource::Primary
-                        };
-                        ops.push(Op::GetLine {
-                            var: var_idx,
-                            source: src,
-                            push_result: true,
-                        });
-                    }
-                    GetlineRedir::File(e) => {
-                        self.compile_expr(e, ops);
-                        ops.push(Op::GetLine {
-                            var: var_idx,
-                            source: GetlineSource::File,
-                            push_result: true,
-                        });
-                    }
-                    GetlineRedir::Coproc(e) => {
-                        self.compile_expr(e, ops);
-                        ops.push(Op::GetLine {
-                            var: var_idx,
-                            source: GetlineSource::Coproc,
-                            push_result: true,
-                        });
-                    }
-                }
-            }
+            } => self.compile_getline(pipe_cmd.as_deref(), var.as_ref(), redir, true, ops),
         }
     }
 
@@ -1145,26 +1075,108 @@ impl Compiler {
             if !binds(i, e) {
                 continue;
             }
-            let tmp_name = format!(
-                "\0elem{}",
-                ELEM_TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            );
-            // Never a slot: `Op::ElemBind` stores it in the global variables.
-            self.array_names.insert(tmp_name.clone());
-            let arr = self.strings.intern(arr);
-            let tmp = self.strings.intern(&tmp_name);
-            let depth = self.compile_subarray_path(path, ops);
-            self.compile_array_key(indices, ops);
-            ops.push(Op::ElemBind {
-                arr,
-                depth: depth + 1,
-                tmp,
-                array: as_array,
-            });
+            let (tmp_name, tmp) = self.bind_element(arr, path, indices, as_array, ops);
             bound.args[i] = Expr::Var(tmp_name);
             bound.tmps.push(tmp);
         }
         Some(bound)
+    }
+
+    /// Copy the element `arr[path..][indices]` into a fresh hidden variable
+    /// with [`Op::ElemBind`]; returns its name and string-pool index for the
+    /// matching [`Op::ElemUnbind`].
+    fn bind_element(
+        &mut self,
+        arr: &str,
+        path: &[Vec<Expr>],
+        indices: &[Expr],
+        as_array: bool,
+        ops: &mut Vec<Op>,
+    ) -> (String, u32) {
+        let tmp_name = format!(
+            "\0elem{}",
+            ELEM_TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        // Never a slot: `Op::ElemBind` stores it in the global variables.
+        self.array_names.insert(tmp_name.clone());
+        let arr = self.strings.intern(arr);
+        let tmp = self.strings.intern(&tmp_name);
+        let depth = self.compile_subarray_path(path, ops);
+        self.compile_array_key(indices, ops);
+        ops.push(Op::ElemBind {
+            arr,
+            depth: depth + 1,
+            tmp,
+            array: as_array,
+        });
+        (tmp_name, tmp)
+    }
+
+    /// `[cmd |] getline [lvalue] [< file | <& coproc]`. As in gawk's
+    /// `mk_getline`, the command or redirect operand is evaluated first and the
+    /// target's field index / subscripts after it, every time — also when the
+    /// read then fails, so `while ((getline a[++n]) > 0)` counts the attempt
+    /// that hit end of input.
+    fn compile_getline(
+        &mut self,
+        pipe_cmd: Option<&Expr>,
+        var: Option<&IncDecTarget>,
+        redir: &GetlineRedir,
+        push_result: bool,
+        ops: &mut Vec<Op>,
+    ) {
+        if let Some(cmd) = pipe_cmd {
+            self.compile_expr(cmd, ops);
+        }
+        let source = match redir {
+            GetlineRedir::Primary if pipe_cmd.is_some() => GetlineSource::Pipe,
+            GetlineRedir::Primary => GetlineSource::Primary,
+            GetlineRedir::File(e) => {
+                self.compile_expr(e, ops);
+                GetlineSource::File
+            }
+            GetlineRedir::Coproc(e) => {
+                self.compile_expr(e, ops);
+                GetlineSource::Coproc
+            }
+        };
+        let mut unbind = None;
+        let target = match var {
+            None => SubTarget::Record,
+            Some(IncDecTarget::Var(name)) => SubTarget::Var(self.strings.intern(name)),
+            Some(IncDecTarget::Field(inner)) => {
+                self.compile_expr(inner, ops);
+                SubTarget::Field
+            }
+            Some(IncDecTarget::Index {
+                name,
+                path,
+                indices,
+            }) if path.is_empty() => {
+                let arr = self.strings.intern(name);
+                self.compile_array_key(indices, ops);
+                SubTarget::Index(arr)
+            }
+            // An element of a subarray (gawk arrays of arrays) is read into a
+            // hidden variable and stored back, as for a `sub` target.
+            Some(IncDecTarget::Index {
+                name,
+                path,
+                indices,
+            }) => {
+                let (_, tmp) = self.bind_element(name, path, indices, false, ops);
+                unbind = Some(tmp);
+                SubTarget::Var(tmp)
+            }
+        };
+        ops.push(Op::GetLine {
+            target,
+            source,
+            push_result,
+        });
+        if let Some(tmp) = unbind {
+            ops.push(Op::ElemUnbind(tmp));
+        }
     }
 
     fn compile_call(&mut self, name: &str, args: &[Expr], ops: &mut Vec<Op>) {
@@ -1901,7 +1913,10 @@ fn collect_names_stmt(s: &Stmt, names: &mut HashSet<String>, scalars: bool) {
             Stmt::ForIn { var, .. } => {
                 names.insert(var.clone());
             }
-            Stmt::GetLine { var: Some(v), .. } => {
+            Stmt::GetLine {
+                var: Some(IncDecTarget::Var(v)),
+                ..
+            } => {
                 names.insert(v.clone());
             }
             _ => {}
@@ -1991,8 +2006,18 @@ fn collect_names_stmt(s: &Stmt, names: &mut HashSet<String>, scalars: bool) {
         }
         Stmt::Exit(Some(e)) | Stmt::Return(Some(e)) => collect_names_expr(e, names, scalars),
         Stmt::GetLine {
-            pipe_cmd, redir, ..
+            pipe_cmd,
+            var,
+            redir,
         } => {
+            if let Some(t) = var {
+                if let IncDecTarget::Index { name, .. } = t {
+                    names.insert(name.clone());
+                }
+                for x in t.exprs() {
+                    collect_names_expr(x, names, scalars);
+                }
+            }
             if let Some(p) = pipe_cmd {
                 collect_names_expr(p, names, scalars);
             }
@@ -2047,7 +2072,10 @@ fn collect_names_expr(e: &Expr, names: &mut HashSet<String>, scalars: bool) {
             } => {
                 names.insert(n.clone());
             }
-            Expr::GetLine { var: Some(v), .. } => {
+            Expr::GetLine {
+                var: Some(IncDecTarget::Var(v)),
+                ..
+            } => {
                 names.insert(v.clone());
             }
             _ => {}
@@ -2151,8 +2179,18 @@ fn collect_names_expr(e: &Expr, names: &mut HashSet<String>, scalars: bool) {
             IncDecTarget::Var(_) => {}
         },
         Expr::GetLine {
-            pipe_cmd, redir, ..
+            pipe_cmd,
+            var,
+            redir,
         } => {
+            if let Some(t) = var {
+                if let IncDecTarget::Index { name, .. } = t {
+                    names.insert(name.clone());
+                }
+                for x in t.exprs() {
+                    collect_names_expr(x, names, scalars);
+                }
+            }
             if let Some(p) = pipe_cmd {
                 collect_names_expr(p, names, scalars);
             }
@@ -3047,8 +3085,13 @@ fn validate_stmt(st: &Stmt, ctx: BreakCtx) -> Result<()> {
             Ok(())
         }
         Stmt::GetLine {
-            pipe_cmd, redir, ..
+            pipe_cmd,
+            var,
+            redir,
         } => {
+            for x in var.iter().flat_map(|t| t.exprs()) {
+                validate_expr(x, false)?;
+            }
             if let Some(cmd) = pipe_cmd {
                 validate_expr(cmd, false)?;
             }
@@ -3181,8 +3224,13 @@ fn validate_expr(e: &Expr, allow_tuple: bool) -> Result<()> {
             IncDecTarget::Var(_) => Ok(()),
         },
         Expr::GetLine {
-            pipe_cmd, redir, ..
+            pipe_cmd,
+            var,
+            redir,
         } => {
+            for x in var.iter().flat_map(|t| t.exprs()) {
+                validate_expr(x, false)?;
+            }
             if let Some(cmd) = pipe_cmd {
                 validate_expr(cmd, false)?;
             }
@@ -3977,7 +4025,13 @@ mod peephole_pinning {
     fn compile_getline_var() {
         let ops = compile_begin_ops("BEGIN { getline x }");
         assert!(
-            contains_op(&ops, |op| matches!(op, Op::GetLine { var: Some(_), .. })),
+            contains_op(&ops, |op| matches!(
+                op,
+                Op::GetLine {
+                    target: crate::bytecode::SubTarget::Var(_),
+                    ..
+                }
+            )),
             "expected GetLine with var, got: {ops:?}"
         );
     }
@@ -4032,7 +4086,7 @@ mod peephole_pinning {
                 op,
                 Op::GetLine {
                     source: GetlineSource::File,
-                    var: None,
+                    target: crate::bytecode::SubTarget::Record,
                     ..
                 }
             )),
@@ -4046,7 +4100,7 @@ mod peephole_pinning {
                 op,
                 Op::GetLine {
                     source: GetlineSource::Pipe,
-                    var: Some(_),
+                    target: crate::bytecode::SubTarget::Var(_),
                     ..
                 }
             )),

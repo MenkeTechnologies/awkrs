@@ -155,9 +155,14 @@ fn collect_stmt_strings(s: &Stmt, out: &mut BTreeMap<String, usize>) {
             }
         }
         Stmt::GetLine {
-            pipe_cmd, redir, ..
+            pipe_cmd,
+            var,
+            redir,
         } => {
             use crate::ast::GetlineRedir;
+            for x in var.iter().flat_map(|v| v.exprs()) {
+                collect_expr_strings(x, out);
+            }
             if let Some(cmd) = pipe_cmd {
                 collect_expr_strings(cmd, out);
             }
@@ -271,9 +276,14 @@ fn collect_expr_strings(e: &Expr, out: &mut BTreeMap<String, usize>) {
             crate::ast::IncDecTarget::Var(_) => {}
         },
         Expr::GetLine {
-            pipe_cmd, redir, ..
+            pipe_cmd,
+            var,
+            redir,
         } => {
             use crate::ast::GetlineRedir;
+            for x in var.iter().flat_map(|v| v.exprs()) {
+                collect_expr_strings(x, out);
+            }
             if let Some(cmd) = pipe_cmd {
                 collect_expr_strings(cmd, out);
             }
@@ -650,7 +660,10 @@ fn stmt_collect_defines(s: &Stmt, out: &mut FxHashSet<String>) {
             redir,
         } => {
             if let Some(v) = var {
-                out.insert(v.clone());
+                out.extend(v.name().map(str::to_string));
+                for x in v.exprs() {
+                    expr_collect_defines(x, out);
+                }
             }
             if let Some(cmd) = pipe_cmd {
                 expr_collect_defines(cmd, out);
@@ -787,7 +800,10 @@ fn expr_collect_defines(e: &Expr, out: &mut FxHashSet<String>) {
             redir,
         } => {
             if let Some(v) = var {
-                out.insert(v.clone());
+                out.extend(v.name().map(str::to_string));
+                for x in v.exprs() {
+                    expr_collect_defines(x, out);
+                }
             }
             if let Some(cmd) = pipe_cmd {
                 expr_collect_defines(cmd, out);
@@ -933,8 +949,13 @@ fn stmt_lint_reads(
             }
         }
         Stmt::GetLine {
-            pipe_cmd, redir, ..
+            pipe_cmd,
+            var,
+            redir,
         } => {
+            for x in var.iter().flat_map(|v| v.exprs()) {
+                expr_lint_reads(x, global_def, params, warned, w);
+            }
             if let Some(cmd) = pipe_cmd {
                 expr_lint_reads(cmd, global_def, params, warned, w);
             }
@@ -1054,8 +1075,13 @@ fn expr_lint_reads(
             }
         },
         Expr::GetLine {
-            pipe_cmd, redir, ..
+            pipe_cmd,
+            var,
+            redir,
         } => {
+            for x in var.iter().flat_map(|v| v.exprs()) {
+                expr_lint_reads(x, global_def, params, warned, w);
+            }
             if let Some(cmd) = pipe_cmd {
                 expr_lint_reads(cmd, global_def, params, warned, w);
             }
@@ -1232,8 +1258,13 @@ fn lint_expr_printf_deep(w: &impl Fn(&str), e: &Expr) {
             IncDecTarget::Var(_) => {}
         },
         Expr::GetLine {
-            pipe_cmd, redir, ..
+            pipe_cmd,
+            var,
+            redir,
         } => {
+            for x in var.iter().flat_map(|v| v.exprs()) {
+                lint_expr_printf_deep(w, x);
+            }
             if let Some(cmd) = pipe_cmd {
                 lint_expr_printf_deep(w, cmd);
             }
@@ -1438,8 +1469,13 @@ fn lint_stmt_printf_args(w: &impl Fn(&str), stmt: &Stmt) {
             }
         }
         Stmt::GetLine {
-            pipe_cmd, redir, ..
+            pipe_cmd,
+            var,
+            redir,
         } => {
+            for x in var.iter().flat_map(|v| v.exprs()) {
+                lint_expr_printf_deep(w, x);
+            }
             if let Some(cmd) = pipe_cmd {
                 lint_expr_printf_deep(w, cmd);
             }

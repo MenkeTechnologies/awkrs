@@ -41,10 +41,10 @@ pub enum GetlineSource {
     Pipe,
 }
 
-/// Lvalue target for `sub`/`gsub`.
+/// Lvalue target for `sub`/`gsub` and `getline`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SubTarget {
-    /// Operate on `$0` (no third argument).
+    /// Operate on `$0` (no third argument; plain `getline`).
     Record,
     /// Named variable (string pool index, not slotted).
     Var(u32),
@@ -295,10 +295,12 @@ pub enum Op {
     JoinArrayKey(u16),
 
     // ── Getline ─────────────────────────────────────────────────────────
-    /// `var` is optional variable name index. File/Coproc/Pipe pop an expr from stack when applicable.
+    /// `target` is where the line goes (`Record` = `$0`). A `Field`/`Index`
+    /// target pops its field index / key first; File/Coproc/Pipe then pop the
+    /// redirect operand.
     /// `push_result`: expression `getline` pushes `1`/`0`/`-1`; statement form uses `false`.
     GetLine {
-        var: Option<u32>,
+        target: SubTarget,
         source: GetlineSource,
         push_result: bool,
     },

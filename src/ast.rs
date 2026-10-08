@@ -117,7 +117,9 @@ pub enum Stmt {
     GetLine {
         /// `expr | getline` — shell command string from `expr` (via `sh -c`).
         pipe_cmd: Option<Box<Expr>>,
-        var: Option<String>,
+        /// The lvalue the line is read into: a variable, `$expr` or an array
+        /// element (POSIX `getline lvalue`); `None` reads into `$0`.
+        var: Option<IncDecTarget>,
         redir: GetlineRedir,
     },
     /// gawk-style `switch (expr) { case … default … }` (cases do not fall through).
@@ -259,7 +261,9 @@ pub enum Expr {
     /// Same shape as [`Stmt::GetLine`]; used in `if ((getline x) > 0)` and `expr | getline`.
     GetLine {
         pipe_cmd: Option<Box<Expr>>,
-        var: Option<String>,
+        /// The lvalue the line is read into: a variable, `$expr` or an array
+        /// element (POSIX `getline lvalue`); `None` reads into `$0`.
+        var: Option<IncDecTarget>,
         redir: GetlineRedir,
     },
 }
@@ -277,7 +281,7 @@ pub enum IncDecOp {
     PostDec,
 }
 
-/// Lvalue for `++` / `--` only.
+/// An lvalue: the operand of `++` / `--` and the target of `getline`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum IncDecTarget {
     /// `Var` variant.
@@ -291,6 +295,29 @@ pub enum IncDecTarget {
         indices: Vec<Expr>,
     },
 }
+
+impl IncDecTarget {
+    /// The variable or array the lvalue names; `None` for a field.
+    pub fn name(&self) -> Option<&str> {
+        match self {
+            IncDecTarget::Var(name) | IncDecTarget::Index { name, .. } => Some(name),
+            IncDecTarget::Field(_) => None,
+        }
+    }
+
+    /// The expressions evaluated to locate the lvalue: the field index, or
+    /// the subscripts of an element.
+    pub fn exprs(&self) -> Vec<&Expr> {
+        match self {
+            IncDecTarget::Var(_) => Vec::new(),
+            IncDecTarget::Field(inner) => vec![inner],
+            IncDecTarget::Index { path, indices, .. } => {
+                path.iter().flatten().chain(indices).collect()
+            }
+        }
+    }
+}
+
 /// `BinOp` — see variants for the choices.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BinOp {

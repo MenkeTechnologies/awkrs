@@ -2381,10 +2381,10 @@ fn execute_chunk(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
 
             // ── Getline ─────────────────────────────────────────────────
             Op::GetLine {
-                var,
+                target,
                 source,
                 push_result,
-            } => exec_getline(ctx, var, source, push_result)?,
+            } => exec_getline(ctx, target, source, push_result)?,
 
             // ── Sub / Gsub ──────────────────────────────────────────────
             Op::SubFn(target) => exec_sub(ctx, target, false)?,
@@ -3173,25 +3173,72 @@ fn sprintf_simple(
 
 // ── Getline ─────────────────────────────────────────────────────────────────
 
+/// Where a `getline` with a target puts the line: the field index or array
+/// subscript was evaluated before the read and is popped first.
+enum GetlineLvalue {
+    Record,
+    Var(String),
+    Slot(usize),
+    Field(i32),
+    Elem(String, String),
+}
+
+fn pop_getline_lvalue(ctx: &mut VmCtx<'_>, target: SubTarget) -> Result<GetlineLvalue> {
+    Ok(match target {
+        SubTarget::Record => GetlineLvalue::Record,
+        SubTarget::Var(idx) => GetlineLvalue::Var(ctx.str_ref(idx).to_string()),
+        SubTarget::SlotVar(slot) => GetlineLvalue::Slot(slot as usize),
+        SubTarget::Field => GetlineLvalue::Field(ctx.pop().as_number() as i32),
+        SubTarget::Index(arr) => {
+            let key_val = ctx.pop();
+            let key = ctx.rt.value_to_array_key(&key_val);
+            let name = ctx.str_ref(arr).to_string();
+            check_array_target(ctx, &name)?;
+            GetlineLvalue::Elem(name, key)
+        }
+    })
+}
+
 fn apply_getline_line(
     ctx: &mut VmCtx<'_>,
-    var: Option<u32>,
+    target: &GetlineLvalue,
     source: GetlineSource,
     line: Option<String>,
 ) -> Result<()> {
-    if let Some(l) = line {
-        // Every reader hands back a finished record: the `RS` separator is
-        // already gone, and under the default `RS` that is the trailing newline
-        // and nothing else. This used to trim `['\n', '\r']` here instead, which
-        // ate the `\r` of a CRLF line — so `getline l < "crlf.txt"` reported
-        // `length(l) == 1` where gawk, mawk, one-true-awk and awkrs's own main
-        // record loop all report 2.
-        let trimmed = l;
-        if let Some(var_idx) = var {
-            // getline var — read into variable only, do NOT touch $0/fields/NF.
-            let name = ctx.str_ref(var_idx).to_string();
-            ctx.set_var(&name, Value::Str(trimmed.into()))?;
-        } else {
+    let Some(l) = line else {
+        // Naming an element as the target creates it even when nothing is
+        // read, as in gawk: `getline a[1] < "/dev/null"` leaves `1 in a`.
+        if let GetlineLvalue::Elem(name, key) = target {
+            ctx.array_elem_get_vivify_bytes(name, key.as_bytes());
+        }
+        return Ok(());
+    };
+    // NR and FNR count the record before it is stored, as in gawk's
+    // `do_getline`, so `getline NR` leaves NR holding the line.
+    if matches!(source, GetlineSource::Primary) {
+        ctx.rt.nr += 1.0;
+        ctx.rt.fnr += 1.0;
+    }
+    // Every reader hands back a finished record: the `RS` separator is
+    // already gone, and under the default `RS` that is the trailing newline
+    // and nothing else. This used to trim `['\n', '\r']` here instead, which
+    // ate the `\r` of a CRLF line — so `getline l < "crlf.txt"` reported
+    // `length(l) == 1` where gawk, mawk, one-true-awk and awkrs's own main
+    // record loop all report 2.
+    match target {
+        // getline var — read into variable only, do NOT touch $0/fields/NF.
+        GetlineLvalue::Var(name) => ctx.set_var(name, Value::Str(l.into()))?,
+        GetlineLvalue::Slot(slot) => {
+            ctx.rt.slots[*slot] = Value::Str(l.into());
+            ctx.rt.touch_slot(*slot);
+        }
+        // Input is user data, so a field or element read this way is a
+        // numeric string when it looks like a number.
+        GetlineLvalue::Field(i) => ctx.rt.set_field_strnum(*i, l.as_bytes(), true)?,
+        GetlineLvalue::Elem(name, key) => {
+            ctx.array_elem_set(name, key.clone(), Value::Str(l.into()))
+        }
+        GetlineLvalue::Record => {
             // getline (no var) — update $0 and re-split fields, then update NF.
             let fs = ctx
                 .rt
@@ -3199,14 +3246,10 @@ fn apply_getline_line(
                 .get("FS")
                 .map(|v| v.as_str())
                 .unwrap_or_else(|| " ".into());
-            ctx.rt.set_field_sep_split(&fs, trimmed.as_bytes());
+            ctx.rt.set_field_sep_split(&fs, l.as_bytes());
             ctx.rt.ensure_fields_split();
             let nf = ctx.rt.nf() as f64;
             ctx.rt.vars.insert("NF".into(), Value::Num(nf));
-        }
-        if matches!(source, GetlineSource::Primary) {
-            ctx.rt.nr += 1.0;
-            ctx.rt.fnr += 1.0;
         }
     }
     Ok(())
@@ -3251,10 +3294,11 @@ fn read_primary_with_file_rules(ctx: &mut VmCtx<'_>) -> Result<Option<String>> {
 
 fn exec_getline(
     ctx: &mut VmCtx<'_>,
-    var: Option<u32>,
+    target: SubTarget,
     source: GetlineSource,
     push_result: bool,
 ) -> Result<()> {
+    let lvalue = pop_getline_lvalue(ctx, target)?;
     let file_path = match source {
         // The redirect operand names a file or command as a *string*, so a
         // numeric one converts through CONVFMT: `CONVFMT="%.2f"; x=1.23456;
@@ -3293,7 +3337,7 @@ fn exec_getline(
     match line_res {
         Ok(line) => {
             let has = line.is_some();
-            apply_getline_line(ctx, var, source, line)?;
+            apply_getline_line(ctx, &lvalue, source, line)?;
             if push_result {
                 ctx.push(Value::Num(if has { 1.0 } else { 0.0 }));
             }
@@ -3312,6 +3356,7 @@ fn exec_getline(
             if matches!(source, GetlineSource::Primary) && matches!(&e, Error::InputFile(..)) {
                 return Err(e);
             }
+            apply_getline_line(ctx, &lvalue, source, None)?;
             let _code = ctx.rt.getline_error_code_for_key(&e, &input_key);
             if push_result {
                 ctx.push(Value::Num(_code));

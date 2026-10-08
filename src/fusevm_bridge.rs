@@ -345,7 +345,7 @@ pub fn translate_op(op: &bytecode::Op, line: u32) -> Vec<(fusevm::Op, u32)> {
         A::ForInEnd => vec![(F::Extended(AWK_FORIN_END, 0), line)],
 
         A::GetLine {
-            var: _,
+            target: _,
             source,
             push_result,
         } => {

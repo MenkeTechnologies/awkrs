@@ -250,7 +250,7 @@ fn format_stmt(st: &Stmt, depth: usize) -> String {
             s.push_str("getline");
             if let Some(v) = var {
                 s.push(' ');
-                s.push_str(v);
+                s.push_str(&format_lvalue(v));
             }
             use crate::ast::GetlineRedir;
             match redir {
@@ -402,18 +402,7 @@ pub(crate) fn format_expr(e: &Expr) -> String {
             let p: Vec<_> = parts.iter().map(format_expr).collect();
             format!("({})", p.join(", "))
         }
-        Expr::IncDec { op, target } => match target {
-            IncDecTarget::Var(n) => format_incdec_var(op, n),
-            IncDecTarget::Field(inner) => format_incdec_field(op, inner),
-            IncDecTarget::Index {
-                name,
-                path,
-                indices,
-            } => format_incdec_index(
-                op,
-                &format!("{name}{}", format_subscripts(path, Some(indices))),
-            ),
-        },
+        Expr::IncDec { op, target } => format_incdec_index(op, &format_lvalue(target)),
         Expr::GetLine {
             pipe_cmd,
             var,
@@ -427,7 +416,7 @@ pub(crate) fn format_expr(e: &Expr) -> String {
             s.push_str("getline");
             if let Some(v) = var {
                 s.push(' ');
-                s.push_str(v);
+                s.push_str(&format_lvalue(v));
             }
             use crate::ast::GetlineRedir;
             match redir {
@@ -446,18 +435,17 @@ pub(crate) fn format_expr(e: &Expr) -> String {
     }
 }
 
-fn format_incdec_var(op: &IncDecOp, name: &str) -> String {
-    match op {
-        IncDecOp::PreInc => format!("++{name}"),
-        IncDecOp::PostInc => format!("{name}++"),
-        IncDecOp::PreDec => format!("--{name}"),
-        IncDecOp::PostDec => format!("{name}--"),
+/// `name`, `$(expr)` or `name[i][j, k]`.
+fn format_lvalue(t: &IncDecTarget) -> String {
+    match t {
+        IncDecTarget::Var(name) => name.clone(),
+        IncDecTarget::Field(inner) => format!("$({})", format_expr(inner)),
+        IncDecTarget::Index {
+            name,
+            path,
+            indices,
+        } => format!("{name}{}", format_subscripts(path, Some(indices))),
     }
-}
-
-fn format_incdec_field(op: &IncDecOp, inner: &Expr) -> String {
-    let f = format!("$({})", format_expr(inner));
-    format_incdec_index(op, &f)
 }
 
 /// `[i][j, k]` for a subarray path, followed by `last` when there is one.
