@@ -762,7 +762,7 @@ fn parallel_pool(threads: usize) -> Result<ThreadPool> {
 #[allow(clippy::too_many_arguments)]
 fn parallel_set_rt_approx(rt: &mut Runtime) {
     let rs = rt.rs_string();
-    let rt_sep = if rs == "\n" {
+    let rt_sep = if rs == "\n" || rs == crate::record_io::CSV_RS {
         "\n".to_string()
     } else if rs.is_empty() {
         "\n\n".to_string()
@@ -1043,6 +1043,12 @@ fn read_input_file(path: &Path, rt: &mut Runtime) -> Result<InputBytes> {
 fn mmap_split_into_owned_records(rt: &mut Runtime, data: &[u8]) -> Result<Vec<String>> {
     rt.ensure_rs_regex_bytes()?;
     let rs = rt.rs_string();
+    if rs == crate::record_io::CSV_RS {
+        return Ok(crate::record_io::split_csv_records(data)
+            .into_iter()
+            .map(|(c, _)| String::from_utf8_lossy(&c).into_owned())
+            .collect());
+    }
     let re_owned = rt.rs_regex_bytes.clone();
     let chunks = crate::record_io::split_input_into_records(data, &rs, re_owned.as_ref());
     Ok(chunks
@@ -1707,6 +1713,17 @@ fn process_file_slurp(
     let re_owned = rt.rs_regex_bytes.clone();
 
     let mut count = 0usize;
+
+    if rs == crate::record_io::CSV_RS {
+        for (rec, terminated) in crate::record_io::split_csv_records(data) {
+            count += 1;
+            let rtb: &[u8] = if terminated { b"\n" } else { b"" };
+            if dispatch_slurp_record(cp, range_state, rt, &rec, rtb)? {
+                break;
+            }
+        }
+        return Ok(count);
+    }
 
     if let Some(regex) = re_owned.as_ref() {
         if data.is_empty() {

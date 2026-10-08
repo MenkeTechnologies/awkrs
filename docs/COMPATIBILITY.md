@@ -47,7 +47,7 @@ References: special variables and builtins lists in `src/compiler.rs` (`SPECIAL_
 | `-E` exec | — | — | — | Yes | **Match** (program from FILE; remaining args are data) |
 | `-g` gen-pot | — | — | — | Yes | **Match** (awkrs POT generator) |
 | `-I` trace | — | — | — | Yes | **No** (parsed for CLI compatibility; no runtime effect — `Args::trace` is never read outside `src/cli.rs`) |
-| `-k` / `--csv` | — | — | — | Yes | **Match** (CSV / `FPAT` mode per `Runtime::csv_mode`) |
+| `-k` / `--csv` | — | — | — | Yes | **Match** (CSV mode per `Runtime::csv_mode`): records follow gawk's `csvscan` — `RS` is ignored, a newline inside double quotes continues the record, and every CR-LF becomes LF — and fields follow `comma_parse_field`: `""` is a quote inside a quoted run, a `"` that does not close the run is kept (`"b"x,d` is one field) and a field that does not start with a quote is plain text. awkrs used to end every record at a newline and panicked on a quoted run followed by anything but a comma. |
 | `-l` load / `AWKPATH` | — | — | — | Yes | **Part** (library search; no dynamic `.so`) |
 | `-L` lint | — | — | — | Yes | **Part** (`lint_warn` / fatal modes) |
 | `-M` bignum | — | — | — | Yes | **Part** (MPFR path; `PROCINFO["prec"]` / `roundmode`) |

@@ -3312,3 +3312,27 @@ fn intdiv_extension_zero_divisor_returns_minus_one() {
     assert_eq!(stdout, "-1 0\n");
     assert!(stderr.contains("intdiv: division by zero attempted"), "{stderr}");
 }
+
+/// `--csv` records and fields follow gawk 5.4 (io.c `csvscan`, field.c
+/// `comma_parse_field`): a newline inside double quotes continues the record,
+/// every CR-LF becomes LF, a `"` that does not close a quoted run is kept (so
+/// `"b"x,d` is one field), and a field that did not start with a quote is
+/// plain text. awkrs ended every record at a newline, so a quoted multi-line
+/// field split into two records, and a quoted run followed by anything but a
+/// comma tripped an assertion and killed the interpreter thread. Expected
+/// output captured from gawk 5.4.1.
+#[test]
+fn csv_mode_records_span_quoted_newlines_and_fields_follow_gawk() {
+    let input = "a,\"b \"\"q\"\" c\",,\"multi\nline\",e\r\n1,\"x\r\ny\"\r\na,\"b\"x,d\nx\"\"y,\n\"open";
+    let prog = r#"{ printf "%d %d RT=%d", NR, NF, length(RT); for (i = 1; i <= NF; i++) printf " [%s]", $i; print "" }"#;
+    let (code, stdout, stderr) = run_awkrs_stdin_args(["--csv"], prog, input);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(
+        stdout,
+        "1 5 RT=1 [a] [b \"q\" c] [] [multi\nline] [e]\n\
+         2 2 RT=1 [1] [x\ny]\n\
+         3 2 RT=1 [a] [b\"x,d]\n\
+         4 2 RT=1 [x\"\"y] []\n\
+         5 1 RT=0 [open]\n"
+    );
+}

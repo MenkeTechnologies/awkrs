@@ -1097,56 +1097,63 @@ fn split_fields_fieldwidths(
     }
 }
 
-/// gawk `--csv` / `-k` field splitting: comma-separated, `"..."` for quoting, `""` for a literal `"`.
-/// Field ranges are **value** byte ranges (no surrounding quote characters), matching gawk’s `$n` text.
-/// gawk `--csv` field splitting (RFC 4180-ish): commas separate fields,
-/// double-quoted fields may contain commas, and `""` inside a quoted field is
-/// an escaped quote. Empty record → 0 fields; otherwise the field count is
-/// always `(commas at top level) + 1`.
-fn split_csv_gawk_fields(record: &[u8], field_ranges: &mut Vec<(u32, u32)>) {
+/// `--csv` field splitting: a port of gawk's `comma_parse_field` (field.c).
+///
+/// Fields are separated by commas. A `"` starts a quoted run, inside which
+/// `""` is a literal quote and commas and newlines are data; the run ends at a
+/// `"` that is followed by a comma or ends the record. Any other `"` inside it
+/// is kept, so `"b"x,d` is the single field `b"x,d`, and a `"` in a field that
+/// did not start with one is ordinary text (`x"y"z`). A trailing comma adds an
+/// empty last field; an empty record has no fields.
+///
+/// Returns the field values; `field_ranges` gets each field's raw span in
+/// `record`, quotes included.
+fn split_csv_gawk_fields(record: &[u8], field_ranges: &mut Vec<(u32, u32)>) -> Vec<AwkStr> {
     field_ranges.clear();
-    let bytes = record;
-    let n = bytes.len();
-    if n == 0 {
-        return;
+    let mut fields = Vec::new();
+    let end = record.len();
+    if end == 0 {
+        return fields;
     }
-    let mut i = 0usize;
+    let mut scan = 0usize;
     loop {
-        // Each iteration emits exactly one field starting at position `i`.
-        if i < n && bytes[i] == b'"' {
-            i += 1;
-            let val_start = i;
-            while i < n {
-                if bytes[i] == b'"' {
-                    if i + 1 < n && bytes[i + 1] == b'"' {
-                        i += 2;
-                        continue;
+        let start = scan;
+        let mut value = Vec::new();
+        while scan < end && record[scan] != b',' {
+            if record[scan] == b'"' {
+                scan += 1;
+                while scan < end {
+                    if record[scan] == b'"' && record.get(scan + 1) == Some(&b'"') {
+                        value.push(b'"');
+                        scan += 2;
+                    } else if record[scan] == b'"' && (scan + 1 == end || record[scan + 1] == b',') {
+                        scan += 1;
+                        break;
+                    } else {
+                        value.push(record[scan]);
+                        scan += 1;
                     }
-                    break;
                 }
-                i += 1;
+            } else {
+                while scan < end && record[scan] != b',' {
+                    value.push(record[scan]);
+                    scan += 1;
+                }
             }
-            let val_end = i;
-            field_ranges.push((val_start as u32, val_end as u32));
-            if i < n && bytes[i] == b'"' {
-                i += 1;
-            }
-        } else {
-            let val_start = i;
-            while i < n && bytes[i] != b',' {
-                i += 1;
-            }
-            field_ranges.push((val_start as u32, i as u32));
         }
-        // After the field, expect EOR or a comma separator.
-        if i >= n {
-            return;
+        field_ranges.push((start as u32, scan as u32));
+        fields.push(AwkStr::from_vec(value));
+        if scan == end {
+            break;
         }
-        // bytes[i] == ',' — consume it and loop to emit the next (possibly
-        // empty) field. This is what makes `,,,` produce 4 empty fields, not 3.
-        debug_assert_eq!(bytes[i], b',');
-        i += 1;
+        scan += 1;
+        if scan == end {
+            field_ranges.push((end as u32, end as u32));
+            fields.push(AwkStr::from_vec(Vec::new()));
+            break;
+        }
     }
+    fields
 }
 
 /// Compile a regex `FS`. `None` when the pattern is not a valid regex, which
@@ -1302,19 +1309,6 @@ pub enum FsRegex<'a> {
 /// rewrites FS to `[<fs>\n]` there and leaves a regex FS untouched); mawk does
 /// not apply it at all. The default `FS == " "` needs nothing extra — newline is
 /// already whitespace — so the flag is only consulted in the single-char branch.
-/// Every occurrence of `from` in `hay` replaced by `to`.
-fn byte_replace(hay: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(hay.len());
-    let mut start = 0usize;
-    while let Some(off) = memchr::memmem::find(&hay[start..], from) {
-        out.extend_from_slice(&hay[start..start + off]);
-        out.extend_from_slice(to);
-        start += off + from.len();
-    }
-    out.extend_from_slice(&hay[start..]);
-    out
-}
-
 /// `[AwkStr]::join` — the pieces separated by `sep`, as one `AwkStr`.
 fn join_awkstrs(parts: &[AwkStr], sep: &[u8]) -> AwkStr {
     let mut out = AwkStr::with_capacity(
@@ -3081,7 +3075,7 @@ impl Runtime {
         }
         self.rs_pattern_for_regex.clear();
         self.rs_pattern_for_regex.push_str(&rs);
-        if rs == "\n" || rs.is_empty() {
+        if rs == "\n" || rs.is_empty() || rs == crate::record_io::CSV_RS {
             self.rs_regex_bytes = None;
             return Ok(());
         }
@@ -3471,6 +3465,9 @@ impl Runtime {
     /// `RS == ""` — awk's paragraph mode. Records are separated by blank lines and
     /// <newline> is an additional field separator regardless of `FS`.
     pub fn paragraph_mode(&self) -> bool {
+        if self.csv_mode {
+            return false;
+        }
         match self.get_global_var("RS") {
             Some(v) => v.as_str_cow().is_empty(),
             None => false,
@@ -3478,6 +3475,10 @@ impl Runtime {
     }
 
     pub fn rs_string(&self) -> String {
+        // `--csv` ignores `RS`: records come from gawk's `csvscan` rule.
+        if self.csv_mode {
+            return crate::record_io::CSV_RS.to_string();
+        }
         match self.get_global_var("RS") {
             Some(Value::Str(s)) => s.clone().to_lossy_string(),
             Some(v) => v.as_str(),
@@ -4245,18 +4246,7 @@ impl Runtime {
     fn split_record_fields(&mut self) {
         let record: &[u8] = self.record.as_bytes();
         if self.csv_mode {
-            split_csv_gawk_fields(record, &mut self.field_ranges);
-            self.fields.clear();
-            for &(s, e) in &self.field_ranges {
-                let raw = &record[s as usize..e as usize];
-                // CSV doubled-quote escape: `""` → `"` inside a quoted field (gawk / RFC 4180).
-                self.fields
-                    .push(if memchr::memmem::find(raw, b"\"\"").is_some() {
-                        AwkStr::from_vec(byte_replace(raw, b"\"\"", b"\""))
-                    } else {
-                        AwkStr::from(raw)
-                    });
-            }
+            self.fields = split_csv_gawk_fields(record, &mut self.field_ranges);
             self.fields_dirty = true;
             return;
         }
@@ -6747,16 +6737,20 @@ mod extra_runtime_tests {
 
     #[test]
     fn split_csv_gawk_rfc4180() {
+        // The splitter now returns the field values (gawk's comma_parse_field
+        // builds each one); the ranges are the raw spans, quotes included.
         let mut ranges = Vec::new();
-        split_csv_gawk_fields(b"a,\"b,c\",d", &mut ranges);
-        assert_eq!(ranges.len(), 3);
-        assert_eq!(ranges[0], (0, 1)); // "a"
-        assert_eq!(ranges[1], (3, 6)); // "b,c"
-        assert_eq!(ranges[2], (8, 9)); // "d"
-
-        split_csv_gawk_fields(b"\"\"\"\"", &mut ranges); // escaped quote
-        assert_eq!(ranges.len(), 1);
-        assert_eq!(ranges[0], (1, 3)); // ""
+        let f = split_csv_gawk_fields(b"a,\"b,c\",d", &mut ranges);
+        assert_eq!(f, ["a", "b,c", "d"].map(AwkStr::from));
+        assert_eq!(ranges, [(0, 1), (2, 7), (8, 9)]);
+        let f = split_csv_gawk_fields(b"\"\"\"\"", &mut ranges); // escaped quote
+        assert_eq!(f, [AwkStr::from("\"")]);
+        // gawk: a quote that does not close the run is kept, and a field that
+        // did not start with a quote is plain text.
+        let f = split_csv_gawk_fields(b"a,\"b\"x,d", &mut ranges);
+        assert_eq!(f, ["a", "b\"x,d"].map(AwkStr::from));
+        let f = split_csv_gawk_fields(b"x\"\"y,", &mut ranges);
+        assert_eq!(f, ["x\"\"y", ""].map(AwkStr::from));
     }
 
     #[test]

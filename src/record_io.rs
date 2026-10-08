@@ -7,6 +7,93 @@ use memchr::memchr;
 use regex::bytes::Regex as BytesRegex;
 use std::io::BufRead;
 
+/// What [`crate::runtime::Runtime::rs_string`] hands the readers under
+/// `--csv`. gawk ignores `RS` in CSV mode and finds records with `csvscan`
+/// (io.c): a newline ends a record only outside double quotes. No `RS` a
+/// program can assign starts with a NUL, so this cannot collide with one.
+pub const CSV_RS: &str = "\u{0}csv";
+
+/// End of the CSV record that starts at `start`: `(record_end, terminated)`,
+/// where the record is `start..record_end` and `terminated` says a newline
+/// follows it. gawk's `csvscan` toggles a quote flag on every `"` and only
+/// stops at a newline seen outside quotes.
+fn csv_record_end(data: &[u8], start: usize) -> (usize, bool) {
+    let mut in_quote = false;
+    let mut bp = start;
+    loop {
+        while bp < data.len() && data[bp] != b'\n' {
+            if data[bp] == b'"' {
+                in_quote = !in_quote;
+            }
+            bp += 1;
+        }
+        if in_quote && bp < data.len() {
+            bp += 1;
+            continue;
+        }
+        return (bp, bp < data.len());
+    }
+}
+
+/// `csvscan` turns every CR-LF in a record into LF, the one ending the record
+/// included (and a CR left at the very end of the input).
+fn csv_strip_cr_before_lf(rec: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+    let drop_at = |i: usize| rec[i] == b'\r' && (i + 1 == rec.len() || rec[i + 1] == b'\n');
+    if !(0..rec.len()).any(drop_at) {
+        return std::borrow::Cow::Borrowed(rec);
+    }
+    std::borrow::Cow::Owned(
+        (0..rec.len()).filter(|&i| !drop_at(i)).map(|i| rec[i]).collect(),
+    )
+}
+
+/// Split an in-memory input into CSV records: each record (CR-LF folded) and
+/// whether a newline ended it, which is what `RT` reports.
+pub fn split_csv_records(data: &[u8]) -> Vec<(std::borrow::Cow<'_, [u8]>, bool)> {
+    let mut out = Vec::new();
+    let mut pos = 0usize;
+    while pos < data.len() {
+        let (end, terminated) = csv_record_end(data, pos);
+        out.push((csv_strip_cr_before_lf(&data[pos..end]), terminated));
+        pos = end + 1;
+    }
+    out
+}
+
+/// Streaming form of [`split_csv_records`] for the readers that work line by
+/// line: keep appending lines while a quote is open.
+fn read_csv_record<R: BufRead>(
+    reader: &mut R,
+    out: &mut Vec<u8>,
+    rt_sep: &mut Vec<u8>,
+    leftover: &mut Vec<u8>,
+) -> Result<bool> {
+    let mut in_quote = false;
+    let mut line = Vec::new();
+    let mut sep = Vec::new();
+    loop {
+        line.clear();
+        sep.clear();
+        if !read_until_lf(reader, &mut line, &mut sep, leftover)? {
+            return Ok(!out.is_empty());
+        }
+        let terminated = line.last() == Some(&b'\n');
+        if terminated {
+            line.pop();
+        }
+        in_quote ^= line.iter().filter(|&&b| b == b'"').count() % 2 == 1;
+        out.extend_from_slice(&csv_strip_cr_before_lf(&line));
+        if in_quote && terminated {
+            out.push(b'\n');
+            continue;
+        }
+        if terminated {
+            rt_sep.push(b'\n');
+        }
+        return Ok(true);
+    }
+}
+
 /// Trim trailing `\n` from a byte slice (record content).
 ///
 /// gawk parity (POSIX text mode on Unix): only `\n` is stripped — `\r` is
@@ -64,6 +151,9 @@ pub fn read_next_record_from<R: BufRead>(
 ) -> Result<bool> {
     out.clear();
     rt_sep.clear();
+    if rs == CSV_RS {
+        return read_csv_record(r, out, rt_sep, leftover);
+    }
     if rs == "\n" {
         return read_until_lf(r, out, rt_sep, leftover);
     }
