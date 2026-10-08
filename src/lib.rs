@@ -243,6 +243,10 @@ pub fn run(bin_name: &str) -> Result<()> {
     let profile_start = args.profile.is_some().then(Instant::now);
 
     crate::runtime::set_numeric_parse_mode(args.non_decimal_data);
+    crate::lexer::NONDECIMAL_SOURCE_CONSTANTS.store(
+        !(args.traditional || args.posix),
+        std::sync::atomic::Ordering::Relaxed,
+    );
 
     // No program and no files on an interactive terminal → drop into the REPL
     // instead of erroring with "no program given".
@@ -2241,6 +2245,12 @@ fn cacheable_script_path(args: &Args) -> Option<PathBuf> {
         return None;
     }
     if args.pretty_print.is_some() || args.gen_pot {
+        return None;
+    }
+    // `--traditional` and `--posix` change how numbers in the source are read
+    // (no hex or octal constants), so a program cached in one mode must not be
+    // replayed in another.
+    if args.traditional || args.posix {
         return None;
     }
     // `-f -` is the program on stdin: no file to key the cache by. Any other

@@ -1,5 +1,15 @@
 use crate::error::{Error, Result};
 use rug::Integer;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Whether program source may spell numbers in hex (`0x1f`) or octal (`011`).
+///
+/// gawk's scanner (awkgram.y) recognizes both only without `--traditional`
+/// (which `--posix` implies): in those modes `0x1f` is the number `0` followed
+/// by the name `x1f`, and `011` is eleven, as in one-true-awk. Cleared by the
+/// command line before the program is parsed.
+pub static NONDECIMAL_SOURCE_CONSTANTS: AtomicBool = AtomicBool::new(true);
+
 /// `Token` — see variants for the choices.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
@@ -547,10 +557,15 @@ impl<'a> Lexer<'a> {
         // gawk: `0x`/`0X` hex; leading `0` octal if all digits are `0`–`7`, else decimal (`01238` → 1238);
         // a `.` in the token forces a decimal float (`077.5` → 77.5).
         if c.is_ascii_digit() || (c == '.' && self.lookahead_digit()) {
+            let nondecimal = NONDECIMAL_SOURCE_CONSTANTS.load(Ordering::Relaxed);
             let start = self.pos;
-            if c == '0' {
+            if c == '0' && nondecimal {
                 let rest = &self.input[self.pos.saturating_add(1)..];
-                if rest.first() == Some(&b'x') || rest.first() == Some(&b'X') {
+                // gawk takes `0x` as hex only when a hex digit follows; otherwise the
+                // number is `0` and the `x` starts the next token.
+                if matches!(rest.first(), Some(b'x' | b'X'))
+                    && rest.get(1).is_some_and(u8::is_ascii_hexdigit)
+                {
                     self.bump();
                     self.bump();
                     let hx = self.pos;
@@ -560,12 +575,6 @@ impl<'a> Lexer<'a> {
                         } else {
                             break;
                         }
-                    }
-                    if self.pos == hx {
-                        return Err(Error::Parse {
-                            line: self.line,
-                            msg: "empty hex literal".into(),
-                        });
                     }
                     let hex_digits = std::str::from_utf8(&self.input[hx..self.pos])
                         .expect("hex digits are ASCII");
@@ -626,7 +635,8 @@ impl<'a> Lexer<'a> {
             let slice = std::str::from_utf8(&self.input[start..self.pos])
                 .expect("numeric literal is ASCII");
             if !had_dot && !had_exp {
-                if slice.len() > 1
+                if nondecimal
+                    && slice.len() > 1
                     && slice.starts_with('0')
                     && slice.bytes().all(|b| (b'0'..=b'7').contains(&b))
                 {
@@ -635,6 +645,13 @@ impl<'a> Lexer<'a> {
                         msg: format!("bad octal literal {slice:?}"),
                     })?;
                     return Ok(Token::IntegerLiteral(v.to_string()));
+                }
+                if !nondecimal {
+                    // Leading zeros dropped: the `-M` path reads a `0`-prefixed
+                    // string of octal digits as octal, and `011` here is eleven.
+                    let digits = slice.trim_start_matches('0');
+                    let digits = if digits.is_empty() { "0" } else { digits };
+                    return Ok(Token::IntegerLiteral(digits.to_string()));
                 }
                 return Ok(Token::IntegerLiteral(slice.to_string()));
             }
@@ -1425,9 +1442,19 @@ mod tests {
     }
 
     #[test]
-    fn lex_hex_empty_errors() {
-        let mut l = Lexer::new(b"0x");
-        assert!(l.next_token(false).is_err());
+    fn lex_0x_without_hex_digit_is_zero_then_name() {
+        // gawk's scanner pushes the `x` back when no hex digit follows, so
+        // `0x` is the number 0 and then the name `x` (this used to be pinned as
+        // an "empty hex literal" error, which gawk never reports).
+        assert_eq!(
+            tokens_no_regex("0x 0xg"),
+            vec![
+                Token::IntegerLiteral("0".into()),
+                Token::Ident("x".into()),
+                Token::IntegerLiteral("0".into()),
+                Token::Ident("xg".into()),
+            ]
+        );
     }
 
     #[test]

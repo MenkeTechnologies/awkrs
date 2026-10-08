@@ -3231,3 +3231,21 @@ fn begin_then_newline_then_brace_is_a_syntax_error() {
     assert_eq!(code, 1, "stderr: {stderr}");
     assert_eq!(stdout, "");
 }
+
+/// `--traditional` and `--posix` turn off hex and octal constants in program
+/// source (gawk's scanner checks `do_traditional`, which `--posix` implies):
+/// `0x1f` is the number 0 followed by the name `x1f`, and `011` is eleven —
+/// what one-true-awk always does. awkrs read them as 31 and 9 in every mode.
+#[test]
+fn traditional_and_posix_read_no_hex_or_octal_constants() {
+    let prog = "BEGIN { x1f = \"X\"; print 011, 0x1f, 08, 1e2 }";
+    for flag in ["--traditional", "--posix"] {
+        let (code, stdout, stderr) = run_awkrs_stdin_args([flag], prog, "");
+        assert_eq!(code, 0, "{flag}: {stderr}");
+        assert_eq!(stdout, "11 0X 8 100\n", "{flag}");
+        let (_, stdout, _) = run_awkrs_stdin_args([flag, "-M"], "BEGIN { print 017 + 0 }", "");
+        assert_eq!(stdout, "17\n", "{flag} -M");
+    }
+    let (_, stdout, _) = run_awkrs_stdin(prog, "");
+    assert_eq!(stdout, "9 31 8 100\n", "gawk mode keeps hex and octal");
+}
