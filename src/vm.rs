@@ -107,6 +107,16 @@ impl<'a> VmCtx<'a> {
         Ok(())
     }
 
+    /// A builtin named the global scalar `name` as its target without storing
+    /// to it (`sub` with no match, `getline var` at end of input): it is still
+    /// referenced, so an untyped slot becomes gawk's "unassigned".
+    fn touch_global_scalar(&mut self, name: &str) {
+        let is_local = self.locals.last().is_some_and(|f| f.contains_key(name));
+        if let (false, Some(&slot)) = (is_local, self.cp.slot_map.get(name)) {
+            self.rt.touch_slot(slot as usize);
+        }
+    }
+
     /// Scalar read for locals/slots/globals: [`Cow::Borrowed`] when stored (no clone);
     /// [`Cow::Owned`] for synthesized scalars (`NR`, `NF`, …) or missing globals.
     pub(crate) fn var_value_cow(&mut self, name: &str) -> Cow<'_, Value> {
@@ -3210,8 +3220,15 @@ fn apply_getline_line(
     let Some(l) = line else {
         // Naming an element as the target creates it even when nothing is
         // read, as in gawk: `getline a[1] < "/dev/null"` leaves `1 in a`.
-        if let GetlineLvalue::Elem(name, key) = target {
-            ctx.array_elem_get_vivify_bytes(name, key.as_bytes());
+        // A scalar target is referenced all the same: an untyped variable
+        // becomes "unassigned" (`typeof`), as after any other use.
+        match target {
+            GetlineLvalue::Elem(name, key) => {
+                ctx.array_elem_get_vivify_bytes(name, key.as_bytes());
+            }
+            GetlineLvalue::Var(name) => ctx.touch_global_scalar(name),
+            GetlineLvalue::Slot(slot) => ctx.rt.touch_slot(*slot),
+            GetlineLvalue::Record | GetlineLvalue::Field(_) => {}
         }
         return Ok(());
     };
@@ -3466,6 +3483,9 @@ pub(crate) fn exec_sub_from_values(
             };
             if n > 0.0 {
                 ctx.set_var(&name, Value::Str(s))?;
+            } else {
+                // Still referenced: an untyped target becomes "unassigned".
+                ctx.touch_global_scalar(&name);
             }
             n
         }
@@ -3490,6 +3510,7 @@ pub(crate) fn exec_sub_from_values(
             if n > 0.0 {
                 ctx.rt.slots[slot as usize] = Value::Str(s);
             }
+            ctx.rt.touch_slot(slot as usize);
             n
         }
         SubTarget::Field => {
@@ -3523,6 +3544,10 @@ pub(crate) fn exec_sub_from_values(
             };
             if n > 0.0 {
                 ctx.array_elem_set(&arr_name, key, Value::Str(s));
+            } else if arr_name != "SYMTAB" {
+                // The element is referenced even when nothing matched: gawk
+                // creates it, "unassigned", so `length` and `in` see it.
+                ctx.array_elem_get_vivify_bytes(&arr_name, key.as_bytes());
             }
             n
         }
