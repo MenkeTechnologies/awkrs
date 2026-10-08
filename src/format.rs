@@ -1003,13 +1003,6 @@ fn format_one(
             );
         }
     }
-    // gawk `is_zero(arg)` (printf.c): whether `%.0d` prints no digits and
-    // whether `#` adds its `0x` prefix is decided by the *value*, not by its
-    // truncated digits — `printf "%.0d|%#x", 0.5, 0.5` is `0|0x0` in gawk.
-    let value_is_zero = match v {
-        Value::Mpfr(f) => f.is_zero(),
-        _ => v.as_number() == 0.0,
-    };
     match conv {
         's' => {
             // POSIX / gawk: the `0` flag has no effect on string conversions —
@@ -1067,8 +1060,11 @@ fn format_one(
             };
             // POSIX: `%.Nd` with N==0 and value 0 produces NO digits at all
             // ("[]"), not "0". This matches gawk and most libc printf impls.
-            if matches!(prec, Some(0)) && value_is_zero {
-                s.clear();
+            if matches!(prec, Some(0)) {
+                let mag = s.trim_start_matches('-');
+                if mag == "0" {
+                    s.clear();
+                }
             }
             // POSIX: `%.Nd` zero-pads the integer magnitude to at least N digits
             // (the sign is added separately and doesn't count toward N).
@@ -1102,7 +1098,7 @@ fn format_one(
                 format!("{u}")
             };
             // POSIX %.Nu with N==0 and value 0 → empty (gawk parity).
-            if matches!(prec, Some(0)) && value_is_zero {
+            if matches!(prec, Some(0)) && s == "0" {
                 s.clear();
             }
             pad_int_to_precision(&mut s, prec);
@@ -1122,7 +1118,7 @@ fn format_one(
                 let un = gawk_unsigned_operand(v.as_number()).unwrap_or_default();
                 format!("{un:o}")
             };
-            if matches!(prec, Some(0)) && value_is_zero {
+            if matches!(prec, Some(0)) && s == "0" {
                 s.clear();
             }
             pad_int_to_precision(&mut s, prec);
@@ -1156,14 +1152,15 @@ fn format_one(
                     format!("{un:X}")
                 }
             };
-            if matches!(prec, Some(0)) && value_is_zero {
+            if matches!(prec, Some(0)) && s == "0" {
                 s.clear();
             }
+            let zero_valued = s.is_empty() || s.chars().all(|c| c == '0');
             pad_int_to_precision(&mut s, prec);
             // POSIX / gawk: `#` adds the `0x`/`0X` prefix only when the value
-            // is non-zero. `printf "%#x", 0` yields "0", not "0x0", while
-            // `printf "%#x", 0.5` is "0x0": the digits are 0 but the value is not.
-            if alt && !value_is_zero {
+            // is non-zero. `printf "%#x", 0` yields "0", not "0x0". The test is
+            // on the value, not the padded text, so `%#.5x` of 0 stays `00000`.
+            if alt && !zero_valued {
                 s = if conv == 'x' {
                     format!("0x{s}")
                 } else {
