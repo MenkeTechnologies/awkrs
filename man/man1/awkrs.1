@@ -395,9 +395,9 @@ or
 .B @include
 directives loads once.
 .TP
-.B AWKLIBPATH
-Search path for
-.BR @load .
+.B AWKRS_AOT_RUNTIME_LIB
+Path of the runtime library (\fBlibawkrs.a\fR) that \fB\-\-aot\fR links against.
+When unset, \fBlibawkrs.a\fR is looked up beside the running executable.
 .TP
 .B GAWK_READ_TIMEOUT
 Default read timeout (ms) used as the fallback for
@@ -417,7 +417,11 @@ parsing.
 Successful completion.
 .TP
 .B 1
-Error during program execution or invalid usage. Errors are written to stderr in the form
+Parse or validation error (invalid program or usage).
+.TP
+.B 2
+Runtime or I/O error, or an unreadable program or input file.
+Errors are written to stderr in the form
 .BR "awkrs: \fIcommand\fR: \fIreason\fR" .
 .TP
 .IR n
@@ -480,7 +484,7 @@ diverges from gawk in the following documented ways:
 produce awkrs\-specific output, not gawk's debugger / pretty\-printer / per\-line profiler formats.
 .IP \[bu] 2
 .BR \-c ", " \-P
-are accepted but currently have minimal runtime effect.
+refuse the gawk\-extension builtins; other gawk traditional/POSIX restrictions are not applied.
 .IP \[bu] 2
 .BR \-r
 is a no\-op; interval regex syntax is always available.

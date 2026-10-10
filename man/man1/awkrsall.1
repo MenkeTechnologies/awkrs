@@ -95,15 +95,6 @@ record processor that activates automatically when the program is
 parallel-safe and
 .B \-j
 selects more than one thread; otherwise execution is sequential.
-.PP
-Source survey claim: among the major public awk implementations
-(BWK awk, gawk, mawk, goawk, frawk, zawk),
-.B awkrs is the first to combine a bytecode VM, a JIT compiler, and a
-.B persistent on-disk bytecode cache.
-frawk has VM + Cranelift/LLVM JIT but recompiles every invocation;
-gawk's
-.B pm-gawk
-persists script-defined variables, not compiled bytecode.
 .SH "1.  INVOCATION"
 The program text is taken from the first non-option argument unless
 .B \-f
@@ -148,7 +139,8 @@ Use byte length for
 .BR index .
 .TP
 .BR \-c ", " \-\-traditional
-Traditional POSIX awk mode.
+Traditional awk mode: refuses the gawk-extension builtins and enables
+the BSD awk %0Ns / %0Nc zero padding.
 .TP
 .BR \-C ", " \-\-copyright
 Print copyright information.
@@ -175,9 +167,12 @@ no opcode trace is emitted.
 .TP
 .BR \-k ", " \-\-csv
 CSV mode.  Sets
-.B FS / FPAT
-and uses a parser aligned with
-.BR "gawk --csv" .
+.B FS
+to comma and
+.B FPAT
+to handle quoted fields with
+.B ""
+escapes.
 .TP
 .BR \-l " \fILIB\fR, " \-\-load =\fILIB\fR
 Load extension library (gawk
@@ -203,7 +198,9 @@ for
 Pretty-print parsed program text.
 .TP
 .BR \-O ", " \-\-optimize
-Bytecode optimizations on (default).
+Accepted for parity. The JIT is on by default; use
+.B \-s
+to disable.
 .TP
 .BR \-p "[\fIFILE\fR], " \-\-profile [=\fIFILE\fR]
 Profile execution.
@@ -212,10 +209,10 @@ Profile execution.
 Strict POSIX mode.
 .TP
 .BR \-r ", " \-\-re-interval
-Enable interval expressions in regex.
+Accepted as a no-op; interval expressions are always enabled.
 .TP
 .BR \-s ", " \-\-no-optimize
-Disable bytecode optimizations.
+Disable the JIT.
 .TP
 .BR \-S ", " \-\-sandbox
 Disable
@@ -229,8 +226,7 @@ Lint against historical awk dialects.
 .TP
 .BR \-W " \fIspec\fR"
 Mawk-style options forwarded to the runtime
-.RB ( "compat" ,
-.BR "interactive" ,
+.RB ( "interactive" ,
 .BR "sprintf=N" ,
 .BR "exec=FILE" ,
 .BR "posix_space" ,
@@ -246,13 +242,14 @@ when the program is parallel-safe (see
 .BR \-\-read-ahead " \fILINES\fR"
 Stdin parallel batch size.  Default 1024.
 .PP
-There is no flag to switch off the JIT or the bytecode cache.  Use
+The JIT is switched off with
 .BR \-s / \-\-no-optimize
-(above) or the environment variables
-.BR AWKRS_JIT=0 ,
-.BR AWKRS_FUSEVM=0 ,
-and
-.BR AWKRS_CACHE=0 .
+(above) or the environment variable
+.BR AWKRS_JIT=0 ;
+.B AWKRS_FUSEVM=0
+stops numeric chunks being offloaded to fusevm, and
+.B AWKRS_CACHE=0
+disables the bytecode cache.
 .TP
 .B \-\-repl
 Launch the interactive REPL.  Also the default when awkrs is started with no
@@ -286,6 +283,12 @@ Print a fusevm bytecode disassembly listing and exit.
 .B \-\-tiers
 Run the program on the fusevm backend, then report which fusevm execution tier
 took each of its chunks.
+.TP
+.BR \-h ", " \-\-help
+Print help and exit.
+.TP
+.BR \-V ", " \-\-version
+Print the version and exit.
 .SH "2.  PROGRAM TEXT"
 .SS Rules
 .BR BEGIN ,
@@ -642,56 +645,19 @@ line from the mapped buffer with
 .B ORS
 and skips the VM.
 .SH "7.  CRANELIFT JIT"
-The
-.B jit
-module compiles eligible bytecode chunks to native code using Cranelift
-with
-.BR "opt_level=speed" .
-.SS ABI
-.B "(vmctx, slots, field_fn, array_field_add, var_dispatch, field_dispatch, io_dispatch, val_dispatch) -> f64"
-\(em opaque
-.B vmctx
-plus seven
-.B "extern \"C\""
-callbacks (no thread-local lookups).
-.SS Tiered compilation
-Chunks count entries and only compile after
-.B AWKRS_JIT_MIN_INVOCATIONS
-(default 3; set
-.B 1
-for first-entry compile).  Set
-.B AWKRS_JIT=0
-to force the bytecode interpreter.
-.SS Eligible JIT ops
-Constants, arithmetic/comparisons, jumps and fused loop tests, slot and
-HashMap-path scalar ops, field reads (including dynamic
-.B $i
-writes in mixed mode),
-.BR for-in ,
-.BR asort ,
-.BR asorti ,
-.BR match ,
-.BR sub ,
-.BR gsub ,
-.BR split ,
-.BR patsplit ,
-.B getline
-(primary, file, coproc),
-.BR CallUser ,
-fused print opcodes (including redirects),
-.BR typeof ,
-and a whitelist of builtins (math,
-.BR sprintf ,
-.BR printf ,
-.BR strftime ,
-.BR fflush ,
-.BR close ,
-.BR system ).
-.SS Value representation
-Mixed-mode chunks NaN-box
-.B Value
-in slots; non-mixed chunks keep slots in Cranelift SSA.  Unsupported
-opcodes fall back to the bytecode loop.
+Eligible bytecode chunks are lowered to fusevm ops and run on the fusevm
+executor, whose Cranelift JIT compiles them to native code.  Eligibility
+is limited to pure-numeric chunks; when a whole chunk is not eligible, an
+eligible numeric loop prefix is offloaded and the bytecode loop resumes at
+the first ineligible op.  Everything else runs on the bytecode interpreter.
+.PP
+The JIT is bypassed with
+.BR \-s / \-\-no-optimize ,
+.BR AWKRS_JIT=0 ,
+or
+.BR AWKRS_FUSEVM=0 ,
+and is never used with
+.BR \-M / \-\-bignum .
 .SH "8.  BYTECODE CACHE"
 .B "\-f script.awk"
 invocations memoize the compiled
@@ -719,7 +685,8 @@ only the matched entry's blob is decoded.
 .B Invalidation:
 entries are invalidated on source-file mtime change or when the running
 .B awkrs
-binary is newer than the cached entry.  Any rebuild silently rebuilds
+binary's mtime or size differs
+from the one recorded in the entry.  Any rebuild silently rebuilds
 the cache.
 .PP
 .B Disable
@@ -734,9 +701,12 @@ form \(em inline
 .BR \-l / \-\-load ,
 .BR \-\-debug ,
 .BR \-\-lint ,
+.BR \-t / \-\-lint-old ,
 .BR \-\-pretty-print ,
+.BR \-c / \-\-traditional ,
+.BR \-P / \-\-posix ,
 .B \-\-gen-pot
-skip the cache because they need the AST.
+skip the cache.
 .SH "9.  PARALLEL RECORDS"
 .PP
 .RS 2
@@ -861,9 +831,9 @@ or
 .B @include
 directives loads once.
 .TP
-.B AWKLIBPATH
-Search path for
-.BR @load .
+.B AWKRS_AOT_RUNTIME_LIB
+Path of the runtime library (\fBlibawkrs.a\fR) that \fB\-\-aot\fR links against.
+When unset, it is looked up beside the running executable.
 .TP
 .B AWKRS_CACHE
 Set to
@@ -875,9 +845,10 @@ Set to
 .B 0
 to force the bytecode interpreter.
 .TP
-.B AWKRS_JIT_MIN_INVOCATIONS
-JIT tier-up threshold (default
-.BR 3 ).
+.B AWKRS_FUSEVM
+Set to
+.B 0
+to stop numeric chunks being offloaded to fusevm.
 .TP
 .B GAWK_READ_TIMEOUT
 Default read timeout (ms) used as the fallback for
@@ -897,7 +868,11 @@ parsing.
 Successful completion.
 .TP
 .B 1
-Error during program execution or invalid usage.  Errors are written to
+Parse or validation error (invalid program or usage).
+.TP
+.B 2
+Runtime or I/O error, or an unreadable program or input file.
+Errors are written to
 stderr as
 .BR "awkrs: <command>: <reason>" .
 .TP
@@ -945,13 +920,6 @@ Force the bytecode interpreter (no JIT):
 .RS
 .nf
 AWKRS_JIT=0 awkrs '{ print $2 }' input.txt
-.fi
-.RE
-.PP
-First-entry JIT (tier-up threshold = 1):
-.RS
-.nf
-AWKRS_JIT_MIN_INVOCATIONS=1 awkrs -f hot.awk huge.log
 .fi
 .RE
 .PP
@@ -1057,11 +1025,7 @@ is used.
 .BR awkrs (1),
 .BR awk (1),
 .BR gawk (1),
-.BR mawk (1),
-.BR strykeall (1),
-.BR zshrsall (1),
-.BR lsofrsall (1),
-.BR temprsall (1)
+.BR mawk (1)
 .SH AUTHOR
 .B MenkeTechnologies
 .RI < https://github.com/MenkeTechnologies >
