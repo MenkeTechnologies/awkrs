@@ -231,12 +231,9 @@ pub(crate) fn exec_builtin_dispatch(
         "intdiv" => match argc {
             2 => bignum::awk_intdiv_values(&args[0], &args[1], ctx.rt)?,
             // gawk's `intdiv` extension: `intdiv(num, denom, result)`.
-            3 => crate::gawk_extensions::intdiv_into(
-                ctx.rt,
-                &args[0],
-                &args[1],
-                &args[2].as_str(),
-            )?,
+            3 => {
+                crate::gawk_extensions::intdiv_into(ctx.rt, &args[0], &args[1], &args[2].as_str())?
+            }
             _ => {
                 return Err(Error::Runtime(
                     "`intdiv` expects two arguments, or three for gawk's intdiv extension".into(),

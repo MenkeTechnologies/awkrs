@@ -387,8 +387,8 @@ impl<'a> Parser<'a> {
                 ))?;
                 if self.cur == Token::Comma {
                     self.bump(true)?;
-// `p1,` <NL> `p2`: gawk `comma: ',' opt_nls`; one-true-awk agrees.
-self.skip_newlines()?;
+                    // `p1,` <NL> `p2`: gawk `comma: ',' opt_nls`; one-true-awk agrees.
+                    self.skip_newlines()?;
                     let e2 = self.parse_expr(false, false)?;
                     if matches!(e2, Expr::Tuple(_)) {
                         return Err(Error::Parse {
@@ -420,8 +420,8 @@ self.skip_newlines()?;
                 }
                 if self.cur == Token::Comma {
                     self.bump(true)?;
-// `p1,` <NL> `p2`: gawk `comma: ',' opt_nls`; one-true-awk agrees.
-self.skip_newlines()?;
+                    // `p1,` <NL> `p2`: gawk `comma: ',' opt_nls`; one-true-awk agrees.
+                    self.skip_newlines()?;
                     let e2 = self.parse_expr(false, false)?;
                     if matches!(e2, Expr::Tuple(_)) {
                         return Err(Error::Parse {
@@ -1010,7 +1010,10 @@ self.skip_newlines()?;
     }
 
     fn at_stmt_end(&self) -> bool {
-        matches!(self.cur, Token::Semi | Token::Newline | Token::RBrace | Token::Eof)
+        matches!(
+            self.cur,
+            Token::Semi | Token::Newline | Token::RBrace | Token::Eof
+        )
     }
 
     fn consume_stmt_end(&mut self) -> Result<()> {

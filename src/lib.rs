@@ -406,7 +406,10 @@ pub fn run(bin_name: &str) -> Result<()> {
         // to a field-splitting variable is ignored with its one warning.
         if args.field_separator().is_some()
             || args.assigns.iter().any(|a| {
-                matches!(a.to_string_lossy().split('=').next(), Some("FS" | "FIELDWIDTHS" | "FPAT"))
+                matches!(
+                    a.to_string_lossy().split('=').next(),
+                    Some("FS" | "FIELDWIDTHS" | "FPAT")
+                )
             })
         {
             rt.warn_csv_split_var_assignment();
@@ -2436,9 +2439,8 @@ fn resolve_program_and_files(args: &Args) -> Result<(Vec<u8>, Vec<PathBuf>)> {
     // SRC_INC and SRC_EXTLIB), so `gawk -i lib.awk 'prog' file` still takes
     // `prog` from the operands. awkrs used to run `-i lib.awk` as the whole
     // program and read `prog` as an input file.
-    let named_a_source = !args.progfiles.is_empty()
-        || !args.source.is_empty()
-        || args.exec_file.is_some();
+    let named_a_source =
+        !args.progfiles.is_empty() || !args.source.is_empty() || args.exec_file.is_some();
     if !named_a_source {
         if args.rest.is_empty() {
             return Err(Error::Parse {

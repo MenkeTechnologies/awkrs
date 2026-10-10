@@ -2437,7 +2437,10 @@ fn execute_chunk(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 // separator parses `s` as a CSV record (`comma_parse_field`).
                 let (parts, seps_vec) = if !has_fs && ctx.rt.csv_mode {
                     let mut spans = Vec::new();
-                    (crate::runtime::split_csv_gawk_fields(&s, &mut spans), Vec::new())
+                    (
+                        crate::runtime::split_csv_gawk_fields(&s, &mut spans),
+                        Vec::new(),
+                    )
                 } else if fs.is_empty() && ctx.rt.characters_as_bytes {
                     // Byte mode: every byte is a character, so each is a field.
                     let parts: Vec<AwkStr> = s.iter().map(|b| AwkStr::from(&[*b][..])).collect();

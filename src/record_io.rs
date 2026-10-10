@@ -43,7 +43,10 @@ fn csv_strip_cr_before_lf(rec: &[u8]) -> std::borrow::Cow<'_, [u8]> {
         return std::borrow::Cow::Borrowed(rec);
     }
     std::borrow::Cow::Owned(
-        (0..rec.len()).filter(|&i| !drop_at(i)).map(|i| rec[i]).collect(),
+        (0..rec.len())
+            .filter(|&i| !drop_at(i))
+            .map(|i| rec[i])
+            .collect(),
     )
 }
 
@@ -527,7 +530,11 @@ mod tests {
         let got: Vec<(&[u8], bool)> = recs.iter().map(|(r, t)| (r.as_ref(), *t)).collect();
         assert_eq!(
             got,
-            [(&b"a,\"x\ny\""[..], true), (&b"b"[..], true), (&b"\"open"[..], false)]
+            [
+                (&b"a,\"x\ny\""[..], true),
+                (&b"b"[..], true),
+                (&b"\"open"[..], false)
+            ]
         );
     }
     use crate::runtime::SharedInputReader;

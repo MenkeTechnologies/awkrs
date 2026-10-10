@@ -3585,10 +3585,16 @@ fn source_search_uses_awkpath_awk_suffix_and_includes_once() {
     let dir = std::env::temp_dir().join(format!("awkrs_awkpath_{}", std::process::id()));
     let libdir = dir.join("lib");
     fs::create_dir_all(&libdir).expect("mkdir");
-    fs::write(libdir.join("one.awk"), "@include \"two\"\nfunction one() { return 1 }\n")
-        .expect("write one");
-    fs::write(libdir.join("two.awk"), "@include \"one\"\nfunction two() { return 2 }\n")
-        .expect("write two");
+    fs::write(
+        libdir.join("one.awk"),
+        "@include \"two\"\nfunction one() { return 1 }\n",
+    )
+    .expect("write one");
+    fs::write(
+        libdir.join("two.awk"),
+        "@include \"one\"\nfunction two() { return 2 }\n",
+    )
+    .expect("write two");
     fs::write(dir.join("main.awk"), "BEGIN { print one() + two() }\n").expect("write main");
     let bin = env!("CARGO_BIN_EXE_awkrs");
     let run = |args: &[&str]| {
@@ -3611,10 +3617,18 @@ fn source_search_uses_awkpath_awk_suffix_and_includes_once() {
     ];
     for args in cases {
         let (code, stdout, stderr) = run(args);
-        assert_eq!((code, stdout.as_str()), (Some(0), "3\n"), "{args:?}: {stderr}");
+        assert_eq!(
+            (code, stdout.as_str()),
+            (Some(0), "3\n"),
+            "{args:?}: {stderr}"
+        );
     }
     let (code, _, stderr) = run(&["@include \"missing\"\nBEGIN { print 1 }"]);
-    assert_eq!(code, Some(1), "missing @include is a parse-time error: {stderr}");
+    assert_eq!(
+        code,
+        Some(1),
+        "missing @include is a parse-time error: {stderr}"
+    );
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -3637,7 +3651,12 @@ fn f_dash_reads_the_program_from_stdin() {
         .write_all(b"BEGIN { print \"from stdin\" } END { print NR }\n")
         .expect("write");
     let out = child.wait_with_output().expect("wait");
-    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert_eq!(String::from_utf8_lossy(&out.stdout), "from stdin\n0\n");
 }
 
@@ -3653,7 +3672,15 @@ fn optional_value_options_leave_the_program_text_alone() {
             .args([opt, "BEGIN { print \"ran\" }"])
             .output()
             .expect("spawn");
-        assert_eq!(out.status.code(), Some(0), "{opt}: {}", String::from_utf8_lossy(&out.stderr));
-        assert!(String::from_utf8_lossy(&out.stdout).starts_with("ran\n"), "{opt}");
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{opt}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&out.stdout).starts_with("ran\n"),
+            "{opt}"
+        );
     }
 }

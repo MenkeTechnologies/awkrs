@@ -520,12 +520,16 @@ pub fn patsplit(
     let mut fields = Vec::new();
     let mut seps = Vec::new();
     let ok = crate::runtime::with_fpat_regexes(fp, rt.ignore_case_flag(), |alts| {
-        alts.map(|alts| crate::runtime::fpat_parse_fields(s.as_bytes(), alts, &mut fields, Some(&mut seps)))
+        alts.map(|alts| {
+            crate::runtime::fpat_parse_fields(s.as_bytes(), alts, &mut fields, Some(&mut seps))
+        })
     });
     if ok.is_none() {
         return Err(Error::Runtime(format!("patsplit: invalid regexp `{fp}'")));
     }
-    let text = |(a, b): (u32, u32)| Value::Str(AwkStr::from(s.as_bytes()[a as usize..b as usize].to_vec()));
+    let text = |(a, b): (u32, u32)| {
+        Value::Str(AwkStr::from(s.as_bytes()[a as usize..b as usize].to_vec()))
+    };
     rt.array_delete(arr_name, None);
     for (i, &f) in fields.iter().enumerate() {
         rt.array_set(arr_name, format!("{}", i + 1), text(f));

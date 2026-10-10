@@ -424,7 +424,11 @@ impl RwReader<'_> {
                 let len = self.u32()? as usize;
                 let text = self.take(len)?;
                 let text = text.split(|&b| b == 0).next().unwrap_or_default();
-                let n = std::str::from_utf8(text).ok()?.trim().parse::<f64>().unwrap_or(0.0);
+                let n = std::str::from_utf8(text)
+                    .ok()?
+                    .trim()
+                    .parse::<f64>()
+                    .unwrap_or(0.0);
                 Some(Value::Num(n))
             }
             VT_GMP => {
@@ -434,13 +438,19 @@ impl RwReader<'_> {
                 if size < 0 {
                     i = -i;
                 }
-                Some(rw_number(rt, rug::Float::with_val(rt.mpfr_prec_bits().max(i.significant_bits()), i)))
+                Some(rw_number(
+                    rt,
+                    rug::Float::with_val(rt.mpfr_prec_bits().max(i.significant_bits()), i),
+                ))
             }
             VT_MPFR => {
                 let end = self.buf[self.pos..].iter().position(|&b| b == b' ')?;
                 let text = std::str::from_utf8(self.take(end)?).ok()?.to_string();
                 self.take(1)?;
-                Some(rw_number(rt, mpfr_parse_base62(&text, rt.mpfr_prec_bits())?))
+                Some(rw_number(
+                    rt,
+                    mpfr_parse_base62(&text, rt.mpfr_prec_bits())?,
+                ))
             }
             _ => {
                 let len = self.u32()? as usize;
@@ -483,7 +493,12 @@ fn mpfr_out_str_base62(f: &rug::Float) -> String {
         return "@NaN@".into();
     }
     if f.is_infinite() {
-        return if f.is_sign_negative() { "-@Inf@" } else { "@Inf@" }.into();
+        return if f.is_sign_negative() {
+            "-@Inf@"
+        } else {
+            "@Inf@"
+        }
+        .into();
     }
     if f.is_zero() {
         return if f.is_sign_negative() { "-0" } else { "0" }.into();
@@ -492,7 +507,11 @@ fn mpfr_out_str_base62(f: &rug::Float) -> String {
     let x = rug::Rational::try_from(f).expect("finite").abs();
     let pow = |e: i64| -> rug::Rational {
         let p = rug::Integer::from(62).pow(e.unsigned_abs() as u32);
-        if e >= 0 { rug::Rational::from(p) } else { rug::Rational::from((1, p)) }
+        if e >= 0 {
+            rug::Rational::from(p)
+        } else {
+            rug::Rational::from((1, p))
+        }
     };
     // Exponent e with 62^(e-1) <= x < 62^e, from an estimate corrected exactly.
     let mut e = (x.to_f64().log(62.0)).floor() as i64 + 1;
@@ -506,7 +525,11 @@ fn mpfr_out_str_base62(f: &rug::Float) -> String {
         let r = rug::Rational::from(&x * &pow(i64::from(m) - e));
         let (frac, fl) = r.fract_floor(rug::Integer::new());
         let half = rug::Rational::from((1, 2));
-        if frac > half || (frac == half && fl.is_odd()) { fl + 1 } else { fl }
+        if frac > half || (frac == half && fl.is_odd()) {
+            fl + 1
+        } else {
+            fl
+        }
     };
     let mut n = scaled(e);
     if n >= rug::Integer::from(62).pow(m) {
@@ -569,7 +592,11 @@ fn mpfr_parse_base62(text: &str, prec: u32) -> Option<rug::Float> {
     }
     let shift = exp - frac_digits;
     let p = rug::Integer::from(62).pow(shift.unsigned_abs() as u32);
-    let r = if shift >= 0 { rug::Rational::from(n * p) } else { rug::Rational::from((n, p)) };
+    let r = if shift >= 0 {
+        rug::Rational::from(n * p)
+    } else {
+        rug::Rational::from((n, p))
+    };
     let f = rug::Float::with_val(prec, r);
     Some(if neg { -f } else { f })
 }
@@ -640,7 +667,8 @@ pub(crate) fn intdiv_into(
             return Ok(Value::Num(-1.0));
         }
         let (q, r) = n.div_rem(d);
-        let to_value = |i: rug::Integer| Value::Mpfr(rug::Float::with_val(prec.max(i.significant_bits()), i));
+        let to_value =
+            |i: rug::Integer| Value::Mpfr(rug::Float::with_val(prec.max(i.significant_bits()), i));
         (to_value(q), to_value(r))
     } else {
         let n = num.as_number().trunc();

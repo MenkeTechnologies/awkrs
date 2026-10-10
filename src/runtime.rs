@@ -1108,7 +1108,10 @@ fn split_fields_fieldwidths(
 ///
 /// Returns the field values; `field_ranges` gets each field's raw span in
 /// `record`, quotes included.
-pub(crate) fn split_csv_gawk_fields(record: &[u8], field_ranges: &mut Vec<(u32, u32)>) -> Vec<AwkStr> {
+pub(crate) fn split_csv_gawk_fields(
+    record: &[u8],
+    field_ranges: &mut Vec<(u32, u32)>,
+) -> Vec<AwkStr> {
     field_ranges.clear();
     let mut fields = Vec::new();
     let end = record.len();
@@ -1126,7 +1129,8 @@ pub(crate) fn split_csv_gawk_fields(record: &[u8], field_ranges: &mut Vec<(u32, 
                     if record[scan] == b'"' && record.get(scan + 1) == Some(&b'"') {
                         value.push(b'"');
                         scan += 2;
-                    } else if record[scan] == b'"' && (scan + 1 == end || record[scan + 1] == b',') {
+                    } else if record[scan] == b'"' && (scan + 1 == end || record[scan + 1] == b',')
+                    {
                         scan += 1;
                         break;
                     } else {

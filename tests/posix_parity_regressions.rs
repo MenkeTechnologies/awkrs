@@ -3310,7 +3310,10 @@ fn intdiv_extension_zero_divisor_returns_minus_one() {
     );
     assert_eq!(code, 0, "{stderr}");
     assert_eq!(stdout, "-1 0\n");
-    assert!(stderr.contains("intdiv: division by zero attempted"), "{stderr}");
+    assert!(
+        stderr.contains("intdiv: division by zero attempted"),
+        "{stderr}"
+    );
 }
 
 /// `--csv` records and fields follow gawk 5.4 (io.c `csvscan`, field.c
@@ -3323,7 +3326,8 @@ fn intdiv_extension_zero_divisor_returns_minus_one() {
 /// output captured from gawk 5.4.1.
 #[test]
 fn csv_mode_records_span_quoted_newlines_and_fields_follow_gawk() {
-    let input = "a,\"b \"\"q\"\" c\",,\"multi\nline\",e\r\n1,\"x\r\ny\"\r\na,\"b\"x,d\nx\"\"y,\n\"open";
+    let input =
+        "a,\"b \"\"q\"\" c\",,\"multi\nline\",e\r\n1,\"x\r\ny\"\r\na,\"b\"x,d\nx\"\"y,\n\"open";
     let prog = r#"{ printf "%d %d RT=%d", NR, NF, length(RT); for (i = 1; i <= NF; i++) printf " [%s]", $i; print "" }"#;
     let (code, stdout, stderr) = run_awkrs_stdin_args(["--csv"], prog, input);
     assert_eq!(code, 0, "{stderr}");
@@ -3350,7 +3354,9 @@ fn csv_mode_fs_procinfo_and_default_split_follow_gawk() {
     assert_eq!(code, 0, "{stderr}");
     assert_eq!(stdout, "[ ][FS]\n3 b,c\n4 \"b\n3\n");
     assert_eq!(
-        stderr.matches("assignment to FS/FIELDWIDTHS/FPAT has no effect when using --csv").count(),
+        stderr
+            .matches("assignment to FS/FIELDWIDTHS/FPAT has no effect when using --csv")
+            .count(),
         1,
         "{stderr}"
     );
@@ -3375,9 +3381,15 @@ fn parallel_records_keep_trailing_cr_and_newline() {
             .arg(file)
             .output()
             .expect("spawn");
-        (out.status.code(), String::from_utf8_lossy(&out.stdout).into_owned())
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+        )
     };
-    assert_eq!(run_j4("{ print length($0) }", &crlf), (Some(0), "2\n2\n".into()));
+    assert_eq!(
+        run_j4("{ print length($0) }", &crlf),
+        (Some(0), "2\n2\n".into())
+    );
     let (c, stdin_out, e) = run_awkrs_stdin_args(["-j", "4"], "{ print length($0) }", "a\r\nb\r\n");
     assert_eq!((c, stdin_out.as_str()), (0, "2\n2\n"), "{e}");
     assert_eq!(
