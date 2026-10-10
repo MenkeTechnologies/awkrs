@@ -95,11 +95,31 @@ jobs:
           make install
           "$HOME/gawk/bin/gawk" --version | head -n1 | grep -F "GNU MPFR"
       - run: echo "$HOME/gawk/bin" >> "$GITHUB_PATH"
+      # mawk is built from the upstream tarball rather than apt: Ubuntu's
+      # 1.3.4-20240123 parses `$i++` as `$(i++)` (so `$NF++` appends an empty
+      # field instead of incrementing it), which 1.3.4-20260302 no longer does.
+      # Case portable/3014 is frozen against the fixed behaviour.
+      - uses: actions/cache@v5
+        id: mawk-cache
+        with:
+          path: ~/mawk
+          key: ${{ runner.os }}-mawk-1.3.4-20260302-e2c08a77d0a84a01f9be454d1ca3872d4f103f9ada683d075198b0c6e965633d
+      - name: Build mawk 1.3.4-20260302
+        if: steps.mawk-cache.outputs.cache-hit != 'true'
+        run: |
+          curl --proto '=https' --tlsv1.2 --retry 5 -sSfLO https://invisible-island.net/archives/mawk/mawk-1.3.4-20260302.tgz
+          echo "e2c08a77d0a84a01f9be454d1ca3872d4f103f9ada683d075198b0c6e965633d  mawk-1.3.4-20260302.tgz" | sha256sum -c -
+          tar -xzf mawk-1.3.4-20260302.tgz
+          cd mawk-1.3.4-20260302
+          ./configure --prefix="$HOME/mawk"
+          make -j"$(nproc)"
+          make install
+      - run: echo "$HOME/mawk/bin" >> "$GITHUB_PATH"
       - name: Install reference awks
         run: |
           sudo apt-get update
           # Noble dropped the transitional `nawk` metapackage; use `original-awk` (One True awk).
-          sudo apt-get install -y mawk original-awk
+          sudo apt-get install -y original-awk
           command -v gawk && gawk --version | head -n1
           command -v mawk && mawk -W version 2>&1 | head -n1
           command -v original-awk && original-awk -W version 2>&1 | head -n1 || true
