@@ -1,10 +1,10 @@
 # Awk parity roadmap (awkrs)
 
-**Goal:** Lock observable behavior to reference implementations on shared inputs: **gawk**, **mawk**, and **BSD awk** all run the **same** corpus (`parity/cases/` + `parity/cases_portable/`) — so compatibility work is driven by failing parity cases, not guesswork.
+**Goal:** Lock observable behavior to reference implementations on shared inputs: **gawk**, **mawk**, and **BSD awk** all run the **same** shared corpus (`parity/cases/` + `parity/cases_portable/`; gawk additionally runs `parity/cases_gawk/` and `examples/`) — so compatibility work is driven by failing parity cases, not guesswork.
 
 ## Two harnesses
 
-- **`parity/run_parity.sh`** (this document) — **replays** a fixed corpus of ~2 100 committed cases. It is the regression gate.
+- **`parity/run_parity.sh`** (this document) — **replays** a fixed corpus of committed cases. It is the regression gate.
 - **`scripts/fuzz_parity.sh`** — **finds** new gaps. Curated probes (`scripts/fuzz/probes.awkc`) plus a seeded generator (`scripts/fuzz/gen_awk.pl`), compared on stdout bytes + exit status against gawk / mawk / one-true-awk. Run it before adding cases here: a divergence it reports is what a new case should pin.
 
 ## Harness
@@ -32,10 +32,12 @@ bash parity/run_parity.sh all
 |-----------|------|
 | `parity/cases/` | **Seed** programs (`001_*.awk` …) plus **`1000_bulk.awk`–`1999_bulk.awk`**: machine corpus from `gen_parity_awk.py` (portable `pb_*` bitwise helpers, not gawk `and`/`xor`/…). |
 | `parity/cases_portable/` | **`2000_portable.awk`–`2999_portable.awk`**: no gawk-only bitwise builtins; safe for **mawk** and **BSD awk**. |
+| `parity/cases_gawk/` | Programs that use gawk-only extensions (variadic `and`/`or`/`xor`, `FPAT`, `patsplit`, …); run in **gawk** mode only. |
 
 **Which mode runs which files**
 
 - **gawk, mawk, and bsd:** `parity/cases/*.awk` **and** `parity/cases_portable/*.awk` (identical lists; only the reference `awk` binary changes).
+- **gawk only:** additionally `parity/cases_gawk/*.awk` and `examples/*.awk`.
 
 On Linux, `/usr/bin/awk` is often **mawk**; for **bsd** mode set **`BSD_AWK=nawk`** (or another BSD awk) after installing the distro package. On macOS, the harness defaults to **`/usr/bin/awk`** when `nawk` is absent.
 
