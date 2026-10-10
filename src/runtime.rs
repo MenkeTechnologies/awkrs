@@ -1256,8 +1256,11 @@ fn with_split_regex<R>(fs: &str, ignore_case: bool, f: impl FnOnce(Option<&Bytes
 //   printf 'AB cd EF\n' | gawk 'BEGIN{FPAT="[a-z]+";IGNORECASE=1}{print NF, $1}'
 //   1 cd          # awkrs answered `3 AB` — the alternatives were compiled
 //                 # case-insensitively, so `AB` and `EF` became fields too.
+/// `FPAT` text and `IGNORECASE` mapped to its compiled alternatives (`None`: does not compile).
+type FpatRegexMemo = AwkMap<(String, bool), Option<Vec<BytesRegex>>>;
+
 thread_local! {
-    static FPAT_REGEX_MEMO: std::cell::RefCell<AwkMap<(String, bool), Option<Vec<BytesRegex>>>> =
+    static FPAT_REGEX_MEMO: std::cell::RefCell<FpatRegexMemo> =
         std::cell::RefCell::new(AwkMap::default());
 }
 
