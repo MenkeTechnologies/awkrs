@@ -13,9 +13,9 @@ NR == 1 {
     close("echo piped")
     "echo f3" | getline $(1 + 2)
     print "field3:", $0, "NF=" NF
-    while ((getline rest[++n]) > 0)
-        ;
-    print "attempts:", n, "last:", rest[n - 1]
+    while ((getline rest[n + 1]) > 0)
+        n++
+    print "attempts:", n, "last:", rest[n]
     if ((getline x[1] < "/nonexistent/file") < 0)
         print "missing file: -1"
 }
