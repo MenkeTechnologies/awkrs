@@ -244,7 +244,7 @@ fn regexp_constant_gensub_replacement() {
 fn lint_flag_warns_uninitialized_read_in_begin() {
     // Use a non-fatal level: `-L fatal` exits on the *first* lint line (the static header),
     // before uninitialized-variable checks run.
-    let (c, o, e) = run_awkrs_stdin_args(["-L", "invalid"], "BEGIN { print u }", "");
+    let (c, o, e) = run_awkrs_stdin_args(["-Linvalid"], "BEGIN { print u }", "");
     assert_eq!(c, 0);
     assert_eq!(o, "\n");
     assert!(
@@ -434,9 +434,9 @@ fn writea_reada_roundtrip_preserves_array() {
         r#"BEGIN {{
   src["x"] = 1
   src["y"] = 2
-  if (writea("{ps}", src) != 0) {{ print "writea_fail"; exit 1 }}
+  if (writea("{ps}", src) != 1) {{ print "writea_fail"; exit 1 }}
   delete dst
-  if (reada("{ps}", dst) != 0) {{ print "reada_fail"; exit 1 }}
+  if (reada("{ps}", dst) != 1) {{ print "reada_fail"; exit 1 }}
   print dst["x"], dst["y"]
 }}"#
     );
@@ -514,7 +514,7 @@ BEGIN { print "ok" }"#,
 fn debug_flag_emits_static_listing_on_stderr() {
     let bin = env!("CARGO_BIN_EXE_awkrs");
     let out = Command::new(bin)
-        .args(["-D", "-", "-e", "BEGIN { print 1 }"])
+        .args(["-D-", "-e", "BEGIN { print 1 }"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -532,7 +532,7 @@ fn debug_flag_emits_static_listing_on_stderr() {
 fn profile_flag_emits_wall_time_on_stderr() {
     let bin = env!("CARGO_BIN_EXE_awkrs");
     let out = Command::new(bin)
-        .args(["-p", "-", "-e", "BEGIN { x = 1 }"])
+        .args(["-p-", "-e", "BEGIN { x = 1 }"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -550,7 +550,7 @@ fn profile_flag_emits_wall_time_on_stderr() {
 fn pretty_print_flag_emits_disclaimer_on_stdout() {
     let bin = env!("CARGO_BIN_EXE_awkrs");
     let out = Command::new(bin)
-        .args(["-o", "-", "-e", "BEGIN { z = 3 }"])
+        .args(["-o-", "-e", "BEGIN { z = 3 }"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -568,7 +568,7 @@ fn pretty_print_flag_emits_disclaimer_on_stdout() {
 fn dump_variables_flag_includes_user_global() {
     let bin = env!("CARGO_BIN_EXE_awkrs");
     let out = Command::new(bin)
-        .args(["-d", "-", "-e", "BEGIN { mydumpvar = 99 }"])
+        .args(["-d-", "-e", "BEGIN { mydumpvar = 99 }"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
