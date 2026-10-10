@@ -801,25 +801,34 @@ self.skip_newlines()?;
             Token::Getline => {
                 self.bump(false)?;
                 let var = self.parse_getline_target()?;
-                if self.cur == Token::LtAmp {
+                if self.cur == Token::LtAmp || self.cur == Token::Lt {
+                    let coproc = self.cur == Token::LtAmp;
                     self.bump(false)?;
-                    let fe = self.parse_expr(false, false)?;
-                    self.consume_stmt_end()?;
-                    return Ok(Stmt::GetLine {
+                    let fe = Box::new(self.parse_getline_source()?);
+                    let redir = if coproc {
+                        GetlineRedir::Coproc(fe)
+                    } else {
+                        GetlineRedir::File(fe)
+                    };
+                    if self.at_stmt_end() {
+                        self.consume_stmt_end()?;
+                        return Ok(Stmt::GetLine {
+                            pipe_cmd: None,
+                            var,
+                            redir,
+                        });
+                    }
+                    // `getline < f ".bak"` groups as `(getline < f) ".bak"`: keep going
+                    // as an expression statement.
+                    let seed = Expr::GetLine {
                         pipe_cmd: None,
                         var,
-                        redir: GetlineRedir::Coproc(Box::new(fe)),
-                    });
-                }
-                if self.cur == Token::Lt {
-                    self.bump(false)?;
-                    let fe = self.parse_expr(false, false)?;
+                        redir,
+                    };
+                    let e = self.parse_concat_rest(seed, false)?;
+                    let e = self.parse_expr_from_concat_seed(e)?;
                     self.consume_stmt_end()?;
-                    return Ok(Stmt::GetLine {
-                        pipe_cmd: None,
-                        var,
-                        redir: GetlineRedir::File(Box::new(fe)),
-                    });
+                    return Ok(Stmt::Expr(e));
                 }
                 self.consume_stmt_end()?;
                 Ok(Stmt::GetLine {
@@ -998,6 +1007,10 @@ self.skip_newlines()?;
             self.push_stmt(&mut stmts)?;
         }
         Ok(stmts)
+    }
+
+    fn at_stmt_end(&self) -> bool {
+        matches!(self.cur, Token::Semi | Token::Newline | Token::RBrace | Token::Eof)
     }
 
     fn consume_stmt_end(&mut self) -> Result<()> {
@@ -1432,7 +1445,20 @@ self.skip_newlines()?;
     }
 
     fn parse_concat(&mut self, regex_mode: bool, re_pat: bool) -> Result<Expr> {
-        let mut e = self.parse_additive(regex_mode, re_pat)?;
+        let e = self.parse_additive(regex_mode, re_pat)?;
+        self.parse_concat_rest(e, re_pat)
+    }
+
+    /// The file / coprocess operand of `getline < src` and `getline <& src`: gawk's
+    /// `simp_exp`, i.e. arithmetic but no concatenation or comparison, so
+    /// `getline x < f ".bak"` is `(getline x < f) ".bak"` and `getline x < f > 0`
+    /// is `(getline x < f) > 0`.
+    fn parse_getline_source(&mut self) -> Result<Expr> {
+        self.parse_additive(false, false)
+    }
+
+    /// Implicit concatenation continuing from an already parsed left operand.
+    fn parse_concat_rest(&mut self, mut e: Expr, re_pat: bool) -> Result<Expr> {
         loop {
             if matches!(
                 self.cur,
@@ -1978,22 +2004,19 @@ self.skip_newlines()?;
             Token::Getline => {
                 self.bump(false)?;
                 let var = self.parse_getline_target()?;
-                if self.cur == Token::LtAmp {
+                if self.cur == Token::LtAmp || self.cur == Token::Lt {
+                    let coproc = self.cur == Token::LtAmp;
                     self.bump(false)?;
-                    let fe = self.parse_expr(false, false)?;
+                    let fe = Box::new(self.parse_getline_source()?);
+                    let redir = if coproc {
+                        GetlineRedir::Coproc(fe)
+                    } else {
+                        GetlineRedir::File(fe)
+                    };
                     return Ok(Expr::GetLine {
                         pipe_cmd: None,
                         var,
-                        redir: GetlineRedir::Coproc(Box::new(fe)),
-                    });
-                }
-                if self.cur == Token::Lt {
-                    self.bump(false)?;
-                    let fe = self.parse_expr(false, false)?;
-                    return Ok(Expr::GetLine {
-                        pipe_cmd: None,
-                        var,
-                        redir: GetlineRedir::File(Box::new(fe)),
+                        redir,
                     });
                 }
                 Ok(Expr::GetLine {

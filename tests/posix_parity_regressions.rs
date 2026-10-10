@@ -3386,3 +3386,74 @@ fn parallel_records_keep_trailing_cr_and_newline() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A rule that assigns `RS` governs the *next* record (POSIX). The file-argument
+/// path splits the whole mapped file up front, so it kept cutting the unread
+/// tail by the old `RS`: after `NR == 1 { RS = "x" }` gawk and the stdin path
+/// answered `b `, ` c`, `d\n`, while the file path returned `b x c`, `d`.
+/// Every separator kind is crossed, each against the same bytes on stdin.
+#[test]
+fn rs_assigned_mid_file_applies_to_the_next_record() {
+    for (program, input, want) in [
+        (
+            r#"NR == 1 { RS = "x" } { print NR ": " $0 }"#,
+            "a\nb x c\nd\n",
+            "1: a\n2: b \n3:  c\nd\n\n",
+        ),
+        (
+            r#"NR == 1 { RS = "" } { print NR ": [" $0 "]" }"#,
+            "a\nb\n\n\nc\nd\n\ne\n",
+            "1: [a]\n2: [b]\n3: [c\nd]\n4: [e]\n",
+        ),
+        (
+            r#"BEGIN { RS = "" } NR == 1 { RS = "\n" } { print NR ": [" $0 "]" }"#,
+            "a\nb\n\n\nc\nd\n",
+            "1: [a\nb]\n2: [c]\n3: [d]\n",
+        ),
+        (
+            r#"BEGIN { RS = ";" } NR == 2 { RS = "[,.]+" } { print NR ": [" $0 "]" }"#,
+            "a;b,c;d,,.e\n",
+            "1: [a]\n2: [b,c]\n3: [d]\n4: [e\n]\n",
+        ),
+        (
+            r#"BEGIN { RS = "[;,]" } NR == 2 { RS = ";" } { print NR ": [" $0 "]" }"#,
+            "a;b,c;d,e\n",
+            "1: [a]\n2: [b]\n3: [c]\n4: [d,e\n]\n",
+        ),
+    ] {
+        let path = unique_tmp_path("rs_mid_file");
+        std::fs::write(&path, input).unwrap();
+        let (code, out, err) = run_awkrs_file(program, &path);
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(code, 0, "{program}: stderr {err:?}");
+        assert_eq!(out, want, "file operand: {program}");
+
+        let (code, out, _) = run_awkrs_stdin(program, input);
+        assert_eq!(code, 0);
+        assert_eq!(out, want, "stdin: {program}");
+    }
+}
+
+/// `getline < f` takes an arithmetic operand and stops there: concatenation and
+/// comparison bind looser. `getline x < f ".bak"` is `(getline x < f) ".bak"`,
+/// and `getline x < f > 0` is `(getline x < f) > 0`. awkrs parsed the whole
+/// expression as the file name, so the first read `f.bak` (missing, so `x` stayed
+/// empty) and the second compared nothing.
+#[test]
+fn getline_file_operand_excludes_concatenation_and_comparison() {
+    let path = unique_tmp_path("getline_operand");
+    std::fs::write(&path, "first\nsecond\n").unwrap();
+    let p = path.to_string_lossy().replace('\\', "\\\\");
+    let program = format!(
+        r#"BEGIN {{
+  f = "{p}"
+  getline x < f ".bak"; print "[" x "]"
+  close(f); r = getline y < f > 0; print r, y
+  close(f); getline < f; print $0
+}}"#
+    );
+    let (code, out, err) = run_awkrs_stdin(&program, "");
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(code, 0, "stderr {err:?}");
+    assert_eq!(out, "[first]\n1 first\nfirst\n");
+}

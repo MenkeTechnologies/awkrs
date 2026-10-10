@@ -1731,53 +1731,77 @@ fn process_file_slurp(
         return process_file_slurp_inline(data, &fs, pattern, action, cp, rt);
     }
 
-    rt.ensure_rs_regex_bytes()?;
-    let rs = rt.rs_string();
-    let re_owned = rt.rs_regex_bytes.clone();
-
+    // Records are split from the live `RS`. A rule that assigns `RS` governs the
+    // *next* record (POSIX), so once a record's rules have run under a different
+    // `RS` the unread tail is split afresh under the new one.
     let mut count = 0usize;
+    let mut start = 0usize;
+    loop {
+        rt.ensure_rs_regex_bytes()?;
+        let rs = rt.rs_string();
+        let re_owned = rt.rs_regex_bytes.clone();
+        let tail = &data[start..];
 
-    if rs == crate::record_io::CSV_RS {
-        for (rec, terminated) in crate::record_io::split_csv_records(data) {
-            count += 1;
-            let rtb: &[u8] = if terminated { b"\n" } else { b"" };
-            if dispatch_slurp_record(cp, range_state, rt, &rec, rtb)? {
-                break;
+        if rs == crate::record_io::CSV_RS {
+            for (rec, terminated) in crate::record_io::split_csv_records(tail) {
+                count += 1;
+                let rtb: &[u8] = if terminated { b"\n" } else { b"" };
+                if dispatch_slurp_record(cp, range_state, rt, &rec, rtb)? {
+                    break;
+                }
             }
-        }
-        return Ok(count);
-    }
-
-    if let Some(regex) = re_owned.as_ref() {
-        if data.is_empty() {
-            return Ok(0);
-        }
-        let mut last = 0usize;
-        for m in crate::record_io::record_separator_matches(regex, data) {
-            let chunk = &data[last..m.start()];
-            last = m.end();
-            count += 1;
-            if dispatch_slurp_record(cp, range_state, rt, chunk, m.as_bytes())? {
-                return Ok(count);
-            }
-        }
-        let chunk = &data[last..];
-        count += 1;
-        if dispatch_slurp_record(cp, range_state, rt, chunk, b"")? {
             return Ok(count);
         }
-        return Ok(count);
-    }
 
-    let chunks = crate::record_io::split_input_into_records(data, &rs, None);
-    for chunk in chunks {
-        count += 1;
-        let rtb: &[u8] = if rs.is_empty() { b"\n" } else { rs.as_bytes() };
-        if dispatch_slurp_record(cp, range_state, rt, chunk, rtb)? {
-            break;
+        // Each record with the offset (into `data`) just past its separator.
+        let mut resume = None;
+        if let Some(regex) = re_owned.as_ref() {
+            if tail.is_empty() {
+                return Ok(count);
+            }
+            let mut last = 0usize;
+            for m in crate::record_io::record_separator_matches(regex, tail) {
+                let chunk = &tail[last..m.start()];
+                last = m.end();
+                count += 1;
+                if dispatch_slurp_record(cp, range_state, rt, chunk, m.as_bytes())? {
+                    return Ok(count);
+                }
+                if !rt.rs_is(&rs) {
+                    resume = Some(start + last);
+                    break;
+                }
+            }
+            if resume.is_none() {
+                count += 1;
+                dispatch_slurp_record(cp, range_state, rt, &tail[last..], b"")?;
+                return Ok(count);
+            }
+        } else {
+            let rtb: &[u8] = if rs.is_empty() { b"\n" } else { rs.as_bytes() };
+            let base = tail.as_ptr() as usize;
+            for chunk in crate::record_io::split_input_into_records(tail, &rs, None) {
+                count += 1;
+                if dispatch_slurp_record(cp, range_state, rt, chunk, rtb)? {
+                    return Ok(count);
+                }
+                if !rt.rs_is(&rs) {
+                    let end = chunk.as_ptr() as usize - base + chunk.len();
+                    let next = if rs.is_empty() {
+                        crate::record_io::skip_blank_lines(tail, end)
+                    } else {
+                        (end + rs.len()).min(tail.len())
+                    };
+                    resume = Some(start + next);
+                    break;
+                }
+            }
+        }
+        match resume {
+            Some(next) => start = next,
+            None => return Ok(count),
         }
     }
-    Ok(count)
 }
 
 /// Ultra-fast inlined record loop for single-rule programs with one fused opcode.

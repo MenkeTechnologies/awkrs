@@ -447,6 +447,19 @@ fn split_lines_unix(data: &[u8]) -> Vec<&[u8]> {
     v
 }
 
+/// Offset of the first byte at or after `pos` that is not part of a paragraph-mode
+/// separator: the rest of the line `pos` sits on, then every whitespace-only line.
+pub fn skip_blank_lines(data: &[u8], mut pos: usize) -> usize {
+    while pos < data.len() {
+        let eol = memchr(b'\n', &data[pos..]).map_or(data.len(), |i| pos + i);
+        if !data[pos..eol].iter().all(|b| b.is_ascii_whitespace()) {
+            break;
+        }
+        pos = (eol + 1).min(data.len());
+    }
+    pos
+}
+
 /// `RS == ""` — records separated by one or more blank lines (gawk paragraph mode).
 fn split_paragraph_mmap(data: &[u8]) -> Vec<&[u8]> {
     let mut out = Vec::new();

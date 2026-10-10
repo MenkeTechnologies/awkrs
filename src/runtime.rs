@@ -3479,6 +3479,19 @@ impl Runtime {
         }
     }
 
+    /// Whether `RS` currently equals `rs` (a prior [`Self::rs_string`]), without
+    /// allocating on the common path: a record loop asks this once per record.
+    pub fn rs_is(&self, rs: &str) -> bool {
+        if !self.csv_mode {
+            if let Some(Value::Str(s)) = self.get_global_var("RS") {
+                if s.as_bytes() == rs.as_bytes() {
+                    return true;
+                }
+            }
+        }
+        self.rs_string() == rs
+    }
+
     pub fn rs_string(&self) -> String {
         // `--csv` ignores `RS`: records come from gawk's `csvscan` rule.
         if self.csv_mode {
