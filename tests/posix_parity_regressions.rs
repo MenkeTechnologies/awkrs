@@ -3506,3 +3506,21 @@ fn index_rejects_regex_literal_second_argument_before_running() {
     assert_eq!(code, 0);
     assert_eq!(stdout, "1 2 2\n");
 }
+
+/// gawk's `parse_next_arg`: once any conversion has used `count$`, a format
+/// must use it on every conversion, and a `count$` after a sequential argument
+/// was consumed is just as fatal (exit 2). awkrs used to mix the two silently,
+/// printing `a a` for `%1$s %s`. mawk and one-true-awk reject `$` outright.
+#[test]
+fn printf_mixing_positional_and_sequential_is_fatal() {
+    for fmt in ["%1$s %s", "%s %1$s", "%1$d %*d"] {
+        let program = format!("BEGIN {{ printf \"{fmt}\\n\", 1, 2; print \"after\" }}");
+        let (code, stdout, stderr) = run_awkrs_stdin(&program, "");
+        assert_eq!(code, 2, "{fmt}");
+        assert_eq!(stdout, "", "{fmt}");
+        assert!(
+            stderr.contains("must use `count$' on all formats or none"),
+            "{fmt}: {stderr:?}"
+        );
+    }
+}

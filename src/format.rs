@@ -130,8 +130,9 @@ fn star_operand(v: &Value) -> i64 {
 /// still converts). A format that ends inside a spec is copied literally too
 /// (`%5` prints `%5`). `%%` emits one `%` whatever flags precede it.
 ///
-/// Positional `n$` values and `*n$` operands keep awkrs's own rules for mixing
-/// with sequential arguments, which the unit tests pin.
+/// Positional `n$` arguments follow gawk's `parse_next_arg`: a format uses
+/// `count$` on every conversion or on none, and a `*n$` operand reads argument
+/// n without moving the sequential cursor.
 fn format_tree(
     fmt: &str,
     vals: &[Value],
@@ -144,6 +145,8 @@ fn format_tree(
     let n = b.len();
     let mut out = AwkStr::new();
     let mut vi = 0usize;
+    // gawk `used_dollar`: set by the first `count$` and never cleared.
+    let mut used_dollar = false;
     // `s0`: start of the text not yet copied out; `s1`: the scan position.
     let mut s0 = 0usize;
     let mut s1 = 0usize;
@@ -218,24 +221,36 @@ fn format_tree(
                     }
                 }
                 b'$' => {
-                    if cur != SpecTarget::Width {
-                        return Err("sprintf: `$' not permitted after period in format".into());
+                    // gawk: digits before `$` name the argument, whether they were
+                    // read as the width (`%2$d`) or the precision (`%.2$d`, which
+                    // leaves a precision of 0).
+                    let k = if cur == SpecTarget::Width {
+                        std::mem::take(&mut fw)
+                    } else {
+                        std::mem::take(&mut prec)
+                    };
+                    used_dollar = true;
+                    if k <= 0 {
+                        return Err("sprintf: argument index with `$' must be > 0".into());
                     }
-                    if fw <= 0 {
-                        return Err("sprintf: positional argument was 0".into());
+                    if k as usize > vals.len() {
+                        return Err(format!(
+                            "sprintf: argument index {k} greater than total number of supplied arguments"
+                        ));
                     }
-                    let k = fw as usize;
-                    if k > vals.len() {
-                        return Err("sprintf: invalid positional argument".into());
-                    }
-                    argnum = Some(k);
-                    fw = 0;
+                    argnum = Some(k as usize);
                 }
                 b'*' => {
                     if cur == SpecTarget::Closed {
                         break;
                     }
-                    let v = if s1 < n && b[s1].is_ascii_digit() {
+                    let digit_follows = s1 < n && b[s1].is_ascii_digit();
+                    if used_dollar && !digit_follows {
+                        return Err(MIXED_DOLLAR.into());
+                    }
+                    let v = if digit_follows {
+                        // `*N$` reads the operand from argument N without moving
+                        // the sequential cursor or committing the format to `$`.
                         let k = spec_digits(b, &mut s1, 0);
                         if s1 >= n || b[s1] != b'$' {
                             return Err(
@@ -244,15 +259,17 @@ fn format_tree(
                             );
                         }
                         s1 += 1;
-                        if k <= 0 {
-                            return Err("sprintf: positional argument was 0".into());
+                        if k < 0 || k as usize > vals.len() {
+                            return Err("sprintf: not enough arguments".into());
                         }
-                        let k = k as usize;
-                        let v = val_at(vals, k)?;
-                        vi = vi.max(k);
-                        star_operand(v)
+                        if k == 0 {
+                            // gawk's argument 0 is the format string itself.
+                            star_operand(&Value::StrLit(fmt.into()))
+                        } else {
+                            star_operand(&vals[k as usize - 1])
+                        }
                     } else {
-                        star_operand(take_val(vals, &mut vi)?)
+                        star_operand(next_arg(vals, argnum, used_dollar, &mut vi)?)
                     };
                     match cur {
                         SpecTarget::Width => {
@@ -338,10 +355,7 @@ fn format_tree(
                 }
                 c if is_known_conv(c as char) => {
                     let conv = c as char;
-                    let v = match argnum {
-                        Some(k) => val_at(vals, k)?,
-                        None => take_val(vals, &mut vi)?,
-                    };
+                    let v = next_arg(vals, argnum, used_dollar, &mut vi)?;
                     let width = (fw != 0).then(|| fw.clamp(0, MAX_FMT_WIDTH) as usize);
                     let prec = (have_prec && prec >= 0).then_some(prec as usize);
                     let piece = if conv == 's' || conv == 'c' {
@@ -389,17 +403,32 @@ fn format_tree(
     Ok(out)
 }
 
-fn take_val<'a>(vals: &'a [Value], vi: &mut usize) -> Result<&'a Value, String> {
+const MIXED_DOLLAR: &str = "sprintf: must use `count$' on all formats or none";
+
+/// Port of gawk's `parse_next_arg`: the argument a conversion (or a plain `*`)
+/// consumes. A `count$` spec reads its argument directly, but only while no
+/// sequential argument has been consumed yet; once any spec has used `$`, a
+/// spec without one is fatal. Otherwise arguments are taken in order.
+fn next_arg<'a>(
+    vals: &'a [Value],
+    argnum: Option<usize>,
+    used_dollar: bool,
+    vi: &mut usize,
+) -> Result<&'a Value, String> {
+    if let Some(k) = argnum {
+        if *vi > 0 {
+            return Err(MIXED_DOLLAR.into());
+        }
+        return Ok(&vals[k - 1]);
+    }
+    if used_dollar {
+        return Err(MIXED_DOLLAR.into());
+    }
     let v = vals
         .get(*vi)
         .ok_or_else(|| "sprintf: not enough arguments".to_string())?;
     *vi += 1;
     Ok(v)
-}
-
-fn val_at(vals: &[Value], one_based: usize) -> Result<&Value, String> {
-    vals.get(one_based - 1)
-        .ok_or_else(|| "sprintf: invalid positional argument".to_string())
 }
 
 /// Conversion letters that `format_one` understands. Anything outside this set is
@@ -1543,24 +1572,31 @@ mod tests {
 
     #[test]
     fn positional_and_sequential_mixed() {
-        let s = awk_sprintf(
+        // gawk 5.4 rejects any mix of `count$` and sequential conversions.
+        let e = awk_sprintf(
             "%d %3$d %d",
             &[Value::Num(1.0), Value::Num(2.0), Value::Num(3.0)],
         )
-        .unwrap();
-        assert_eq!(s, "1 3 2");
+        .unwrap_err();
+        assert!(
+            e.contains("must use `count$' on all formats or none"),
+            "{e}"
+        );
     }
 
     #[test]
     fn star_positional_width() {
         let s = awk_sprintf("%*1$d", &[Value::Num(4.0), Value::Num(7.0)]).unwrap();
-        assert_eq!(s, "   7");
+        assert_eq!(s, "   4");
+        // The next sequential conversion still starts at argument 1's successor.
+        let s = awk_sprintf("%*1$d %d", &[Value::Num(4.0), Value::Num(7.0)]).unwrap();
+        assert_eq!(s, "   4 7");
     }
 
     #[test]
     fn star_positional_precision() {
         let s = awk_sprintf("%.*1$f", &[Value::Num(3.0), Value::Num(1.234567)]).unwrap();
-        assert_eq!(s, "1.235");
+        assert_eq!(s, "3.000");
     }
 
     #[test]
@@ -1570,7 +1606,7 @@ mod tests {
             &[Value::Num(5.0), Value::Num(4.0), Value::Num(9.0)],
         )
         .unwrap();
-        assert_eq!(s, "   9");
+        assert_eq!(s, "   5");
     }
 
     #[test]
@@ -1592,7 +1628,7 @@ mod tests {
             &[Value::Num(9.0), Value::Num(2.0), Value::Num(PI)],
         )
         .unwrap();
-        assert_eq!(s, "3.14");
+        assert_eq!(s, "9.00");
     }
 
     #[test]
@@ -2039,27 +2075,40 @@ mod tests {
     #[test]
     fn format_positional_out_of_bounds() {
         let e = awk_sprintf("%2$d", &[Value::Num(1.0)]).unwrap_err();
-        assert!(e.contains("positional"), "{e}");
+        assert!(
+            e.contains("argument index 2 greater than total number of supplied arguments"),
+            "{e}"
+        );
     }
 
     #[test]
     fn format_mixed_positional_and_sequential_fails_consistently() {
-        // POSIX allows mixing only if they are independent, but many implementations error.
-        // Let's check awkrs behavior.
-        let s = awk_sprintf("%d %1$d", &[Value::Num(1.0)]).unwrap();
-        assert_eq!(s, "1 1");
+        // gawk 5.4: a `count$` spec after a sequential one is fatal.
+        let e = awk_sprintf("%d %1$d", &[Value::Num(1.0)]).unwrap_err();
+        assert!(
+            e.contains("must use `count$' on all formats or none"),
+            "{e}"
+        );
+        // ... and so is a sequential spec after a `count$` one.
+        let e = awk_sprintf("%1$d %d", &[Value::Num(1.0), Value::Num(2.0)]).unwrap_err();
+        assert!(
+            e.contains("must use `count$' on all formats or none"),
+            "{e}"
+        );
     }
 
     #[test]
     fn format_star_width_positional_mismatch() {
-        // %*1$d uses arg 1 for width, next sequential arg for value.
+        // gawk: `*1$` does not advance the sequential cursor, so the value is
+        // argument 1 as well, and the second argument is left unused.
         let s = awk_sprintf("%*1$d", &[Value::Num(5.0), Value::Num(42.0)]).unwrap();
-        assert_eq!(s, "   42");
+        assert_eq!(s, "    5");
     }
 
     #[test]
     fn format_positional_star_width_and_precision() {
-        // %*1$.*2$f uses arg 1 for width, arg 2 for precision, next sequential arg for value.
+        // gawk: `*1$` / `*2$` read width and precision without moving the
+        // sequential cursor, so the value is argument 1 again.
         let s = awk_sprintf(
             "%*1$.*2$f",
             &[
@@ -2069,7 +2118,7 @@ mod tests {
             ],
         )
         .unwrap();
-        assert_eq!(s, "      3.14");
+        assert_eq!(s, "     10.00");
     }
 
     #[test]
@@ -2578,32 +2627,33 @@ mod tests {
 
     #[test]
     fn format_star_positional_v3() {
-        // %*1$d
+        // %*1$d: width 5 from argument 1, value also argument 1 (gawk).
         assert_eq!(
             awk_sprintf("%*1$d", &[Value::Num(5.0), Value::Num(42.0)]).unwrap(),
-            "   42"
+            "    5"
         );
     }
 
     #[test]
     fn format_star_positional_precision_v3() {
-        // %.*1$d
+        // %.*1$d: precision 5 from argument 1, value also argument 1 (gawk).
         assert_eq!(
             awk_sprintf("%.*1$d", &[Value::Num(5.0), Value::Num(42.0)]).unwrap(),
-            "00042"
+            "00005"
         );
     }
 
     #[test]
     fn format_star_positional_width_and_precision_v3() {
-        // %*1$.*2$d using args 1 and 2 for width/prec
+        // %*1$.*2$d: width 8 and precision 5 from args 1 and 2; the value is the
+        // first sequential argument, 8 (gawk).
         assert_eq!(
             awk_sprintf(
                 "%*1$.*2$d",
                 &[Value::Num(8.0), Value::Num(5.0), Value::Num(42.0)]
             )
             .unwrap(),
-            "   00042"
+            "   00008"
         );
     }
 

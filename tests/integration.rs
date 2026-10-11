@@ -393,9 +393,10 @@ fn printf_statement_no_parens() {
 
 #[test]
 fn sprintf_star_positional_width() {
+    // gawk: `*1$` does not advance the sequential cursor; the value is argument 1.
     let (code, stdout, _) = run_awkrs_stdin("BEGIN { print sprintf(\"%*1$d\", 4, 9) }", "");
     assert_eq!(code, 0);
-    assert_eq!(stdout, "   9\n");
+    assert_eq!(stdout, "   4\n");
 }
 
 #[test]
@@ -490,9 +491,10 @@ fn fflush_unknown_target_errors() {
 
 #[test]
 fn sprintf_star_width_second_arg_end_to_end() {
+    // gawk: width 4 from argument 2, value from the first sequential argument.
     let (code, stdout, _) = run_awkrs_stdin(r#"BEGIN { print sprintf("%*2$d", 5, 4, 9) }"#, "");
     assert_eq!(code, 0);
-    assert_eq!(stdout, "   9\n");
+    assert_eq!(stdout, "   5\n");
 }
 
 #[test]

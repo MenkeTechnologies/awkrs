@@ -1482,7 +1482,7 @@
         <h3><a class="doc-anchor" href="#doc-n-positional-argument">#</a> <code>N$ (positional argument)</code></h3>
         <pre><code class="lang-awk">printf &quot;%2$s %1$s\n&quot;, &quot;a&quot;, &quot;b&quot;
 </code></pre>
-        <p>Select the Nth argument explicitly instead of consuming the next one — the example prints <code>b a</code>. Useful when a translated format string needs a different argument order than the original.</p>
+        <p>Select the Nth argument explicitly instead of consuming the next one — the example prints <code>b a</code>. Useful when a translated format string needs a different argument order than the original. As in gawk, a format uses <code>N$</code> on every conversion or on none; <code>*N$</code> reads a width or precision from argument N without moving the sequential cursor.</p>
       </article>
       <article class="doc-entry" id="doc-h-l-l-length-modifiers">
         <h3><a class="doc-anchor" href="#doc-h-l-l-length-modifiers">#</a> <code>h, l, L (length modifiers)</code></h3>

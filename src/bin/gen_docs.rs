@@ -1048,7 +1048,9 @@ const PRINTF_MODIFIERS: &[Entry] = &[
         lang: "awk",
         desc: "Select the Nth argument explicitly instead of consuming the next one — the example \
                prints `b a`. Useful when a translated format string needs a different argument \
-               order than the original.",
+               order than the original. As in gawk, a format uses `N$` on every conversion or on none; \
+               `*N$` reads a width or precision from argument N without moving the sequential \
+               cursor.",
     },
     Entry {
         name: "h, l, L (length modifiers)",

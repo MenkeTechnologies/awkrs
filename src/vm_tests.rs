@@ -2806,9 +2806,10 @@ fn vm_printf_many_args() {
 
 #[test]
 fn vm_printf_positional_star_width() {
-    // positional width + sequential value
+    // gawk: `*1$` takes the width from argument 1 without advancing the
+    // sequential cursor, so the value is argument 1 too.
     let out = run_begin_capture("BEGIN { printf \"%*1$d\", 5, 42 }");
-    assert_eq!(out, "   42");
+    assert_eq!(out, "    5");
 }
 
 #[test]
