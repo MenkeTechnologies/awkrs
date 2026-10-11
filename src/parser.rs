@@ -47,6 +47,13 @@ fn builtin_regex_pattern_arg(fname: &str, arg_index: usize) -> bool {
         _ => false,
     }
 }
+
+/// `/re/` parsed in value position: the `$0 ~ /re/` it desugars to, unextended.
+fn is_bare_regex_match(e: &Expr) -> bool {
+    matches!(e, Expr::Binary { op: BinOp::Match, left, right: _ }
+        if matches!(left.as_ref(), Expr::Field(n) if matches!(n.as_ref(), Expr::Number(z) if *z == 0.0)))
+}
+
 /// [`parse_program`] for source that may hold a byte no `&str` can name.
 ///
 /// gawk, mawk and one-true-awk all accept such a byte inside a string literal,
@@ -1910,7 +1917,22 @@ impl<'a> Parser<'a> {
                             // a regex regardless, so only `split` needs the marker.
                             let literal_re =
                                 name == "split" && matches!(self.cur, Token::Regexp(_));
+                            let starts_with_re = matches!(self.cur, Token::Regexp(_));
                             let arg = self.parse_expr_allow_gt(false, re_for_arg)?;
+                            // gawk and one-true-awk reject `index(s, /re/)` while
+                            // parsing (mawk quietly searches for "0" or "1"). Both
+                            // raise it as a fatal, not a syntax error, and exit 2,
+                            // which is the status awkrs gives `Error::Runtime`.
+                            if name == "index"
+                                && args.len() == 1
+                                && starts_with_re
+                                && is_bare_regex_match(&arg)
+                            {
+                                return Err(Error::Runtime(
+                                    "index: regexp constant as second argument is not allowed"
+                                        .into(),
+                                ));
+                            }
                             args.push(match arg {
                                 Expr::Str(s) if literal_re => {
                                     Expr::RegexpLiteral(s.to_lossy_string().into())

@@ -3485,3 +3485,24 @@ fn for_in_key_and_asorti_index_compare_as_strings() {
     assert_eq!(code, 0);
     assert_eq!(stdout, "string 1\nstring 1\n");
 }
+
+/// gawk and one-true-awk reject a regex literal as `index`'s second argument
+/// while parsing, so even an earlier `BEGIN` never prints, and both exit 2.
+/// awkrs used to evaluate `/b/` as `$0 ~ /b/` and search for "0" (mawk's
+/// reading). A regex in the first argument, or one inside a larger expression,
+/// is an ordinary value and stays legal.
+#[test]
+fn index_rejects_regex_literal_second_argument_before_running() {
+    let (code, stdout, stderr) =
+        run_awkrs_stdin("BEGIN { print \"x\" } END { print index(\"a\", /b/) }", "");
+    assert_eq!(code, 2);
+    assert_eq!(stdout, "");
+    assert!(stderr.contains("index: regexp constant"), "{stderr:?}");
+
+    let (code, stdout, _) = run_awkrs_stdin(
+        "BEGIN { print index(/b/, \"0\"), index(\"a0\", /b/ \"\"), index(\"a0\", $0 ~ /b/) }",
+        "",
+    );
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "1 2 2\n");
+}
