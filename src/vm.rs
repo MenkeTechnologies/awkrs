@@ -727,7 +727,8 @@ fn exec_asort(
         .into_iter()
         .enumerate()
         .map(|(i, (k, v))| {
-            let out = if by_value { v } else { Value::Str(k) };
+            // `asorti` stores indices, which are strings, never numeric strings.
+            let out = if by_value { v } else { Value::StrLit(k) };
             (format!("{}", i + 1), out)
         })
         .collect();
@@ -2537,7 +2538,9 @@ fn execute_chunk(chunk: &Chunk, ctx: &mut VmCtx<'_>) -> Result<VmSignal> {
                 // Move key out of the snapshot vec — avoids cloning each `String`.
                 let key = mem::take(&mut state.keys[state.index]);
                 state.index += 1;
-                ctx.set_var_interned(var, Value::Str(key))?;
+                // An array index is a string, never a numeric string: gawk and
+                // one-true-awk compare `k < 9` for `k == "10"` as strings.
+                ctx.set_var_interned(var, Value::StrLit(key))?;
             }
             Op::ForInEnd => {
                 ctx.for_in_iters.pop();

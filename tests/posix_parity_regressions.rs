@@ -3469,3 +3469,19 @@ fn getline_file_operand_excludes_concatenation_and_comparison() {
     assert_eq!(code, 0, "stderr {err:?}");
     assert_eq!(out, "[first]\n1 first\nfirst\n");
 }
+
+/// An array index is a string, never a numeric string, so the loop variable of
+/// `for (k in a)` compares as a string even when the index came from a numeric
+/// field: `"10" < 9` is true. gawk and one-true-awk agree (mawk compares
+/// numerically). awkrs used to bind `k` as a strnum and answer 0. gawk's
+/// `asorti` destination values are indices too and follow the same rule.
+#[test]
+fn for_in_key_and_asorti_index_compare_as_strings() {
+    let (code, stdout, _) = run_awkrs_stdin(
+        "{ a[$1]; for (k in a) print typeof(k), (k < 9) }
+         END { b[\"10\"]; asorti(b, d); print typeof(d[1]), (d[1] < 9) }",
+        "10\n",
+    );
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "string 1\nstring 1\n");
+}
