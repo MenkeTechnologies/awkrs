@@ -3173,6 +3173,8 @@ fn builtin_arity(name: &str) -> Option<(usize, usize)> {
     Some(match name {
         "rand" | "systime" => (0, 0),
         "length" | "srand" => (0, 1),
+        "bindtextdomain" => (1, 2),
+        "dcgettext" => (1, 3),
         "strftime" => (0, 3),
         "cos" | "exp" | "int" | "log" | "sin" | "sqrt" | "system" | "tolower" | "toupper" => (1, 1),
         "close" | "mktime" => (1, 2),
@@ -3181,6 +3183,8 @@ fn builtin_arity(name: &str) -> Option<(usize, usize)> {
         "gsub" | "match" | "sub" | "substr" => (2, 3),
         "patsplit" | "split" => (2, 4),
         "gensub" => (3, 4),
+        // gawk's grammar admits 1..5; `do_dcngettext` fatals at run time below 3.
+        "dcngettext" => (1, 5),
         _ => return None,
     })
 }

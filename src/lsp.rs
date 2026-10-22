@@ -992,16 +992,16 @@ pub fn builtin_signature(name: &str) -> Option<(&'static str, &'static str)> {
             "Sleep for `sec` seconds, fractions included, and return 0; a negative argument returns -1 and sets `ERRNO` (gawk `time`).",
         ),
         "bindtextdomain" => (
-            "bindtextdomain(domain, dirname)",
-            "Set `TEXTDOMAIN` to `domain`, point the catalog search at `dirname`, and load that catalog if present; returns `dirname`. Both arguments are required, and awkrs takes them in `(domain, dirname)` order.",
+            "bindtextdomain(directory [, domain])",
+            "Bind `domain` (default `TEXTDOMAIN`) to the catalog directory `directory`, load that catalog if present, and return the directory; an empty `directory` only reports the current binding. gawk argument order.",
         ),
         "dcgettext" => (
-            "dcgettext(string, domain, category)",
-            "Translate `string` through the loaded `domain` catalog, returning `string` unchanged when no catalog is loaded. All three arguments are required and `category` is accepted but not used for lookup.",
+            "dcgettext(string [, domain [, category]])",
+            "Translate `string` through the catalog bound to `domain` (default `TEXTDOMAIN`), returning `string` unchanged when no catalog is loaded. `category` (default `LC_MESSAGES`) must name a locale category, as in gawk, but does not affect the lookup.",
         ),
         "dcngettext" => (
-            "dcngettext(s1, s2, n, domain, category)",
-            "Plural-aware translation of `s1`/`s2` for count `n` through the `domain` catalog; with no catalog loaded, returns `s1` when `n` is 1 and `s2` otherwise. All five arguments are required and `category` is accepted but not used for lookup.",
+            "dcngettext(string1, string2, number [, domain [, category]])",
+            "Plural-aware translation of `string1`/`string2` for count `number` through the catalog bound to `domain` (default `TEXTDOMAIN`); with no catalog loaded, returns `string1` when `number` is 1 and `string2` otherwise. `category` is validated like `dcgettext`'s.",
         ),
         "intercept" => (
             "intercept(kind, pattern, code)",

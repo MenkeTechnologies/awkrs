@@ -1605,8 +1605,10 @@ pub struct Runtime {
     pub inet_tcp_write: HashMap<String, TcpStream>,
     /// gawk `/inet/udp/...` connected UDP sockets (one per path; `recv` / `send` datagrams).
     pub inet_udp: HashMap<String, UdpSocket>,
-    /// Last `bindtextdomain` directory (gettext stub / future real i18n).
-    pub gettext_dir: String,
+    /// `bindtextdomain` bindings: text domain → catalog directory. gawk keeps one
+    /// directory per domain (glibc `bindtextdomain`), and `bindtextdomain("")`
+    /// reports the directory currently bound to the domain without changing it.
+    pub gettext_dirs: HashMap<String, String>,
     /// `-M` / `--bignum`: use MPFR ([`Value::Mpfr`]) for arithmetic in the VM.
     pub bignum: bool,
     /// Seed last given to `srand` (what the next `srand` returns).
@@ -2368,7 +2370,8 @@ impl Runtime {
         vars.insert("IGNORECASE".into(), Value::Num(0.0));
         vars.insert("BINMODE".into(), Value::Num(0.0));
         vars.insert("LINT".into(), Value::Num(0.0));
-        vars.insert("TEXTDOMAIN".into(), Value::Str(String::new().into()));
+        // gawk's default text domain (`TEXTDOMAIN` in main.c / `print TEXTDOMAIN`).
+        vars.insert("TEXTDOMAIN".into(), Value::Str("messages".into()));
         Self {
             vars,
             global_readonly: None,
@@ -2396,7 +2399,7 @@ impl Runtime {
             inet_tcp_read: HashMap::new(),
             inet_tcp_write: HashMap::new(),
             inet_udp: HashMap::new(),
-            gettext_dir: String::new(),
+            gettext_dirs: HashMap::new(),
             bignum: false,
             read_timeout_env: Cell::new(None),
             fs_regex: None,
@@ -2903,7 +2906,7 @@ impl Runtime {
             inet_tcp_read: HashMap::new(),
             inet_tcp_write: HashMap::new(),
             inet_udp: HashMap::new(),
-            gettext_dir: String::new(),
+            gettext_dirs: HashMap::new(),
             bignum,
             read_timeout_env: Cell::new(None),
             fs_regex: None,
@@ -5612,7 +5615,7 @@ impl Clone for Runtime {
             inet_tcp_read: HashMap::new(),
             inet_tcp_write: HashMap::new(),
             inet_udp: HashMap::new(),
-            gettext_dir: self.gettext_dir.clone(),
+            gettext_dirs: self.gettext_dirs.clone(),
             bignum: self.bignum,
             read_timeout_env: Cell::new(None),
             fs_regex: None,

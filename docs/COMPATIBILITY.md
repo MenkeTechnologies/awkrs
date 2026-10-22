@@ -122,7 +122,7 @@ References: special variables and builtins lists in `src/compiler.rs` (`SPECIAL_
 | `IGNORECASE` | Part | Part | Yes | **Match** — applies to multi-char regex FS, `match`/`sub`/`gsub`/`split`/`gensub`, and `~`/`!~`. Single-char string FS (and single-char `split` separator) is always literal, independent of `IGNORECASE` (gawk parity). |
 | `BINMODE` | No | No | Yes | **Part** |
 | `LINT` | No | No | Yes | **Part** |
-| `TEXTDOMAIN` | No | No | Yes | **Part** (gettext path) |
+| `TEXTDOMAIN` | No | No | Yes | **Match** — starts as `"messages"`, gawk's default domain, and is the domain `dcgettext` / `dcngettext` / `bindtextdomain` fall back to when their `domain` argument is omitted. awkrs used to start it empty and let `bindtextdomain` overwrite it. |
 
 ---
 
@@ -142,11 +142,11 @@ Columns: **P** = POSIX / universal core, **B** = BSD awk, **M** = mawk, **G** = 
 | `strtonum` | *¹ | Part | Part | Yes | **Match** |
 | `asort` `asorti` | — | — | — | Yes | **Match** — including the third argument: an `@ind_*` / `@val_*` ordering or a `(i1, v1, i2, v2)` comparison function. |
 | `gensub` `patsplit` | — | — | — | Yes | **Part** |
-| `mktime` `strftime` `systime` `gettimeofday` | — | — | Part | Yes | **Part** |
+| `mktime` `strftime` `systime` `gettimeofday` | — | — | Part | Yes | **Part** — `systime()` returns whole seconds (`(long) time(NULL)` in gawk), so `systime() == int(systime())` and `mktime(strftime("%Y %m %d %H %M %S", t)) == t` hold; awkrs used to return the sub-second fraction too, which also made `print systime()` show `1.79271e+09` under the default `OFMT`. `strftime` truncates its timestamp toward zero like gawk's `(time_t)` cast and keeps no fraction (`strftime("%Y", -0.9, 1)` is `1970`, `strftime("%S", 1.999, 1)` is `01`); awkrs used to floor it, giving `1969`. |
 | `and` `or` `xor` `compl` `lshift` `rshift` | — | — | — | Yes | **Match** — every one computes in 64-bit unsigned arithmetic on `(uintmax_t)`-cast operands and narrows the result to a double's 53 bits like gawk's `adjust_uint`: `compl(0)` = 9007199254740991 (not -1), `or(2^54, 1)` = 1, and a shift count of 64 or more yields 0 (`lshift(1, 70)` = 0) instead of being masked to 6 bits, as in gawk 5.4.1 (gawk 5.2.1 on x86-64 still shifts by the count modulo 64). The fold of `and`/`or`/`xor` narrows once, after the last argument. awkrs used to work on a sign-wrapped `i64`, so `or(2^54, 1)` printed 18014398509481984, `xor(2^60, 1)` 1152921504606846976, `lshift(1, 70)` 64 and `compl(2^64)` 9223372036854775808. An operand of 2^64 or more is an undefined C cast in gawk; awkrs saturates it as the aarch64 build does (`compl(2^64)` = 0). Under `-M` gawk works on the unbounded integer and so does awkrs: `compl(0)` = -1, `or(2^70, 1)` = 2^70+1, `lshift(1, 70)` = 2^70 (awkrs masked the count and wrapped at 64 bits). |
 | `isarray` `typeof` `mkbool` | — | — | — | Yes | **Match** / **Part** |
 | `intdiv` `intdiv0` | — | — | — | Yes | **Match** |
-| `bindtextdomain` `dcgettext` `dcngettext` | — | — | — | Yes | **Part** (`gettext_util` / stubs) |
+| `bindtextdomain` `dcgettext` `dcngettext` | — | — | — | Yes | **Match** on gawk's signatures: `dcgettext(string [, domain [, category]])`, `dcngettext(string1, string2, number [, domain [, category]])` and `bindtextdomain(directory [, domain])`, with `domain` defaulting to `TEXTDOMAIN` and a `category` that must name a locale category (`` dcgettext: `BOGUS' is not a valid locale category `` is fatal, as in gawk). `bindtextdomain` returns the directory now bound to the domain, keeps one directory per domain, and with an empty `directory` only reports the current binding. awkrs used to require every argument, take `bindtextdomain(domain, directory)` in the reversed order, and set `TEXTDOMAIN` from it. Translations come from GNU `.mo` catalogs found under the bound directory (`gettext_util`); with no catalog the string comes back unchanged, and `dcngettext` picks `string1` only when `number` is 1. When no directory was ever bound, `bindtextdomain("")` returns `""` where gawk returns its compiled-in locale directory. |
 | `chdir` `stat` `statvfs` `fts` | — | — | — | Ext / Yes | **Match** / **Part** (`gawk_extensions.rs`) |
 | `readfile` `ord` `chr` `sleep` | — | — | — | Ext | **Match** (as builtins) |
 | `revoutput` `revtwoway` `rename` | — | — | — | Ext | **Match** |

@@ -696,25 +696,25 @@
       <p class="chapter-meta">3 topics</p>
       <article class="doc-entry" id="doc-bindtextdomain">
         <h3><a class="doc-anchor" href="#doc-bindtextdomain">#</a> <code>bindtextdomain</code></h3>
-        <pre><code class="lang-awk">bindtextdomain(domain, dirname)
+        <pre><code class="lang-awk">bindtextdomain(directory [, domain])
 </code></pre>
-        <p>Set <code>TEXTDOMAIN</code> to <code>domain</code>, point the catalog search at <code>dirname</code>, and load that catalog if present; returns <code>dirname</code>. Both arguments are required, and awkrs takes them in <code>(domain, dirname)</code> order.</p>
+        <p>Bind <code>domain</code> (default <code>TEXTDOMAIN</code>) to the catalog directory <code>directory</code>, load that catalog if present, and return the directory; an empty <code>directory</code> only reports the current binding. gawk argument order.</p>
         <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Neither fusevm route lowers it: the numeric-chunk offload treats the chunk as ineligible, and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend refuses to compile a program that calls it rather than lowering it to something approximate.</p>
         <p><strong>Restrictions.</strong> Rejected as a non-POSIX extension under <code>-P</code>/<code>--posix</code> and <code>-c</code>/<code>--traditional</code>.</p>
       </article>
       <article class="doc-entry" id="doc-dcgettext">
         <h3><a class="doc-anchor" href="#doc-dcgettext">#</a> <code>dcgettext</code></h3>
-        <pre><code class="lang-awk">dcgettext(string, domain, category)
+        <pre><code class="lang-awk">dcgettext(string [, domain [, category]])
 </code></pre>
-        <p>Translate <code>string</code> through the loaded <code>domain</code> catalog, returning <code>string</code> unchanged when no catalog is loaded. All three arguments are required and <code>category</code> is accepted but not used for lookup.</p>
+        <p>Translate <code>string</code> through the catalog bound to <code>domain</code> (default <code>TEXTDOMAIN</code>), returning <code>string</code> unchanged when no catalog is loaded. <code>category</code> (default <code>LC_MESSAGES</code>) must name a locale category, as in gawk, but does not affect the lookup.</p>
         <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Neither fusevm route lowers it: the numeric-chunk offload treats the chunk as ineligible, and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend refuses to compile a program that calls it rather than lowering it to something approximate.</p>
         <p><strong>Restrictions.</strong> Rejected as a non-POSIX extension under <code>-P</code>/<code>--posix</code> and <code>-c</code>/<code>--traditional</code>.</p>
       </article>
       <article class="doc-entry" id="doc-dcngettext">
         <h3><a class="doc-anchor" href="#doc-dcngettext">#</a> <code>dcngettext</code></h3>
-        <pre><code class="lang-awk">dcngettext(s1, s2, n, domain, category)
+        <pre><code class="lang-awk">dcngettext(string1, string2, number [, domain [, category]])
 </code></pre>
-        <p>Plural-aware translation of <code>s1</code>/<code>s2</code> for count <code>n</code> through the <code>domain</code> catalog; with no catalog loaded, returns <code>s1</code> when <code>n</code> is 1 and <code>s2</code> otherwise. All five arguments are required and <code>category</code> is accepted but not used for lookup.</p>
+        <p>Plural-aware translation of <code>string1</code>/<code>string2</code> for count <code>number</code> through the catalog bound to <code>domain</code> (default <code>TEXTDOMAIN</code>); with no catalog loaded, returns <code>string1</code> when <code>number</code> is 1 and <code>string2</code> otherwise. <code>category</code> is validated like <code>dcgettext</code>&#39;s.</p>
         <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Neither fusevm route lowers it: the numeric-chunk offload treats the chunk as ineligible, and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend refuses to compile a program that calls it rather than lowering it to something approximate.</p>
         <p><strong>Restrictions.</strong> Rejected as a non-POSIX extension under <code>-P</code>/<code>--posix</code> and <code>-c</code>/<code>--traditional</code>.</p>
       </article>

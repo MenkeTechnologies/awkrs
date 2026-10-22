@@ -1593,3 +1593,105 @@ fn delete_multidim_subscript_removes_composite_key() {
     assert_eq!(c, 0);
     assert_eq!(o, "0\n");
 }
+
+#[test]
+fn systime_returns_whole_seconds() {
+    // gawk: `(long) time(NULL)`; a fractional result printed `1.79271e+09` under
+    // the default OFMT and broke the strftime/mktime round trip.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { t = systime(); print (t == int(t)), (t > 1700000000), (mktime(strftime("%Y %m %d %H %M %S", t)) == t); print (t ~ /^[0-9]+$/) }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "1 1 1\n1\n");
+}
+
+#[test]
+fn strftime_truncates_timestamp_toward_zero() {
+    // gawk casts the timestamp with `(time_t)`: no flooring, no fraction.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { print strftime("%Y %H", -0.9, 1), strftime("%Y %H", 3599.9, 1), strftime("%Y %H", -3599.9, 1), strftime("%S", 1.999, 1) }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "1970 00 1970 00 1969 23 01\n");
+}
+
+#[test]
+fn textdomain_defaults_to_messages_and_is_not_rebound_by_bindtextdomain() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { print TEXTDOMAIN; bindtextdomain("/x", "dom"); print TEXTDOMAIN }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "messages\nmessages\n");
+}
+
+#[test]
+fn gettext_builtins_take_gawk_optional_arguments() {
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { print dcgettext("hello"), dcgettext("hello", "dom"), dcgettext("hello", "dom", "LC_MESSAGES"); print dcngettext("one", "many", 1), dcngettext("one", "many", 2), dcngettext("one", "many", 0, "d"), dcngettext("one", "many", 1, "d", "LC_TIME") }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "hello hello hello\none many many one\n");
+}
+
+#[test]
+fn bindtextdomain_takes_directory_first_and_queries_with_empty_directory() {
+    // gawk: bindtextdomain(directory [, domain]) returns the directory now bound
+    // to the domain (TEXTDOMAIN by default); "" only reports the current binding.
+    let (c, o, _) = run_awkrs_stdin(
+        r#"BEGIN { print bindtextdomain("/a", "zzz"); print "[" bindtextdomain("", "zzz") "]"; TEXTDOMAIN = "zzz"; print "[" bindtextdomain("") "]"; print bindtextdomain("/x"); print "[" bindtextdomain("") "]"; print "[" bindtextdomain("", "zzz") "]" }"#,
+        "",
+    );
+    assert_eq!(c, 0);
+    assert_eq!(o, "/a\n[/a]\n[/a]\n/x\n[/x]\n[/x]\n");
+}
+
+#[test]
+fn dcgettext_rejects_invalid_locale_category() {
+    let (c, o, e) = run_awkrs_stdin(r#"BEGIN { print dcgettext("x", "", "BOGUS") }"#, "");
+    assert_eq!(c, 2);
+    assert_eq!(o, "");
+    assert!(
+        e.contains("dcgettext: `BOGUS' is not a valid locale category"),
+        "stderr: {e}"
+    );
+    // gawk words dcngettext's category error with `dcgettext:` too.
+    let (c, _, e) = run_awkrs_stdin(r#"BEGIN { print dcngettext("a", "b", 1, "", "nope") }"#, "");
+    assert_eq!(c, 2);
+    assert!(
+        e.contains("dcgettext: `nope' is not a valid locale category"),
+        "stderr: {e}"
+    );
+}
+
+#[test]
+fn gettext_builtins_argument_count_errors() {
+    // Out-of-range counts are rejected before the program runs (exit 1), as
+    // gawk's grammar does; dcngettext with fewer than 3 passes the grammar in
+    // gawk and is a run-time fatal (exit 2).
+    for prog in [
+        r#"BEGIN { print "ran"; print dcgettext() }"#,
+        r#"BEGIN { print "ran"; print dcgettext("a", "b", "c", "d") }"#,
+        r#"BEGIN { print "ran"; print bindtextdomain() }"#,
+        r#"BEGIN { print "ran"; print bindtextdomain("a", "b", "c") }"#,
+        r#"BEGIN { print "ran"; print dcngettext("a", "b", 1, "d", "LC_ALL", "x") }"#,
+    ] {
+        let (c, o, e) = run_awkrs_stdin(prog, "");
+        assert_eq!(c, 1, "{prog}: {e}");
+        assert_eq!(o, "", "{prog}");
+        assert!(
+            e.contains("is invalid as number of arguments for"),
+            "{prog}: {e}"
+        );
+    }
+    let (c, o, e) = run_awkrs_stdin(r#"BEGIN { print dcngettext("a", "b") }"#, "");
+    assert_eq!(c, 2);
+    assert_eq!(o, "");
+    assert!(
+        e.contains("dcngettext: called with 2 arguments"),
+        "stderr: {e}"
+    );
+}

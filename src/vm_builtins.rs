@@ -578,49 +578,71 @@ pub(crate) fn exec_builtin_dispatch(
                 _ => 0.0,
             })
         }
+        // gawk `bindtextdomain(directory [, domain])` (builtin.c `do_bindtextdomain`):
+        // the directory comes first, `domain` defaults to `TEXTDOMAIN`, an empty
+        // `directory` only queries the current binding, and the result is the
+        // directory now bound. awkrs used to take `(domain, dirname)`, require
+        // both, and overwrite `TEXTDOMAIN`.
         "bindtextdomain" => {
-            if argc != 2 {
-                return Err(Error::Runtime(
-                    "`bindtextdomain` expects two arguments (domain, dirname)".into(),
-                ));
+            if argc != 1 && argc != 2 {
+                return Err(Error::Runtime(format!(
+                    "{argc} is invalid as number of arguments for bindtextdomain"
+                )));
             }
-            let domain = args[0].as_str();
-            let dirname = args[1].as_str();
-            ctx.rt.gettext_dir = dirname.clone();
-            ctx.rt
-                .vars
-                .insert("TEXTDOMAIN".into(), Value::Str(domain.clone().into()));
-            if let Some(cat) = crate::gettext_util::try_load_gettext_catalog(&domain, &dirname) {
-                ctx.rt.gettext_catalogs.insert(domain, cat);
+            let directory = args[0].as_str();
+            let domain = gettext_domain_arg(ctx, args.get(1));
+            if !directory.is_empty() {
+                if let Some(cat) =
+                    crate::gettext_util::try_load_gettext_catalog(&domain, &directory)
+                {
+                    ctx.rt.gettext_catalogs.insert(domain.clone(), cat);
+                }
+                ctx.rt.gettext_dirs.insert(domain.clone(), directory);
             }
-            Value::Str(dirname.into())
+            let bound = ctx
+                .rt
+                .gettext_dirs
+                .get(&domain)
+                .cloned()
+                .unwrap_or_default();
+            Value::Str(bound.into())
         }
+        // gawk `dcgettext(string [, domain [, category]])` (`do_dcgettext`).
         "dcgettext" => {
-            if argc != 3 {
-                return Err(Error::Runtime(
-                    "`dcgettext` expects three arguments (string, domain, category)".into(),
-                ));
+            if argc == 0 || argc > 3 {
+                return Err(Error::Runtime(format!(
+                    "{argc} is invalid as number of arguments for dcgettext"
+                )));
             }
             let msgid = args[0].as_str();
-            let domain = args[1].as_str();
-            let _cat = args[2].as_number() as i32;
+            let domain = gettext_domain_arg(ctx, args.get(1));
+            gettext_check_category("dcgettext", args.get(2))?;
             if let Some(cat) = ctx.rt.gettext_catalogs.get(&domain) {
                 Value::Str(cat.gettext(msgid.as_str()).to_string().into())
             } else {
                 Value::Str(msgid.into())
             }
         }
+        // gawk `dcngettext(string1, string2, number [, domain [, category]])`
+        // (`do_dcngettext`). gawk's grammar admits 1 to 5 arguments and the
+        // builtin itself rejects fewer than 3 at run time, so that case is a
+        // fatal here (exit 2), not a parse error, as in gawk.
         "dcngettext" => {
-            if argc != 5 {
-                return Err(Error::Runtime(
-                    "`dcngettext` expects five arguments (s1, s2, n, domain, category)".into(),
-                ));
+            if argc > 5 {
+                return Err(Error::Runtime(format!(
+                    "{argc} is invalid as number of arguments for dcngettext"
+                )));
+            }
+            if argc < 3 {
+                return Err(Error::Runtime(format!(
+                    "dcngettext: called with {argc} arguments"
+                )));
             }
             let s1 = args[0].as_str();
             let s2 = args[1].as_str();
             let n = args[2].as_number();
-            let domain = args[3].as_str();
-            let _ = args[4].as_number() as i32;
+            let domain = gettext_domain_arg(ctx, args.get(3));
+            gettext_check_category("dcgettext", args.get(4))?;
             if let Some(cat) = ctx.rt.gettext_catalogs.get(&domain) {
                 Value::Str(
                     cat.ngettext(s1.as_str(), s2.as_str(), n as u64)
@@ -914,6 +936,44 @@ fn fusevm_value_to_awk(v: fusevm::Value) -> Value {
         fusevm::Value::Float(f) => Value::Num(f),
         fusevm::Value::Undef => Value::Uninit,
         other => Value::Str(other.to_str().into()),
+    }
+}
+
+/// The text domain a gettext builtin works on: its optional `domain` argument
+/// when given and non-empty, otherwise the current `TEXTDOMAIN` (gawk reads the
+/// variable at call time, so `TEXTDOMAIN = "x"; dcgettext(s)` uses `x`).
+fn gettext_domain_arg(ctx: &mut VmCtx<'_>, arg: Option<&Value>) -> String {
+    match arg.map(Value::as_str) {
+        Some(domain) if !domain.is_empty() => domain,
+        _ => ctx.get_var("TEXTDOMAIN").as_str(),
+    }
+}
+
+/// gawk's `dcgettext` / `dcngettext` require their optional `category` to name
+/// a locale category (builtin.c `localecategory_from_argument`); anything else is
+/// fatal: `` dcgettext: `BOGUS' is not a valid locale category ``. gawk words the
+/// message with `dcgettext:` from both builtins, so callers pass that name. The
+/// lookup itself ignores the category.
+fn gettext_check_category(builtin: &str, arg: Option<&Value>) -> Result<()> {
+    const CATEGORIES: &[&str] = &[
+        "LC_ALL",
+        "LC_COLLATE",
+        "LC_CTYPE",
+        "LC_MESSAGES",
+        "LC_MONETARY",
+        "LC_NUMERIC",
+        "LC_RESPONSE",
+        "LC_TIME",
+    ];
+    let Some(category) = arg.map(Value::as_str) else {
+        return Ok(());
+    };
+    if CATEGORIES.contains(&category.as_str()) {
+        Ok(())
+    } else {
+        Err(Error::Runtime(format!(
+            "{builtin}: `{category}' is not a valid locale category"
+        )))
     }
 }
 

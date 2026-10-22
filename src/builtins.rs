@@ -543,12 +543,18 @@ pub fn patsplit(
     Ok(fields.len() as f64)
 }
 
-/// Seconds since the Unix epoch (same idea as POSIX `awk` / gawk `systime()`).
+/// Whole seconds since the Unix epoch, as gawk's `systime()` returns them.
+///
+/// gawk's `do_systime` is `(long) time(NULL)`, so the result is always integral
+/// and `systime() == int(systime())`; the sub-second part is dropped, not
+/// rounded. awkrs used to return `as_secs_f64()`, so `print systime()` showed
+/// `1.79271e+09` under the default `OFMT` and `mktime(strftime("%Y %m %d %H %M %S", t)) == t`
+/// was false.
 pub fn awk_systime() -> f64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs_f64())
+        .map(|d| d.as_secs() as f64)
         .unwrap_or(0.0)
 }
 
@@ -569,8 +575,11 @@ pub fn awk_strftime(args: &[Value]) -> std::result::Result<Value, String> {
         ),
         _ => return Err("strftime: expected 0 to 3 arguments".into()),
     };
-    let secs = ts.floor() as i64;
-    let nsec = ((ts - secs as f64) * 1e9).round().clamp(0.0, 1e9 - 1.0) as u32;
+    // gawk's `do_strftime` casts the timestamp with `(time_t) force_number()`,
+    // which truncates toward zero and keeps no fraction: `strftime("%Y", -0.9, 1)`
+    // is `1970` and `strftime("%S", 1.999, 1)` is `01`. Flooring gave `1969`.
+    let secs = ts.trunc() as i64;
+    let nsec = 0;
     // chrono's `format(...).to_string()` panics inside `Display::fmt` when an
     // unsupported strftime directive is encountered (e.g. `%N` on some chrono
     // versions). Format via `write!` so the fmt::Error path returns Err
@@ -1888,6 +1897,29 @@ mod tests {
     #[test]
     fn awk_systime_v10() {
         assert!(super::awk_systime() > 0.0);
+    }
+
+    /// gawk's `systime()` is `(long) time(NULL)`: whole seconds, never a fraction.
+    #[test]
+    fn awk_systime_is_integral() {
+        let t = super::awk_systime();
+        assert_eq!(t, t.trunc(), "systime() returned a fraction: {t}");
+    }
+
+    /// gawk casts the `strftime` timestamp with `(time_t)`: truncation toward
+    /// zero, so -0.9 is still 1970 and 1.999 is second 01.
+    #[test]
+    fn awk_strftime_truncates_timestamp_toward_zero() {
+        let utc = Value::Num(1.0);
+        let fmt = |f: &str| Value::Str(f.into());
+        let run = |f: &str, ts: f64| {
+            awk_strftime(&[fmt(f), Value::Num(ts), utc.clone()])
+                .unwrap()
+                .as_str()
+        };
+        assert_eq!(run("%Y %H", -0.9), "1970 00");
+        assert_eq!(run("%Y %H", -3599.9), "1969 23");
+        assert_eq!(run("%S", 1.999), "01");
     }
 
     #[test]
