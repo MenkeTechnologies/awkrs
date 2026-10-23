@@ -2847,13 +2847,21 @@ fn validate_function_signature(f: &crate::ast::FunctionDef) -> Result<()> {
             "function name `{fname}` previously defined"
         )));
     }
+    // gawk's check_params (awkgram.y), in its order.
     for (i, p) in f.params.iter().enumerate() {
-        // gawk also refuses a parameter named after the function itself
-        // ("cannot use function name as parameter name"); awkrs accepts it,
-        // which the `large_number_of_args_to_function` integration test pins.
+        if p == fname {
+            return Err(Error::Runtime(format!(
+                "function `{fname}`: cannot use function name as parameter name"
+            )));
+        }
         if STD_VARS.contains(&p.as_str()) {
             return Err(Error::Runtime(format!(
                 "function `{fname}`: parameter `{p}`: POSIX disallows using a special variable as a function parameter"
+            )));
+        }
+        if p.contains(':') {
+            return Err(Error::Runtime(format!(
+                "function `{fname}`: parameter `{p}` cannot contain a namespace"
             )));
         }
         if let Some(j) = f.params[..i].iter().position(|q| q == p) {

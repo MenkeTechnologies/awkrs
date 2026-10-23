@@ -882,7 +882,8 @@ pub fn builtin_signature(name: &str) -> Option<(&'static str, &'static str)> {
         ),
         "strtonum" => (
             "strtonum(s)",
-            "Numeric value of `s`, honoring 0x/0 prefixes (gawk).",
+            "Numeric value of `s`. A string starting with `0x` is hex and one starting \
+             with `0` octal (gawk); anything else, a leading blank or sign included, is decimal.",
         ),
         "and" => ("and(v1, v2, ...)", "Bitwise AND of the arguments (gawk)."),
         "or" => ("or(v1, v2, ...)", "Bitwise OR of the arguments (gawk)."),

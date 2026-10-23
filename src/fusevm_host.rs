@@ -511,7 +511,7 @@ impl fusevm::AwkHost for AwkRuntimeHost {
                 fusevm::Value::Str(_) => crate::runtime::Value::StrLit(s.to_str().into()),
                 other => fuse_to_awk(other.clone()),
             };
-            awk_to_fuse(crate::bignum::awk_strtonum_of(&v, rt))
+            host_result(crate::bignum::awk_strtonum_of(&v, rt))
         })
     }
 

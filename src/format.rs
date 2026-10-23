@@ -169,9 +169,10 @@ fn format_tree(
         let mut quote_flag = false;
         let mut lj = false;
         let mut alt = false;
-        let mut big_flag = false;
-        let mut bigbig_flag = false;
-        let mut small_flag = false;
+        // gawk's `bad_modifiers`: the C length modifiers, meaningless in awk and
+        // ignored, each accepted once per conversion.
+        const LENGTH_MODIFIERS: &[u8] = b"DHhjLltwz";
+        let mut modifier_seen = [false; LENGTH_MODIFIERS.len()];
         let mut magic_posix_flag = false;
 
         loop {
@@ -327,25 +328,18 @@ fn format_tree(
                         break;
                     }
                 }
-                // Length modifiers are meaningless in awk and ignored — but each
-                // may appear only once.
-                b'l' => {
-                    if big_flag {
+                // A length modifier (`%ld`, `%zu`, `%jd`, …) is skipped; a repeat
+                // ends the spec, which then prints as literal text.
+                c if LENGTH_MODIFIERS.contains(&c) => {
+                    let index = LENGTH_MODIFIERS
+                        .iter()
+                        .position(|&m| m == c)
+                        .expect("contains");
+                    let seen = &mut modifier_seen[index];
+                    if *seen {
                         break;
                     }
-                    big_flag = true;
-                }
-                b'L' => {
-                    if bigbig_flag {
-                        break;
-                    }
-                    bigbig_flag = true;
-                }
-                b'h' => {
-                    if small_flag {
-                        break;
-                    }
-                    small_flag = true;
+                    *seen = true;
                 }
                 b'P' => {
                     if magic_posix_flag {

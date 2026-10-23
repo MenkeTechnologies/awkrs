@@ -535,7 +535,7 @@ pub(crate) fn exec_builtin_dispatch(
                     "{argc} is invalid as number of arguments for strtonum"
                 )));
             }
-            bignum::awk_strtonum_of(&args[0], ctx.rt)
+            bignum::awk_strtonum_of(&args[0], ctx.rt)?
         }
         "typeof" => {
             if argc != 1 {

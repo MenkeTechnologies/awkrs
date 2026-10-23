@@ -684,54 +684,133 @@ fn scan_mktime_fields(s: &str) -> Vec<i64> {
     out
 }
 
-/// gawk `strtonum` — hex `0x…`, octal `0…`, else decimal float parse.
-pub fn awk_strtonum(s: &str) -> f64 {
-    let t = s.trim();
-    if t.is_empty() {
-        return 0.0;
+/// gawk `strtonum` of a string (`do_strtonum`, builtin.c). The base comes from
+/// [`strtonum_numbase`] on the string as given, so leading whitespace or a sign
+/// makes it decimal (`" 0x1A"` and `"+0x1A"` are 0, `" 017"` is 17), and a
+/// decimal string is read like any other awk string-to-number conversion.
+/// The only error is gawk's fatal for a hexadecimal float without exponent.
+pub fn awk_strtonum(s: &str) -> Result<f64> {
+    if strtonum_numbase(s.as_bytes()) == 10 {
+        return Ok(crate::runtime::parse_number(s));
     }
-    // gawk parity: bare `"nan"` / `"inf"` (no sign) → 0 because gawk's number
-    // scan rejects non-digit/non-sign prefixes. Rust's `f64::parse` would
-    // happily accept those tokens.
-    let first = t.as_bytes()[0];
-    if !matches!(first, b'+' | b'-' | b'.' | b'0'..=b'9') {
-        return 0.0;
+    nondec_to_number(s)
+}
+
+/// Port of gawk's `get_numbase` (node.c): the base `strtonum` reads `s` in.
+/// Only a leading `0` selects a non-decimal base: `0x` / `0X` is hex, and `0`
+/// followed by a digit other than 8 or 9 is octal unless a `.`, `e` or `E`
+/// appears before the first non-digit, which keeps `00.34` and `0e1` decimal.
+fn strtonum_numbase(s: &[u8]) -> u32 {
+    if s.len() < 2 || s[0] != b'0' {
+        return 10;
     }
-    // gawk: `0x…` / `0…` octal prefixes are only honored *without* a sign.
-    // `"+0x10"` and `"-0x10"` return 0 (the sign disqualifies the hex form).
-    let unsigned_hex_or_octal = !matches!(first, b'+' | b'-');
-    if unsigned_hex_or_octal {
-        if t.starts_with("0x") || t.starts_with("0X") {
-            return u64::from_str_radix(&t[2..], 16)
-                .map(|v| v as f64)
-                .unwrap_or(0.0);
+    if s[1] == b'x' || s[1] == b'X' {
+        return 16;
+    }
+    for &c in s {
+        if matches!(c, b'e' | b'E' | b'.') {
+            return 10;
         }
-        if t.len() > 1
-            && t.starts_with('0')
-            && !t.contains('.')
-            && !t.contains('e')
-            && !t.contains('E')
-            // Pre-fix the octal branch was entered for ANY leading-zero string
-            // — including "08", "09", "0888" which contain digits invalid in
-            // base-8. `i64::from_str_radix(_, 8)` then returned Err and the
-            // `.unwrap_or(0.0)` swallowed the value to 0.0 (gawk's strtonum
-            // returns 8.0 for "08", 9.0 for "09" — falls through to decimal).
-            // Gate the octal branch on "every char is a valid octal digit".
-            && t.bytes().all(|b| (b'0'..=b'7').contains(&b))
-        {
-            return i64::from_str_radix(t, 8).map(|v| v as f64).unwrap_or(0.0);
+        if !c.is_ascii_digit() {
+            break;
         }
     }
-    // gawk parity: longest leading numeric prefix (so `"42abc"` → 42, not 0).
-    // Signed `"+inf"` / `"-inf"` and `"+nan"` / `"-nan"` pass through here because
-    // their leading sign satisfies the first-byte check above; the f64 parser
-    // then yields the matching non-finite value.
-    if let Some(prefix) = crate::runtime::longest_f64_prefix(t) {
-        if let Ok(v) = prefix.parse::<f64>() {
-            return v;
+    if !s[1].is_ascii_digit() || s[1] == b'8' || s[1] == b'9' {
+        10
+    } else {
+        8
+    }
+}
+
+/// Port of gawk's `nondec2awknum` (builtin.c) for a string [`strtonum_numbase`]
+/// did not call decimal: the value of the hex or octal digits up to the first
+/// other character (`0x1Ag` is 26, `017abc` is 15; `0x` alone is 0). A hex
+/// string containing `.`, `p` or `P` is a C99 hexadecimal float, which needs a
+/// binary exponent (`0x1.8p1` is 3; `0x1.8` is fatal). An octal string that
+/// reaches an 8 or 9 is read as decimal instead (`019` is 19, `0789` is 789).
+fn nondec_to_number(s: &str) -> Result<f64> {
+    let bytes = s.as_bytes();
+    if bytes.len() >= 2 && bytes[0] == b'0' && (bytes[1] == b'x' || bytes[1] == b'X') {
+        let mut value = 0.0;
+        for &c in &bytes[2..] {
+            if matches!(c, b'.' | b'p' | b'P') {
+                if !bytes.contains(&b'p') && !bytes.contains(&b'P') {
+                    return Err(Error::Runtime(
+                        "hexadecimal floating point constants require an exponent".into(),
+                    ));
+                }
+                return Ok(hex_float_prefix(bytes));
+            }
+            match (c as char).to_digit(16) {
+                Some(d) => value = value * 16.0 + d as f64,
+                None => break,
+            }
+        }
+        return Ok(value);
+    }
+    let mut value = 0.0;
+    for &c in bytes {
+        if !c.is_ascii_digit() {
+            break;
+        }
+        if c == b'8' || c == b'9' {
+            return Ok(crate::runtime::parse_number(s));
+        }
+        value = value * 8.0 + (c - b'0') as f64;
+    }
+    Ok(value)
+}
+
+/// The C99 hexadecimal floating constant at the start of `s` (`0x1.8p1` is 3,
+/// `0X1P-1` is 0.5), as C `strtod` reads it for gawk: hex digits with at most
+/// one `.`, then an optional `p` exponent. A `p` with no digits after it is not
+/// part of the number (`0x1Ap` is 26).
+fn hex_float_prefix(s: &[u8]) -> f64 {
+    let mut mantissa = 0.0;
+    let mut fraction_bits = 0i32;
+    let mut seen_point = false;
+    let mut i = 2;
+    while i < s.len() {
+        match (s[i] as char).to_digit(16) {
+            Some(d) => {
+                mantissa = mantissa * 16.0 + d as f64;
+                if seen_point {
+                    fraction_bits -= 4;
+                }
+            }
+            None if s[i] == b'.' && !seen_point => seen_point = true,
+            None => break,
+        }
+        i += 1;
+    }
+    let mut exponent = 0i32;
+    if i < s.len() && (s[i] == b'p' || s[i] == b'P') {
+        let mut j = i + 1;
+        let negative = j < s.len() && s[j] == b'-';
+        if j < s.len() && (s[j] == b'+' || s[j] == b'-') {
+            j += 1;
+        }
+        let digits = &s[j..];
+        let digits = &digits[..digits.iter().take_while(|c| c.is_ascii_digit()).count()];
+        for &c in digits {
+            exponent = exponent
+                .saturating_mul(10)
+                .saturating_add((c - b'0') as i32);
+        }
+        if negative {
+            exponent = -exponent;
         }
     }
-    0.0
+    // Scale in steps no 2^n factor of which over- or underflows on its own, so
+    // a subnormal result such as `0x1p-1074` survives.
+    let mut scale = fraction_bits.saturating_add(exponent);
+    let mut value = mantissa;
+    while scale != 0 && value != 0.0 && value.is_finite() {
+        let step = scale.clamp(-1000, 1000);
+        value *= 2f64.powi(step);
+        scale -= step;
+    }
+    value
 }
 
 /// [`awk_to_upper`] over bytes.
@@ -1163,27 +1242,31 @@ mod tests {
 
     #[test]
     fn awk_strtonum_empty_or_whitespace_zero() {
-        assert_eq!(awk_strtonum(""), 0.0);
-        assert_eq!(awk_strtonum("   "), 0.0);
+        assert_eq!(awk_strtonum("").unwrap(), 0.0);
+        assert_eq!(awk_strtonum("   ").unwrap(), 0.0);
     }
 
     #[test]
     fn awk_strtonum_hex_octal_and_decimal() {
-        assert_eq!(awk_strtonum("0x10"), 16.0);
-        assert_eq!(awk_strtonum("0Xff"), 255.0);
-        assert_eq!(awk_strtonum("010"), 8.0);
-        assert_eq!(awk_strtonum("3.5"), 3.5);
+        assert_eq!(awk_strtonum("0x10").unwrap(), 16.0);
+        assert_eq!(awk_strtonum("0Xff").unwrap(), 255.0);
+        assert_eq!(awk_strtonum("010").unwrap(), 8.0);
+        assert_eq!(awk_strtonum("3.5").unwrap(), 3.5);
     }
 
     #[test]
     fn awk_strtonum_invalid_hex_returns_zero() {
-        assert_eq!(awk_strtonum("0x"), 0.0);
-        assert_eq!(awk_strtonum("0xzz"), 0.0);
+        assert_eq!(awk_strtonum("0x").unwrap(), 0.0);
+        assert_eq!(awk_strtonum("0xzz").unwrap(), 0.0);
     }
 
     #[test]
-    fn awk_strtonum_hex_above_u64_returns_zero() {
-        assert_eq!(awk_strtonum("0x10000000000000000"), 0.0);
+    fn awk_strtonum_hex_above_u64_accumulates_like_gawk() {
+        // gawk's nondec2awknum sums the digits in a double, so 2^64 is 2^64.
+        assert_eq!(
+            awk_strtonum("0x10000000000000000").unwrap(),
+            18446744073709551616.0
+        );
     }
 
     #[test]
@@ -1481,18 +1564,18 @@ mod tests {
 
     #[test]
     fn strtonum_various_formats() {
-        assert_eq!(awk_strtonum("0x10"), 16.0);
-        assert_eq!(awk_strtonum("010"), 8.0);
-        assert_eq!(awk_strtonum("42"), 42.0);
-        assert_eq!(awk_strtonum("0xG"), 0.0); // Invalid hex
-                                              // FIXED: gawk parity — "09" has a leading 0 but contains '9' which is
-                                              // not a valid octal digit, so the octal branch is SKIPPED and the
-                                              // value falls through to decimal interpretation. Pre-fix awkrs
-                                              // entered the octal branch unconditionally and returned 0.0.
-        assert_eq!(awk_strtonum("09"), 9.0);
-        assert_eq!(awk_strtonum("  0x10  "), 16.0); // Spaces allowed
-        assert_eq!(awk_strtonum("1e3"), 1000.0); // Scientific in strtonum
-        assert_eq!(awk_strtonum("\t\n 42 \r"), 42.0); // All whitespace
+        assert_eq!(awk_strtonum("0x10").unwrap(), 16.0);
+        assert_eq!(awk_strtonum("010").unwrap(), 8.0);
+        assert_eq!(awk_strtonum("42").unwrap(), 42.0);
+        assert_eq!(awk_strtonum("0xG").unwrap(), 0.0); // Invalid hex
+                                                       // FIXED: gawk parity — "09" has a leading 0 but contains '9' which is
+                                                       // not a valid octal digit, so the octal branch is SKIPPED and the
+                                                       // value falls through to decimal interpretation. Pre-fix awkrs
+                                                       // entered the octal branch unconditionally and returned 0.0.
+        assert_eq!(awk_strtonum("09").unwrap(), 9.0);
+        assert_eq!(awk_strtonum("  0x10  ").unwrap(), 0.0); // gawk: base from the raw text, so a leading blank is decimal
+        assert_eq!(awk_strtonum("1e3").unwrap(), 1000.0); // Scientific in strtonum
+        assert_eq!(awk_strtonum("\t\n 42 \r").unwrap(), 42.0); // All whitespace
     }
 
     #[test]
@@ -1709,8 +1792,8 @@ mod tests {
 
     #[test]
     fn awk_strtonum_scientific_v3() {
-        assert_eq!(awk_strtonum("1e3"), 1000.0);
-        assert_eq!(awk_strtonum("0x10"), 16.0);
+        assert_eq!(awk_strtonum("1e3").unwrap(), 1000.0);
+        assert_eq!(awk_strtonum("0x10").unwrap(), 16.0);
     }
 
     #[test]
@@ -1824,22 +1907,22 @@ mod tests {
 
     #[test]
     fn awk_strtonum_octal_v4() {
-        assert_eq!(super::awk_strtonum("010"), 8.0);
+        assert_eq!(super::awk_strtonum("010").unwrap(), 8.0);
     }
 
     #[test]
     fn awk_strtonum_invalid_hex_v4() {
-        assert_eq!(super::awk_strtonum("0xG"), 0.0);
+        assert_eq!(super::awk_strtonum("0xG").unwrap(), 0.0);
     }
 
     #[test]
     fn awk_strtonum_empty_v4() {
-        assert_eq!(super::awk_strtonum(""), 0.0);
+        assert_eq!(super::awk_strtonum("").unwrap(), 0.0);
     }
 
     #[test]
     fn awk_strtonum_ws_v4() {
-        assert_eq!(super::awk_strtonum("  123  "), 123.0);
+        assert_eq!(super::awk_strtonum("  123  ").unwrap(), 123.0);
     }
 
     #[test]
@@ -2117,14 +2200,14 @@ mod tests {
     /// leading-zero string → from_str_radix(_, 8) failed → unwrap_or(0.0).
     #[test]
     fn awk_strtonum_leading_zero_with_8_or_9_falls_through_to_decimal() {
-        assert_eq!(awk_strtonum("08"), 8.0);
-        assert_eq!(awk_strtonum("09"), 9.0);
-        assert_eq!(awk_strtonum("0888"), 888.0);
-        assert_eq!(awk_strtonum("01239"), 1239.0);
+        assert_eq!(awk_strtonum("08").unwrap(), 8.0);
+        assert_eq!(awk_strtonum("09").unwrap(), 9.0);
+        assert_eq!(awk_strtonum("0888").unwrap(), 888.0);
+        assert_eq!(awk_strtonum("01239").unwrap(), 1239.0);
         // Valid octal still works.
-        assert_eq!(awk_strtonum("010"), 8.0);
-        assert_eq!(awk_strtonum("077"), 63.0);
+        assert_eq!(awk_strtonum("010").unwrap(), 8.0);
+        assert_eq!(awk_strtonum("077").unwrap(), 63.0);
         // Hex still works.
-        assert_eq!(awk_strtonum("0x10"), 16.0);
+        assert_eq!(awk_strtonum("0x10").unwrap(), 16.0);
     }
 }

@@ -726,7 +726,7 @@ fn ofmt_affects_print_number() {
 #[test]
 fn large_number_of_args_to_function() {
     let (c, o, _e) = run_awkrs_stdin(
-        "function f(a,b,c,d,e,f,g) { print a,g; } BEGIN { f(1,2,3,4,5,6,7); }",
+        "function f(a,b,c,d,e,h,g) { print a,g; } BEGIN { f(1,2,3,4,5,6,7); }",
         "",
     );
     assert_eq!(c, 0, "stderr: {}", _e);

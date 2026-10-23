@@ -1708,7 +1708,8 @@ fn bare_print_accepts_a_redirection() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// `FPAT` matches case-sensitively whatever `IGNORECASE` says. gawk is the only
+/// `IGNORECASE` set *after* `FPAT` does not reach `FPAT` splitting (the other
+/// order is `fpat_takes_ignorecase_in_force_when_assigned`). gawk is the only
 /// reference that implements `FPAT`, and it is unambiguous:
 ///
 /// ```text
@@ -3522,5 +3523,149 @@ fn printf_mixing_positional_and_sequential_is_fatal() {
             stderr.contains("must use `count$' on all formats or none"),
             "{fmt}: {stderr:?}"
         );
+    }
+}
+
+/// gawk's `set_FPAT` chooses between its exact and case-folded `FPAT` regex
+/// from the `IGNORECASE` in force at the assignment, and `set_IGNORECASE` only
+/// re-selects for `FS`. So `IGNORECASE` set before `FPAT` folds case, a later
+/// change of `IGNORECASE` alone does not undo it, and `FPAT = FPAT` picks up
+/// the current value. awkrs always split case-sensitively. Every expectation is
+/// gawk 5.4.1 on the record `AB cd EF`; `patsplit` keeps reading the current
+/// `IGNORECASE`, as gawk's does.
+#[test]
+fn fpat_takes_ignorecase_in_force_when_assigned() {
+    for (program, want) in [
+        (
+            r#"BEGIN { IGNORECASE=1; FPAT="[a-z]+" } { print NF, $1 }"#,
+            "3 AB\n",
+        ),
+        (
+            r#"BEGIN { IGNORECASE=1; FPAT="[a-z]+"; IGNORECASE=0 } { print NF, $1 }"#,
+            "3 AB\n",
+        ),
+        (
+            r#"BEGIN { FPAT="[a-z]+"; IGNORECASE=1; FPAT=FPAT } { print NF, $1 }"#,
+            "3 AB\n",
+        ),
+        (
+            r#"BEGIN { IGNORECASE=1; FPAT="ab" } { print NF, $1 }"#,
+            "1 AB\n",
+        ),
+        (
+            r#"BEGIN { IGNORECASE=1; FPAT="[a-z]+" } { IGNORECASE=0; print patsplit($0, p), NF }"#,
+            "1 3\n",
+        ),
+    ] {
+        let (code, stdout, stderr) = run_awkrs_stdin(program, "AB cd EF\n");
+        assert_eq!(code, 0, "{program}: stderr {stderr:?}");
+        assert_eq!(stdout, want, "{program}");
+    }
+    // The command-line order is the assignment order.
+    let (code, stdout, _) = run_awkrs_stdin_args(
+        ["-v", "IGNORECASE=1", "-v", "FPAT=[a-z]+"],
+        "{ print NF }",
+        "AB cd EF\n",
+    );
+    assert_eq!((code, stdout.as_str()), (0, "3\n"));
+    let (code, stdout, _) = run_awkrs_stdin_args(
+        ["-v", "FPAT=[a-z]+", "-v", "IGNORECASE=1"],
+        "{ print NF }",
+        "AB cd EF\n",
+    );
+    assert_eq!((code, stdout.as_str()), (0, "1\n"));
+}
+
+/// gawk's `do_strtonum` picks the base with `get_numbase` on the string as
+/// given, so only a string that *starts* with `0` can be hex or octal: a
+/// leading blank makes `" 0x1A"` decimal (0) and `" 017"` decimal (17), while
+/// `"0x1A"` is 26 and `"017"` 15. The hex and octal scans (`nondec2awknum`)
+/// stop at the first non-digit, an octal string that meets an 8 or 9 is
+/// decimal, and a hex string with `.`/`p` is a C99 hex float. awkrs trimmed the
+/// string first and required every character to be a digit, so `" 0x1A"` was
+/// 26, `"0x1Ag"` 0, `"017abc"` 17 and `"0x1p4"` 0. Each value is gawk 5.4.1.
+#[test]
+fn strtonum_reads_base_from_untrimmed_text_like_gawk() {
+    for (arg, want) in [
+        (" 0x1A", "0"),
+        ("0x1A", "26"),
+        (" 017", "17"),
+        ("017", "15"),
+        ("017 ", "15"),
+        ("017abc", "15"),
+        ("0x1Ag", "26"),
+        ("0x", "0"),
+        ("+0x10", "0"),
+        ("-017", "-17"),
+        ("019", "19"),
+        ("0789", "789"),
+        ("00.5", "0.5"),
+        ("0e1", "0"),
+        ("0x1p4", "16"),
+        ("0x1.8p1", "3"),
+        ("0x.8p1", "1"),
+        ("0X1P-1", "0.5"),
+        ("0x1Ap", "26"),
+        ("0x10000000000000000", "1.8446744073709552e+19"),
+    ] {
+        let program = format!(r#"BEGIN {{ printf "%.17g\n", strtonum("{arg}") }}"#);
+        let (code, stdout, stderr) = run_awkrs_stdin(&program, "");
+        assert_eq!(code, 0, "{arg:?}: stderr {stderr:?}");
+        assert_eq!(stdout, format!("{want}\n"), "strtonum({arg:?})");
+    }
+    // A numeric operand, including a strnum field, is returned unchanged.
+    let (code, stdout, _) = run_awkrs_stdin("{ print strtonum($1) }", "017\n");
+    assert_eq!((code, stdout.as_str()), (0, "17\n"));
+}
+
+/// gawk: "hexadecimal floating point constants require an exponent" is fatal
+/// (exit 2) for a hex string with a `.` but no `p`. awkrs returned 0.
+#[test]
+fn strtonum_hex_float_without_exponent_is_fatal() {
+    let (code, stdout, stderr) =
+        run_awkrs_stdin(r#"BEGIN { print strtonum("0x1.8"); print "after" }"#, "");
+    assert_eq!(code, 2, "stdout {stdout:?}");
+    assert_eq!(stdout, "");
+    assert!(
+        stderr.contains("hexadecimal floating point constants require an exponent"),
+        "{stderr:?}"
+    );
+}
+
+/// gawk skips every C length modifier in `bad_modifiers` (`DHhjLltwz`), each
+/// at most once per conversion; a repeat ends the spec and it prints as text.
+/// awkrs knew only `h`, `l` and `L`, so `%jd`, `%zu` and `%td` printed
+/// literally. Expectations are gawk 5.4.1.
+#[test]
+fn printf_skips_every_c_length_modifier_once() {
+    let (code, stdout, stderr) = run_awkrs_stdin(
+        r#"BEGIN { printf "%jd %zd %td|%5jd|%-4zu|%tx|%wd|%Dd|%Hd|%ld %hd %Lf\n", 1, 2, 3, 4, 5, 255, 6, 7, 8, 9, 10, 11 }"#,
+        "",
+    );
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "1 2 3|    4|5   |ff|6|7|8|9 10 11.000000\n");
+    let (code, stdout, _) = run_awkrs_stdin(r#"BEGIN { printf "%jjd|%zzd|%lld\n", 1, 2, 3 }"#, "");
+    assert_eq!((code, stdout.as_str()), (0, "%jjd|%zzd|%lld\n"));
+}
+
+/// gawk's `check_params` rejects a parameter named after its own function and
+/// a namespace-qualified parameter, both before the program runs (exit 1).
+/// awkrs ran `function f(f)` and `function f(a::b)`.
+#[test]
+fn function_parameter_named_after_function_or_namespaced_is_an_error() {
+    for (program, msg) in [
+        (
+            "function f(f) { return 1 } BEGIN { print \"ran\" }",
+            "cannot use function name as parameter name",
+        ),
+        (
+            "function f(a::b) { return 1 } BEGIN { print \"ran\" }",
+            "parameter `a::b` cannot contain a namespace",
+        ),
+    ] {
+        let (code, stdout, stderr) = run_awkrs_stdin(program, "");
+        assert_ne!(code, 0, "{program}");
+        assert_eq!(stdout, "", "{program}");
+        assert!(stderr.contains(msg), "{program}: {stderr:?}");
     }
 }

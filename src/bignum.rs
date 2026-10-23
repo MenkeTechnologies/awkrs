@@ -130,28 +130,30 @@ pub fn awk_intdiv_values(a: &Value, b: &Value, rt: &Runtime) -> Result<Value> {
 /// it a number) — is returned as that number, so `strtonum($1)` of the field
 /// `017` is 17 and only a genuine string goes through the `0x` / leading-`0`
 /// base detection of [`awk_strtonum_value`].
-pub fn awk_strtonum_of(v: &Value, rt: &Runtime) -> Value {
+pub fn awk_strtonum_of(v: &Value, rt: &Runtime) -> Result<Value> {
     match v {
-        Value::Num(_) | Value::Mpfr(_) => v.clone(),
+        Value::Num(_) | Value::Mpfr(_) => Ok(v.clone()),
         Value::Str(_) if v.is_numeric_str() => {
             if rt.bignum {
                 awk_strtonum_value(&v.as_str(), rt)
             } else {
-                Value::Num(v.as_number())
+                Ok(Value::Num(v.as_number()))
             }
         }
         _ => awk_strtonum_value(&v.as_str(), rt),
     }
 }
 
-/// `awk_strtonum_value` — see implementation for the contract.
-pub fn awk_strtonum_value(s: &str, rt: &Runtime) -> Value {
+/// `strtonum` of the string `s`: [`crate::builtins::awk_strtonum`], or under
+/// `-M` the exact MPFR value. The one error is gawk's fatal for a hexadecimal
+/// float without an exponent.
+pub fn awk_strtonum_value(s: &str, rt: &Runtime) -> Result<Value> {
     if !rt.bignum {
-        return Value::Num(crate::builtins::awk_strtonum(s));
+        return crate::builtins::awk_strtonum(s).map(Value::Num);
     }
     let prec = rt.mpfr_prec_bits();
     let round = rt.mpfr_round();
-    Value::Mpfr(numeric_string_to_mpfr(s, prec, round))
+    Ok(Value::Mpfr(numeric_string_to_mpfr(s, prec, round)))
 }
 /// gawk's three bitwise folds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -666,17 +668,20 @@ mod tests {
     #[test]
     fn awk_strtonum_value_hex_without_bignum_uses_builtin() {
         let rt = Runtime::new();
-        let v = awk_strtonum_value("0x10", &rt);
-        assert_eq!(v.as_number(), crate::builtins::awk_strtonum("0x10"));
+        let v = awk_strtonum_value("0x10", &rt).unwrap();
+        assert_eq!(
+            v.as_number(),
+            crate::builtins::awk_strtonum("0x10").unwrap()
+        );
     }
 
     #[test]
     fn awk_strtonum_value_empty_string_zero() {
         let rt = Runtime::new();
-        assert_eq!(awk_strtonum_value("", &rt).as_number(), 0.0);
+        assert_eq!(awk_strtonum_value("", &rt).unwrap().as_number(), 0.0);
         let mut rtb = Runtime::new();
         rtb.bignum = true;
-        assert!(awk_strtonum_value("", &rtb).as_number() == 0.0);
+        assert!(awk_strtonum_value("", &rtb).unwrap().as_number() == 0.0);
     }
 
     #[test]
@@ -693,7 +698,7 @@ mod tests {
     fn awk_strtonum_value_large_hex_integer_bignum_is_exact() {
         let mut rt = Runtime::new();
         rt.bignum = true;
-        let v = awk_strtonum_value("0x10000000000000000", &rt);
+        let v = awk_strtonum_value("0x10000000000000000", &rt).unwrap();
         let s = mpfr_dec(&v, &rt);
         assert_eq!(s, "18446744073709551616");
     }
@@ -722,7 +727,7 @@ mod tests {
         let mut rt = Runtime::new();
         rt.bignum = true;
         // Large integer that would lose precision in f64
-        let v = awk_strtonum_value("1267650600228229401496703205376", &rt);
+        let v = awk_strtonum_value("1267650600228229401496703205376", &rt).unwrap();
         let s = mpfr_dec(&v, &rt);
         assert_eq!(s, "1267650600228229401496703205376");
     }

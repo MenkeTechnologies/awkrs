@@ -844,7 +844,7 @@ fn parse_number_strtonum(s: &str) -> f64 {
 
 /// Parse a string to f64, returning 0.0 for non-numeric. Handles leading/trailing whitespace.
 #[inline]
-fn parse_number(s: &str) -> f64 {
+pub(crate) fn parse_number(s: &str) -> f64 {
     if s.is_empty() {
         return 0.0;
     }
@@ -948,11 +948,19 @@ fn split_toplevel_alternatives(pat: &str) -> Vec<String> {
 /// leftmost-first takes the first alternative everywhere and splits inside the
 /// quotes. The pattern is split into its top-level alternatives, each anchored
 /// at the candidate position, and the longest match there wins.
-fn split_fields_fpat(record: &[u8], fpat: &str, field_ranges: &mut Vec<(u32, u32)>) -> bool {
+///
+/// `ignore_case` is the `IGNORECASE` captured when `FPAT` was assigned
+/// ([`Runtime::fpat_ignore_case`]), not the current one.
+fn split_fields_fpat(
+    record: &[u8],
+    fpat: &str,
+    ignore_case: bool,
+    field_ranges: &mut Vec<(u32, u32)>,
+) -> bool {
     // "We compile them once" used to mean once per *call*, and this runs once
     // per record — `FPAT="[0-9]+"` over 300 000 records cost 3.04 s of CPU
     // against gawk's 1.39 s. Memoised like the `FS` and `split()` engines.
-    with_fpat_regexes(fpat, false, |compiled| {
+    with_fpat_regexes(fpat, ignore_case, |compiled| {
         let Some(compiled) = compiled else {
             return false;
         };
@@ -1249,13 +1257,15 @@ fn with_split_regex<R>(fs: &str, ignore_case: bool, f: impl FnOnce(Option<&Bytes
 // treatment for the other per-record regex. `None` records an `FPAT` that does
 // not compile, which is what makes the splitter fall back to `FS`.
 //
-// No `IGNORECASE` in the key because `FPAT` does not honour it. gawk is the only
-// reference that implements `FPAT` at all, and it matches case-sensitively
-// regardless:
+// The `IGNORECASE` half of the key is the one in force when `FPAT` was
+// assigned, which is the only time gawk's `set_FPAT` picks between its exact
+// and case-folded regex (`set_IGNORECASE` re-selects only for `FS`). gawk is
+// the only reference that implements `FPAT` at all:
 //
 //   printf 'AB cd EF\n' | gawk 'BEGIN{FPAT="[a-z]+";IGNORECASE=1}{print NF, $1}'
-//   1 cd          # awkrs answered `3 AB` — the alternatives were compiled
-//                 # case-insensitively, so `AB` and `EF` became fields too.
+//   1 cd          # IGNORECASE set after FPAT: case-sensitive
+//   printf 'AB cd EF\n' | gawk 'BEGIN{IGNORECASE=1;FPAT="[a-z]+"}{print NF, $1}'
+//   3 AB          # IGNORECASE set before FPAT: case-insensitive
 /// `FPAT` text and `IGNORECASE` mapped to its compiled alternatives (`None`: does not compile).
 type FpatRegexMemo = AwkMap<(String, bool), Option<Vec<BytesRegex>>>;
 
@@ -1652,6 +1662,12 @@ pub struct Runtime {
     /// Which of `FS`, `FIELDWIDTHS` and `FPAT` splits records: the one assigned
     /// last, as gawk's `set_parser` does (see [`Runtime::note_split_var_assigned`]).
     pub field_split_by: Option<FieldSplitBy>,
+    /// `IGNORECASE` as it stood when `FPAT` was last assigned. gawk's `set_FPAT`
+    /// chooses the exact or case-folded `FPAT` regex at that moment, and
+    /// `set_IGNORECASE` only re-selects for `FS` (`set_RS` → `set_FS` when `FS`
+    /// is the splitter), so a later `IGNORECASE` change leaves `FPAT` splitting
+    /// alone until `FPAT` is assigned again.
+    pub fpat_ignore_case: bool,
     /// gawk: `RS` longer than one character is a regex delimiter (cached here).
     pub rs_pattern_for_regex: String,
     /// `rs_regex_bytes` field.
@@ -2434,6 +2450,7 @@ impl Runtime {
             csv_mode: false,
             csv_split_var_warned: false,
             field_split_by: None,
+            fpat_ignore_case: false,
             rs_pattern_for_regex: String::new(),
             rs_regex_bytes: None,
             sandbox: false,
@@ -2941,6 +2958,7 @@ impl Runtime {
             csv_mode,
             csv_split_var_warned: false,
             field_split_by,
+            fpat_ignore_case: false,
             rs_pattern_for_regex: String::new(),
             rs_regex_bytes: None,
             sandbox,
@@ -4312,7 +4330,12 @@ impl Runtime {
                 }
             });
         if let Some(ref fp_trimmed) = fpat_trimmed {
-            if split_fields_fpat(record, fp_trimmed, &mut self.field_ranges) {
+            if split_fields_fpat(
+                record,
+                fp_trimmed,
+                self.fpat_ignore_case,
+                &mut self.field_ranges,
+            ) {
                 return;
             }
         }
@@ -4931,6 +4954,11 @@ impl Runtime {
             "FPAT" => FieldSplitBy::Fpat,
             _ => return,
         };
+        // gawk's `set_FPAT` fixes the case rule here, from the `IGNORECASE` in
+        // force now; see `fpat_ignore_case`.
+        if by == FieldSplitBy::Fpat {
+            self.fpat_ignore_case = self.ignore_case_flag();
+        }
         // gawk splits the current record completely under the old rule first,
         // so changing the rule mid-record leaves this record's fields alone.
         self.ensure_fields_split();
@@ -5646,6 +5674,7 @@ impl Clone for Runtime {
             csv_mode: self.csv_mode,
             csv_split_var_warned: self.csv_split_var_warned,
             field_split_by: self.field_split_by,
+            fpat_ignore_case: self.fpat_ignore_case,
             rs_pattern_for_regex: self.rs_pattern_for_regex.clone(),
             rs_regex_bytes: self.rs_regex_bytes.clone(),
             sandbox: self.sandbox,

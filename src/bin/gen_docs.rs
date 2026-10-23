@@ -1053,14 +1053,15 @@ const PRINTF_MODIFIERS: &[Entry] = &[
                cursor.",
     },
     Entry {
-        name: "h, l, L (length modifiers)",
+        name: "h, l, L, j, z, t, w, D, H (length modifiers)",
         sig: r#"printf "%ld\n", n"#,
         lang: "awk",
         desc: "Accepted and skipped. awk has one numeric type, so the C length modifiers carry no \
-               information; they are consumed so that formats copied from C source still work. \
-               Each may appear once per conversion, anywhere among the flags, width and \
-               precision; a repeat abandons the conversion, so `%lld` prints itself literally \
-               and converts nothing, as in gawk.",
+               information; they are consumed so that formats copied from C source still work \
+               (`%ld`, `%zu`, `%jd`, `%td`); gawk's set is `DHhjLltwz`. Each may appear once \
+               per conversion, anywhere among the flags, width and precision; a repeat abandons \
+               the conversion, so `%lld` prints itself literally and converts nothing, as in \
+               gawk.",
     },
 ];
 

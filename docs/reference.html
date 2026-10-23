@@ -347,7 +347,7 @@
         <h3><a class="doc-anchor" href="#doc-strtonum">#</a> <code>strtonum</code></h3>
         <pre><code class="lang-awk">strtonum(s)
 </code></pre>
-        <p>Numeric value of <code>s</code>, honoring 0x/0 prefixes (gawk).</p>
+        <p>Numeric value of <code>s</code>. A string starting with <code>0x</code> is hex and one starting with <code>0</code> octal (gawk); anything else, a leading blank or sign included, is decimal.</p>
         <p><strong>Engine.</strong> Dispatched by awkrs&#39;s own VM. Neither fusevm route lowers it: the numeric-chunk offload treats the chunk as ineligible, and the <code>AWKRS_FUSEVM_NATIVE=1</code> backend refuses to compile a program that calls it rather than lowering it to something approximate.</p>
         <p><strong>Restrictions.</strong> Rejected as a non-POSIX extension under <code>-P</code>/<code>--posix</code> and <code>-c</code>/<code>--traditional</code>.</p>
       </article>
@@ -1484,11 +1484,11 @@
 </code></pre>
         <p>Select the Nth argument explicitly instead of consuming the next one — the example prints <code>b a</code>. Useful when a translated format string needs a different argument order than the original. As in gawk, a format uses <code>N$</code> on every conversion or on none; <code>*N$</code> reads a width or precision from argument N without moving the sequential cursor.</p>
       </article>
-      <article class="doc-entry" id="doc-h-l-l-length-modifiers">
-        <h3><a class="doc-anchor" href="#doc-h-l-l-length-modifiers">#</a> <code>h, l, L (length modifiers)</code></h3>
+      <article class="doc-entry" id="doc-h-l-l-j-z-t-w-d-h-length-modifiers">
+        <h3><a class="doc-anchor" href="#doc-h-l-l-j-z-t-w-d-h-length-modifiers">#</a> <code>h, l, L, j, z, t, w, D, H (length modifiers)</code></h3>
         <pre><code class="lang-awk">printf &quot;%ld\n&quot;, n
 </code></pre>
-        <p>Accepted and skipped. awk has one numeric type, so the C length modifiers carry no information; they are consumed so that formats copied from C source still work. Each may appear once per conversion, anywhere among the flags, width and precision; a repeat abandons the conversion, so <code>%lld</code> prints itself literally and converts nothing, as in gawk.</p>
+        <p>Accepted and skipped. awk has one numeric type, so the C length modifiers carry no information; they are consumed so that formats copied from C source still work (<code>%ld</code>, <code>%zu</code>, <code>%jd</code>, <code>%td</code>); gawk&#39;s set is <code>DHhjLltwz</code>. Each may appear once per conversion, anywhere among the flags, width and precision; a repeat abandons the conversion, so <code>%lld</code> prints itself literally and converts nothing, as in gawk.</p>
       </article>
     </section>
     <section class="tutorial-section" id="ch-string-escape-sequences">
