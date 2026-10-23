@@ -3669,3 +3669,59 @@ fn function_parameter_named_after_function_or_namespaced_is_an_error() {
         assert!(stderr.contains(msg), "{program}: {stderr:?}");
     }
 }
+
+/// gawk treats the right operand of `~` / `!~` as a regex only when the whole
+/// operand is one bare `/re/`. Concatenation binds tighter than `~`, so in
+/// `x ~ /b/ ""` the operand is `($0 ~ /b/) ""`, a dynamic regex from its
+/// string value; a parenthesized `(/re/)` is likewise `$0 ~ /re/`. awkrs
+/// bound the regex literal to `~` and printed `1 0` for the first line. Expectations are
+/// gawk 5.4.1 under LC_ALL=C.
+#[test]
+fn match_operand_regex_literal_is_a_pattern_only_when_bare() {
+    let (code, stdout, stderr) = run_awkrs_stdin(
+        r#"BEGIN {
+            x = "abc"
+            print x ~ /b/ "", x ~ /z/ ""
+            print x !~ /b/ "", x !~ /z/ ""
+            print x ~ (/b/), x ~ /b/, x !~ /b/
+            $0 = "b"; y = "1"
+            print y ~ /b/ "", y ~ (/b/), y ~ /b/
+            a["0"]; print x ~ /b/ "" in a
+        }"#,
+        "",
+    );
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "0 0\n1 1\n0 1 0\n1 1 0\n1\n");
+}
+
+/// A regex literal operand of a relational operator is `$0 ~ /re/`, so
+/// `x == /b/` compares `x` with 0 or 1. awkrs compared `x` with the pattern
+/// text. Expectations are gawk 5.4.1.
+#[test]
+fn relational_operand_regex_literal_matches_record() {
+    let (code, stdout, stderr) = run_awkrs_stdin(
+        r#"BEGIN { $0 = "b"; x = 1; print x == /b/, x != /b/, x < /b/, x >= /b/, "b" == /b/; x = 0; print x == /b/ }"#,
+        "",
+    );
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "1 0 0 1 0\n0\n");
+}
+
+/// The regex argument of `sub` / `gsub` / `match` follows the same rule as
+/// `~`: only a bare `/re/` is a regex; `/b/ ""` and `(/b/)` are the string
+/// value of `$0 ~ /b/`. Expectations are gawk 5.4.1.
+#[test]
+fn builtin_regex_argument_is_a_pattern_only_when_bare() {
+    let (code, stdout, stderr) = run_awkrs_stdin(
+        r#"BEGIN {
+            s = "abc"; n = gsub(/b/ "", "X", s); print n, s
+            s = "a0c"; n = gsub(/b/ "", "X", s); print n, s
+            s = "abc"; n = sub((/b/), "X", s); print n, s
+            print match("abc", (/b/)), match("abc", /b/), match("a0", /b/ "")
+            s = "abc"; n = gsub(/b/, "X", s); print n, s
+        }"#,
+        "",
+    );
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(stdout, "0 abc\n1 aXc\n0 abc\n0 2 2\n1 aXc\n");
+}

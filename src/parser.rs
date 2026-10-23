@@ -182,10 +182,10 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
-    fn parse_expr_allow_gt(&mut self, regex_mode: bool, re_pat: bool) -> Result<Expr> {
+    fn parse_expr_allow_gt(&mut self, regex_mode: bool) -> Result<Expr> {
         let saved = self.in_print_arg;
         self.in_print_arg = false;
-        let e = self.parse_expr(regex_mode, re_pat);
+        let e = self.parse_expr(regex_mode);
         self.in_print_arg = saved;
         e
     }
@@ -396,7 +396,7 @@ impl<'a> Parser<'a> {
                     self.bump(true)?;
                     // `p1,` <NL> `p2`: gawk `comma: ',' opt_nls`; one-true-awk agrees.
                     self.skip_newlines()?;
-                    let e2 = self.parse_expr(false, false)?;
+                    let e2 = self.parse_expr(false)?;
                     if matches!(e2, Expr::Tuple(_)) {
                         return Err(Error::Parse {
                             line: self.line,
@@ -418,7 +418,7 @@ impl<'a> Parser<'a> {
             }
             Token::LBrace => Ok(Pattern::Empty),
             _ => {
-                let e = self.parse_expr(false, false)?;
+                let e = self.parse_expr(false)?;
                 if matches!(e, Expr::Tuple(_)) {
                     return Err(Error::Parse {
                         line: self.line,
@@ -429,7 +429,7 @@ impl<'a> Parser<'a> {
                     self.bump(true)?;
                     // `p1,` <NL> `p2`: gawk `comma: ',' opt_nls`; one-true-awk agrees.
                     self.skip_newlines()?;
-                    let e2 = self.parse_expr(false, false)?;
+                    let e2 = self.parse_expr(false)?;
                     if matches!(e2, Expr::Tuple(_)) {
                         return Err(Error::Parse {
                             line: self.line,
@@ -479,7 +479,7 @@ impl<'a> Parser<'a> {
                     });
                 }
                 self.bump(true)?;
-                let cond = self.parse_expr(false, false)?;
+                let cond = self.parse_expr(false)?;
                 if self.cur != Token::RParen {
                     return Err(Error::Parse {
                         line: self.line,
@@ -516,7 +516,7 @@ impl<'a> Parser<'a> {
                     });
                 }
                 self.bump(true)?;
-                let cond = self.parse_expr(false, false)?;
+                let cond = self.parse_expr(false)?;
                 if self.cur != Token::RParen {
                     return Err(Error::Parse {
                         line: self.line,
@@ -550,7 +550,7 @@ impl<'a> Parser<'a> {
                     });
                 }
                 self.bump(true)?;
-                let cond = self.parse_expr(false, false)?;
+                let cond = self.parse_expr(false)?;
                 if self.cur != Token::RParen {
                     return Err(Error::Parse {
                         line: self.line,
@@ -607,7 +607,7 @@ impl<'a> Parser<'a> {
                     self.bump(false)?;
                     None
                 } else {
-                    let e = self.parse_expr(false, false)?;
+                    let e = self.parse_expr(false)?;
                     if self.cur != Token::Semi {
                         return Err(Error::Parse {
                             line: self.line,
@@ -621,7 +621,7 @@ impl<'a> Parser<'a> {
                     self.bump(false)?;
                     None
                 } else {
-                    let e = self.parse_expr(false, false)?;
+                    let e = self.parse_expr(false)?;
                     if self.cur != Token::Semi {
                         return Err(Error::Parse {
                             line: self.line,
@@ -634,7 +634,7 @@ impl<'a> Parser<'a> {
                 let iter = if self.cur == Token::RParen {
                     None
                 } else {
-                    let e = self.parse_expr(false, false)?;
+                    let e = self.parse_expr(false)?;
                     Some(e)
                 };
                 if self.cur != Token::RParen {
@@ -661,7 +661,7 @@ impl<'a> Parser<'a> {
                     });
                 }
                 self.bump(true)?;
-                let expr = self.parse_expr(false, false)?;
+                let expr = self.parse_expr(false)?;
                 if self.cur != Token::RParen {
                     return Err(Error::Parse {
                         line: self.line,
@@ -696,7 +696,7 @@ impl<'a> Parser<'a> {
                                     SwitchLabel::Regexp(t)
                                 }
                                 _ => {
-                                    let e = self.parse_expr(false, false)?;
+                                    let e = self.parse_expr(false)?;
                                     SwitchLabel::Expr(e)
                                 }
                             };
@@ -760,7 +760,7 @@ impl<'a> Parser<'a> {
                 ) {
                     None
                 } else {
-                    Some(self.parse_expr(false, false)?)
+                    Some(self.parse_expr(false)?)
                 };
                 self.consume_stmt_end()?;
                 Ok(Stmt::Exit(e))
@@ -773,7 +773,7 @@ impl<'a> Parser<'a> {
                 ) {
                     None
                 } else {
-                    Some(self.parse_expr(false, false)?)
+                    Some(self.parse_expr(false)?)
                 };
                 self.consume_stmt_end()?;
                 Ok(Stmt::Return(e))
@@ -832,7 +832,7 @@ impl<'a> Parser<'a> {
                         var,
                         redir,
                     };
-                    let e = self.parse_concat_rest(seed, false)?;
+                    let e = self.parse_concat_rest(seed)?;
                     let e = self.parse_expr_from_concat_seed(e)?;
                     self.consume_stmt_end()?;
                     return Ok(Stmt::Expr(e));
@@ -959,7 +959,7 @@ impl<'a> Parser<'a> {
                 Ok(Stmt::Printf { args, redir })
             }
             _ => {
-                let e = self.parse_expr(false, false)?;
+                let e = self.parse_expr(false)?;
                 if matches!(e, Expr::Tuple(_)) {
                     return Err(Error::Parse {
                         line: self.line,
@@ -1050,25 +1050,23 @@ impl<'a> Parser<'a> {
             Token::Gt => {
                 self.bump(false)?;
                 Ok(Some(PrintRedir::Overwrite(Box::new(
-                    self.parse_concat(false, false)?,
+                    self.parse_concat(false)?,
                 ))))
             }
             Token::GtGt => {
                 self.bump(false)?;
                 Ok(Some(PrintRedir::Append(Box::new(
-                    self.parse_concat(false, false)?,
+                    self.parse_concat(false)?,
                 ))))
             }
             Token::Pipe => {
                 self.bump(false)?;
-                Ok(Some(PrintRedir::Pipe(Box::new(
-                    self.parse_concat(false, false)?,
-                ))))
+                Ok(Some(PrintRedir::Pipe(Box::new(self.parse_concat(false)?))))
             }
             Token::PipeCoproc => {
                 self.bump(false)?;
                 Ok(Some(PrintRedir::Coproc(Box::new(
-                    self.parse_concat(false, false)?,
+                    self.parse_concat(false)?,
                 ))))
             }
             _ => Ok(None),
@@ -1079,7 +1077,7 @@ impl<'a> Parser<'a> {
         let saved = self.in_print_arg;
         self.in_print_arg = true;
         let res = (|| -> Result<Expr> {
-            let mut e = self.parse_expr(false, false)?;
+            let mut e = self.parse_expr(false)?;
             loop {
                 if matches!(
                     self.cur,
@@ -1095,7 +1093,7 @@ impl<'a> Parser<'a> {
                 ) {
                     break;
                 }
-                let rhs = self.parse_expr(false, false)?;
+                let rhs = self.parse_expr(false)?;
                 e = Expr::Binary {
                     op: BinOp::Concat,
                     left: Box::new(e),
@@ -1108,8 +1106,8 @@ impl<'a> Parser<'a> {
         res
     }
 
-    fn parse_expr(&mut self, regex_mode: bool, re_pat: bool) -> Result<Expr> {
-        self.parse_assign(regex_mode, re_pat)
+    fn parse_expr(&mut self, regex_mode: bool) -> Result<Expr> {
+        self.parse_assign(regex_mode)
     }
 
     /// After a `/regex/` token in a record rule, the pattern is a plain match unless another rule
@@ -1128,6 +1126,21 @@ impl<'a> Parser<'a> {
         ) || matches!(self.cur, Token::Regexp(_))
     }
 
+    /// The operand of `~`, `!~` or a regex-pattern builtin argument (`sub`,
+    /// `gsub`, `match`, `split`, …) after parsing. gawk treats it as a regex
+    /// only when the *whole* operand is one bare `/re/`; any extension —
+    /// `/re/ ""`, `(/re/)`, `/re/ == 1` — leaves the `/re/` inside as the usual
+    /// `$0 ~ /re/`, and the operand's string value is a dynamic regex.
+    fn regex_operand(starts_with_re: bool, e: Expr) -> Expr {
+        if !starts_with_re || !is_bare_regex_match(&e) {
+            return e;
+        }
+        match e {
+            Expr::Binary { right, .. } => *right,
+            other => other,
+        }
+    }
+
     /// Same desugaring as [`Self::parse_primary`] for bare `/re/` in expression context:
     /// `$0 ~ "pattern"` (pattern stored as [`Expr::Str`] for the compiler/`~` pipeline).
     fn pattern_regex_match_seed(pat: String) -> Expr {
@@ -1142,11 +1155,11 @@ impl<'a> Parser<'a> {
     /// record rule pattern starts with `/re/` but continues with `&&` / `||` / comparisons / …).
     fn parse_expr_from_concat_seed(&mut self, seed: Expr) -> Result<Expr> {
         let e = self.parse_pipe_getline(seed)?;
-        let e = self.parse_cmp_rest(e, false)?;
-        let e = self.parse_and_rest(e, false)?;
-        let e = self.parse_or_rest(e, false)?;
-        let e = self.parse_cond_rest(e, false)?;
-        self.parse_assign_rest(e, false, false)
+        let e = self.parse_cmp_rest(e)?;
+        let e = self.parse_and_rest(e)?;
+        let e = self.parse_or_rest(e)?;
+        let e = self.parse_cond_rest(e)?;
+        self.parse_assign_rest(e)
     }
 
     /// The optional target after `getline`: gawk's `opt_variable`, i.e. a
@@ -1172,7 +1185,7 @@ impl<'a> Parser<'a> {
                 self.bump(false)?;
                 let inner = if self.cur == Token::LParen {
                     self.bump(true)?;
-                    let e = self.parse_expr_allow_gt(false, false)?;
+                    let e = self.parse_expr_allow_gt(false)?;
                     if self.cur != Token::RParen {
                         return Err(Error::Parse {
                             line: self.line,
@@ -1231,17 +1244,17 @@ impl<'a> Parser<'a> {
         Ok(getline)
     }
 
-    fn parse_assign(&mut self, regex_mode: bool, re_pat: bool) -> Result<Expr> {
-        let lhs = self.parse_cond(regex_mode, re_pat)?;
-        self.parse_assign_rest(lhs, regex_mode, re_pat)
+    fn parse_assign(&mut self, regex_mode: bool) -> Result<Expr> {
+        let lhs = self.parse_cond(regex_mode)?;
+        self.parse_assign_rest(lhs)
     }
 
-    fn parse_assign_rest(&mut self, lhs: Expr, _regex_mode: bool, re_pat: bool) -> Result<Expr> {
+    fn parse_assign_rest(&mut self, lhs: Expr) -> Result<Expr> {
         let op_tok = self.cur.clone();
         match op_tok {
             Token::Assign => {
                 self.bump(false)?;
-                let rhs = self.parse_assign(false, re_pat)?;
+                let rhs = self.parse_assign(false)?;
                 assign_expr(lhs, None, rhs, self.line)
             }
             Token::AddAssign
@@ -1260,26 +1273,26 @@ impl<'a> Parser<'a> {
                     _ => unreachable!(),
                 };
                 self.bump(false)?;
-                let rhs = self.parse_assign(false, re_pat)?;
+                let rhs = self.parse_assign(false)?;
                 assign_expr(lhs, Some(op), rhs, self.line)
             }
             _ => Ok(lhs),
         }
     }
 
-    fn parse_cond(&mut self, regex_mode: bool, re_pat: bool) -> Result<Expr> {
-        let e = self.parse_or(regex_mode, re_pat)?;
-        self.parse_cond_rest(e, re_pat)
+    fn parse_cond(&mut self, regex_mode: bool) -> Result<Expr> {
+        let e = self.parse_or(regex_mode)?;
+        self.parse_cond_rest(e)
     }
 
-    fn parse_cond_rest(&mut self, mut e: Expr, re_pat: bool) -> Result<Expr> {
+    fn parse_cond_rest(&mut self, mut e: Expr) -> Result<Expr> {
         if self.cur == Token::Question {
             Self::reject_tuple_expr(&e, self.line)?;
             self.bump(true)?;
             // gawk parity: `?` and `:` are statement-continuation tokens — a
             // newline after either is whitespace.
             self.skip_newlines()?;
-            let t = self.parse_expr(false, re_pat)?;
+            let t = self.parse_expr(false)?;
             Self::reject_tuple_expr(&t, self.line)?;
             if self.cur != Token::Colon {
                 return Err(Error::Parse {
@@ -1294,7 +1307,7 @@ impl<'a> Parser<'a> {
             // awkrs only allowed `conditional_expression` here, which made
             // `=2` look like a stray assign-into-ternary token. parse_assign
             // recursively handles nested ternary via parse_cond.
-            let f = self.parse_assign(false, re_pat)?;
+            let f = self.parse_assign(false)?;
             Self::reject_tuple_expr(&f, self.line)?;
             e = Expr::Ternary {
                 cond: Box::new(e),
@@ -1305,19 +1318,19 @@ impl<'a> Parser<'a> {
         Ok(e)
     }
 
-    fn parse_or(&mut self, regex_mode: bool, re_pat: bool) -> Result<Expr> {
-        let e = self.parse_and(regex_mode, re_pat)?;
-        self.parse_or_rest(e, re_pat)
+    fn parse_or(&mut self, regex_mode: bool) -> Result<Expr> {
+        let e = self.parse_and(regex_mode)?;
+        self.parse_or_rest(e)
     }
 
-    fn parse_or_rest(&mut self, mut e: Expr, re_pat: bool) -> Result<Expr> {
+    fn parse_or_rest(&mut self, mut e: Expr) -> Result<Expr> {
         while self.cur == Token::Or {
             Self::reject_tuple_expr(&e, self.line)?;
             self.bump(true)?;
             // gawk parity: `||` is a continuation token; newlines after it are
             // treated as whitespace.
             self.skip_newlines()?;
-            let r = self.parse_and(false, re_pat)?;
+            let r = self.parse_and(false)?;
             Self::reject_tuple_expr(&r, self.line)?;
             e = Expr::Binary {
                 op: BinOp::Or,
@@ -1328,18 +1341,18 @@ impl<'a> Parser<'a> {
         Ok(e)
     }
 
-    fn parse_and(&mut self, regex_mode: bool, re_pat: bool) -> Result<Expr> {
-        let e = self.parse_array(regex_mode, re_pat)?;
-        self.parse_and_rest(e, re_pat)
+    fn parse_and(&mut self, regex_mode: bool) -> Result<Expr> {
+        let e = self.parse_array(regex_mode)?;
+        self.parse_and_rest(e)
     }
 
-    fn parse_and_rest(&mut self, mut e: Expr, re_pat: bool) -> Result<Expr> {
+    fn parse_and_rest(&mut self, mut e: Expr) -> Result<Expr> {
         while self.cur == Token::And {
             Self::reject_tuple_expr(&e, self.line)?;
             self.bump(true)?;
             // `&&` is a continuation token.
             self.skip_newlines()?;
-            let r = self.parse_array(false, re_pat)?;
+            let r = self.parse_array(false)?;
             Self::reject_tuple_expr(&r, self.line)?;
             e = Expr::Binary {
                 op: BinOp::And,
@@ -1350,12 +1363,12 @@ impl<'a> Parser<'a> {
         Ok(e)
     }
 
-    fn parse_array(&mut self, regex_mode: bool, re_pat: bool) -> Result<Expr> {
-        self.parse_cmp(regex_mode, re_pat)
+    fn parse_array(&mut self, regex_mode: bool) -> Result<Expr> {
+        self.parse_cmp(regex_mode)
     }
 
-    fn parse_cmp(&mut self, regex_mode: bool, re_pat: bool) -> Result<Expr> {
-        let e = self.parse_concat(regex_mode, re_pat)?;
+    fn parse_cmp(&mut self, regex_mode: bool) -> Result<Expr> {
+        let e = self.parse_concat(regex_mode)?;
         let e = self.parse_pipe_getline(e)?;
         if self.in_print_arg
             && matches!(
@@ -1365,10 +1378,10 @@ impl<'a> Parser<'a> {
         {
             return Ok(e);
         }
-        self.parse_cmp_rest(e, re_pat)
+        self.parse_cmp_rest(e)
     }
 
-    fn parse_cmp_rest(&mut self, mut e: Expr, _re_pat: bool) -> Result<Expr> {
+    fn parse_cmp_rest(&mut self, mut e: Expr) -> Result<Expr> {
         loop {
             if self.cur == Token::In {
                 self.bump(false)?;
@@ -1400,11 +1413,13 @@ impl<'a> Parser<'a> {
             Self::reject_tuple_expr(&e, self.line)?;
             // RHS of `~` / `!~` may be `/regex/`; lexer must use regex mode for the next token.
             self.bump(true)?;
-            // Bare `/re/` here is the pattern operand only (not `$0 ~ /re/`).
-            // gawk's `~` binds looser than the relational operators, so its
-            // right operand takes one: `x ~ y == z` is `x ~ (y == z)`.
-            let r = self.parse_concat(false, true)?;
+            // gawk's `~` binds looser than concatenation and the relational
+            // operators, so its right operand takes both: `x ~ y == z` is
+            // `x ~ (y == z)` and `x ~ /b/ ""` is `x ~ (/b/ "")`.
+            let starts_with_re = matches!(self.cur, Token::Regexp(_));
+            let r = self.parse_concat(false)?;
             let r = self.parse_relop_rest(r)?;
+            let r = Self::regex_operand(starts_with_re, r);
             Self::reject_tuple_expr(&r, self.line)?;
             e = Expr::Binary {
                 op,
@@ -1439,7 +1454,7 @@ impl<'a> Parser<'a> {
         };
         Self::reject_tuple_expr(&e, self.line)?;
         self.bump(false)?;
-        let r = self.parse_concat(false, true)?;
+        let r = self.parse_concat(false)?;
         Self::reject_tuple_expr(&r, self.line)?;
         if self.relop().is_some() {
             return Err(Error::Parse {
@@ -1454,9 +1469,9 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_concat(&mut self, regex_mode: bool, re_pat: bool) -> Result<Expr> {
-        let e = self.parse_additive(regex_mode, re_pat)?;
-        self.parse_concat_rest(e, re_pat)
+    fn parse_concat(&mut self, regex_mode: bool) -> Result<Expr> {
+        let e = self.parse_additive(regex_mode)?;
+        self.parse_concat_rest(e)
     }
 
     /// The file / coprocess operand of `getline < src` and `getline <& src`: gawk's
@@ -1464,11 +1479,11 @@ impl<'a> Parser<'a> {
     /// `getline x < f ".bak"` is `(getline x < f) ".bak"` and `getline x < f > 0`
     /// is `(getline x < f) > 0`.
     fn parse_getline_source(&mut self) -> Result<Expr> {
-        self.parse_additive(false, false)
+        self.parse_additive(false)
     }
 
     /// Implicit concatenation continuing from an already parsed left operand.
-    fn parse_concat_rest(&mut self, mut e: Expr, re_pat: bool) -> Result<Expr> {
+    fn parse_concat_rest(&mut self, mut e: Expr) -> Result<Expr> {
         loop {
             if matches!(
                 self.cur,
@@ -1514,7 +1529,7 @@ impl<'a> Parser<'a> {
             ) {
                 break;
             }
-            let r = self.parse_additive(false, re_pat)?;
+            let r = self.parse_additive(false)?;
             Self::reject_tuple_expr(&e, self.line)?;
             Self::reject_tuple_expr(&r, self.line)?;
             e = Expr::Binary {
@@ -1526,8 +1541,8 @@ impl<'a> Parser<'a> {
         Ok(e)
     }
 
-    fn parse_additive(&mut self, regex_mode: bool, re_pat: bool) -> Result<Expr> {
-        let mut e = self.parse_multiplicative(regex_mode, re_pat)?;
+    fn parse_additive(&mut self, regex_mode: bool) -> Result<Expr> {
+        let mut e = self.parse_multiplicative(regex_mode)?;
         loop {
             let op = match &self.cur {
                 Token::Plus => Some(BinOp::Add),
@@ -1537,7 +1552,7 @@ impl<'a> Parser<'a> {
             let Some(op) = op else { break };
             Self::reject_tuple_expr(&e, self.line)?;
             self.bump(true)?;
-            let r = self.parse_multiplicative(false, re_pat)?;
+            let r = self.parse_multiplicative(false)?;
             Self::reject_tuple_expr(&r, self.line)?;
             e = Expr::Binary {
                 op,
@@ -1548,8 +1563,8 @@ impl<'a> Parser<'a> {
         Ok(e)
     }
 
-    fn parse_multiplicative(&mut self, regex_mode: bool, re_pat: bool) -> Result<Expr> {
-        let mut e = self.parse_unary(regex_mode, re_pat)?;
+    fn parse_multiplicative(&mut self, regex_mode: bool) -> Result<Expr> {
+        let mut e = self.parse_unary(regex_mode)?;
         loop {
             let op = match &self.cur {
                 Token::Star => Some(BinOp::Mul),
@@ -1560,7 +1575,7 @@ impl<'a> Parser<'a> {
             let Some(op) = op else { break };
             Self::reject_tuple_expr(&e, self.line)?;
             self.bump(true)?;
-            let r = self.parse_unary(false, re_pat)?;
+            let r = self.parse_unary(false)?;
             Self::reject_tuple_expr(&r, self.line)?;
             e = Expr::Binary {
                 op,
@@ -1574,30 +1589,30 @@ impl<'a> Parser<'a> {
     /// Prefix `++`/`--` bind tighter than `^` / `**`; `!` / unary `+` / `-` bind looser than `^`
     /// (e.g. `-2^2` is `-(2^2)`).  `!` / `+` / `-` live in [`Self::parse_prefix_unary`] so `$-1`
     /// works without consuming `$1++`-style postfix too early.
-    fn parse_unary(&mut self, regex_mode: bool, re_pat: bool) -> Result<Expr> {
+    fn parse_unary(&mut self, regex_mode: bool) -> Result<Expr> {
         match &self.cur.clone() {
             Token::PlusPlus => {
                 self.bump(false)?;
-                let inner = self.parse_unary(false, re_pat)?;
+                let inner = self.parse_unary(false)?;
                 Self::wrap_prefix_incdec(inner, IncDecOp::PreInc, self.line)
             }
             Token::MinusMinus => {
                 self.bump(false)?;
-                let inner = self.parse_unary(false, re_pat)?;
+                let inner = self.parse_unary(false)?;
                 Self::wrap_prefix_incdec(inner, IncDecOp::PreDec, self.line)
             }
-            _ => self.parse_power(regex_mode, re_pat),
+            _ => self.parse_power(regex_mode),
         }
     }
 
     /// `^` / `**` — right-associative; postfix `++`/`--` are handled before `^` (e.g. `x++^2`).
-    fn parse_power(&mut self, regex_mode: bool, re_pat: bool) -> Result<Expr> {
-        let mut e = self.parse_prefix_unary(regex_mode, re_pat)?;
+    fn parse_power(&mut self, regex_mode: bool) -> Result<Expr> {
+        let mut e = self.parse_prefix_unary(regex_mode)?;
         e = self.parse_postfix_on_expr(e)?;
         if matches!(self.cur, Token::Caret | Token::StarStar) {
             Self::reject_tuple_expr(&e, self.line)?;
             self.bump(true)?;
-            let rhs = self.parse_power(false, re_pat)?;
+            let rhs = self.parse_power(false)?;
             Self::reject_tuple_expr(&rhs, self.line)?;
             return Ok(Expr::Binary {
                 op: BinOp::Pow,
@@ -1609,21 +1624,21 @@ impl<'a> Parser<'a> {
     }
 
     /// Prefix unary operators; postfix `++`/`--` are handled by [`Self::parse_postfix_on_expr`].
-    fn parse_prefix_unary(&mut self, regex_mode: bool, re_pat: bool) -> Result<Expr> {
+    fn parse_prefix_unary(&mut self, regex_mode: bool) -> Result<Expr> {
         match &self.cur.clone() {
             Token::PlusPlus => {
                 self.bump(false)?;
-                let inner = self.parse_unary(false, re_pat)?;
+                let inner = self.parse_unary(false)?;
                 Self::wrap_prefix_incdec(inner, IncDecOp::PreInc, self.line)
             }
             Token::MinusMinus => {
                 self.bump(false)?;
-                let inner = self.parse_unary(false, re_pat)?;
+                let inner = self.parse_unary(false)?;
                 Self::wrap_prefix_incdec(inner, IncDecOp::PreDec, self.line)
             }
             Token::Bang => {
                 self.bump(true)?;
-                let e = self.parse_power(false, re_pat)?;
+                let e = self.parse_power(false)?;
                 Self::reject_tuple_expr(&e, self.line)?;
                 Ok(Expr::Unary {
                     op: UnaryOp::Not,
@@ -1632,7 +1647,7 @@ impl<'a> Parser<'a> {
             }
             Token::Minus => {
                 self.bump(true)?;
-                let e = self.parse_power(false, re_pat)?;
+                let e = self.parse_power(false)?;
                 Self::reject_tuple_expr(&e, self.line)?;
                 Ok(Expr::Unary {
                     op: UnaryOp::Neg,
@@ -1641,14 +1656,14 @@ impl<'a> Parser<'a> {
             }
             Token::Plus => {
                 self.bump(true)?;
-                let e = self.parse_power(false, re_pat)?;
+                let e = self.parse_power(false)?;
                 Self::reject_tuple_expr(&e, self.line)?;
                 Ok(Expr::Unary {
                     op: UnaryOp::Pos,
                     expr: Box::new(e),
                 })
             }
-            _ => self.parse_primary(regex_mode, re_pat),
+            _ => self.parse_primary(regex_mode),
         }
     }
 
@@ -1657,7 +1672,7 @@ impl<'a> Parser<'a> {
     /// operator, so a trailing `++`/`--` applies to the *field*: `$i++` is `($i)++` in
     /// gawk, mawk and one-true-awk alike, not `$(i++)`.
     fn parse_inner_for_dollar_field(&mut self) -> Result<Expr> {
-        self.parse_prefix_unary(false, false)
+        self.parse_prefix_unary(false)
     }
 
     fn parse_postfix_on_expr(&mut self, mut e: Expr) -> Result<Expr> {
@@ -1739,16 +1754,16 @@ impl<'a> Parser<'a> {
 
     fn parse_index_list(&mut self) -> Result<Vec<Expr>> {
         let mut v = Vec::new();
-        v.push(self.parse_expr_allow_gt(false, false)?);
+        v.push(self.parse_expr_allow_gt(false)?);
         while self.cur == Token::Comma {
             self.bump(true)?;
             self.skip_newlines()?;
-            v.push(self.parse_expr_allow_gt(false, false)?);
+            v.push(self.parse_expr_allow_gt(false)?);
         }
         Ok(v)
     }
 
-    fn parse_primary(&mut self, regex_mode: bool, re_pat: bool) -> Result<Expr> {
+    fn parse_primary(&mut self, regex_mode: bool) -> Result<Expr> {
         // `/` is only lexed as [`Token::Slash`] when `regex_mode` was false (e.g. after `=`).
         // At the start of a **primary**, `/` cannot be division — division is handled in
         // [`Self::parse_multiplicative`]. Reinterpret as `/regex/` (POSIX awk).
@@ -1778,15 +1793,11 @@ impl<'a> Parser<'a> {
             Token::Regexp(s) => {
                 let s = s.clone();
                 self.bump(false)?;
-                if re_pat {
-                    Ok(Expr::Str(s))
-                } else {
-                    Ok(Expr::Binary {
-                        op: BinOp::Match,
-                        left: Box::new(Expr::Field(Box::new(Expr::Number(0.0)))),
-                        right: Box::new(Expr::Str(s)),
-                    })
-                }
+                Ok(Expr::Binary {
+                    op: BinOp::Match,
+                    left: Box::new(Expr::Field(Box::new(Expr::Number(0.0)))),
+                    right: Box::new(Expr::Str(s)),
+                })
             }
             Token::At => {
                 // `@/re/` regexp constant (gawk) vs `@var(...)` indirect call.
@@ -1824,13 +1835,13 @@ impl<'a> Parser<'a> {
                     Token::Dollar => {
                         // `@$1(args)` — callee read from a field.
                         self.bump(false)?;
-                        let inner = self.parse_primary(false, false)?;
+                        let inner = self.parse_primary(false)?;
                         Expr::Field(Box::new(inner))
                     }
                     Token::LParen => {
                         // Parenthesized expression callee.
                         self.bump(true)?;
-                        let inner = self.parse_expr_allow_gt(false, false)?;
+                        let inner = self.parse_expr_allow_gt(false)?;
                         if self.cur != Token::RParen {
                             return Err(Error::Parse {
                                 line: self.line,
@@ -1859,7 +1870,7 @@ impl<'a> Parser<'a> {
                 let mut args = Vec::new();
                 if self.cur != Token::RParen {
                     loop {
-                        args.push(self.parse_expr_allow_gt(false, false)?);
+                        args.push(self.parse_expr_allow_gt(false)?);
                         if self.cur == Token::Comma {
                             self.bump(true)?;
                             self.skip_newlines()?;
@@ -1918,7 +1929,12 @@ impl<'a> Parser<'a> {
                             let literal_re =
                                 name == "split" && matches!(self.cur, Token::Regexp(_));
                             let starts_with_re = matches!(self.cur, Token::Regexp(_));
-                            let arg = self.parse_expr_allow_gt(false, re_for_arg)?;
+                            let arg = self.parse_expr_allow_gt(false)?;
+                            let arg = if re_for_arg {
+                                Self::regex_operand(starts_with_re, arg)
+                            } else {
+                                arg
+                            };
                             // gawk and one-true-awk reject `index(s, /re/)` while
                             // parsing (mawk quietly searches for "0" or "1"). Both
                             // raise it as a fatal, not a syntax error, and exit 2,
@@ -1971,7 +1987,7 @@ impl<'a> Parser<'a> {
                 self.bump(false)?;
                 if self.cur == Token::LParen {
                     self.bump(true)?;
-                    let e = self.parse_expr_allow_gt(false, re_pat)?;
+                    let e = self.parse_expr_allow_gt(false)?;
                     if self.cur != Token::RParen {
                         return Err(Error::Parse {
                             line: self.line,
@@ -1987,7 +2003,7 @@ impl<'a> Parser<'a> {
             }
             Token::LParen => {
                 self.bump(true)?;
-                let first = self.parse_expr_allow_gt(false, re_pat)?;
+                let first = self.parse_expr_allow_gt(false)?;
                 if self.cur == Token::Comma {
                     // gawk parity: `printf("fmt", a, b)` is the function-call
                     // form of `printf "fmt", a, b`. Earlier awkrs rejected the
@@ -1998,7 +2014,7 @@ impl<'a> Parser<'a> {
                     let mut parts = vec![first];
                     while self.cur == Token::Comma {
                         self.bump(true)?;
-                        parts.push(self.parse_expr_allow_gt(false, re_pat)?);
+                        parts.push(self.parse_expr_allow_gt(false)?);
                     }
                     if self.cur != Token::RParen {
                         return Err(Error::Parse {
