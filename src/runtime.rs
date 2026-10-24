@@ -153,53 +153,90 @@ fn cmp_awknums(a: f64, b: f64) -> Ordering {
     }
 }
 
-/// An element gawk sorts as a scalar value (`Node_val`): not a subarray and
-/// not an element that was referenced but never assigned (`Node_elem_new`).
+/// An element gawk sorts as a scalar value: anything but a subarray. An
+/// element that was referenced but never assigned (`a["k"]` alone, typeof
+/// `unassigned`) sorts as gawk's null value, number 0 and string `""`:
+/// gawk 5.4.1 orders `a["n"]=-1; a["u"]; a["z"]=0` as `n u z` under
+/// `@val_type_asc` and `@val_num_asc`, and `a["e"]=""; a["u"]` as `e u`
+/// under `@val_str_asc`. A missing key reads the same way.
 fn is_scalar_elem(v: Option<&Value>) -> bool {
-    !matches!(v, None | Some(Value::Uninit | Value::Array(_)))
+    !matches!(v, Some(Value::Array(_)))
 }
 
-/// gawk `fixtype` for sorting: numbers, and strings that look numeric
-/// (input-derived strnums), compare as numbers.
-fn sorts_as_number(v: &Value) -> bool {
+/// gawk `fixtype` for sorting: numbers, the null value, and strings that look
+/// numeric (input-derived strnums) compare as numbers.
+fn sorts_as_number(v: Option<&Value>) -> bool {
     match v {
-        Value::Num(_) | Value::Mpfr(_) => true,
-        Value::Str(_) => v.is_numeric_str(),
+        None | Some(Value::Uninit | Value::Num(_) | Value::Mpfr(_)) => true,
+        Some(s @ Value::Str(_)) => s.is_numeric_str(),
         _ => false,
     }
 }
 
-/// gawk `do_sort_up_value_type` (array.c): unassigned elements, then scalars,
-/// then subarrays; among scalars numbers (numerically) before strings (by
-/// bytes).
-fn val_type_cmp(va: Option<&Value>, vb: Option<&Value>) -> Ordering {
-    let rank = |v: Option<&Value>| match v {
-        Some(Value::Array(_)) => 2,
-        v if is_scalar_elem(v) => 1,
-        _ => 0,
+fn sort_num(v: Option<&Value>) -> f64 {
+    v.map_or(0.0, Value::as_number)
+}
+
+fn sort_str(v: Option<&Value>) -> String {
+    v.map_or_else(String::new, Value::as_str)
+}
+
+/// gawk's sort-side `cmp_strings`, used for every string comparison a
+/// `PROCINFO["sorted_in"]` mode or `asort`/`asorti` makes (values and the
+/// index tie-break alike). Without `IGNORECASE` it is a byte comparison with
+/// the shorter of two equal prefixes first. With `IGNORECASE` the common
+/// prefix is first compared case-folded (to lower case, so `_` sorts before
+/// `A`), then case-sensitively, then by length — gawk 5.4.1 orders
+/// `AB a`, `A ab`, `AAA aa` and `_ A` exactly so.
+fn cmp_sort_strings(a: &[u8], b: &[u8], ignore_case: bool) -> Ordering {
+    let n = a.len().min(b.len());
+    let (pa, pb) = (&a[..n], &b[..n]);
+    let folded = if ignore_case {
+        pa.iter()
+            .map(u8::to_ascii_lowercase)
+            .cmp(pb.iter().map(u8::to_ascii_lowercase))
+    } else {
+        Ordering::Equal
     };
-    let (ra, rb) = (rank(va), rank(vb));
-    if ra != 1 || rb != 1 {
-        return ra.cmp(&rb);
+    folded
+        .then_with(|| pa.cmp(pb))
+        .then_with(|| a.len().cmp(&b.len()))
+}
+
+/// gawk `do_sort_up_value_type` (array.c): scalars before subarrays; among
+/// scalars numbers (numerically) before strings.
+fn val_type_cmp(va: Option<&Value>, vb: Option<&Value>, ignore_case: bool) -> Ordering {
+    match (is_scalar_elem(va), is_scalar_elem(vb)) {
+        (true, true) => {}
+        (sa, sb) => return sb.cmp(&sa),
     }
-    let (a, b) = (va.expect("scalar"), vb.expect("scalar"));
-    match (sorts_as_number(a), sorts_as_number(b)) {
-        (true, true) => cmp_awknums(a.as_number(), b.as_number()),
+    match (sorts_as_number(va), sorts_as_number(vb)) {
+        (true, true) => cmp_awknums(sort_num(va), sort_num(vb)),
         (true, false) => Ordering::Less,
         (false, true) => Ordering::Greater,
-        (false, false) => a.as_str().as_bytes().cmp(b.as_str().as_bytes()),
+        (false, false) => cmp_sort_strings(
+            sort_str(va).as_bytes(),
+            sort_str(vb).as_bytes(),
+            ignore_case,
+        ),
     }
 }
 
 /// The ascending comparison behind a `PROCINFO["sorted_in"]` `@ind_*`/`@val_*`
 /// mode, ported from gawk's `sort_up_*` functions (array.c). Every one ends in
-/// a tie-break on the index string (gawk `cmp_strings`: bytes, shorter prefix
-/// first), so no two elements compare equal and the order is total; a
-/// descending mode is the exact reverse. Values that are not scalars (a
-/// subarray or an unassigned element) send `@val_str`/`@val_num` to the
-/// `@val_type` comparison, as gawk does.
-fn sorted_in_cmp(arr: &AwkArray, ka: &AwkStr, kb: &AwkStr, by: SortKey) -> Ordering {
-    let index = || ka.as_bytes().cmp(kb.as_bytes());
+/// a tie-break on the index string ([`cmp_sort_strings`]), so the order is
+/// total unless `IGNORECASE` makes two indices compare equal; a descending
+/// mode is the exact reverse. A subarray value sends `@val_str`/`@val_num` to
+/// the `@val_type` comparison, as gawk does.
+fn sorted_in_cmp(
+    arr: &AwkArray,
+    ka: &AwkStr,
+    kb: &AwkStr,
+    by: SortKey,
+    ignore_case: bool,
+) -> Ordering {
+    let strings = |a: &[u8], b: &[u8]| cmp_sort_strings(a, b, ignore_case);
+    let index = || strings(ka.as_bytes(), kb.as_bytes());
     let (va, vb) = (arr.get_bytes(ka), arr.get_bytes(kb));
     match by {
         SortKey::IndStr => index(),
@@ -208,21 +245,16 @@ fn sorted_in_cmp(arr: &AwkArray, ka: &AwkStr, kb: &AwkStr, by: SortKey) -> Order
             parse_number(&kb.to_str_lossy()),
         )
         .then_with(index),
-        SortKey::ValType => val_type_cmp(va, vb).then_with(index),
-        _ if !(is_scalar_elem(va) && is_scalar_elem(vb)) => val_type_cmp(va, vb).then_with(index),
+        SortKey::ValType => val_type_cmp(va, vb, ignore_case).then_with(index),
+        _ if !(is_scalar_elem(va) && is_scalar_elem(vb)) => {
+            val_type_cmp(va, vb, ignore_case).then_with(index)
+        }
         SortKey::ValStr => {
-            let (a, b) = (va.expect("scalar"), vb.expect("scalar"));
-            a.as_str()
-                .as_bytes()
-                .cmp(b.as_str().as_bytes())
-                .then_with(index)
+            strings(sort_str(va).as_bytes(), sort_str(vb).as_bytes()).then_with(index)
         }
-        SortKey::ValNum => {
-            let (a, b) = (va.expect("scalar"), vb.expect("scalar"));
-            cmp_awknums(a.as_number(), b.as_number())
-                .then_with(|| a.as_str().as_bytes().cmp(b.as_str().as_bytes()))
-                .then_with(index)
-        }
+        SortKey::ValNum => cmp_awknums(sort_num(va), sort_num(vb))
+            .then_with(|| strings(sort_str(va).as_bytes(), sort_str(vb).as_bytes()))
+            .then_with(index),
     }
 }
 
@@ -235,7 +267,12 @@ enum SortKey {
     ValType,
 }
 
-pub(crate) fn sort_for_in_keys(keys: &mut [AwkStr], arr: &AwkArray, mode: SortedInMode) {
+pub(crate) fn sort_for_in_keys(
+    keys: &mut [AwkStr],
+    arr: &AwkArray,
+    mode: SortedInMode,
+    ignore_case: bool,
+) {
     use SortedInMode::*;
     let (by, desc) = match mode {
         Unsorted | CustomFn(_) => return,
@@ -251,7 +288,7 @@ pub(crate) fn sort_for_in_keys(keys: &mut [AwkStr], arr: &AwkArray, mode: Sorted
         ValTypeDesc => (SortKey::ValType, true),
     };
     keys.sort_by(|a, b| {
-        let o = sorted_in_cmp(arr, a, b, by);
+        let o = sorted_in_cmp(arr, a, b, by, ignore_case);
         if desc {
             o.reverse()
         } else {
@@ -5364,7 +5401,7 @@ impl Runtime {
             for k in &keys {
                 tmp.insert_bytes(k.as_bytes(), self.symtab_elem_get(&k.to_str_lossy()));
             }
-            sort_for_in_keys(&mut keys, &tmp, mode);
+            sort_for_in_keys(&mut keys, &tmp, mode, self.ignore_case_flag());
             return keys;
         }
         match self.get_global_var(name) {
@@ -5385,7 +5422,7 @@ impl Runtime {
         if matches!(mode, SortedInMode::CustomFn(_)) {
             return keys;
         }
-        sort_for_in_keys(&mut keys, a, mode);
+        sort_for_in_keys(&mut keys, a, mode, self.ignore_case_flag());
         keys
     }
 
@@ -6298,7 +6335,7 @@ mod longest_prefix_and_sorted_in_tests {
     fn sort_for_in_ind_num_asc_numeric_not_lexicographic() {
         let mut keys = vec!["10".into(), "2".into(), "1".into()];
         let arr = super::AwkArray::new();
-        sort_for_in_keys(&mut keys, &arr, SortedInMode::IndNumAsc);
+        sort_for_in_keys(&mut keys, &arr, SortedInMode::IndNumAsc, false);
         assert_eq!(keys, vec!["1", "2", "10"]);
     }
 
@@ -6308,7 +6345,7 @@ mod longest_prefix_and_sorted_in_tests {
         let mut arr = super::AwkArray::new();
         arr.insert("a".into(), Value::Num(1.0));
         arr.insert("b".into(), Value::Num(10.0));
-        sort_for_in_keys(&mut keys, &arr, SortedInMode::ValNumDesc);
+        sort_for_in_keys(&mut keys, &arr, SortedInMode::ValNumDesc, false);
         assert_eq!(keys, vec!["b", "a"]);
     }
 
@@ -6318,7 +6355,7 @@ mod longest_prefix_and_sorted_in_tests {
         let mut arr = super::AwkArray::new();
         arr.insert("a".into(), Value::Str("z".into()));
         arr.insert("b".into(), Value::Str("a".into()));
-        sort_for_in_keys(&mut keys, &arr, SortedInMode::ValStrAsc);
+        sort_for_in_keys(&mut keys, &arr, SortedInMode::ValStrAsc, false);
         assert_eq!(keys, vec!["b", "a"]);
     }
 
@@ -6355,7 +6392,7 @@ mod longest_prefix_and_sorted_in_tests {
         let mut arr = super::AwkArray::new();
         arr.insert("num".into(), Value::Num(1.0));
         arr.insert("str".into(), Value::Str("z".into()));
-        sort_for_in_keys(&mut keys, &arr, SortedInMode::ValTypeAsc);
+        sort_for_in_keys(&mut keys, &arr, SortedInMode::ValTypeAsc, false);
         assert_eq!(keys, vec!["absent", "num", "str"]);
     }
 
@@ -6365,7 +6402,7 @@ mod longest_prefix_and_sorted_in_tests {
         let mut arr = super::AwkArray::new();
         arr.insert("num".into(), Value::Num(1.0));
         arr.insert("str".into(), Value::Str("z".into()));
-        sort_for_in_keys(&mut keys, &arr, SortedInMode::ValTypeDesc);
+        sort_for_in_keys(&mut keys, &arr, SortedInMode::ValTypeDesc, false);
         assert_eq!(keys, vec!["str", "num", "absent"]);
     }
 
@@ -6373,7 +6410,7 @@ mod longest_prefix_and_sorted_in_tests {
     fn sort_for_in_ind_str_desc() {
         let mut keys = vec!["a".into(), "c".into(), "b".into()];
         let arr = super::AwkArray::new();
-        sort_for_in_keys(&mut keys, &arr, SortedInMode::IndStrDesc);
+        sort_for_in_keys(&mut keys, &arr, SortedInMode::IndStrDesc, false);
         assert_eq!(keys, vec!["c", "b", "a"]);
     }
 
@@ -6381,7 +6418,7 @@ mod longest_prefix_and_sorted_in_tests {
     fn sort_for_in_unsorted_no_op() {
         let mut keys = vec!["z".into(), "a".into()];
         let arr = super::AwkArray::new();
-        sort_for_in_keys(&mut keys, &arr, SortedInMode::Unsorted);
+        sort_for_in_keys(&mut keys, &arr, SortedInMode::Unsorted, false);
         assert_eq!(keys, vec!["z", "a"]);
     }
 
@@ -6389,7 +6426,7 @@ mod longest_prefix_and_sorted_in_tests {
     fn sort_for_in_custom_fn_no_op_in_runtime_helper() {
         let mut keys = vec!["b".into(), "a".into()];
         let arr = super::AwkArray::new();
-        sort_for_in_keys(&mut keys, &arr, SortedInMode::CustomFn("cmp".into()));
+        sort_for_in_keys(&mut keys, &arr, SortedInMode::CustomFn("cmp".into()), false);
         assert_eq!(keys, vec!["b", "a"]);
     }
 }
@@ -6608,7 +6645,7 @@ mod parse_inet_pinning {
 mod coercion_and_ordering_pinning {
     /// gawk 5.4.1 `sorted_in` tie-breaks: equal values fall back to the index
     /// string, a descending mode reverses the whole order (ties included), and
-    /// unassigned elements sort by type, below every scalar.
+    /// an unassigned element sorts as the null value, number 0.
     #[test]
     fn sorted_in_ties_break_on_the_index_like_gawk() {
         use super::{sort_for_in_keys, AwkArray, SortedInMode, Value};
@@ -6618,7 +6655,7 @@ mod coercion_and_ordering_pinning {
         }
         let order = |a: &AwkArray, mode| {
             let mut keys = a.keys();
-            sort_for_in_keys(&mut keys, a, mode);
+            sort_for_in_keys(&mut keys, a, mode, false);
             keys.iter()
                 .map(|k| k.to_str_lossy().into_owned())
                 .collect::<String>()
@@ -6632,7 +6669,7 @@ mod coercion_and_ordering_pinning {
             n.insert_str(k, Value::Uninit);
         }
         let mut keys = n.keys();
-        sort_for_in_keys(&mut keys, &n, SortedInMode::IndNumAsc);
+        sort_for_in_keys(&mut keys, &n, SortedInMode::IndNumAsc, false);
         let keys: Vec<_> = keys.iter().map(|k| k.to_str_lossy().into_owned()).collect();
         assert_eq!(keys, ["9", "010", "10", "1e1"]);
     }

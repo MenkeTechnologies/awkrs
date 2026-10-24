@@ -739,8 +739,10 @@ fn exec_asort(
 
 /// Order `(index, value)` pairs for `asort` / `asorti`. A non-empty gawk `how`
 /// is an `@ind_*` / `@val_*` token (the `PROCINFO["sorted_in"]` orderings) or
-/// the name of a comparison function; without one, `asort` orders by value and
-/// `asorti` by index string, both honoring `IGNORECASE`.
+/// the name of a comparison function. Without one gawk sorts `asort` as
+/// `@val_type_asc` (numbers, then strings, then subarrays, which are copied
+/// to the destination like any other value) and `asorti` as `@ind_str_asc`;
+/// string comparisons honor `IGNORECASE` either way.
 fn order_sort_pairs(
     ctx: &mut VmCtx<'_>,
     pairs: &mut Vec<(AwkStr, Value)>,
@@ -748,38 +750,22 @@ fn order_sort_pairs(
     by_value: bool,
 ) -> Result<()> {
     let how = how.map(|v| v.as_str()).filter(|s| !s.is_empty());
-    let Some(how) = how else {
-        let ic = ctx.rt.ignore_case_flag();
-        if by_value {
-            pairs.sort_by(|(_, va), (_, vb)| builtins::awk_value_sort_cmp_with_case(va, vb, ic));
-        } else {
-            pairs.sort_by(|(ka, _), (kb, _)| {
-                if ic {
-                    builtins::locale_str_cmp_sort(
-                        &ka.to_str_lossy().to_lowercase(),
-                        &kb.to_str_lossy().to_lowercase(),
-                    )
-                } else {
-                    builtins::locale_str_cmp_sort(&ka.to_str_lossy(), &kb.to_str_lossy())
-                }
-            });
-        }
-        return Ok(());
-    };
-    let Some(mode) = crate::runtime::parse_sorted_in_at_token(&how) else {
-        return sort_pairs_with_custom_cmp(ctx, pairs, &how);
+    let mode = match how {
+        None if by_value => SortedInMode::ValTypeAsc,
+        None => SortedInMode::IndStrAsc,
+        Some(how) => match crate::runtime::parse_sorted_in_at_token(&how) {
+            Some(mode) => mode,
+            None => return sort_pairs_with_custom_cmp(ctx, pairs, &how),
+        },
     };
     let mut arr = AwkArray::new();
     for (k, v) in pairs.drain(..) {
         arr.insert_bytes(k.as_bytes(), v);
     }
     let mut keys = arr.keys();
-    crate::runtime::sort_for_in_keys(&mut keys, &arr, mode);
+    crate::runtime::sort_for_in_keys(&mut keys, &arr, mode, ctx.rt.ignore_case_flag());
     pairs.extend(keys.into_iter().map(|k| {
-        let v = arr
-            .get_bytes(k.as_bytes())
-            .cloned()
-            .unwrap_or(Value::Uninit);
+        let v = arr.remove_bytes(k.as_bytes()).unwrap_or(Value::Uninit);
         (k, v)
     }));
     Ok(())

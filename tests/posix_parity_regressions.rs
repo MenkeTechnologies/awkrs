@@ -3725,3 +3725,89 @@ fn builtin_regex_argument_is_a_pattern_only_when_bare() {
     assert_eq!(code, 0, "stderr {stderr:?}");
     assert_eq!(stdout, "0 abc\n1 aXc\n0 abc\n0 2 2\n1 aXc\n");
 }
+
+/// gawk's default `asort` order is `@val_type_asc`: numbers (an unassigned
+/// element counts as 0) before strings, strings by bytes, subarrays last and
+/// copied to the destination. awkrs compared values pairwise as numbers when
+/// both looked numeric, so string constants `"10"`/`"9"` sorted numerically,
+/// the unassigned element sorted first, and a subarray value was a fatal
+/// "attempt to use array in a scalar context". Expectations are gawk 5.4.1
+/// under LC_ALL=C.
+#[test]
+fn asort_default_order_is_val_type_asc_with_subarrays_last() {
+    let (code, stdout, stderr) = run_awkrs_stdin(
+        r#"BEGIN {
+            a[1] = "10"; a[2] = "9"; a[3] = 5; a[4] = "abc"; a[5] = ""; a[6]; a[7] = -1
+            n = asort(a, b)
+            for (i = 1; i <= n; i++) printf "%s:%s ", b[i], typeof(b[i])
+            print ""
+            c["x"][1] = 5; c["y"] = 3; c["z"] = "s"
+            n = asort(c, d)
+            print n, d[1], d[2], isarray(d[3]), d[3][1]
+            d[3][1] = 99; print c["x"][1]
+            n = asort(c); print n, c[1], isarray(c[3])
+        }"#,
+        "",
+    );
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(
+        stdout,
+        "-1:number :unassigned 5:number :string 10:string 9:string abc:string \n\
+         3 3 s 1 5\n5\n3 3 1\n"
+    );
+}
+
+/// An element that was referenced but never assigned sorts as gawk's null
+/// value (number 0, string `""`) in every `PROCINFO["sorted_in"]` value
+/// mode, not ahead of every scalar. Expectations are gawk 5.4.1.
+#[test]
+fn sorted_in_unassigned_element_sorts_as_null_value() {
+    let (code, stdout, stderr) = run_awkrs_stdin(
+        r#"BEGIN {
+            a["n"] = -1; a["u"]; a["z"] = 0; a["e"] = ""; a["s"] = "b"; a["r"][1]
+            split("@val_type_asc @val_type_desc @val_str_asc @val_num_asc", m)
+            for (i = 1; i <= 4; i++) {
+                PROCINFO["sorted_in"] = m[i]
+                for (k in a) printf "%s ", k
+                print ""
+            }
+        }"#,
+        "",
+    );
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(
+        stdout,
+        "n u z e s r \nr s e z u n \ne u n z s r \nn e u z s r \n"
+    );
+}
+
+/// Under `IGNORECASE` gawk's sort comparisons fold case (to lower, so `[`
+/// and `_` sort before letters) and break folded ties case-sensitively, in
+/// `PROCINFO["sorted_in"]` orders as well as `asort`/`asorti`. awkrs
+/// ignored `IGNORECASE` for `sorted_in` and folded without the tie-break in
+/// `asort`. Expectations are gawk 5.4.1 under LC_ALL=C.
+#[test]
+fn sorted_in_and_asort_fold_case_under_ignorecase() {
+    let (code, stdout, stderr) = run_awkrs_stdin(
+        r#"BEGIN {
+            split("b B _ [ Ab aB ab AB x Y", w)
+            for (i in w) v[w[i]] = w[i]
+            IGNORECASE = 1
+            PROCINFO["sorted_in"] = "@ind_str_asc"
+            for (k in v) printf "%s ", k
+            print ""
+            PROCINFO["sorted_in"] = "@val_str_desc"
+            for (k in v) printf "%s ", k
+            print ""
+            delete PROCINFO["sorted_in"]
+            n = asort(v, s); for (i = 1; i <= n; i++) printf "%s ", s[i]
+            print ""
+            n = asorti(v, s); for (i = 1; i <= n; i++) printf "%s ", s[i]
+            print ""
+        }"#,
+        "",
+    );
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    let asc = "[ _ AB Ab aB ab B b x Y \n";
+    assert_eq!(stdout, format!("{asc}Y x b B ab aB Ab AB _ [ \n{asc}{asc}"));
+}
