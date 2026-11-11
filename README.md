@@ -558,7 +558,7 @@ The HUD-themed HTML docs (`docs/index.html`, `docs/report.html`) share `hud-stat
 pub fn run_program(src: &str, input: &str) -> Result<String, String>
 ```
 
-Runs `src` as a complete awk program with `input` as its standard input (the record loop and plain `getline` read it; `RS`/`FS` set in `BEGIN` apply) and returns everything it printed to stdout. Each call runs on its own thread with a fresh runtime, so calls from different threads never share state or output, and nothing is written to the process stdout. Parse/compile/runtime errors, a nonzero `exit` status, and interpreter panics return `Err`; `exit` / `exit 0` returns `Ok` with the output so far. Output of child processes (`system()`, `print | "cmd"`) and `getline < "/dev/stdin"` still use the process's own stdio.
+Runs `src` as a complete awk program with `input` as its standard input (the record loop and plain `getline` read it; `RS`/`FS` set in `BEGIN` apply) and returns everything it printed to stdout. Each call runs on its own thread with a fresh runtime, so calls from different threads never share state or output, and nothing is written to the process stdout. Parse/compile/runtime errors, a nonzero `exit` status, and interpreter panics return `Err`; `exit` / `exit 0` returns `Ok` with the output so far. The stdout of `system()` and `print | "cmd"` children is captured into the same output, in the order the CLI would produce it; a `system()` child gets a null stdin. `getline < "/dev/stdin"` (or `"-"`) reads `input` through the same cursor as the record loop. `print > "/dev/stderr"` and child stderr go to the process stderr.
 
 ```rust
 let out = awkrs::run_program("{ s += $2 } END { print s }", "a 1\nb 2\n")?;

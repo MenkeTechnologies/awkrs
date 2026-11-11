@@ -71,3 +71,45 @@ fn concurrent_calls_keep_their_own_output() {
         assert_eq!(out.lines().count(), 2000);
     }
 }
+
+#[test]
+fn system_output_lands_in_order() {
+    let out = run_program(
+        r#"BEGIN { print "A"; r = system("echo B; exit 3"); print "C " r }"#,
+        "",
+    )
+    .unwrap();
+    assert_eq!(out, "A\nB\nC 3\n");
+}
+
+#[test]
+fn output_pipe_is_captured_at_close_and_at_exit() {
+    let out = run_program(
+        r#"BEGIN { print "A"; print "B" | "cat"; close("cat"); print "C" }"#,
+        "",
+    )
+    .unwrap();
+    assert_eq!(out, "A\nB\nC\n");
+    // An unclosed pipe drains at exit, ahead of what END left buffered, as the
+    // CLI orders it.
+    let out = run_program(r#"{ print | "sort" } END { print "done" }"#, "b\na\nc\n").unwrap();
+    assert_eq!(out, "a\nb\nc\ndone\n");
+}
+
+#[test]
+fn dev_stdin_and_dash_read_the_embedded_input() {
+    let out = run_program(
+        r#"BEGIN { while ((getline l < "-") > 0) print "dash " l }"#,
+        "l1\nl2\n",
+    )
+    .unwrap();
+    assert_eq!(out, "dash l1\ndash l2\n");
+    // Same cursor as the record loop: the redirected read consumes records the
+    // loop then never sees.
+    let out = run_program(
+        r#"NR == 1 { getline l < "/dev/stdin"; print "got " l } { print "rec " $0 }"#,
+        "l1\nl2\nl3\n",
+    )
+    .unwrap();
+    assert_eq!(out, "got l2\nrec l1\nrec l3\n");
+}

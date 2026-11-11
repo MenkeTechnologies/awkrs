@@ -1638,6 +1638,10 @@ pub struct Runtime {
     pub buffered_pipes: std::collections::HashSet<String>,
     /// `pipe_children` field.
     pub pipe_children: HashMap<String, Child>,
+    /// Embedded run only: a thread per output pipe draining the child's stdout,
+    /// joined at `close` so the bytes land in `print_buf` (see
+    /// [`crate::vm::splice_child_output`]).
+    pub pipe_output: HashMap<String, std::thread::JoinHandle<Vec<u8>>>,
     /// `"cmd" | getline …` — stdout of `sh -c cmd`, kept open between calls so the
     /// command runs **once** per logical pipe and subsequent `getline`s advance
     /// through the same stream (matches gawk; pre-fix awkrs respawned every call).
@@ -2464,6 +2468,7 @@ impl Runtime {
             pipe_stdin: HashMap::new(),
             buffered_pipes: std::collections::HashSet::new(),
             pipe_children: HashMap::new(),
+            pipe_output: HashMap::new(),
             pipe_stdout: HashMap::new(),
             pipe_input_children: HashMap::new(),
             coproc_handles: HashMap::new(),
@@ -2972,6 +2977,7 @@ impl Runtime {
             pipe_stdin: HashMap::new(),
             buffered_pipes: std::collections::HashSet::new(),
             pipe_children: HashMap::new(),
+            pipe_output: HashMap::new(),
             pipe_stdout: HashMap::new(),
             pipe_input_children: HashMap::new(),
             coproc_handles: HashMap::new(),
@@ -3217,16 +3223,28 @@ impl Runtime {
             // (rather than at close) is what mawk and one-true-awk do, and it
             // costs one flush per distinct command, not one per write.
             self.flush_stdout_before_child();
-            let mut child = Command::new("sh")
-                .arg("-c")
-                .arg(cmd)
-                .stdin(Stdio::piped())
+            let mut sh = Command::new("sh");
+            sh.arg("-c").arg(cmd).stdin(Stdio::piped());
+            if crate::vm::embedded() {
+                sh.stdout(Stdio::piped());
+            }
+            let mut child = sh
                 .spawn()
                 .map_err(|e| Error::Runtime(format!("pipe `{cmd}`: {e}")))?;
             let stdin = child
                 .stdin
                 .take()
                 .ok_or_else(|| Error::Runtime(format!("pipe `{cmd}`: no stdin")))?;
+            // Drained on its own thread so a child that writes more than a pipe
+            // buffer holds cannot block while awk is still feeding it.
+            if let Some(mut out) = child.stdout.take() {
+                let drain = std::thread::spawn(move || {
+                    let mut bytes = Vec::new();
+                    let _ = out.read_to_end(&mut bytes);
+                    bytes
+                });
+                self.pipe_output.insert(cmd.to_string(), drain);
+            }
             self.pipe_children.insert(cmd.to_string(), child);
             self.pipe_stdin
                 .insert(cmd.to_string(), BufWriter::new(stdin));
@@ -3931,6 +3949,11 @@ impl Runtime {
     /// `getline var < filename` — one record from a kept-open file handle.
     pub fn read_line_file(&mut self, path: &str) -> Result<Option<String>> {
         self.require_unsandboxed_io()?;
+        // Embedded run: standard input is the caller's `input`, read through the
+        // same cursor as the record loop (end of file once that stream is spent).
+        if crate::vm::embedded() && matches!(path, "-" | "/dev/stdin" | "/dev/fd/0") {
+            return self.read_line_primary_current();
+        }
         if path.starts_with("/inet/udp/") {
             self.ensure_inet_udp(path)?;
             let s = self.inet_udp.get_mut(path).unwrap();
@@ -4160,6 +4183,7 @@ impl Runtime {
         if let Some(mut ch) = self.pipe_children.remove(path) {
             had_any = true;
             exit_status = awk_process_status(ch.wait());
+            self.collect_pipe_output(path);
         }
         // `cmd | getline` reader/child — drop the reader (closes the read fd), then
         // reap the child so subsequent calls with the same key respawn cleanly.
@@ -5692,6 +5716,7 @@ impl Clone for Runtime {
             pipe_stdin: HashMap::new(),
             buffered_pipes: std::collections::HashSet::new(),
             pipe_children: HashMap::new(),
+            pipe_output: HashMap::new(),
             pipe_stdout: HashMap::new(),
             pipe_input_children: HashMap::new(),
             coproc_handles: HashMap::new(),
@@ -5768,8 +5793,20 @@ impl Runtime {
         for (_, mut w) in self.pipe_stdin.drain() {
             let _ = w.flush();
         }
-        for (_, mut ch) in self.pipe_children.drain() {
+        let children: Vec<_> = self.pipe_children.drain().collect();
+        for (cmd, mut ch) in children {
             let _ = ch.wait();
+            self.collect_pipe_output(&cmd);
+        }
+    }
+
+    /// Embedded run: after an output pipe's child has exited, put what it wrote
+    /// to stdout into `print_buf`. A no-op for a pipe that was not captured.
+    fn collect_pipe_output(&mut self, cmd: &str) {
+        if let Some(drain) = self.pipe_output.remove(cmd) {
+            if let Ok(bytes) = drain.join() {
+                crate::vm::splice_child_output(&mut self.print_buf, &bytes);
+            }
         }
     }
 }

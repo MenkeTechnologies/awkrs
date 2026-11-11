@@ -2838,19 +2838,46 @@ fn build_debug_snapshot(ctx: &VmCtx<'_>, line: usize) -> crate::dap::PauseSnapsh
 
 thread_local! {
     /// Set on the thread running [`crate::embed::run_program`]: program stdout
-    /// stays in `Runtime::print_buf` for the caller instead of reaching fd 1.
-    pub(crate) static CAPTURE_STDOUT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// stays in `Runtime::print_buf` for the caller, the stdout of `system()`
+    /// and `print | "cmd"` children is piped back into it, and
+    /// `getline < "/dev/stdin"` reads the embedded input.
+    pub(crate) static EMBEDDED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Embedded run: length of `print_buf` at the last point the CLI would have
+    /// written it to fd 1. A child's output is spliced in here, the position it
+    /// takes on a real stdout shared between awk and the child.
+    static EMBED_FLUSHED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Whether this thread is running [`crate::embed::run_program`].
+pub(crate) fn embedded() -> bool {
+    EMBEDDED.with(std::cell::Cell::get)
 }
 
 /// Flush the persistent stdout buffer. Called at file boundaries, not per-record.
-/// A no-op on a thread with [`CAPTURE_STDOUT`] set, so the bytes stay buffered.
+/// In an embedded run the bytes stay buffered; only the flush point is recorded.
 pub fn flush_print_buf(buf: &mut Vec<u8>) -> Result<()> {
-    if !buf.is_empty() && !CAPTURE_STDOUT.with(std::cell::Cell::get) {
+    if embedded() {
+        EMBED_FLUSHED.with(|at| at.set(buf.len()));
+        return Ok(());
+    }
+    if !buf.is_empty() {
         let mut out = io::stdout().lock();
         out.write_all(buf).map_err(Error::Io)?;
         buf.clear();
     }
     Ok(())
+}
+
+/// Embedded run: insert a child's stdout into `buf` at the last flush point.
+///
+/// On the CLI the child writes straight to fd 1, after everything awk flushed
+/// and ahead of what awk still holds buffered; this reproduces that order.
+pub(crate) fn splice_child_output(buf: &mut Vec<u8>, out: &[u8]) {
+    EMBED_FLUSHED.with(|at| {
+        let pos = at.get().min(buf.len());
+        buf.splice(pos..pos, out.iter().copied());
+        at.set(pos + out.len());
+    });
 }
 
 fn truthy(v: &Value) -> Result<bool> {

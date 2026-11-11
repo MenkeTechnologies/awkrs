@@ -4,7 +4,7 @@ use crate::compiler::Compiler;
 use crate::error::{Error, Result};
 use crate::parser::parse_program;
 use crate::runtime::Runtime;
-use crate::vm::{vm_run_begin, vm_run_beginfile, vm_run_end, CAPTURE_STDOUT};
+use crate::vm::{vm_run_begin, vm_run_beginfile, vm_run_end, EMBEDDED};
 use std::io::{BufReader, Cursor, Read};
 use std::sync::{Arc, Mutex};
 
@@ -21,9 +21,12 @@ use std::sync::{Arc, Mutex};
 /// the interpreter all return `Err`. `exit` / `exit 0` returns `Ok` with the
 /// output printed so far (`END` still runs, as in awk).
 ///
-/// Not captured: output of child processes (`system()`, `print | "cmd"`),
-/// which inherit the process stdout, and `getline < "/dev/stdin"` / `"-"`,
-/// which open the process stdin rather than `input`.
+/// The stdout of `system()` and `print | "cmd"` children is captured too,
+/// placed where it would appear on the CLI (awk flushes before `system()`, on
+/// opening an output pipe, and before `close`), and a `system()` child gets
+/// a null stdin. `getline < "/dev/stdin"` (or `"-"`) reads `input` through the same
+/// cursor as the record loop. `print > "/dev/stderr"` and child stderr go to the
+/// process stderr.
 pub fn run_program(src: &str, input: &str) -> std::result::Result<String, String> {
     let src = src.to_owned();
     let input = input.as_bytes().to_vec();
@@ -31,7 +34,7 @@ pub fn run_program(src: &str, input: &str) -> std::result::Result<String, String
         .name("awkrs-embed".into())
         .stack_size(crate::INTERP_STACK_BYTES)
         .spawn(move || {
-            CAPTURE_STDOUT.with(|c| c.set(true));
+            EMBEDDED.with(|c| c.set(true));
             run_captured(&src, input).map_err(|e| e.to_string())
         })
         .map_err(|e| format!("spawn interpreter thread: {e}"))?
@@ -58,6 +61,9 @@ fn run_captured(src: &str, input: Vec<u8>) -> Result<String> {
         || !cp.beginfile_chunks.is_empty()
         || !cp.endfile_chunks.is_empty();
     if reads_input && !rt.exit_pending {
+        // As on the CLI, what `BEGIN` printed counts as flushed before input is
+        // read; child output from here on lands after it.
+        crate::vm::flush_print_buf(&mut rt.print_buf)?;
         let skip = !std::mem::take(&mut rt.beginfile_ran) && vm_run_beginfile(&cp, &mut rt)?;
         // `input_reader` is gone once a `getline` in `BEGIN` drained `input`;
         // the record loop would then fall back to the process stdin.

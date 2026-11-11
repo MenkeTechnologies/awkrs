@@ -445,7 +445,24 @@ pub(crate) fn exec_builtin_dispatch(
             // the identical flush, so both go through the one helper.
             ctx.rt.flush_stdout_before_child();
             let cmd = args[0].as_str();
-            let st = Command::new("sh").arg("-c").arg(&cmd).status();
+            let mut child = Command::new("sh");
+            child.arg("-c").arg(&cmd);
+            let st = if crate::vm::embedded() {
+                // The child's stdout belongs in the caller's buffer, and the
+                // host's stdin is not the program's.
+                use std::process::Stdio;
+                let out = child
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::inherit())
+                    .output();
+                out.map(|o| {
+                    crate::vm::splice_child_output(&mut ctx.rt.print_buf, &o.stdout);
+                    o.status
+                })
+            } else {
+                child.status()
+            };
             Value::Num(crate::runtime::awk_process_status(st))
         }
         "close" => {
