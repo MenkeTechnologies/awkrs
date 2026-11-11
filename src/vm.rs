@@ -2836,9 +2836,16 @@ fn build_debug_snapshot(ctx: &VmCtx<'_>, line: usize) -> crate::dap::PauseSnapsh
 
 // ── Helper functions ────────────────────────────────────────────────────────
 
+thread_local! {
+    /// Set on the thread running [`crate::embed::run_program`]: program stdout
+    /// stays in `Runtime::print_buf` for the caller instead of reaching fd 1.
+    pub(crate) static CAPTURE_STDOUT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// Flush the persistent stdout buffer. Called at file boundaries, not per-record.
+/// A no-op on a thread with [`CAPTURE_STDOUT`] set, so the bytes stay buffered.
 pub fn flush_print_buf(buf: &mut Vec<u8>) -> Result<()> {
-    if !buf.is_empty() {
+    if !buf.is_empty() && !CAPTURE_STDOUT.with(std::cell::Cell::get) {
         let mut out = io::stdout().lock();
         out.write_all(buf).map_err(Error::Io)?;
         buf.clear();
