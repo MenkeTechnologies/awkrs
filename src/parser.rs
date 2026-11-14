@@ -192,7 +192,12 @@ impl<'a> Parser<'a> {
 
     fn bump(&mut self, regex_mode: bool) -> Result<()> {
         self.cur = self.lexer.next_token(regex_mode)?;
-        self.line = self.lexer.line();
+        // The lexer's line has already moved past a `Newline` token it just
+        // returned; that token belongs to the line it ends. Without this, a
+        // statement rejected at its terminating newline (`delete`, `3 = 2`,
+        // `printf`) was reported one line late. gawk and mawk name the line
+        // holding the statement.
+        self.line = self.lexer.line() - usize::from(self.cur == Token::Newline);
         Ok(())
     }
 
@@ -223,10 +228,13 @@ impl<'a> Parser<'a> {
         self.skip_stmt_separators()?;
         while !matches!(self.cur, Token::Eof) {
             if matches!(self.cur, Token::Function) {
+                // The duplicate is reported where it starts, not at the token
+                // after its body (gawk, mawk and one-true-awk all do).
+                let def_line = self.line;
                 let f = self.parse_function_def()?;
                 if funcs.insert(f.name.clone(), f).is_some() {
                     return Err(Error::Parse {
-                        line: self.line,
+                        line: def_line,
                         msg: "duplicate function name".into(),
                     });
                 }
@@ -808,41 +816,38 @@ impl<'a> Parser<'a> {
             Token::Getline => {
                 self.bump(false)?;
                 let var = self.parse_getline_target()?;
-                if self.cur == Token::LtAmp || self.cur == Token::Lt {
+                let redir = if self.cur == Token::LtAmp || self.cur == Token::Lt {
                     let coproc = self.cur == Token::LtAmp;
                     self.bump(false)?;
                     let fe = Box::new(self.parse_getline_source()?);
-                    let redir = if coproc {
+                    if coproc {
                         GetlineRedir::Coproc(fe)
                     } else {
                         GetlineRedir::File(fe)
-                    };
-                    if self.at_stmt_end() {
-                        self.consume_stmt_end()?;
-                        return Ok(Stmt::GetLine {
-                            pipe_cmd: None,
-                            var,
-                            redir,
-                        });
                     }
-                    // `getline < f ".bak"` groups as `(getline < f) ".bak"`: keep going
-                    // as an expression statement.
-                    let seed = Expr::GetLine {
+                } else {
+                    GetlineRedir::Primary
+                };
+                if self.at_stmt_end() {
+                    self.consume_stmt_end()?;
+                    return Ok(Stmt::GetLine {
                         pipe_cmd: None,
                         var,
                         redir,
-                    };
-                    let e = self.parse_concat_rest(seed)?;
-                    let e = self.parse_expr_from_concat_seed(e)?;
-                    self.consume_stmt_end()?;
-                    return Ok(Stmt::Expr(e));
+                    });
                 }
-                self.consume_stmt_end()?;
-                Ok(Stmt::GetLine {
+                // `getline < f ".bak"` groups as `(getline < f) ".bak"` and
+                // `getline x y` as `(getline x) y` — gawk, mawk and one-true-awk
+                // all accept both — so keep going as an expression statement.
+                let seed = Expr::GetLine {
                     pipe_cmd: None,
                     var,
-                    redir: GetlineRedir::Primary,
-                })
+                    redir,
+                };
+                let e = self.parse_concat_rest(seed)?;
+                let e = self.parse_expr_from_concat_seed(e)?;
+                self.consume_stmt_end()?;
+                Ok(Stmt::Expr(e))
             }
             Token::LBrace => {
                 self.bump(false)?;

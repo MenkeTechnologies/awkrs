@@ -413,6 +413,9 @@ impl<'a> Lexer<'a> {
         // string
         if c == '"' {
             self.bump();
+            // An unterminated string is reported on the line it opened on, not
+            // past a `\`-newline continuation it ran through (gawk and mawk).
+            let start_line = self.line;
             // A byte string, not a `String`: `"\351"` and `"\xe9"` name a single
             // byte in gawk, mawk and one-true-awk alike, and so does a byte
             // written raw between the quotes, which all three also accept. The
@@ -531,7 +534,7 @@ impl<'a> Lexer<'a> {
                         }
                         None => {
                             return Err(Error::Parse {
-                                line: self.line,
+                                line: start_line,
                                 msg: "unterminated string".into(),
                             });
                         }
@@ -548,7 +551,7 @@ impl<'a> Lexer<'a> {
                 self.bump_byte();
             }
             return Err(Error::Parse {
-                line: self.line,
+                line: start_line,
                 msg: "unterminated string".into(),
             });
         }
